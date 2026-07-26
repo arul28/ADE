@@ -10407,13 +10407,15 @@ final class SyncService: ObservableObject {
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
-      // Unsent composer text and in-progress question answers are scoped to the
-      // machine's chats, so forgetting the machine has to drop them too — the
-      // trust reset already promises to clear machine-scoped drafts, and these
-      // stores are bounded by entry count, not lifetime, so they would otherwise
-      // outlive the pairing indefinitely.
-      WorkComposerDraftStore.clearAll()
-      WorkQuestionDraftStore.clearAll()
+      // Deliberately does NOT clear the composer/question draft stores. Reaching
+      // here does not mean the user asked to forget anything: the only
+      // production trigger is `forgetHost()`, which has no UI caller and fires
+      // automatically from `handleReconnectFailure` on an attributed auth
+      // failure — a desktop reinstall or token rotation is enough. And the
+      // stores are keyed by session id, not by host, so wiping them would
+      // destroy unsent text for every OTHER machine still paired, plus the
+      // machine-independent Hub and New Chat drafts. Losing a user's typed words
+      // on a background reconnect is far worse than a stale draft lingering.
       activeHostProfile = nil
       hostName = nil
       hiddenProjectKeys = loadHiddenProjectKeys()

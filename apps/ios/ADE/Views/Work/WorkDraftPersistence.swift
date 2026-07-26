@@ -121,13 +121,13 @@ enum WorkComposerDraftStore {
   }
 
   private static func loadAll() -> [String: Entry] {
-    WorkDefaultsJSONMap.load(storageKey)
-  }
-
-  /// Drops every stored draft. Called when the phone forgets a machine — the
-  /// drafts belong to that machine's chats.
-  static func clearAll() {
-    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    // Piggyback the legacy-secret purge on the store that every chat open and
+    // every composer keystroke touches. Hanging it off the question-draft store
+    // alone left it unreachable on exactly the devices that need it: one that
+    // answered a secret question on an intermediate build and never renders
+    // another question card would keep the plaintext blob forever.
+    WorkQuestionDraftStore.purgeLegacyStoreIfNeeded()
+    return WorkDefaultsJSONMap.load(storageKey)
   }
 }
 
@@ -206,19 +206,14 @@ enum WorkQuestionDraftStore {
     return WorkDefaultsJSONMap.load(storageKey)
   }
 
-  /// Runs on first access rather than at launch so the purge can't be skipped by
-  /// a path that never boots the chat surface.
-  private static func purgeLegacyStoreIfNeeded() {
+  /// Called from both draft stores' `loadAll`, so any chat open triggers it —
+  /// not just one that happens to render a question card. Cheap after the first
+  /// run: an absent key is an in-memory dictionary miss, and nothing in the app
+  /// ever writes `legacyStorageKey` again (there is no `UserDefaults.register`
+  /// anywhere that could resurrect it).
+  static func purgeLegacyStoreIfNeeded() {
     let defaults = ADESharedContainer.defaults
     guard defaults.object(forKey: legacyStorageKey) != nil else { return }
-    defaults.removeObject(forKey: legacyStorageKey)
-  }
-
-  /// Drops every stored answer. Called when the phone forgets a machine — the
-  /// gates these answer belong to that machine's chats.
-  static func clearAll() {
-    let defaults = ADESharedContainer.defaults
-    defaults.removeObject(forKey: storageKey)
     defaults.removeObject(forKey: legacyStorageKey)
   }
 }
