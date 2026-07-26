@@ -2318,7 +2318,7 @@ final class WorkChatComposerDraftState: ObservableObject {
     let key = persistenceKey
     let value = text
     autosaveTask = Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(400))
+      try? await Task.sleep(for: workDraftAutosaveDebounce)
       guard !Task.isCancelled else { return }
       WorkComposerDraftStore.save(value, for: key)
     }

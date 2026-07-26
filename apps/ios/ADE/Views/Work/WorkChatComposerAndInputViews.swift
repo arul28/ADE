@@ -956,84 +956,6 @@ struct WorkPendingInputHeightBoundedCard<Content: View>: View {
   }
 }
 
-/// In-progress answers for a still-open question request, persisted per request
-/// id. The card's selections and freeform text were plain `@State`, so backing
-/// out of a chat to check something in the transcript — the exact reason a user
-/// minimizes the card — silently discarded everything they had picked or typed.
-/// Same storage shape as `WorkComposerDraftStore`: one JSON dictionary under a
-/// versioned key, bounded and evicted oldest-first.
-enum WorkQuestionDraftStore {
-  struct Snapshot: Codable, Equatable {
-    var selections: [String: Set<String>] = [:]
-    var freeform: [String: String] = [:]
-    var sharedFreeform: String = ""
-    var page: Int = 0
-    var updatedAt: Double = 0
-
-    /// Nothing worth persisting — used to decide between a write and a removal.
-    var isEmpty: Bool {
-      selections.values.allSatisfy(\.isEmpty)
-        && freeform.values.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        && sharedFreeform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && page == 0
-    }
-  }
-
-  private static let storageKey = "ade.work.questionDrafts.v1"
-  /// Open question gates are short-lived; a small cap is plenty and keeps the
-  /// blob from accumulating answers to requests that were resolved elsewhere.
-  private static let maxEntries = 30
-  private static var defaults: UserDefaults { ADESharedContainer.defaults }
-
-  static func load(_ requestId: String) -> Snapshot? {
-    guard !requestId.isEmpty else { return nil }
-    return loadAll()[requestId]
-  }
-
-  static func save(_ snapshot: Snapshot, for requestId: String) {
-    guard !requestId.isEmpty else { return }
-    guard !snapshot.isEmpty else {
-      clear(requestId)
-      return
-    }
-    var map = loadAll()
-    var stamped = snapshot
-    stamped.updatedAt = Date().timeIntervalSince1970
-    // Compare ignoring the timestamp so an unchanged draft costs no write.
-    if var existing = map[requestId] {
-      existing.updatedAt = stamped.updatedAt
-      if existing == stamped { return }
-    }
-    map[requestId] = stamped
-    if map.count > maxEntries {
-      let survivors = map
-        .sorted { $0.value.updatedAt > $1.value.updatedAt }
-        .prefix(maxEntries)
-      map = Dictionary(uniqueKeysWithValues: survivors.map { ($0.key, $0.value) })
-    }
-    persist(map)
-  }
-
-  static func clear(_ requestId: String) {
-    guard !requestId.isEmpty else { return }
-    var map = loadAll()
-    guard map.removeValue(forKey: requestId) != nil else { return }
-    persist(map)
-  }
-
-  private static func loadAll() -> [String: Snapshot] {
-    guard let data = defaults.data(forKey: storageKey),
-          let decoded = try? JSONDecoder().decode([String: Snapshot].self, from: data)
-    else { return [:] }
-    return decoded
-  }
-
-  private static func persist(_ map: [String: Snapshot]) {
-    guard let data = try? JSONEncoder().encode(map) else { return }
-    defaults.set(data, forKey: storageKey)
-  }
-}
-
 struct WorkStructuredQuestionCard: View {
   let question: WorkPendingQuestionModel
   let busy: Bool
@@ -1185,7 +1107,7 @@ struct WorkStructuredQuestionCard: View {
       // Keystroke debounce: each edit cancels the pending sleep and restarts it,
       // so a burst of typing costs one write instead of one per character.
       guard didRestoreDrafts else { return }
-      try? await Task.sleep(for: .milliseconds(400))
+      try? await Task.sleep(for: workDraftAutosaveDebounce)
       guard !Task.isCancelled else { return }
       persistDrafts()
     }
@@ -1474,12 +1396,20 @@ struct WorkStructuredQuestionCard: View {
     }
     // Standard iOS escape hatch from a multi-line field: the vertical-axis
     // TextField swallows Return as a newline, so without an explicit Done there
-    // is no way to lower the keyboard. Scoped to this card's fields.
+    // is no way to lower the keyboard.
+    //
+    // Gated on `freeformFocused` rather than declared unconditionally: keyboard
+    // toolbars are scoped to the enclosing view, and this card is mounted a few
+    // points above the main chat composer — a UITextView this Done button cannot
+    // dismiss. If the toolbar ever surfaced over that keyboard, the button would
+    // silently do nothing, which is worse than having no button at all.
     .toolbar {
-      ToolbarItemGroup(placement: .keyboard) {
-        Spacer()
-        Button("Done") { freeformFocused = false }
-          .accessibilityLabel("Dismiss keyboard")
+      if freeformFocused {
+        ToolbarItemGroup(placement: .keyboard) {
+          Spacer()
+          Button("Done") { freeformFocused = false }
+            .accessibilityLabel("Dismiss keyboard")
+        }
       }
     }
   }

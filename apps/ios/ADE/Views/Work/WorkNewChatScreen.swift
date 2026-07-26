@@ -1560,22 +1560,7 @@ private struct WorkNewChatComposerBar: View {
       attachments: $attachments,
       onDismiss: { composerFocused = true }
     )
-    // Restore whatever the user last typed here but never sent. Guarded on
-    // empty so a re-appear can't clobber live text.
-    .task {
-      if draft.isEmpty {
-        draft = WorkComposerDraftStore.load(WorkComposerDraftStore.workNewChatKey)
-      }
-    }
-    // Debounced autosave: each keystroke restarts this task, and the cancelled
-    // sleep throws before the write, so only a typing pause hits UserDefaults.
-    .task(id: draft) {
-      try? await Task.sleep(for: .milliseconds(400))
-      guard !Task.isCancelled else { return }
-      WorkComposerDraftStore.save(draft, for: WorkComposerDraftStore.workNewChatKey)
-    }
-    // The debounce dies with the view, so flush the final text on teardown.
-    .onDisappear { WorkComposerDraftStore.save(draft, for: WorkComposerDraftStore.workNewChatKey) }
+    .workPersistedDraft($draft, key: WorkComposerDraftStore.workNewChatKey)
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph
