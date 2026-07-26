@@ -12943,6 +12943,36 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testCanonicalAndLiveRowsForOneMessageRenderItOnce() {
+    // Production ordering: a canonical `chat.getTranscript` row carries the
+    // first fragment's timestamp and no sequence, so it sorts ahead of the live
+    // fragments for the same message. Whichever way they combine, the message
+    // must render once — the mobile "text cut then repeated" bug was this pair
+    // being concatenated.
+    let complete = "Better approach — the surface height is already derivable from two "
+      + "existing measurements, no new modifier chain needed:"
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-26T01:00:01.000Z",
+        sequence: nil,
+        event: .assistantText(text: complete, turnId: "turn-1", itemId: "msg-a")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-26T01:00:01.000Z",
+        sequence: 42,
+        event: .assistantText(text: "ifier chain needed:", turnId: "turn-1", itemId: "msg-a")
+      ),
+    ]
+
+    let markdown = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+      .map(\.markdown)
+
+    XCTAssertEqual(markdown, [complete])
+  }
+
   func testMakeWorkChatTranscriptPreservesTranscriptEntryMessageId() {
     let transcript = makeWorkChatTranscript(
       from: [

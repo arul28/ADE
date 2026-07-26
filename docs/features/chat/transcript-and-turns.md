@@ -40,6 +40,63 @@ discriminated `AgentChatEvent` union.
 originate from orchestrator, worker, or user threads and must be routed
 back to the correct activity feed.
 
+## Canonical assistant text (fragile — read before editing)
+
+`chat.getTranscript` — plus the cursor-paged chat-history reader and the
+internal `readTranscriptEntries` used by auto-title and handoff — flattens the
+envelope stream into role-tagged entries via `transcriptEntriesFromEnvelopes` in
+`apps/desktop/src/main/services/chat/chatTranscriptEntries.ts`. Clients that
+hold **both** the live fragment stream and this canonical text (iOS, the web
+client) reconcile the two, so the module owes them one invariant:
+
+> Canonical text is byte-identical to what a renderer draws from the same
+> envelopes. ADE never invents a character.
+
+That is stronger than "don't corrupt text", and it is the property that matters:
+a client holding both renditions can only reconcile them if they agree. The
+moment canonical groups or joins differently from a renderer, the two are no
+longer deltas of each other and the client concatenates them — rendering the
+message twice.
+
+So canonical mirrors the renderer exactly:
+
+- **Entries group on `messageId`** (else the turn), because that is what every
+  renderer keys on. Desktop's `shouldMergeTextRows` compares `messageId` and
+  ignores `itemId`; iOS collapses a text event onto its `messageId` in
+  `workAssistantMessageStableId`. Grouping more finely — for example splitting on
+  the `itemId` Codex advances per provider message — makes a client silently
+  concatenate two entries it keyed the same.
+- **Identified fragments concatenate verbatim**, whatever interleaves, because
+  the renderer joins merged rows with a bare `${previous}${next}`. ADE has no
+  block-level identity it can trust, so guessing a boundary from interleaved
+  events is what spliced `"\n\n"` into the middle of a word (`"no new mod"` +
+  `"ifier chain needed:"`).
+
+Only when ADE cannot tie a fragment to a provider message does it fall back to
+inferring boundaries from interleaved events. Ephemeral chrome — `activity`
+hints, live `context_usage`, token counters — is invisible to every renderer, so
+letting it break a run made the canonical text disagree with what desktop, the
+TUI, and iOS actually draw. `isTranscriptContentEvent` is an allowlist of
+*content* types on purpose: a new event type defaults to "does not break the
+run", which at worst drops a paragraph break, whereas the inverse default
+corrupts words. Keep genuinely rendered rows (`todo_update`, the `subagent_*`
+cards, `done`) in that list — they are not chrome.
+
+A user message clears every open entry, so a stream key reused in a later turn
+cannot merge backwards into text that preceded the user.
+
+A whitespace-only fragment (a word gap, or a markdown hard break `"  \n"`) is a
+real delta and is dropped only when there is no run for it to continue.
+
+Because canonical and rendered text agree, clients need no reconciliation
+heuristic of their own. iOS merges every assistant fragment through
+`mergeWorkStreamingText` regardless of where the envelope came from. An earlier
+attempt to add a client-side guard for whole-message rows had to be removed: it
+could not tell a complete message from one chunk of a paged canonical fetch
+(`getChatTranscriptPage` can split a message at an envelope boundary), so it
+dropped the other chunk. Keep the agreement on the host side; do not reintroduce
+a client rule that has to guess what a sequence-less envelope contains.
+
 ## Parsing
 
 `parseAgentChatTranscript(raw)` in

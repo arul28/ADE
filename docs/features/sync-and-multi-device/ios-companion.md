@@ -1978,6 +1978,18 @@ different machine's cached limits.
   `itemId` or (b) the immediately preceding envelope was also assistant
   text. This keeps the iOS Work chat from fanning a single assistant
   turn into many tiny rows.
+- **Assistant fragments merge the same way whatever their source.** Live
+  `chat_event` frames carry a `sequence`; rows from `chat.getTranscript` do not.
+  Both go through `mergeWorkStreamingText`, because the host now guarantees the
+  canonical text is byte-identical to what the phone renders from the same
+  fragments (see
+  [Canonical assistant text](../chat/transcript-and-turns.md#canonical-assistant-text-fragile--read-before-editing)).
+  A client-side guard that treated every sequence-less envelope as a *complete*
+  message was tried and removed: `getChatTranscriptPage` can split one message
+  across two byte-cursor pages, so both chunks arrive without a sequence and
+  neither is whole — keeping only the longer one silently dropped part of the
+  answer. Fix disagreements on the host, not with a client rule that has to
+  guess what a sequence-less envelope contains.
 - **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against
