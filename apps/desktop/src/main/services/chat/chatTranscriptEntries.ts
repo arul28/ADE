@@ -35,6 +35,7 @@ const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEve
   "approval_request",
   "codex_image_generation",
   "codex_image_view",
+  "codex_turn_recovery",
   "codex_turn_stalled",
   "command",
   "completion_report",
@@ -58,6 +59,9 @@ const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEve
   "tool_call",
   "tool_result",
   "tool_use_summary",
+  "turn_diagnostics",
+  "turn_health",
+  "turn_recovery",
   "web_search",
 ]);
 
@@ -91,7 +95,14 @@ function assistantStream(event: TextEvent): AssistantStream | null {
   const messageId = event.messageId?.trim() ?? "";
   const itemId = event.itemId?.trim() ?? "";
   const turnId = event.turnId?.trim() ?? "";
-  const key = messageId ? `message:${messageId}` : turnId ? `turn:${turnId}` : null;
+  // Mirror `workAssistantMessageStableId` on iOS exactly: messageId, else the
+  // itemId a provider supplies in its place. Desktop agrees — `turnAndItemMatch`
+  // refuses to merge rows whose item ids differ. Keying item-only streams on the
+  // turn instead would run two separate messages together.
+  const key = messageId ? `message:${messageId}`
+    : itemId ? `item:${itemId}`
+    : turnId ? `turn:${turnId}`
+    : null;
   if (!key) return null;
   return { key, identified: Boolean(messageId || itemId) };
 }

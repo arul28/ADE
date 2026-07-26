@@ -91,6 +91,19 @@ describe("transcriptEntriesFromEnvelopes", () => {
     expect(entries).toEqual(["Alpha.", "Beta."]);
   });
 
+  it("separates item-only streams, since that is the identity clients fall back to", () => {
+    // No messageId: iOS keys the bubble on itemId and desktop's turnAndItemMatch
+    // refuses to merge rows whose item ids differ. Keying these on the turn would
+    // run two separate messages together and disagree with both renderers.
+    const entries = textsOf([
+      envelope({ type: "text", text: "First item.", itemId: "item-a", turnId: "turn-1" }),
+      envelope({ type: "tool_call", tool: "Read", args: {}, itemId: "tool-1", turnId: "turn-1" }),
+      envelope({ type: "text", text: "Second item.", itemId: "item-b", turnId: "turn-1" }),
+    ]);
+
+    expect(entries).toEqual(["First item.", "Second item."]);
+  });
+
   it("joins a runtime's finer id exactly as the renderer joins the rows", () => {
     // Codex sets messageId to a per-turn UUID and itemId to the provider message
     // id. Desktop's shouldMergeTextRows ignores itemId and concatenates the rows
