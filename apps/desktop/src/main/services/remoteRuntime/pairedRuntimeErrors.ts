@@ -1,4 +1,13 @@
-import type { RemoteRuntimeSshHostKeyTrustStatus } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeConnectionAttempt,
+  RemoteRuntimeSshHostKeyTrustStatus,
+} from "../../../shared/types/remoteRuntime";
+
+export type PairedRuntimeRouteDiagnostic = {
+  correlationId: string;
+  attempts: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount?: number;
+};
 
 function assignCause(target: Error, cause: unknown): void {
   if (cause === undefined) return;
@@ -12,7 +21,11 @@ function assignCause(target: Error, cause: unknown): void {
 export class PairedRuntimeTransportUnavailableError extends Error {
   readonly code = "PAIRED_RUNTIME_TRANSPORT_UNAVAILABLE" as const;
 
-  constructor(message: string, cause?: unknown) {
+  constructor(
+    message: string,
+    cause?: unknown,
+    readonly diagnostic?: PairedRuntimeRouteDiagnostic,
+  ) {
     super(message);
     this.name = "PairedRuntimeTransportUnavailableError";
     assignCause(this, cause);
@@ -32,7 +45,11 @@ export class PairedRuntimeCompatibilityError extends Error {
 export class PairedRuntimeRelayAuthRequiredError extends Error {
   readonly code = "PAIRED_RUNTIME_RELAY_AUTH_REQUIRED" as const;
 
-  constructor(message = "Sign in to ADE to connect through ADE Relay.", cause?: unknown) {
+  constructor(
+    message = "Sign in to ADE to connect through ADE Relay.",
+    cause?: unknown,
+    readonly diagnostic?: PairedRuntimeRouteDiagnostic,
+  ) {
     super(message);
     this.name = "PairedRuntimeRelayAuthRequiredError";
     assignCause(this, cause);

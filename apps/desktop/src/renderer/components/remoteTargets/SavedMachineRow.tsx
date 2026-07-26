@@ -7,6 +7,7 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import type {
+  RemoteRuntimeConnectionAttempt,
   RemoteRuntimeConnectResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
@@ -40,6 +41,95 @@ import {
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
+
+const ROUTE_LABELS: Record<RemoteRuntimeConnectionAttempt["kind"], string> = {
+  lan: "LAN",
+  tailnet: "Tailscale",
+  relay: "ADE relay",
+  ssh: "SSH",
+};
+
+function safeDiagnosticHost(value: string): string {
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  if (!normalized) return "Unknown host";
+  try {
+    const url = new URL(normalized.includes("://") ? normalized : `ws://${normalized}`);
+    return url.host || "Unknown host";
+  } catch {
+    return normalized.split(/[/?#]/, 1)[0] || "Unknown host";
+  }
+}
+
+function ConnectionRouteDetails({
+  attempts,
+  correlationId,
+}: {
+  attempts: RemoteRuntimeConnectionAttempt[];
+  correlationId: string | null;
+}) {
+  if (attempts.length === 0 && !correlationId) return null;
+  return (
+    <details
+      style={{
+        borderTop: `1px solid ${COLORS.border}`,
+        paddingTop: 7,
+        color: COLORS.textMuted,
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: COLORS.textSecondary,
+          fontWeight: 650,
+          userSelect: "none",
+        }}
+      >
+        Route details
+      </summary>
+      <div style={{ display: "grid", gap: 5, marginTop: 7 }}>
+        {attempts.slice(0, 8).map((attempt, index) => {
+          const outcome = attempt.outcome === "connected"
+            ? "Connected"
+            : attempt.outcome === "skipped"
+              ? "Skipped"
+              : `Failed${attempt.failure ? ` (${attempt.failure})` : ""}`;
+          return (
+            <div
+              key={`${attempt.kind}:${attempt.startedAt}:${index}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "max-content minmax(0, 1fr)",
+                columnGap: 8,
+              }}
+            >
+              <span style={{ color: COLORS.textSecondary, fontWeight: 650 }}>
+                {ROUTE_LABELS[attempt.kind]}
+              </span>
+              <span>
+                {`${safeDiagnosticHost(attempt.host)} · ${Math.max(0, Math.round(attempt.durationMs))}ms · ${outcome}`}
+              </span>
+            </div>
+          );
+        })}
+        {correlationId ? (
+          <div>
+            <span style={{ color: COLORS.textSecondary, fontWeight: 650 }}>
+              Diagnostic ID
+            </span>
+            {" "}
+            <code style={{ userSelect: "text" }}>{correlationId}</code>
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
 
 type SavedMachineRowProps = {
   row: SavedMachineRowModel;
@@ -109,6 +199,12 @@ export function SavedMachineRow({
     rawError: status?.state === "error" ? status.lastError : null,
     overrideMessage: selected ? error : null,
   });
+  const activeRoute = connected?.target.id === target.id
+    ? connected.route
+    : status?.route;
+  const errorInfo = status?.state === "error" ? status.lastErrorInfo : null;
+  const routeAttempts = (activeRoute?.attempts ?? errorInfo?.attempts ?? []).slice(0, 8);
+  const routeCorrelationId = activeRoute?.correlationId ?? errorInfo?.correlationId ?? null;
   const formOpen = formPrefill?.targetId === target.id;
 
   return (
@@ -264,6 +360,11 @@ export function SavedMachineRow({
             retrying={busyId === target.id}
           />
         ) : null}
+
+        <ConnectionRouteDetails
+          attempts={routeAttempts}
+          correlationId={routeCorrelationId}
+        />
 
         {warnings.length > 0 ? (
           <div

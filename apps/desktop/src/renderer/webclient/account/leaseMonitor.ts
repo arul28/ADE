@@ -27,15 +27,18 @@ export function accountLeaseOwnerForActiveConnection(args: {
   relayAccess: WebRelayAccess;
 }): string | null {
   const environmentOwnerUserId = args.environment.accountOwnerUserId?.trim() ?? "";
-  if (environmentOwnerUserId) return environmentOwnerUserId;
-  if (args.relayAccess.kind !== "signed_in" || !args.endpoint) return null;
+  if (!args.endpoint) return null;
   const requiresRelayLease = deriveBrowserSyncEndpoints({
     environment: args.environment,
   }).some((candidate) => (
     candidate.url === args.endpoint
     && browserEndpointRequiresRelayAccess(candidate)
   ));
-  return requiresRelayLease ? args.relayAccess.userId.trim() || null : null;
+  if (!requiresRelayLease) return null;
+  if (environmentOwnerUserId) return environmentOwnerUserId;
+  return args.relayAccess.kind === "signed_in"
+    ? args.relayAccess.userId.trim() || null
+    : null;
 }
 
 export async function reconcileActiveAccountLease(args: {

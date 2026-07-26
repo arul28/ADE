@@ -311,7 +311,13 @@ struct WorkRootScreen: View {
   var body: some View {
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
-      List {
+        workList(proxy: proxy)
+      }
+    }
+  }
+
+  private func workList(proxy: ScrollViewProxy) -> some View {
+    List {
         if isLoadingSkeleton && sessions.isEmpty && optimisticSessions.isEmpty {
           ForEach(0..<3, id: \.self) { _ in
             ADECardSkeleton(rows: 3)
@@ -396,115 +402,8 @@ struct WorkRootScreen: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            let rowLaneById = laneById
-            let rowPrTagsByLaneId = lanePrTagsByLaneId
-            let rowArchivedSessionIds = archivedSessionIds
-            let rowCollapsedSectionIds = collapsedSectionIds
-            let rowTopLevelDisplaySessionIds = sessionPresentation.topLevelDisplaySessionIds
-            let rowChildGroupsByParentId = sessionPresentation.childGroupsByParentId
-            let rowDeletingLaneIds = syncService.pendingLaneDeletionIds
-
             ForEach(sessionGroups) { group in
-              let isLaneDeleting = group.laneId.map(rowDeletingLaneIds.contains) ?? false
-              WorkSidebarSectionHeader(
-                group: group,
-                collapsed: rowCollapsedSectionIds.contains(group.id),
-                onToggle: {
-                  withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-                    toggleCollapsed(group.id)
-                  }
-                },
-                pullRequest: group.laneId.flatMap { rowPrTagsByLaneId[$0] },
-                onOpenPullRequest: { tag in
-                  openLanePullRequest(tag: tag, laneId: group.laneId)
-                }
-              )
-              .disabled(isLaneDeleting)
-              .redacted(reason: isLaneDeleting ? .placeholder : [])
-              .id(group.id)
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-              .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
-
-              if !rowCollapsedSectionIds.contains(group.id) {
-                ForEach(group.sessions.filter { rowTopLevelDisplaySessionIds.contains($0.id) }) { session in
-                  WorkSessionListRow(
-                    session: session,
-                    lane: rowLaneById[session.laneId],
-                    // Fall back to the resolved lane (name/branch match) so
-                    // legacy sessions with a stale laneId still surface their
-                    // PR shortcut — same resolution goToLane/openPullRequest use.
-                    pullRequest: rowPrTagsByLaneId[session.laneId]
-                      ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
-                    chatSummary: chatSummaries[session.id],
-                    isArchived: rowArchivedSessionIds.contains(session.id),
-                    isLaneDeleting: rowDeletingLaneIds.contains(session.laneId),
-                    transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
-                    selectedSessionId: $selectedSessionTransitionId,
-                    isSelecting: isSelecting,
-                    isChecked: selectedSessionIds.contains(session.id),
-                    onLongPressSelect: startSelection,
-                    onToggleSelect: toggleSelection,
-                    onOpen: openSession,
-                    onPin: togglePin,
-                    onRename: beginRename,
-                    onStopRuntime: { session in stopRuntimeTarget = session },
-                    onDelete: deleteChatSession,
-                    onCopyId: copySessionId,
-                    onCopyDeepLink: copySessionDeepLink,
-                    onGoToLane: goToLane,
-                    onOpenPullRequest: openPullRequest
-                  )
-                  .id(session.id)
-                  .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                  .listRowBackground(Color.clear)
-                  .listRowSeparator(.hidden)
-
-                  if let childGroup = rowChildGroupsByParentId[session.id] {
-                    WorkChildShellSection(
-                      group: childGroup,
-                      collapsed: rowCollapsedSectionIds.contains(childGroup.collapsedSectionId),
-                      onToggle: {
-                        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-                          toggleCollapsed(childGroup.collapsedSectionId)
-                        }
-                      }
-                    ) {
-                      ForEach(childGroup.children) { child in
-                        WorkSessionListRow(
-                          session: child,
-                          lane: rowLaneById[child.laneId],
-                          pullRequest: rowPrTagsByLaneId[child.laneId]
-                            ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: child, lanes: lanes)],
-                          chatSummary: chatSummaries[child.id],
-                          isArchived: rowArchivedSessionIds.contains(child.id),
-                          isLaneDeleting: rowDeletingLaneIds.contains(child.laneId),
-                          transitionNamespace: nil,
-                          compact: true,
-                          selectedSessionId: $selectedSessionTransitionId,
-                          isSelecting: isSelecting,
-                          isChecked: selectedSessionIds.contains(child.id),
-                          onLongPressSelect: startSelection,
-                          onToggleSelect: toggleSelection,
-                          onOpen: openSession,
-                          onPin: togglePin,
-                          onRename: beginRename,
-                          onStopRuntime: { session in stopRuntimeTarget = session },
-                          onDelete: deleteChatSession,
-                          onCopyId: copySessionId,
-                          onCopyDeepLink: copySessionDeepLink,
-                          onGoToLane: goToLane,
-                          onOpenPullRequest: openPullRequest
-                        )
-                        .id(child.id)
-                      }
-                    }
-                    .listRowInsets(EdgeInsets(top: 0, leading: 30, bottom: 6, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                  }
-                }
-              }
+              workSessionGroupRows(group)
             }
           }
         }
@@ -789,7 +688,115 @@ struct WorkRootScreen: View {
       } message: { session in
         Text("ADE will stop the running process. The saved session stays available unless you delete it.")
       }
+  }
+
+  @ViewBuilder
+  private func workSessionGroupRows(_ group: WorkSessionGroup) -> some View {
+    let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
+    WorkSidebarSectionHeader(
+      group: group,
+      collapsed: collapsedSectionIds.contains(group.id),
+      onToggle: {
+        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+          toggleCollapsed(group.id)
+        }
+      },
+      pullRequest: group.laneId.flatMap { lanePrTagsByLaneId[$0] },
+      onOpenPullRequest: { tag in
+        openLanePullRequest(tag: tag, laneId: group.laneId)
       }
+    )
+    .disabled(isLaneDeleting)
+    .redacted(reason: isLaneDeleting ? .placeholder : [])
+    .id(group.id)
+    .listRowBackground(Color.clear)
+    .listRowSeparator(.hidden)
+    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
+
+    if !collapsedSectionIds.contains(group.id) {
+      ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in
+        workSessionRows(session)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func workSessionRows(_ session: TerminalSessionSummary) -> some View {
+    WorkSessionListRow(
+      session: session,
+      lane: laneById[session.laneId],
+      // Fall back to the resolved lane (name/branch match) so legacy sessions
+      // with a stale laneId still surface their PR shortcut.
+      pullRequest: lanePrTagsByLaneId[session.laneId]
+        ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
+      chatSummary: chatSummaries[session.id],
+      isArchived: archivedSessionIds.contains(session.id),
+      transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion)
+        ? sessionTransitionNamespace
+        : nil,
+      isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
+      selectedSessionId: $selectedSessionTransitionId,
+      isSelecting: isSelecting,
+      isChecked: selectedSessionIds.contains(session.id),
+      onLongPressSelect: startSelection,
+      onToggleSelect: toggleSelection,
+      onOpen: openSession,
+      onPin: togglePin,
+      onRename: beginRename,
+      onStopRuntime: { session in stopRuntimeTarget = session },
+      onDelete: deleteChatSession,
+      onCopyId: copySessionId,
+      onCopyDeepLink: copySessionDeepLink,
+      onGoToLane: goToLane,
+      onOpenPullRequest: openPullRequest
+    )
+    .id(session.id)
+    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    .listRowBackground(Color.clear)
+    .listRowSeparator(.hidden)
+
+    if let childGroup = sessionPresentation.childGroupsByParentId[session.id] {
+      WorkChildShellSection(
+        group: childGroup,
+        collapsed: collapsedSectionIds.contains(childGroup.collapsedSectionId),
+        onToggle: {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            toggleCollapsed(childGroup.collapsedSectionId)
+          }
+        }
+      ) {
+        ForEach(childGroup.children) { child in
+          WorkSessionListRow(
+            session: child,
+            lane: laneById[child.laneId],
+            pullRequest: lanePrTagsByLaneId[child.laneId]
+              ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: child, lanes: lanes)],
+            chatSummary: chatSummaries[child.id],
+            isArchived: archivedSessionIds.contains(child.id),
+            transitionNamespace: nil,
+            compact: true,
+            isLaneDeleting: syncService.pendingLaneDeletionIds.contains(child.laneId),
+            selectedSessionId: $selectedSessionTransitionId,
+            isSelecting: isSelecting,
+            isChecked: selectedSessionIds.contains(child.id),
+            onLongPressSelect: startSelection,
+            onToggleSelect: toggleSelection,
+            onOpen: openSession,
+            onPin: togglePin,
+            onRename: beginRename,
+            onStopRuntime: { session in stopRuntimeTarget = session },
+            onDelete: deleteChatSession,
+            onCopyId: copySessionId,
+            onCopyDeepLink: copySessionDeepLink,
+            onGoToLane: goToLane,
+            onOpenPullRequest: openPullRequest
+          )
+          .id(child.id)
+        }
+      }
+      .listRowInsets(EdgeInsets(top: 0, leading: 30, bottom: 6, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
     }
   }
 

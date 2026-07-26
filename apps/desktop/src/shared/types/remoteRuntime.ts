@@ -170,10 +170,35 @@ export type RemoteRuntimeConnectionState =
 
 export type RemoteRuntimeRouteKind = "lan" | "tailnet" | "relay" | "ssh";
 
+export type RemoteRuntimeConnectionAttemptFailure =
+  | "unreachable"
+  | "timeout"
+  | "authentication"
+  | "identity"
+  | "capability"
+  | "protocol"
+  | "unknown";
+
+export type RemoteRuntimeConnectionAttempt = {
+  kind: RemoteRuntimeRouteKind;
+  /** Host and optional port only. Paths, query strings, and credentials are excluded. */
+  host: string;
+  startedAt: number;
+  durationMs: number;
+  outcome: "connected" | "failed" | "skipped";
+  failure?: RemoteRuntimeConnectionAttemptFailure;
+};
+
 export type RemoteRuntimeConnectionRoute = {
   kind: RemoteRuntimeRouteKind;
   endpoint: string;
   latencyMs?: number;
+  /** Correlates the bounded route attempts for this connection without exposing secrets. */
+  correlationId?: string;
+  /** At most eight privacy-safe attempts, ordered exactly as they were tried. */
+  attempts?: RemoteRuntimeConnectionAttempt[];
+  /** Number of route attempts omitted from the bounded diagnostic list. */
+  omittedAttemptCount?: number;
 };
 
 export type RemoteRuntimeConnectErrorInfo = {
@@ -182,6 +207,9 @@ export type RemoteRuntimeConnectErrorInfo = {
   detail?: string;
   freeBytes?: number;
   requiredBytes?: number;
+  correlationId?: string;
+  attempts?: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount?: number;
 };
 
 const REMOTE_RUNTIME_ERROR_DETAIL_MAX_CHARS = 4_000;

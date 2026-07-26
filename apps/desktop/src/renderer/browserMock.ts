@@ -37,7 +37,13 @@ import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import {
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
+  type AgentChatRecoverCodexTurnArgs,
+  type AgentChatRecoverCodexTurnResult,
+  type AgentChatRecoverTurnArgs,
+  type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
+  type AgentChatResolveUnprocessedMessageArgs,
+  type AgentChatResolveUnprocessedMessageResult,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import {
@@ -5082,7 +5088,22 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       cancelDispatchedSteer: resolvedArg({ cancelled: false }),
       interrupt: resolvedArg(undefined),
-      recoverCodexTurn: async (args: any) => ({
+      recoverTurn: async (
+        args: AgentChatRecoverTurnArgs,
+      ): Promise<AgentChatRecoverTurnResult> => ({
+        action: args.action,
+        turnId: args.turnId,
+        status: args.action === "wait"
+          ? "waiting"
+          : args.action === "nudge"
+            ? "nudged"
+            : args.action === "restart_resume"
+              ? "resumed"
+              : "retrying",
+      }),
+      recoverCodexTurn: async (
+        args: AgentChatRecoverCodexTurnArgs,
+      ): Promise<AgentChatRecoverCodexTurnResult> => ({
         action: args.action,
         turnId: args.turnId,
         status: args.action === "wait"
@@ -5092,6 +5113,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             : args.action === "restart_resume_thread"
               ? "resumed"
               : "retrying",
+      }),
+      resolveUnprocessedMessage: async (
+        args: AgentChatResolveUnprocessedMessageArgs,
+      ): Promise<AgentChatResolveUnprocessedMessageResult> => ({
+        steerId: args.steerId,
+        action: args.action,
+        status: "completed",
       }),
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),

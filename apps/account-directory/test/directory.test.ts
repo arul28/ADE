@@ -1001,14 +1001,37 @@ describe("machine directory", () => {
     }), env);
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("https://app.ade.dev");
-    expect(preflight.headers.get("access-control-allow-headers")).toBe("authorization");
+    expect(preflight.headers.get("access-control-allow-headers")).toBe(
+      "authorization, x-ade-correlation-id",
+    );
+    expect(preflight.headers.get("x-ade-correlation-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+
+    const deletePreflight = await handleRequest(new Request(
+      "https://directory.test/account/machines/machine-a",
+      {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.ade.dev",
+          "access-control-request-method": "DELETE",
+          "access-control-request-headers": "authorization, x-ade-correlation-id",
+        },
+      },
+    ), env);
+    expect(deletePreflight.status).toBe(204);
+    expect(deletePreflight.headers.get("access-control-allow-methods")).toBe(
+      "DELETE, OPTIONS",
+    );
 
     const allowed = await handleRequest(new Request("https://directory.test/account/machines", {
       headers: { origin: "https://app.ade.dev", authorization: `Bearer ${token}` },
     }), env);
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get("access-control-allow-origin")).toBe("https://app.ade.dev");
-    expect(allowed.headers.get("access-control-expose-headers")).toBe("Server-Timing");
+    expect(allowed.headers.get("access-control-expose-headers")).toBe(
+      "Server-Timing, X-ADE-Correlation-ID",
+    );
 
     const hostilePreflight = await handleRequest(new Request("https://directory.test/account/machines", {
       method: "OPTIONS",
@@ -1052,6 +1075,61 @@ describe("machine directory", () => {
 
     const otherUserList = await handleRequest(request("GET", "/account/machines", secondToken), env);
     expect(await otherUserList.json()).toEqual({ machines: [] });
+  });
+
+  it("echoes safe correlation ids in responses and structured logs", async () => {
+    const env = makeEnv();
+    const token = await mintToken();
+    const correlationId = "123e4567-e89b-42d3-a456-426614174000";
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const response = await handleRequest(new Request(
+      "https://directory.test/account/machines?ignored=secret",
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-ade-correlation-id": correlationId.toUpperCase(),
+        },
+      },
+    ), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-ade-correlation-id")).toBe(correlationId);
+    const lifecycle = log.mock.calls
+      .map(([line]) => String(line))
+      .find((line) => line.includes('"kind":"request_completed"'));
+    expect(lifecycle).toBeDefined();
+    expect(JSON.parse(lifecycle ?? "{}")).toMatchObject({
+      svc: "ade-account-directory",
+      kind: "request_completed",
+      correlationId,
+      route: "list",
+      method: "GET",
+      status: 200,
+      outcome: "ok",
+    });
+    expect(lifecycle).not.toContain(token);
+    expect(lifecycle).not.toContain("ignored=secret");
+    log.mockRestore();
+  });
+
+  it("replaces invalid correlation ids instead of reflecting them", async () => {
+    const token = await mintToken();
+    const response = await handleRequest(new Request(
+      "https://directory.test/account/machines",
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-ade-correlation-id": "unsafe-value",
+        },
+      },
+    ), makeEnv());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-ade-correlation-id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(response.headers.get("x-ade-correlation-id")).not.toBe("unsafe-value");
   });
 
   it("retains the authenticated machine's verified Relay route during a transient health dip", async () => {

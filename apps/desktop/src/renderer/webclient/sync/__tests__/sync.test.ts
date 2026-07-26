@@ -221,11 +221,22 @@ class ScriptedSocket implements WebSocketLike {
   readonly closeHistory: Array<{ code: number; reason: string }> = [];
   closedWith: { code: number; reason: string } | null = null;
 
+  readonly url: string;
+  readonly rawUrl: string;
+
   constructor(
-    readonly url: string,
+    rawUrl: string,
     private readonly onClientEnvelope: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
     openDelayMs = 0,
   ) {
+    this.rawUrl = rawUrl;
+    const normalized = new URL(rawUrl);
+    if (normalized.searchParams.has("cid")) {
+      normalized.searchParams.delete("cid");
+      this.url = normalized.toString().replace(/\?$/, "");
+    } else {
+      this.url = rawUrl;
+    }
     setTimeout(() => {
       if (this.readyState !== 0) return;
       this.readyState = 1;
@@ -587,7 +598,7 @@ describe("browser sync envelope codec", () => {
 });
 
 describe("browser sync endpoints and storage", () => {
-  it("orders relay and browser-safe endpoints while marking HTTPS plain ws routes undialable", () => {
+  it("orders LAN then Tailscale then Relay while marking HTTPS plain ws routes undialable", () => {
     const endpoints = deriveBrowserSyncEndpoints({
       payload: pairingPayload,
       location: { protocol: "https:", hostname: "app.ade-app.dev" },
@@ -598,6 +609,41 @@ describe("browser sync endpoints and storage", () => {
     ]);
     expect(endpoints.find((candidate) => candidate.url === "ws://127.0.0.1:8787")?.reason).toBe("loopback_blocked_from_https");
     expect(endpoints.find((candidate) => candidate.url === "ws://192.168.1.10:8787")?.reason).toBe("plain_ws_blocked_from_https");
+  });
+
+  it("keeps direct phases ahead of a cached Relay last-good endpoint", () => {
+    const endpoints = deriveBrowserSyncEndpoints({
+      environment: {
+        envId: "ordered",
+        machineName: "Studio",
+        hostDeviceId: "host",
+        relayUrl: "wss://relay.example/connect/machine-key",
+        machineKeyUrl: null,
+        addressCandidates: [
+          { host: "100.64.0.2", kind: "tailscale" },
+          { host: "192.168.1.10", kind: "lan" },
+        ],
+        explicitWssEndpoints: [],
+        port: 8787,
+        pairedDeviceId: "browser",
+        secret: "secret",
+        dpopKeys: {} as CryptoKeyPair,
+        siteId: "site",
+        localDeviceId: "local",
+        localDeviceName: "Browser",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        lastGoodEndpoint: "wss://relay.example/connect/machine-key",
+      },
+      location: { protocol: "http:", hostname: "localhost" },
+    });
+
+    expect(endpoints.filter((candidate) => candidate.dialable).map((candidate) => candidate.url)).toEqual([
+      "ws://127.0.0.1:8787",
+      "ws://localhost:8787",
+      "ws://192.168.1.10:8787",
+      "ws://100.64.0.2:8787",
+      "wss://relay.example/connect/machine-key",
+    ]);
   });
 
   it("allows loopback candidates from local browser pages", () => {
@@ -893,6 +939,12 @@ describe("browser sync connection and client", () => {
     expect(script.sockets[0]?.closedWith?.reason).toBe("Relay readiness negotiation timeout");
     expect(script.sockets[1]?.url).toBe(pairingPayload.relayUrl);
     expect(script.sockets[1]?.sent.map((envelope) => envelope.type)).toEqual(["hello"]);
+    const readyCorrelation = new URL(script.sockets[0]!.rawUrl).searchParams.get("cid");
+    const legacyCorrelation = new URL(script.sockets[1]!.rawUrl).searchParams.get("cid");
+    expect(readyCorrelation).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(legacyCorrelation).toBe(readyCorrelation);
     connection.dispose();
   });
 
@@ -2305,7 +2357,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("disconnects and prunes revoked account trust while connected without deleting local pairings", async () => {
+  it("disconnects a revoked Relay lease while preserving direct reconnect trust", async () => {
     const storage = new MemoryStorage();
     await makeEnvironment(storage, {
       envId: "local-env",
@@ -2348,7 +2400,10 @@ describe("browser sync connection and client", () => {
 
     expect(result.state).toBe("revoked");
     expect(client.getStatus().state).toBe("disconnected");
-    expect((await client.listEnvironments()).map((environment) => environment.envId)).toEqual(["local-env"]);
+    expect((await client.listEnvironments()).map((environment) => environment.envId).sort()).toEqual([
+      "account-env",
+      "local-env",
+    ]);
     client.dispose();
   });
 

@@ -15,6 +15,14 @@ their saved direct routes, but the hosted client no longer creates non-account
 pairings. Its retired `/pair` route discards the payload and opens the normal
 account sign-in flow.
 
+The browser uses the same abstract route order as native controllers:
+LAN → Tailscale → Relay. Eligibility is surface-specific, however: production
+HTTPS blocks insecure `ws://` LAN and tailnet addresses, so they are filtered
+before dialing and Relay is normally the only eligible route. Local HTTP
+development can exercise the direct candidates. Each connection cycle uses one
+correlation id, bounded endpoint metadata, and coarse failure classes so browser,
+directory, and relay logs can be joined without exposing credentials or URLs.
+
 Production hosting is Cloudflare Pages. The Pages URL is
 `https://ade-web-client.pages.dev`; the canonical product URL in source is
 `https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`). The canonical domain is live
@@ -83,7 +91,8 @@ Browser sync client:
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
-  attribution. DPoP/token preparation begins in parallel with the socket dial;
+  attribution, with one correlation id spanning directory lookup and route
+  attempts. DPoP/token preparation begins in parallel with the socket dial;
   transport open and authenticated hello have separate 8-second and 12-second
   deadlines. Relay authorization is renewed in place ahead of expiry even
   while the tab is hidden, so background timer throttling does not turn a
@@ -100,8 +109,9 @@ Browser sync client:
   account ownership, filters Relay routes while signed out, and surfaces the
   sign-in-required state before a socket is opened.
 - `apps/desktop/src/renderer/webclient/sync/endpoints.ts` - derives the
-  browser-safe endpoint list. Relay and explicit `wss://` are dialable from the
-  hosted page; plain `ws://` is dialable only from local/http pages.
+  ordered browser-safe endpoint list (LAN, Tailscale, Relay). Relay and explicit
+  `wss://` are dialable from the hosted page; plain `ws://` is dialable only
+  from local/http pages.
 - `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB storage
   for paired machine environments, per-device secret, host/candidate metadata,
   the WebCrypto `CryptoKeyPair`, and the separate account-session object store.
@@ -315,7 +325,9 @@ Account connection and entry points:
 - `apps/account-directory/src/directory.ts` - Clerk-scoped machine
   register/list/delete routes. The list query reads the 500 most recently seen
   rows, computes online-first order, and exposes auth/D1 durations through the
-  CORS-visible `Server-Timing` header.
+  CORS-visible `Server-Timing` header. It accepts, reflects, and CORS-exposes
+  `X-ADE-Correlation-ID`, then records it with route, method, status, and
+  duration for credential-free connection tracing.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
   the focused **Connections > Phone** and **Connections > Web** tab bodies plus
   the shared **This Mac** card. The Web variant is account-sign-in only; the

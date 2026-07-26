@@ -412,7 +412,8 @@ export class WebClientEnvStore {
           .filter((environment) => environment.accountOwnerUserId != null)
           .filter((environment) => options.removeCurrent
             ? environment.accountOwnerUserId === currentOwnerUserId
-            : environment.accountOwnerUserId !== currentOwnerUserId)
+            : currentOwnerUserId != null
+              && environment.accountOwnerUserId !== currentOwnerUserId)
           .map((environment) => environment.envId);
         const removedIdSet = new Set(removedIds);
         for (const envId of removedIds) transaction.delete("environments", envId);

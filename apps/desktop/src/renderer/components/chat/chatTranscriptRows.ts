@@ -325,10 +325,32 @@ type CollapseTranscriptContext = {
   subagentAnchors: Map<string, SubagentAnchorState>;
   /** Semantic provider failures already rendered for a specific turn. */
   errorKeysByTurn: Set<string>;
+  /** Durable user-message lifecycle rows keyed by ADE steer id. */
+  userMessageRowIndexBySteer: Map<string, number>;
+  /** Resolution events that arrived before their durable user-message row. */
+  unmatchedUserMessageResolutionsBySteer: Map<
+    string,
+    Extract<AgentChatEvent, { type: "user_message_resolution" }>
+  >;
+  /** Latest cumulative diagnostic snapshot keyed by turn id. */
+  diagnosticsRowIndexByTurn: Map<string, number>;
+  /** Latest recovery receipt keyed by turn id. */
+  recoveryRowIndexByTurn: Map<string, number>;
+  /** Actionable stalled-turn card keyed by turn id. */
+  stalledRowIndexByTurn: Map<string, number>;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
-  return { latestTodoItemsByTurn: new Map(), subagentAnchors: new Map(), errorKeysByTurn: new Set() };
+  return {
+    latestTodoItemsByTurn: new Map(),
+    subagentAnchors: new Map(),
+    errorKeysByTurn: new Set(),
+    userMessageRowIndexBySteer: new Map(),
+    unmatchedUserMessageResolutionsBySteer: new Map(),
+    diagnosticsRowIndexByTurn: new Map(),
+    recoveryRowIndexByTurn: new Map(),
+    stalledRowIndexByTurn: new Map(),
+  };
 }
 
 function todoSnapshotKey(turnId: string | null): string {
@@ -946,6 +968,33 @@ function repairSubagentRowPositionsAfterSplice(
   }
 }
 
+function repairIndexedTranscriptRowsAfterSplice(
+  context: CollapseTranscriptContext,
+  removedIndex: number,
+): void {
+  repairSubagentRowPositionsAfterSplice(context, removedIndex);
+  for (const rowIndexes of [
+    context.userMessageRowIndexBySteer,
+    context.diagnosticsRowIndexByTurn,
+    context.recoveryRowIndexByTurn,
+    context.stalledRowIndexByTurn,
+  ]) {
+    for (const [key, storedIndex] of rowIndexes) {
+      if (storedIndex === removedIndex) rowIndexes.delete(key);
+      else if (storedIndex > removedIndex) rowIndexes.set(key, storedIndex - 1);
+    }
+  }
+}
+
+function removeCollapsedTranscriptRow(
+  rows: ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext,
+  index: number,
+): void {
+  rows.splice(index, 1);
+  repairIndexedTranscriptRowsAfterSplice(context, index);
+}
+
 function durationMsBetween(startedAt: string | null, endedAt: string): number | null {
   if (!startedAt) return null;
   const start = Date.parse(startedAt);
@@ -1240,6 +1289,48 @@ export function appendCollapsedChatTranscriptEvent(
   const { event } = envelope;
 
   if (event.type === "user_message") {
+    const steerId = event.steerId?.trim();
+    const pendingResolution = steerId
+      ? context?.unmatchedUserMessageResolutionsBySteer.get(steerId)
+      : undefined;
+    const existingIndex = steerId ? context?.userMessageRowIndexBySteer.get(steerId) : undefined;
+    const existing = existingIndex != null ? rows[existingIndex] : null;
+    if (existingIndex != null && existing?.event.type === "user_message") {
+      rows[existingIndex] = {
+        ...existing,
+        event: {
+          ...existing.event,
+          ...event,
+          text: event.text || existing.event.text,
+          displayText: event.displayText ?? existing.event.displayText,
+          attachments: event.attachments ?? existing.event.attachments,
+          contextAttachments: event.contextAttachments ?? existing.event.contextAttachments,
+          metadata: event.metadata || existing.event.metadata || pendingResolution
+            ? {
+                ...(existing.event.metadata ?? {}),
+                ...(event.metadata ?? {}),
+                ...(pendingResolution
+                  ? {
+                      unprocessedMessageResolution: {
+                        action: pendingResolution.action,
+                        state: pendingResolution.state,
+                        resolvedAt: pendingResolution.resolvedAt,
+                        ...(pendingResolution.replacementMessageId
+                          ? { replacementMessageId: pendingResolution.replacementMessageId }
+                          : {}),
+                      },
+                    }
+                  : {}),
+              }
+            : existing.event.metadata,
+          turnId: event.turnId ?? existing.event.turnId,
+        },
+      };
+      if (steerId && pendingResolution) {
+        context?.unmatchedUserMessageResolutionsBySteer.delete(steerId);
+      }
+      return;
+    }
     const wake = event.metadata?.scheduledWake;
     if (
       wake
@@ -1292,13 +1383,190 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  if (event.type === "user_message_resolution") {
+    const steerId = event.steerId.trim();
+    const existingIndex = context?.userMessageRowIndexBySteer.get(steerId);
+    const existing = existingIndex != null ? rows[existingIndex] : null;
+    if (existingIndex != null && existing?.event.type === "user_message") {
+      rows[existingIndex] = {
+        ...existing,
+        timestamp: envelope.timestamp,
+        event: {
+          ...existing.event,
+          metadata: {
+            ...(existing.event.metadata ?? {}),
+            unprocessedMessageResolution: {
+              action: event.action,
+              state: event.state,
+              resolvedAt: event.resolvedAt,
+              ...(event.replacementMessageId ? { replacementMessageId: event.replacementMessageId } : {}),
+            },
+          },
+        },
+      };
+    } else if (steerId) {
+      context?.unmatchedUserMessageResolutionsBySteer.set(steerId, event);
+    }
+    return;
+  }
+
   if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
     return;
   }
 
   // Codex token usage drives the chat-bottom token footer; inline transcript
   // rows would be duplicate noise.
-  if (event.type === "codex_token_usage") {
+  if (event.type === "codex_token_usage" || event.type === "codex_moderation_metadata") {
+    return;
+  }
+
+  if (event.type === "turn_diagnostics") {
+    const turnKey = event.turnId?.trim() || "__session_startup__";
+    const existingIndex = context?.diagnosticsRowIndexByTurn.get(turnKey);
+    if (existingIndex != null && rows[existingIndex]?.event.type === "turn_diagnostics") {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({
+      key: `turn-diagnostics:${turnKey}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    context?.diagnosticsRowIndexByTurn.set(turnKey, rowIndex);
+    return;
+  }
+
+  if (event.type === "turn_recovery") {
+    const turnKey = event.turnId.trim();
+    if (event.state === "recovered" && context) {
+      const stalledIndex = context.stalledRowIndexByTurn.get(turnKey);
+      if (stalledIndex != null && rows[stalledIndex]?.event.type === "codex_turn_stalled") {
+        removeCollapsedTranscriptRow(rows, context, stalledIndex);
+      }
+    }
+    const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
+    if (
+      existingIndex != null
+      && (
+        rows[existingIndex]?.event.type === "turn_recovery"
+        || rows[existingIndex]?.event.type === "codex_turn_recovery"
+      )
+    ) {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({
+      key: `turn-recovery:${turnKey}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    context?.recoveryRowIndexByTurn.set(turnKey, rowIndex);
+    return;
+  }
+
+  if (event.type === "codex_turn_recovery") {
+    const turnKey = event.turnId.trim();
+    if (event.state === "recovered" && context) {
+      const stalledIndex = context.stalledRowIndexByTurn.get(turnKey);
+      if (stalledIndex != null && rows[stalledIndex]?.event.type === "codex_turn_stalled") {
+        removeCollapsedTranscriptRow(rows, context, stalledIndex);
+      }
+    }
+    const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
+    if (existingIndex != null && rows[existingIndex]?.event.type === "turn_recovery") {
+      // Provider-neutral receipts are canonical when a legacy alias arrives too.
+      return;
+    }
+    if (existingIndex != null && rows[existingIndex]?.event.type === "codex_turn_recovery") {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({
+      key: `codex-turn-recovery:${turnKey}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    context?.recoveryRowIndexByTurn.set(turnKey, rowIndex);
+    return;
+  }
+
+  if (event.type === "codex_turn_stalled") {
+    const turnKey = event.turnId.trim();
+    const recoveryIndex = context?.recoveryRowIndexByTurn.get(turnKey);
+    const recoveryEvent = recoveryIndex != null ? rows[recoveryIndex]?.event : null;
+    if (
+      (recoveryEvent?.type === "codex_turn_recovery" || recoveryEvent?.type === "turn_recovery")
+      && recoveryEvent.state === "recovered"
+    ) {
+      return;
+    }
+    const existingIndex = context?.stalledRowIndexByTurn.get(turnKey);
+    if (existingIndex != null && rows[existingIndex]?.event.type === "codex_turn_stalled") {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({
+      key: `codex-turn-stalled:${turnKey}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    context?.stalledRowIndexByTurn.set(turnKey, rowIndex);
+    return;
+  }
+
+  if (event.type === "turn_health") {
+    const recoveryOptions = event.supportedActions.flatMap((action) => {
+      switch (action) {
+        case "wait":
+          return ["wait" as const];
+        case "nudge":
+          return ["steer" as const];
+        case "retry_same_runtime":
+          return ["interrupt_retry_same_thread" as const];
+        case "restart_resume":
+          return ["restart_resume_thread" as const];
+      }
+    });
+    const legacyStall: Extract<AgentChatEvent, { type: "codex_turn_stalled" }> = {
+      type: "codex_turn_stalled",
+      turnId: event.turnId,
+      reason: event.reason === "runtime_state_unknown"
+        ? "app_server_state_unknown"
+        : event.reason,
+      message: event.message,
+      recoveryOptions,
+      detectedAt: event.detectedAt,
+      turnStartedAt: event.turnStartedAt,
+      lastProgressAt: event.lastProgressAt,
+      automaticRecoveryAttempted: event.automaticRecoveryAttempted,
+      sourceSessionId: event.sourceSessionId,
+    };
+    appendCollapsedChatTranscriptEvent(
+      rows,
+      { ...envelope, event: legacyStall },
+      sequence,
+      context,
+    );
     return;
   }
 
@@ -1408,7 +1676,7 @@ export function appendCollapsedChatTranscriptEvent(
       const row = rows[index];
       if (row?.event.type === "text" && row.event.messageId && retractedIds.has(row.event.messageId)) {
         rows.splice(index, 1);
-        if (context) repairSubagentRowPositionsAfterSplice(context, index);
+        if (context) repairIndexedTranscriptRowsAfterSplice(context, index);
       }
     }
     return;
@@ -1596,11 +1864,38 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  const pendingResolution = event.type === "user_message" && event.steerId?.trim()
+    ? context?.unmatchedUserMessageResolutionsBySteer.get(event.steerId.trim())
+    : undefined;
+  const renderEvent: ChatTranscriptVisibleEvent = event.type === "user_message" && pendingResolution
+    ? {
+        ...event,
+        metadata: {
+          ...(event.metadata ?? {}),
+          unprocessedMessageResolution: {
+            action: pendingResolution.action,
+            state: pendingResolution.state,
+            resolvedAt: pendingResolution.resolvedAt,
+            ...(pendingResolution.replacementMessageId
+              ? { replacementMessageId: pendingResolution.replacementMessageId }
+              : {}),
+          },
+        },
+      }
+    : event as ChatTranscriptVisibleEvent;
+  const rowIndex = rows.length;
   rows.push({
     key: event.type === "text" ? buildTextRenderKey(event, envelope, sequence) : buildRenderKey(envelope, sequence),
     timestamp: envelope.timestamp,
-    event,
+    event: renderEvent,
   });
+  if (event.type === "user_message" && event.steerId?.trim()) {
+    const steerId = event.steerId.trim();
+    context?.userMessageRowIndexBySteer.set(steerId, rowIndex);
+    if (pendingResolution) {
+      context?.unmatchedUserMessageResolutionsBySteer.delete(steerId);
+    }
+  }
 }
 
 /**

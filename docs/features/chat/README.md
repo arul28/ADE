@@ -755,13 +755,12 @@ happen to begin with `User request:`.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).
-   Codex turns also run a narrow no-first-output watchdog: if `turn/start`
-   succeeds but no useful model/tool event arrives, ADE reconciles the same
-   app-server thread with `thread/read` and `thread/turns/list` before
-   surfacing a `codex_turn_stalled` event plus one visible `system_notice`.
-   The watchdog never auto-handoffs or interrupts; parent/orchestrator
-   sessions receive the structured stall event and decide whether to wait,
-   steer, interrupt, or retry the same thread.
+   Codex turns also run the watchdog described below: if `turn/start` succeeds
+   but no useful model/tool event arrives, ADE reconciles the same app-server
+   thread with `thread/read` and `thread/turns/list`, attempts at most one
+   restart + thread resume, then publishes provider-neutral `turn_health` when
+   manual recovery is still needed. Parent/orchestrator sessions receive the
+   structured event with `sourceSessionId` and target the owning child.
 5. On completion the service emits `status: "completed" | "failed" |
    "interrupted"`, optionally emits a `turn_diff_summary`, flushes
    buffered text, marks the session idle, and pulls the next queued steer.
@@ -880,6 +879,59 @@ happens to be idle — the runtime stays warm so the next turn doesn't
 cold-start. Project/window close probes still fail closed: if the chat
 workload probe throws, ADE keeps the project alive instead of closing
 over a possibly running agent.
+
+### Message delivery, turn health, and quiet diagnostics
+
+The transcript is the durable truth for whether ADE merely accepted a message
+or the provider actually processed it. A user message may move through
+`accepted` to `processed`; if the active turn ends without consuming an
+accepted steer, the service persists `unprocessed`. Desktop, ADE Code, hosted
+web, and iOS fold those lifecycle snapshots onto one user bubble rather than
+showing duplicate messages. An unprocessed bubble offers three explicit
+outcomes:
+
+- **Run next** sends the original text and attachments as a new turn only after
+  the current turn is idle.
+- **Edit** restores the original content to the composer without changing the
+  durable message.
+- **Dismiss** records that no turn should be created.
+
+Run next and Dismiss converge through
+`chat.resolveUnprocessedMessage` / `resolveUnprocessedMessage()` and a durable
+`user_message_resolution` event. The replacement message carries
+`metadata.replayedFromUnprocessedSteer`; that replacement is the dispatch
+commit point. If the runtime stops after dispatch but before writing the
+resolution receipt, a later retry reconstructs the missing receipt and still
+resolves to Run next. Concurrent clients are serialized by session + steer id,
+so Dismiss cannot race a replacement turn and repeated calls return the
+already-completed outcome.
+
+Turn stalls use the provider-neutral `turn_health` event and
+`chat.recoverTurn`; `codex_turn_stalled` / `recoverCodexTurn` remain readable
+for older clients. The event names the provider, owning turn, timestamps,
+recovery count, whether automatic recovery was attempted, and the supported
+actions (`wait`, `nudge`, `retry_same_runtime`, `restart_resume`). When a
+child's health event is mirrored into a parent, `sourceSessionId` keeps every
+surface's recovery action targeted at the child. Recovery progress is recorded
+as `turn_recovery`, so a successful recovery replaces the stale warning instead
+of leaving contradictory cards.
+
+Codex is the first provider with an active watchdog behind that shared
+contract. A turn that produces no useful model/tool event for 120 seconds is
+reconciled against app-server thread state. ADE backfills any missed items or
+terminal state it finds; otherwise it attempts one app-server restart + thread
+resume per session before exposing manual recovery. After useful progress,
+10 minutes without further model/tool activity produces a non-destructive
+stall warning. Pending approvals and user input suspend reconciliation, and
+answering them re-arms the 10-minute progress window.
+
+Moderation metadata is operational evidence, not a conversational response.
+Raw `codex_moderation_metadata` events are retained for compatibility but do
+not render as individual cards. The service counts checks per turn and merges
+them with deduplicated optional-integration startup failures in one
+`turn_diagnostics` snapshot. Transcript folds keep only the latest snapshot per
+turn; graphical clients render a quiet **Turn details** disclosure and ADE Code
+renders one compact details line.
 
 ## Spawn types and completion reporting
 
@@ -1077,19 +1129,20 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   summary cannot put the UI back into running/Stop state. Keep every
   renderer rehydration path on this helper so failures always restore a
   sendable composer.
-- **Codex runtime recovery events.** MCP startup status notifications are
-  warnings, not model progress. Do not let them clear the no-first-output
-  watchdog. If app-server state can be read, recovered turn items are
-  backfilled into the transcript and terminal turn state is finalized; only
-  a genuinely silent or unreadable turn emits `codex_turn_stalled`. The
-  desktop transcript, `ade code`, and iOS should render that structured
-  event as the recovery surface; do not hide it as a generic activity row.
-  Desktop recovery buttons call `recoverCodexTurn` and must remain scoped to
-  the active turn: Wait re-arms reconciliation, Nudge sends a progress steer,
-  Retry interrupts/finalizes the turn before retrying in the same thread, and
-  Resume additionally tears down app-server and resumes the persisted thread.
-  Only one action may run for a session/turn, and a late card must fail rather
-  than mutating a newer turn.
+- **Turn-health events are provider-neutral; the Codex watchdog is the first
+  producer.** MCP startup status and moderation notifications are diagnostics,
+  not model progress. Do not let them clear the no-first-output watchdog. If
+  app-server state can be read, recovered turn items are backfilled into the
+  transcript and terminal turn state is finalized; only a genuinely silent or
+  unreadable turn emits the neutral `turn_health` plus its legacy
+  `codex_turn_stalled` twin. Desktop, ADE Code, hosted web, and iOS prefer the
+  neutral event, preserve a mirrored child event's `sourceSessionId`, and avoid
+  rendering both forms. Recovery calls `recoverTurn` when advertised and falls
+  back to `recoverCodexTurn` for older hosts. Wait re-arms reconciliation,
+  Nudge sends a progress steer, Retry interrupts/finalizes the turn before
+  retrying on the same runtime, and Resume additionally tears down app-server
+  and resumes the persisted thread. Only one action may run for a session/turn,
+  and a late card must fail rather than mutating a newer turn.
   App-server `thread/deleted` notifications must clear live turn state,
   stop active Codex subagents, and remove the persisted thread id so the
   next user message starts from a fresh thread.

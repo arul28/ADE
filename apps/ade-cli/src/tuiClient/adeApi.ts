@@ -14,6 +14,10 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -69,6 +73,10 @@ import type {
 } from "../../../desktop/src/shared/types";
 import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
 import type { AdeCodeConnection, AdeCodeInterfaceMode, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
+import {
+  isUnsupportedRecoveryActionError,
+  LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
+} from "../chatRecovery";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 export { buildPtyContinuationLaunchFields };
@@ -786,6 +794,49 @@ export async function recoverCodexTurn(
   return await connection.action<AgentChatRecoverCodexTurnResult>(
     "chat",
     "recoverCodexTurn",
+    args,
+  );
+}
+
+/**
+ * Prefer the provider-neutral recovery action, while retaining compatibility
+ * with brains that predate chat.recoverTurn.
+ */
+export async function recoverTurn(
+  connection: AdeCodeConnection,
+  args: AgentChatRecoverTurnArgs,
+  options: { allowLegacyCodexFallback?: boolean } = {},
+): Promise<AgentChatRecoverTurnResult> {
+  try {
+    return await connection.action<AgentChatRecoverTurnResult>("chat", "recoverTurn", args);
+  } catch (error) {
+    if (
+      options.allowLegacyCodexFallback !== true
+      || !isUnsupportedRecoveryActionError(error)
+    ) {
+      throw error;
+    }
+    const legacyAction = LEGACY_RECOVERY_ACTION_BY_NEUTRAL[args.action];
+    const result = await recoverCodexTurn(connection, {
+      sessionId: args.sessionId,
+      turnId: args.turnId,
+      action: legacyAction,
+    });
+    return {
+      action: args.action,
+      turnId: result.turnId,
+      status: result.status,
+    };
+  }
+}
+
+export async function resolveUnprocessedMessage(
+  connection: AdeCodeConnection,
+  args: AgentChatResolveUnprocessedMessageArgs,
+): Promise<AgentChatResolveUnprocessedMessageResult> {
+  return await connection.action<AgentChatResolveUnprocessedMessageResult>(
+    "chat",
+    "resolveUnprocessedMessage",
     args,
   );
 }

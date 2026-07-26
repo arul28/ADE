@@ -153,11 +153,13 @@ struct AccountDirectoryClient {
     token: String,
     refreshToken: (() async -> String?)? = nil
   ) async throws -> [AccountMachine] {
+    let correlationID = UUID().uuidString.lowercased()
     func request(using accessToken: String) async throws -> (Data, HTTPURLResponse) {
       var request = URLRequest(url: baseURL.appendingPathComponent("account/machines"))
       request.httpMethod = "GET"
       request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
       request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
       request.timeoutInterval = 12
       request.cachePolicy = .reloadIgnoringLocalCacheData
 

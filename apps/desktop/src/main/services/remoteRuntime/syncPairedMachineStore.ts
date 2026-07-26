@@ -50,6 +50,7 @@ import {
   type OpenSyncEnvelopeConnectionOptions,
   type SyncEnvelopeConnection,
 } from "./syncRuntimeTransport";
+import { MAX_ROUTE_ATTEMPTS } from "./pairedRuntimeRoutes";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
 const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
@@ -148,6 +149,18 @@ function formatAccountMachineAdoptionFailure(
   return `${failure.route.kind} ${accountMachineAdoptionRouteHost(failure.route)}: ${
     boundedInlineText(failure.reason, 160)
   }`;
+}
+
+function classifyAccountMachineAdoptionFailure(reason: string): string {
+  if (/timed? out|timeout/i.test(reason)) return "timeout";
+  if (/auth|token|credential|proof|forbidden|unauthorized/i.test(reason)) {
+    return "authentication";
+  }
+  if (/identity|signature|device id|cipher/i.test(reason)) return "identity";
+  if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|refused/i.test(reason)) {
+    return "unreachable";
+  }
+  return "unknown";
 }
 
 function nowIso(): string {
@@ -252,7 +265,10 @@ function coerceEndpointStates(
   value: unknown,
   endpoints: string[],
 ): DesktopPairedMachineEndpointState[] {
-  const successByEndpoint = new Map<string, number | null>();
+  const stateByEndpoint = new Map<string, {
+    lastSucceededAt: number | null;
+    lastDiscoveredAt: number | null;
+  }>();
   if (Array.isArray(value)) {
     for (const entry of value) {
       if (!isRecord(entry)) continue;
@@ -268,20 +284,37 @@ function coerceEndpointStates(
         && Number.isFinite(entry.lastSucceededAt)
         ? entry.lastSucceededAt
         : null;
-      const current = successByEndpoint.get(endpoint) ?? null;
-      if (lastSucceededAt != null && (current == null || lastSucceededAt > current)) {
-        successByEndpoint.set(endpoint, lastSucceededAt);
-      } else if (!successByEndpoint.has(endpoint)) {
-        successByEndpoint.set(endpoint, null);
-      }
+      const lastDiscoveredAt = typeof entry.lastDiscoveredAt === "number"
+        && Number.isFinite(entry.lastDiscoveredAt)
+        ? entry.lastDiscoveredAt
+        : null;
+      const current = stateByEndpoint.get(endpoint);
+      stateByEndpoint.set(endpoint, {
+        lastSucceededAt: Math.max(
+          current?.lastSucceededAt ?? 0,
+          lastSucceededAt ?? 0,
+        ) || null,
+        lastDiscoveredAt: Math.max(
+          current?.lastDiscoveredAt ?? 0,
+          lastDiscoveredAt ?? 0,
+        ) || null,
+      });
     }
   }
   for (const endpoint of endpoints) {
-    if (!successByEndpoint.has(endpoint)) successByEndpoint.set(endpoint, null);
+    if (!stateByEndpoint.has(endpoint)) {
+      stateByEndpoint.set(endpoint, {
+        lastSucceededAt: null,
+        lastDiscoveredAt: null,
+      });
+    }
   }
-  return [...successByEndpoint].map(([endpoint, lastSucceededAt]) => ({
+  return [...stateByEndpoint].map(([endpoint, state]) => ({
     endpoint,
-    lastSucceededAt,
+    lastSucceededAt: state.lastSucceededAt,
+    ...(state.lastDiscoveredAt != null
+      ? { lastDiscoveredAt: state.lastDiscoveredAt }
+      : {}),
   }));
 }
 
@@ -508,6 +541,30 @@ export class DesktopPairedMachineStore {
     });
   }
 
+  markEndpointsDiscovered(
+    hostDeviceIdOrMachineKey: string,
+    endpointValues: string[],
+    nowMs = Date.now(),
+  ): DesktopPairedMachineCredentials {
+    const machine = this.get(hostDeviceIdOrMachineKey);
+    if (!machine) throw new Error("Paired machine was not found.");
+    const discoveredEndpoints = uniqueEndpoints(...endpointValues);
+    const endpoints = uniqueEndpoints(...discoveredEndpoints, ...machine.endpoints);
+    return this.save({
+      ...machine,
+      endpoints,
+      endpointStates: mergeEndpointStates(
+        endpoints,
+        machine.endpointStates,
+        discoveredEndpoints.map((endpoint) => ({
+          endpoint,
+          lastSucceededAt: null,
+          lastDiscoveredAt: nowMs,
+        })),
+      ),
+    });
+  }
+
   async pairWithMachine(
     endpointValue: string,
     pinValue: string,
@@ -724,6 +781,7 @@ export class DesktopPairedMachineStore {
       capabilities: [],
       ...(options.appVersion?.trim() ? { appVersion: options.appVersion.trim() } : {}),
     };
+    const correlationId = randomUUID();
     const failures: AccountMachineAdoptionFailure[] = [];
     for (const route of accountAuthenticationRoutes) {
       throwIfAborted(options.signal);
@@ -743,6 +801,7 @@ export class DesktopPairedMachineStore {
           connectTimeoutMs: options.connectTimeoutMs,
           signal: options.signal,
           createWebSocket: options.createWebSocket,
+          ...(route.kind === "relay" ? { correlationId } : {}),
         });
       } catch (error) {
         throwIfAborted(options.signal);
@@ -1018,16 +1077,24 @@ export class DesktopPairedMachineStore {
       }
     }
     console.warn("[account] Account machine adoption failed on every route.", {
-      machineKey: machine.machineKey,
-      attempts: failures.map((failure) => ({
+      correlationId,
+      attempts: failures.slice(0, MAX_ROUTE_ATTEMPTS).map((failure) => ({
         kind: failure.route.kind,
-        endpoint: failure.route.endpoint,
-        reason: failure.reason,
+        host: accountMachineAdoptionRouteHost(failure.route),
+        failure: classifyAccountMachineAdoptionFailure(failure.reason),
       })),
+      omittedAttemptCount: Math.max(0, failures.length - MAX_ROUTE_ATTEMPTS),
     });
+    const visibleFailures = failures.slice(0, MAX_ROUTE_ATTEMPTS)
+      .map(formatAccountMachineAdoptionFailure);
+    if (failures.length > MAX_ROUTE_ATTEMPTS) {
+      visibleFailures.push(
+        `${failures.length - MAX_ROUTE_ATTEMPTS} more route attempts failed`,
+      );
+    }
     throw new Error(
       `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${
-        failures.map(formatAccountMachineAdoptionFailure).join("; ")
+        visibleFailures.join("; ")
       }`,
     );
   }

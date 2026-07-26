@@ -128,6 +128,7 @@ function environmentsVisibleToOwner(
   environments: WebClientEnvironmentRecord[],
   ownerUserId: string | null,
 ): WebClientEnvironmentRecord[] {
+  if (!ownerUserId) return environments;
   return environments.filter((environment) => (
     environment.accountOwnerUserId == null
     || environment.accountOwnerUserId === ownerUserId

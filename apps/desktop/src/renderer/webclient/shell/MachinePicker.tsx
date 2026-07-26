@@ -130,7 +130,7 @@ export function MachinePicker({
 }) {
   const signedIn = browserAccountIsSignedIn(account.state);
   const directEnvironments = environments.filter((environment) => (
-    environment.accountOwnerUserId == null && hasDirectRoute(environment)
+    hasDirectRoute(environment)
   ));
   const savedRelayEnvironments = environments.filter((environment) => (
     canUseRelayForEnvironment(environment, relayAccess)

@@ -442,6 +442,7 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "codex_token_usage",
   "codex_goal_updated",
   "codex_goal_cleared",
+  "codex_moderation_metadata",
   "pending_input_resolved",
   // Droid AGI mission lifecycle drives the Missions section in the chat-info
   // pane (see chatMission), not the transcript — keep it out of the timeline.
@@ -832,6 +833,14 @@ export function aggregateChatBlocks(args: {
     if (a.kind !== b.kind) return a.kind === "event" ? -1 : 1;
     return a.index - b.index;
   });
+  const latestUserMessageIndexBySteer = new Map<string, number>();
+  for (const entry of timeline) {
+    if (entry.kind !== "event") continue;
+    const event = entry.envelope.event;
+    if (event.type === "user_message" && event.steerId) {
+      latestUserMessageIndexBySteer.set(event.steerId, entry.index);
+    }
+  }
 
   const passthrough = (id: string, kind: "user-bubble" | "assistant-text" | "approval" | "error" | "notice"): void => {
     const line = linesById.get(id);
@@ -873,6 +882,9 @@ export function aggregateChatBlocks(args: {
     }
 
     if (event.type === "user_message") {
+      if (event.steerId && latestUserMessageIndexBySteer.get(event.steerId) !== index) {
+        continue;
+      }
       if (event.steerId && event.deliveryState === "queued") {
         if (pendingSteerIds.has(event.steerId)) {
           blocks.push({
@@ -886,6 +898,9 @@ export function aggregateChatBlocks(args: {
         continue;
       }
       passthrough(id, "user-bubble");
+      continue;
+    }
+    if (event.type === "user_message_resolution") {
       continue;
     }
     if (event.type === "text") {
@@ -1109,6 +1124,22 @@ export function aggregateChatBlocks(args: {
         turnId,
         trigger: event.trigger,
         live: event.state === "started",
+      });
+      continue;
+    }
+    if (
+      event.type === "turn_diagnostics"
+      || event.type === "turn_recovery"
+      || event.type === "turn_health"
+      || event.type === "codex_turn_recovery"
+      || event.type === "codex_turn_stalled"
+    ) {
+      const line = linesById.get(id);
+      if (!line) continue;
+      blocks.push({
+        kind: line.tone === "error" ? "error" : "notice",
+        id,
+        line,
       });
       continue;
     }

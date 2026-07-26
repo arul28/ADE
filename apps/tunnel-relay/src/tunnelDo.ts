@@ -42,6 +42,15 @@ const MAX_CLOSE_REASON_BYTES = 123;
 const WS_OPEN = 1;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const CORRELATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function relayCorrelationId(url: URL): string {
+  const provided = url.searchParams.get("cid")?.trim() ?? "";
+  return CORRELATION_ID_PATTERN.test(provided)
+    ? provided.toLowerCase()
+    : crypto.randomUUID();
+}
 
 function applicationCloseCode(code: unknown, fallback: number): number {
   return typeof code === "number" && Number.isInteger(code) && code >= 4000 && code <= 4999
@@ -88,6 +97,8 @@ type SocketAttachment = {
   legacyBuffered?: true;
   /** Pre-deploy data socket whose volatile pre-ready state cannot be proven. */
   legacyStateUnknown?: true;
+  /** Safe client-generated operation id; never contains endpoint/auth data. */
+  correlationId?: string;
   ts: number;
 };
 
@@ -263,8 +274,16 @@ export class TunnelDurableObject implements DurableObject {
         }
       });
     }
+    const clientAttachment = this.normalizedAttachment(client);
     if (this.pipeForId(id, epoch)) {
-      return this.acceptSocket({ role: "pipe", id, epoch }, (server) => {
+      return this.acceptSocket({
+        role: "pipe",
+        id,
+        epoch,
+        ...(clientAttachment?.correlationId
+          ? { correlationId: clientAttachment.correlationId }
+          : {}),
+      }, (server) => {
         try {
           server.close(CLOSE_STALE_PIPE, "duplicate pipe");
         } catch {
@@ -275,7 +294,14 @@ export class TunnelDurableObject implements DurableObject {
     const control = this.currentControl();
     const controlAttachment = control ? this.normalizedAttachment(control) : null;
     if (this.epochOf(controlAttachment) !== epoch) {
-      return this.acceptSocket({ role: "pipe", id, epoch }, (server) => {
+      return this.acceptSocket({
+        role: "pipe",
+        id,
+        epoch,
+        ...(clientAttachment?.correlationId
+          ? { correlationId: clientAttachment.correlationId }
+          : {}),
+      }, (server) => {
         try {
           server.close(CLOSE_STALE_PIPE, "stale control epoch");
         } catch {
@@ -287,7 +313,14 @@ export class TunnelDurableObject implements DurableObject {
     // also OPEN with an epoch-matched control {t:"ready"} message. A legacy
     // pipe arrival already proves its old Node bridge is OPEN, so that branch
     // becomes ready immediately for both old and ready-v2 clients.
-    const response = await this.acceptSocket({ role: "pipe", id, epoch });
+    const response = await this.acceptSocket({
+      role: "pipe",
+      id,
+      epoch,
+      ...(clientAttachment?.correlationId
+        ? { correlationId: clientAttachment.correlationId }
+        : {}),
+    });
     if (!requestedEpoch) this.markPairReady(id, epoch);
     return response;
   }
@@ -295,12 +328,13 @@ export class TunnelDurableObject implements DurableObject {
   private async handleConnect(request: Request, url: URL): Promise<Response> {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
+    const correlationId = relayCorrelationId(url);
     const control = this.currentControl();
     if (!control) {
       // No host is registered — accept then close so the phone gets a clean,
       // distinguishable code rather than a bare handshake failure.
-      logTunnel("connect_rejected", { reason: "host_offline" });
-      return this.acceptSocket({ role: "client", epoch: "offline" }, (server) => {
+      logTunnel("connect_rejected", { reason: "host_offline", correlationId });
+      return this.acceptSocket({ role: "client", epoch: "offline", correlationId }, (server) => {
         try {
           server.close(CLOSE_HOST_OFFLINE, "host offline");
         } catch {
@@ -312,11 +346,17 @@ export class TunnelDurableObject implements DurableObject {
     const activeClients = this.openSocketsForRole("client").length;
     const maxTunnels = this.maxTunnels();
     if (activeClients >= maxTunnels) {
-      logTunnel("connect_rejected", { reason: "too_many", activeClients, maxTunnels });
+      logTunnel("connect_rejected", {
+        reason: "too_many",
+        activeClients,
+        maxTunnels,
+        correlationId,
+      });
       const controlAttachment = this.normalizedAttachment(control);
       return this.acceptSocket({
         role: "client",
         epoch: this.epochOf(controlAttachment) ?? LEGACY_CONTROL_EPOCH,
+        correlationId,
       }, (server) => {
         try {
           server.close(CLOSE_TOO_MANY, "too many tunnels");
@@ -329,7 +369,7 @@ export class TunnelDurableObject implements DurableObject {
     const controlAttachment = this.normalizedAttachment(control);
     const controlEpoch = this.epochOf(controlAttachment);
     if (!controlAttachment || !controlEpoch) {
-      return this.acceptSocket({ role: "client", epoch: "offline" }, (server) => {
+      return this.acceptSocket({ role: "client", epoch: "offline", correlationId }, (server) => {
         try {
           server.close(CLOSE_HOST_OFFLINE, "host offline");
         } catch {
@@ -346,6 +386,7 @@ export class TunnelDurableObject implements DurableObject {
       role: "client",
       id,
       epoch: controlEpoch,
+      correlationId,
       ...(readyVersion ? { readyVersion } : {}),
     }, (server) => {
       if (!readyVersion) return;
@@ -374,7 +415,7 @@ export class TunnelDurableObject implements DurableObject {
     } catch {
       // The control socket died between lookup and signaling. Do not leave the
       // phone occupying a tunnel slot while it waits for a pipe that cannot come.
-      logTunnel("connect_rejected", { reason: "host_offline" });
+      logTunnel("connect_rejected", { reason: "host_offline", correlationId });
       const client = this.clientForId(id, controlEpoch);
       try {
         client?.close(CLOSE_HOST_OFFLINE, "host offline");
@@ -538,7 +579,11 @@ export class TunnelDurableObject implements DurableObject {
             const code = applicationCloseCode(parsed.code, CLOSE_BRIDGE_REJECTED);
             const reason = sanitizedCloseReason(parsed.reason, "bridge rejected");
             this.pendingClientFrames.delete(parsed.id);
-            logTunnel("connect_rejected", { reason: "bridge_rejected", code });
+            logTunnel("connect_rejected", {
+              reason: "bridge_rejected",
+              code,
+              correlationId: clientAttachment?.correlationId ?? null,
+            });
             this.closePair(client, clientAttachment, code, reason);
           } else if (
             parsed?.t === "ready"
@@ -651,6 +696,7 @@ export class TunnelDurableObject implements DurableObject {
       epochMode: this.epochOf(attachment) === LEGACY_CONTROL_EPOCH ? "legacy" : "epoch",
       code,
       established: attachment?.established === true,
+      correlationId: attachment?.correlationId ?? null,
     });
   }
 
@@ -737,6 +783,7 @@ export class TunnelDurableObject implements DurableObject {
         connectionId: attachment?.id ?? null,
         sourceRole: attachment?.role ?? null,
         reason: closeReason,
+        correlationId: attachment?.correlationId ?? null,
       });
     }
     if (attachment?.id) this.pendingClientFrames.delete(attachment.id);

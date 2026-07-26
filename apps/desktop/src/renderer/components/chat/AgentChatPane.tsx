@@ -49,7 +49,10 @@ import {
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
-import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import {
+  isUnsupportedAgentChatRecoveryActionError,
+  providerSupportsHandoffFork,
+} from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
@@ -3583,6 +3586,7 @@ export function AgentChatPane({
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  const turnActiveBySessionRef = useRef<Record<string, boolean>>({});
   const detachedHistorySessionsRef = useRef<Set<string>>(new Set());
   const detachedLiveEventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const olderHistoryCursorRef = useRef<Record<string, number>>({});
@@ -3604,6 +3608,7 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
   const clearPromptSuggestionForSession = useCallback((sessionId: string | null) => {
     if (!sessionId) return;
@@ -9586,8 +9591,85 @@ export function AgentChatPane({
     [handleApproval],
   );
   const handleListCodexRecovery = useCallback(
-    (args: AgentChatRecoverCodexTurnArgs) => window.ade.agentChat.recoverCodexTurn(args),
+    async (args: AgentChatRecoverCodexTurnArgs) => {
+      const action = args.action === "steer"
+        ? "nudge"
+        : args.action === "interrupt_retry_same_thread"
+          ? "retry_same_runtime"
+          : args.action === "restart_resume_thread"
+            ? "restart_resume"
+            : "wait";
+      try {
+        const result = await window.ade.agentChat.recoverTurn({
+          sessionId: args.sessionId,
+          turnId: args.turnId,
+          action,
+        });
+        return {
+          ...result,
+          action: args.action,
+        };
+      } catch (error) {
+        if (!isUnsupportedAgentChatRecoveryActionError(error)) throw error;
+        return window.ade.agentChat.recoverCodexTurn(args);
+      }
+    },
     [],
+  );
+  const handleRunUnprocessedMessage = useCallback(
+    async (event: Extract<AgentChatEvent, { type: "user_message" }>) => {
+      const sessionId = selectedSessionIdRef.current;
+      if (!sessionId) throw new Error("This chat is no longer selected.");
+      if (turnActiveBySessionRef.current[sessionId]) {
+        throw new Error("A turn is already active. Wait for it to finish, then run this message.");
+      }
+      if (submitInFlightRef.current) {
+        throw new Error("Another message is already being sent.");
+      }
+      try {
+        submitInFlightRef.current = true;
+        setBusy(true);
+        setError(null);
+        touchSession(sessionId);
+        const steerId = event.steerId?.trim();
+        if (!steerId) throw new Error("This message is missing its durable delivery identifier.");
+        await window.ade.agentChat.resolveUnprocessedMessage({
+          sessionId,
+          steerId,
+          action: "run_next",
+        });
+        void refreshSessions().catch(() => {});
+      } catch (runError) {
+        const message = runError instanceof Error ? runError.message : String(runError);
+        setError(message);
+        throw runError;
+      } finally {
+        submitInFlightRef.current = false;
+        setBusy(false);
+      }
+    },
+    [refreshSessions, touchSession],
+  );
+  const handleEditUnprocessedMessage = useCallback(
+    (event: Extract<AgentChatEvent, { type: "user_message" }>) => {
+      insertComposerDraft(event.displayText?.trim() || event.text);
+    },
+    [insertComposerDraft],
+  );
+  const handleDismissUnprocessedMessage = useCallback(
+    async (event: Extract<AgentChatEvent, { type: "user_message" }>) => {
+      const sessionId = selectedSessionIdRef.current;
+      const steerId = event.steerId?.trim();
+      if (!sessionId) throw new Error("This chat is no longer selected.");
+      if (!steerId) throw new Error("This message is missing its durable delivery identifier.");
+      await window.ade.agentChat.resolveUnprocessedMessage({
+        sessionId,
+        steerId,
+        action: "dismiss",
+      });
+      void refreshSessions().catch(() => {});
+    },
+    [refreshSessions],
   );
   const handleListRetryProviderFailure = useCallback(
     async (failedTurnId: string | null) => {
@@ -11789,6 +11871,9 @@ export function AgentChatPane({
                       onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
                       onApproval={handleListApproval}
                       onCodexRecovery={handleListCodexRecovery}
+                      onRunUnprocessedMessage={handleRunUnprocessedMessage}
+                      onEditUnprocessedMessage={handleEditUnprocessedMessage}
+                      onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                       onRetryProviderFailure={handleListRetryProviderFailure}
                       onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                       mosaic={subagentView ? undefined : mosaicContext}

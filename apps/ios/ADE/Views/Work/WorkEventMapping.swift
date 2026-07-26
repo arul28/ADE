@@ -180,6 +180,15 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       deliveryState: deliveryState,
       processed: processed
     )
+  case .userMessageResolution(let steerId, let action, let state, let resolvedAt, let replacementMessageId, let turnId):
+    return .userMessageResolution(
+      steerId: steerId,
+      action: action,
+      state: state,
+      resolvedAt: resolvedAt,
+      replacementMessageId: replacementMessageId,
+      turnId: turnId
+    )
   case .text(let text, let messageId, let turnId, let itemId):
     return .assistantText(
       text: text,
@@ -529,19 +538,100 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .codexSafetyBuffering(let state, let turnId):
     let detail = state.fasterModel.map { "Buffering, \($0) ready" } ?? "Buffering"
     return .codexState(title: "Safety", message: detail, icon: "shield.checkered", turnId: turnId ?? state.turnId)
-  case .codexModerationMetadata(_, let turnId):
-    return .codexState(title: "Moderation", message: "Checked", icon: "checkmark.shield", turnId: turnId)
+  case .codexModerationMetadata:
+    // Routine per-check rows are intentionally absent from the main timeline.
+    // New hosts publish a privacy-safe aggregate `turn_diagnostics` event.
+    return .unknown(type: "codex_moderation_metadata")
+  case .turnDiagnostics(let turnId, let moderationChecks, let optionalIntegrationFailures):
+    return .turnDiagnostics(
+      moderationChecks: max(0, moderationChecks ?? 0),
+      optionalIntegrationFailures: optionalIntegrationFailures ?? [],
+      turnId: turnId
+    )
   case .codexSleep(_, let turnId, let durationMs, _):
     let duration = durationMs.map { $0 < 1000 ? "\($0)ms" : "\(($0 + 500) / 1000)s" }
     return .codexState(title: "Wait", message: duration.map { "Sleeping \($0)" } ?? "Sleeping", icon: "hourglass", turnId: turnId)
   case .codexThreadDeleted(_, let turnId):
     return .codexState(title: "Thread", message: "Deleted upstream. Next message starts fresh.", icon: "exclamationmark.triangle", turnId: turnId)
-  case .codexTurnStalled(let turnId, _, _, let message, let recoveryOptions, let sourceSessionId):
+  case .codexTurnStalled(
+    let turnId,
+    _,
+    let reason,
+    let message,
+    let recoveryOptions,
+    let sourceSessionId,
+    let detectedAt,
+    let turnStartedAt,
+    let lastProgressAt,
+    let automaticRecoveryAttempted
+  ):
     return .codexTurnStalled(
       message: message,
       recoveryOptions: recoveryOptions ?? [],
       turnId: turnId,
-      sourceSessionId: sourceSessionId
+      sourceSessionId: sourceSessionId,
+      context: WorkCodexStallContext(
+        reason: reason,
+        detectedAt: detectedAt,
+        turnStartedAt: turnStartedAt,
+        lastProgressAt: lastProgressAt,
+        automaticRecoveryAttempted: automaticRecoveryAttempted ?? false
+      )
+    )
+  case .turnHealth(
+    let provider,
+    let turnId,
+    _,
+    let reason,
+    let message,
+    let turnStartedAt,
+    let lastProgressAt,
+    let detectedAt,
+    let recoveryCount,
+    let supportedActions,
+    let automaticRecoveryAttempted,
+    let sourceSessionId
+  ):
+    return .codexTurnStalled(
+      message: message,
+      recoveryOptions: supportedActions.compactMap(workLegacyRecoveryAction),
+      turnId: turnId,
+      sourceSessionId: sourceSessionId,
+      context: WorkCodexStallContext(
+        reason: reason,
+        detectedAt: detectedAt,
+        turnStartedAt: turnStartedAt,
+        lastProgressAt: lastProgressAt,
+        automaticRecoveryAttempted: automaticRecoveryAttempted,
+        provider: provider,
+        recoveryCount: recoveryCount,
+        providerNeutral: true
+      )
+    )
+  case .codexTurnRecovery(let turnId, let action, let state, let message, let automatic, let at):
+    return .codexTurnRecovery(
+      message: message,
+      receipt: WorkCodexRecoveryReceipt(
+        action: action,
+        state: state,
+        automatic: automatic,
+        at: at
+      ),
+      turnId: turnId
+    )
+  case .turnRecovery(let provider, let turnId, let action, let state, let message, let automatic, let at, let recoveryCount):
+    return .codexTurnRecovery(
+      message: message,
+      receipt: WorkCodexRecoveryReceipt(
+        action: action,
+        state: state,
+        automatic: automatic,
+        at: at,
+        provider: provider,
+        recoveryCount: recoveryCount,
+        providerNeutral: true
+      ),
+      turnId: turnId
     )
   case .planText(let text, let turnId, _):
     return .planText(text: text, turnId: turnId)
@@ -584,6 +674,16 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .unknown(type: "delegation_state")
   case .unknown(let type):
     return .unknown(type: type)
+  }
+}
+
+func workLegacyRecoveryAction(_ action: String) -> String? {
+  switch action {
+  case "wait": return "wait"
+  case "nudge": return "steer"
+  case "retry_same_runtime": return "interrupt_retry_same_thread"
+  case "restart_resume": return "restart_resume_thread"
+  default: return nil
   }
 }
 

@@ -89,7 +89,10 @@ extension WorkChatSessionView {
       WorkChatMessageBubble(
         message: message,
         isStreaming: message.id == streamingAssistantMessageId,
-        maxUserBubbleWidth: maxUserBubbleWidth
+        maxUserBubbleWidth: maxUserBubbleWidth,
+        onRunUnprocessed: onRunUnprocessedMessage,
+        onEditUnprocessed: onEditUnprocessedMessage,
+        onDismissUnprocessed: onDismissUnprocessedMessage
       )
     case .toolCard(let toolCard):
       timelineToolCard(toolCard)
@@ -254,6 +257,8 @@ extension WorkChatSessionView {
         enabled: isLive,
         onRecover: onRecoverCodexTurn
       )
+    } else if card.kind == "turnDiagnostics" {
+      WorkTurnDiagnosticsDisclosureView(card: card)
     } else {
       WorkEventCardView(
         card: card,

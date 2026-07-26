@@ -37,6 +37,16 @@ afterEach(() => {
   else process.env.ADE_HOME = originalAdeHome;
 });
 
+function endpointWithoutCorrelation(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.searchParams.delete("cid");
+  return url.toString();
+}
+
+function endpointCorrelationId(endpoint: string): string | null {
+  return new URL(endpoint).searchParams.get("cid");
+}
+
 class FakeWebSocket extends EventEmitter {
   readyState = 0;
   bufferedAmount = 0;
@@ -306,6 +316,17 @@ describe("DesktopPairedMachineStore", () => {
     });
     expect(new DesktopPairedMachineStore().get("mac-studio-host"))
       .toEqual(marked);
+
+    const discovered = store.markEndpointsDiscovered(
+      "mac-studio-host",
+      ["ws://studio.local:8805"],
+      1_700_000_000_500,
+    );
+    expect(discovered.endpointStates).toContainEqual({
+      endpoint: "ws://studio.local:8805/",
+      lastSucceededAt: null,
+      lastDiscoveredAt: 1_700_000_000_500,
+    });
   });
 
   it("replaces stale relay connection metadata only when explicitly requested", () => {
@@ -535,7 +556,7 @@ describe("DesktopPairedMachineStore", () => {
       },
     );
 
-    expect(openedEndpoints).toEqual([
+    expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "wss://relay-one.example/connect/machine-account-1",
       "wss://relay-two.example/connect/machine-account-1",
       "wss://relay-one.example/connect/machine-account-1",
@@ -543,6 +564,16 @@ describe("DesktopPairedMachineStore", () => {
       "wss://relay-one.example/connect/machine-account-1",
       "wss://relay-two.example/connect/machine-account-1",
     ]);
+    const correlationIds = openedEndpoints.map(endpointCorrelationId);
+    expect(correlationIds).toEqual([
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      correlationIds[0],
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      correlationIds[2],
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      correlationIds[4],
+    ]);
+    expect(new Set([correlationIds[0], correlationIds[2], correlationIds[4]]).size).toBe(3);
     expect(accountDpopVerdicts).toEqual([
       { ok: true },
       { ok: true },
@@ -607,12 +638,13 @@ describe("DesktopPairedMachineStore", () => {
       warn.mockRestore();
     }
 
-    expect(openedEndpoints).toEqual([
+    expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "wss://relay.example/connect/machine-legacy-relay-only",
     ]);
+    expect(endpointCorrelationId(openedEndpoints[0]!)).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("stops after a successful sealed relay adoption without dialing direct routes", async () => {
+  it("stops after a successful sealed LAN adoption without dialing later routes", async () => {
     process.env.ADE_HOME = fs.mkdtempSync(
       path.join(os.tmpdir(), "ade-desktop-relay-wins-"),
     );
@@ -663,11 +695,11 @@ describe("DesktopPairedMachineStore", () => {
       secret: "sealed-paired-secret",
     });
     expect(openedEndpoints).toEqual([
-      "wss://relay.example/connect/machine-relay-wins",
+      "ws://relay-studio.local:8787/",
     ]);
     expect(stages).toEqual([
-      { kind: "relay", phase: "connecting" },
-      { kind: "relay", phase: "verifying" },
+      { kind: "lan", phase: "connecting" },
+      { kind: "lan", phase: "verifying" },
     ]);
   });
 
@@ -805,7 +837,7 @@ describe("DesktopPairedMachineStore", () => {
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
-  it("falls through a closed relay to sealed tailnet adoption with exact stages", async () => {
+  it("falls through a closed LAN route to sealed tailnet adoption with exact stages", async () => {
     process.env.ADE_HOME = fs.mkdtempSync(
       path.join(os.tmpdir(), "ade-desktop-tailnet-fallback-"),
     );
@@ -844,7 +876,7 @@ describe("DesktopPairedMachineStore", () => {
         onStage: (stage) => stages.push(stage),
         createWebSocket: (endpoint) => {
           openedEndpoints.push(endpoint);
-          if (endpoint.startsWith("wss://")) {
+          if (endpoint.includes("tailnet-studio.local")) {
             return new FakeWebSocket((text, ws) => {
               const envelope = parseSyncEnvelope(wsDataToText(text));
               if (envelope.type === "account_challenge") ws.close();
@@ -863,11 +895,11 @@ describe("DesktopPairedMachineStore", () => {
     });
 
     expect(openedEndpoints).toEqual([
-      "wss://relay.example/connect/machine-tailnet-fallback",
+      "ws://tailnet-studio.local:8787/",
       "ws://100.75.20.63:8787/",
     ]);
     expect(stages).toEqual([
-      { kind: "relay", phase: "connecting" },
+      { kind: "lan", phase: "connecting" },
       { kind: "tailnet", phase: "connecting" },
       { kind: "tailnet", phase: "verifying" },
     ]);
@@ -1190,7 +1222,7 @@ describe("DesktopPairedMachineStore", () => {
     await expect(pairing).rejects.toMatchObject({
       code: "account_host_identity_verification_failed",
     });
-    expect(openedEndpoints).toEqual(["ws://100.75.20.63:8787/"]);
+    expect(openedEndpoints).toEqual(["ws://expected-direct-host.local:8787/"]);
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
@@ -1243,11 +1275,14 @@ describe("DesktopPairedMachineStore", () => {
     expect(failure?.message).toMatch(/relay relay\.example:/);
     expect(failure?.message).toMatch(/tailnet 100\.75\.20\.63:/);
     expect(failure?.message).toMatch(/lan unavailable-studio\.local:/);
-    expect(openedEndpoints).toEqual([
-      "wss://relay.example/connect/machine-all-routes-fail",
-      "ws://100.75.20.63:8787/",
+    expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "ws://unavailable-studio.local:8787/",
+      "ws://100.75.20.63:8787/",
+      "wss://relay.example/connect/machine-all-routes-fail",
     ]);
+    expect(endpointCorrelationId(openedEndpoints[0]!)).toBeNull();
+    expect(endpointCorrelationId(openedEndpoints[1]!)).toBeNull();
+    expect(endpointCorrelationId(openedEndpoints[2]!)).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it.each([
@@ -1367,7 +1402,7 @@ describe("DesktopPairedMachineStore", () => {
       },
     )).rejects.toThrow("cancel account authentication");
 
-    expect(openedEndpoints).toEqual([
+    expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "wss://relay-one.example/connect/machine-cancel",
     ]);
   });
@@ -1409,7 +1444,7 @@ describe("DesktopPairedMachineStore", () => {
     controller.abort(new Error("cancel account connection"));
 
     await expect(pairing).rejects.toThrow("cancel account connection");
-    expect(openedEndpoints).toEqual([
+    expect(openedEndpoints.map(endpointWithoutCorrelation)).toEqual([
       "wss://relay-one.example/connect/machine-connect-cancel",
     ]);
   });

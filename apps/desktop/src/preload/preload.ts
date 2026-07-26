@@ -328,8 +328,12 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -1254,7 +1258,9 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "respondToInput",
   "approveToolUse",
   "interrupt",
+  "recoverTurn",
   "recoverCodexTurn",
+  "resolveUnprocessedMessage",
   "recoverContinuity",
   "steer",
   "cancelSteer",
@@ -5569,6 +5575,19 @@ contextBridge.exposeInMainWorld("ade", {
         await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
       agentChatSummaryCache.clear();
     },
+    recoverTurn: async (
+      args: AgentChatRecoverTurnArgs,
+    ): Promise<AgentChatRecoverTurnResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatRecoverTurnResult>(
+        "chat",
+        "recoverTurn",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRecoverTurn, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
     recoverCodexTurn: async (
       args: AgentChatRecoverCodexTurnArgs,
     ): Promise<AgentChatRecoverCodexTurnResult> => {
@@ -5578,6 +5597,19 @@ contextBridge.exposeInMainWorld("ade", {
         "recoverCodexTurn",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatRecoverCodexTurn, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    resolveUnprocessedMessage: async (
+      args: AgentChatResolveUnprocessedMessageArgs,
+    ): Promise<AgentChatResolveUnprocessedMessageResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatResolveUnprocessedMessageResult>(
+        "chat",
+        "resolveUnprocessedMessage",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatResolveUnprocessedMessage, args),
       );
       agentChatSummaryCache.clear();
       return result;

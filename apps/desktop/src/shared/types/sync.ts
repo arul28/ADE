@@ -1496,6 +1496,8 @@ export type SyncRemoteCommandAction =
   | "chat.send"
   | "chat.interrupt"
   | "chat.recoverCodexTurn"
+  | "chat.recoverTurn"
+  | "chat.resolveUnprocessedMessage"
   | "chat.steer"
   | "chat.cancelSteer"
   | "chat.editSteer"

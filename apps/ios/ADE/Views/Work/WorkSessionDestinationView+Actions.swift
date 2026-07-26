@@ -134,13 +134,78 @@ extension WorkSessionDestinationView {
     )
     await refreshChatStateAfterAction(forceRemote: true)
     errorMessage = nil
-    switch result.status {
-    case "waiting": return "Waiting for Codex output…"
-    case "nudged": return "Status nudge sent."
-    case "retrying": return "Retry started in this thread."
-    case "resumed": return "Codex app server restarted and the thread resumed."
-    default: return "Recovery action sent."
+    return workTurnRecoveryFeedback(status: result.status)
+  }
+
+  @MainActor
+  func runUnprocessedMessage(_ message: WorkChatMessage) async throws {
+    guard liveTurnActiveHint != true && !shouldSteerActiveTurn else {
+      throw NSError(
+        domain: "ADE",
+        code: 28,
+        userInfo: [NSLocalizedDescriptionKey: "A turn is already active. Wait for it to finish, then run this message."]
+      )
     }
+    guard !sending else {
+      throw NSError(
+        domain: "ADE",
+        code: 27,
+        userInfo: [NSLocalizedDescriptionKey: "Another message is already being sent."]
+      )
+    }
+    let steerId = message.steerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !steerId.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 25,
+        userInfo: [NSLocalizedDescriptionKey: "This message is missing its durable delivery identifier."]
+      )
+    }
+    sending = true
+    defer { sending = false }
+    _ = try await syncService.resolveUnprocessedMessage(
+      sessionId: sessionId,
+      steerId: steerId,
+      action: "run_next"
+    )
+    await refreshChatStateAfterAction(forceRemote: true)
+    errorMessage = nil
+  }
+
+  @MainActor
+  func editUnprocessedMessage(_ message: WorkChatMessage) async throws {
+    let text = message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 26,
+        userInfo: [NSLocalizedDescriptionKey: "This message has no editable text."]
+      )
+    }
+    composerDraftRestore = WorkChatComposerDraftRestore(
+      text: text,
+      replacesExistingDraft: true
+    )
+    errorMessage = nil
+  }
+
+  @MainActor
+  func dismissUnprocessedMessage(_ message: WorkChatMessage) async throws {
+    let steerId = message.steerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !steerId.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 25,
+        userInfo: [NSLocalizedDescriptionKey: "This message is missing its durable delivery identifier."]
+      )
+    }
+    _ = try await syncService.resolveUnprocessedMessage(
+      sessionId: sessionId,
+      steerId: steerId,
+      action: "dismiss"
+    )
+    await refreshChatStateAfterAction(forceRemote: true)
+    errorMessage = nil
   }
 
   @MainActor
@@ -908,6 +973,16 @@ extension WorkSessionDestinationView {
       errorMessage = error.localizedDescription
       return false
     }
+  }
+}
+
+func workTurnRecoveryFeedback(status: String) -> String {
+  switch status {
+  case "waiting": return "Waiting for runtime output…"
+  case "nudged": return "Status nudge sent."
+  case "retrying": return "Retry started in this thread."
+  case "resumed": return "Runtime restarted and the thread resumed."
+  default: return "Recovery action sent."
   }
 }
 

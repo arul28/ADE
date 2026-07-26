@@ -470,6 +470,7 @@ function installAdeMocks(options?: {
   aiStatus?: AiSettingsStatus;
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
+  recoverTurnError?: Error;
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -479,6 +480,24 @@ function installAdeMocks(options?: {
     : vi.fn().mockResolvedValue(options?.steerResult ?? { steerId: "steer-default", queued: true });
   const dispatchSteer = vi.fn().mockResolvedValue({ dispatchedAt: Date.now() });
   const cancelSteer = vi.fn().mockResolvedValue(undefined);
+  const recoverTurn = options?.recoverTurnError
+    ? vi.fn().mockRejectedValue(options.recoverTurnError)
+    : vi.fn().mockResolvedValue({
+        action: "restart_resume",
+        turnId: "turn-1",
+        status: "resumed",
+      });
+  const recoverCodexTurn = vi.fn().mockResolvedValue({
+    action: "restart_resume_thread",
+    turnId: "turn-1",
+    status: "resumed",
+  });
+  const resolveUnprocessedMessage = vi.fn().mockResolvedValue({
+    steerId: "steer-unprocessed",
+    action: "run_next",
+    status: "completed",
+    replacementMessageId: "message-next",
+  });
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
@@ -596,6 +615,9 @@ function installAdeMocks(options?: {
       archive,
       unarchive,
       interrupt: vi.fn().mockResolvedValue(undefined),
+      recoverTurn,
+      recoverCodexTurn,
+      resolveUnprocessedMessage,
       approve: vi.fn().mockResolvedValue(undefined),
       respondToInput: vi.fn().mockResolvedValue(undefined),
       warmupModel: vi.fn().mockResolvedValue(undefined),
@@ -685,6 +707,9 @@ function installAdeMocks(options?: {
     steer,
     dispatchSteer,
     cancelSteer,
+    recoverTurn,
+    recoverCodexTurn,
+    resolveUnprocessedMessage,
     list,
     create,
     createLane,
@@ -1425,6 +1450,155 @@ describe("AgentChatPane companion drawers", () => {
 
     expect(await screen.findByText("Persistent identity view text")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Clear view" })).toBeNull();
+  });
+});
+
+describe("AgentChatPane durable recovery actions", () => {
+  it("appends an unprocessed message for editing without replacing the current draft", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-07-25T05:20:00.000Z",
+      event: {
+        type: "user_message",
+        text: "Original backend prompt.",
+        displayText: "Edit this follow-up.",
+        steerId: "steer-unprocessed",
+        deliveryState: "unprocessed",
+        processed: false,
+        turnId: "turn-1",
+      },
+    })}\n`;
+    const { resolveUnprocessedMessage } = installAdeMocks({
+      sessions: [session],
+      transcript,
+    });
+
+    renderPane(session);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Keep this draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "Keep this draft.\n\nEdit this follow-up.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run next" }));
+    await waitFor(() => {
+      expect(resolveUnprocessedMessage).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        steerId: "steer-unprocessed",
+        action: "run_next",
+      });
+    });
+  });
+
+  it("dismisses an unprocessed message durably", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-07-25T05:20:00.000Z",
+      event: {
+        type: "user_message",
+        text: "Dismiss this follow-up.",
+        steerId: "steer-unprocessed",
+        deliveryState: "unprocessed",
+        processed: false,
+        turnId: "turn-1",
+      },
+    })}\n`;
+    const { resolveUnprocessedMessage } = installAdeMocks({
+      sessions: [session],
+      transcript,
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    await waitFor(() => {
+      expect(resolveUnprocessedMessage).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        steerId: "steer-unprocessed",
+        action: "dismiss",
+      });
+    });
+  });
+
+  it("prefers provider-neutral recovery and falls back for older hosts", async () => {
+    const session = buildSession("session-1", { status: "active" });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-07-25T05:20:00.000Z",
+      event: {
+        type: "turn_health",
+        provider: "codex",
+        turnId: "turn-1",
+        state: "stalled",
+        reason: "no_output",
+        message: "Codex accepted the turn but has not streamed output.",
+        turnStartedAt: "2026-07-25T05:18:00.000Z",
+        lastProgressAt: "2026-07-25T05:18:00.000Z",
+        detectedAt: "2026-07-25T05:20:00.000Z",
+        recoveryCount: 0,
+        supportedActions: ["restart_resume"],
+        automaticRecoveryAttempted: false,
+      },
+    })}\n`;
+    const { recoverTurn, recoverCodexTurn } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      recoverTurnError: new Error("Action not supported by runtime"),
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    await waitFor(() => {
+      expect(recoverTurn).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        turnId: "turn-1",
+        action: "restart_resume",
+      });
+      expect(recoverCodexTurn).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        turnId: "turn-1",
+        action: "restart_resume_thread",
+      });
+    });
+  });
+
+  it("does not hide a chat-service outage behind the legacy recovery fallback", async () => {
+    const session = buildSession("session-1", { status: "active" });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-07-25T05:20:00.000Z",
+      event: {
+        type: "turn_health",
+        provider: "codex",
+        turnId: "turn-1",
+        state: "stalled",
+        reason: "no_output",
+        message: "Codex accepted the turn but has not streamed output.",
+        turnStartedAt: "2026-07-25T05:18:00.000Z",
+        lastProgressAt: "2026-07-25T05:18:00.000Z",
+        detectedAt: "2026-07-25T05:20:00.000Z",
+        recoveryCount: 0,
+        supportedActions: ["restart_resume"],
+        automaticRecoveryAttempted: false,
+      },
+    })}\n`;
+    const { recoverTurn, recoverCodexTurn } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      recoverTurnError: new Error("Agent chat service not available."),
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    await waitFor(() => {
+      expect(recoverTurn).toHaveBeenCalledOnce();
+      expect(recoverCodexTurn).not.toHaveBeenCalled();
+    });
   });
 });
 

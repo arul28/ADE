@@ -67,6 +67,7 @@ class FakeSocket {
       established?: boolean;
       legacyBuffered?: true;
       legacyStateUnknown?: true;
+      correlationId?: string;
       ts: number;
     },
   ) {}
@@ -104,6 +105,7 @@ class FakeState {
       readyVersion?: typeof RELAY_READY_VERSION;
       established?: boolean;
       legacyBuffered?: boolean;
+      correlationId?: string;
     } = {},
   ): FakeSocket {
     const epoch = options.epoch ?? CONTROL_EPOCH;
@@ -115,6 +117,7 @@ class FakeState {
       ...(options.readyVersion ? { readyVersion: options.readyVersion } : {}),
       ...(options.established ? { established: true } : {}),
       ...(options.legacyBuffered ? { legacyBuffered: true as const } : {}),
+      ...(options.correlationId ? { correlationId: options.correlationId } : {}),
       ts,
     });
     this.sockets.push(socket);
@@ -148,6 +151,7 @@ function installAcceptSocketStub(durable: TunnelDurableObject, state: FakeState)
         id?: string;
         epoch?: string;
         readyVersion?: typeof RELAY_READY_VERSION;
+        correlationId?: string;
       },
       afterAccept?: (socket: WebSocket) => void,
     ) => Promise<Response>;
@@ -156,6 +160,7 @@ function installAcceptSocketStub(durable: TunnelDurableObject, state: FakeState)
     const socket = state.addSocket(attachment.role, attachment.id, Date.now(), {
       epoch: attachment.epoch,
       readyVersion: attachment.readyVersion,
+      correlationId: attachment.correlationId,
     });
     afterAccept?.(socket as unknown as WebSocket);
     return new Response(null, { status: 200 });
@@ -497,6 +502,50 @@ describe("durable socket lifecycle", () => {
     expect(client.sent).toEqual([]);
     expect(client.deserializeAttachment()).not.toMatchObject({ established: true });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"kind":"forward_failed"'));
+    log.mockRestore();
+  });
+
+  it("propagates a safe client correlation id to pipe lifecycle logs", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    await storage.put("secret", SECRET);
+    installAcceptSocketStub(durable, state);
+    const controlEpoch = CONTROL_EPOCH;
+    const correlationId = "123e4567-e89b-42d3-a456-426614174000";
+    const control = state.addSocket("control", undefined, Date.now(), {
+      epoch: controlEpoch,
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.fetch(new Request(
+      `https://relay.test/connect/${MACHINE_KEY}?ready=2&cid=${correlationId}`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+    const open = JSON.parse(String(control.sent.at(-1))) as {
+      id: string;
+      epoch: string;
+    };
+    const client = state.sockets.find((socket) => socket.tags.includes("client"))!;
+    expect(client.deserializeAttachment()).toMatchObject({ correlationId });
+
+    await durable.fetch(await signedPipeRequest({
+      id: open.id,
+      epoch: controlEpoch,
+    }));
+    const pipe = state.sockets.find((socket) => socket.tags.includes("pipe"))!;
+    expect(pipe.deserializeAttachment()).toMatchObject({ correlationId });
+
+    await durable.webSocketClose(
+      client as unknown as WebSocket,
+      1006,
+      "abnormal close",
+      false,
+    );
+    const terminalLog = log.mock.calls
+      .flatMap(([entry]) => [String(entry)])
+      .find((entry) => entry.includes('"kind":"socket_closed"'));
+    expect(terminalLog).toContain(`"correlationId":"${correlationId}"`);
+    expect(terminalLog).not.toContain("ready=2");
+    expect(terminalLog).not.toContain(MACHINE_KEY);
     log.mockRestore();
   });
 

@@ -627,7 +627,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(warmQuickOpenIndex).toHaveBeenCalledWith({ workspaceId: "lane-warm" });
   });
 
-  it("falls back to headless chat transcript reads when readTranscript is unavailable", async () => {
+  it("keeps headless chat transcript reads shape-compatible with socket-backed reads", async () => {
     const getChatTranscript = vi.fn(async () => ({
       sessionId: "chat-1",
       entries: [
@@ -651,12 +651,9 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       sessionId: " chat-1 ",
       limit: "25",
       since: "2026-06-29T00:00:00.000Z",
-    })).resolves.toMatchObject({
-      sessionId: "chat-1",
-      entries: [
-        { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
-      ],
-    });
+    })).resolves.toEqual([
+      { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
+    ]);
     expect(getChatTranscript).toHaveBeenCalledWith({ sessionId: "chat-1", limit: 25 });
   });
 

@@ -2249,6 +2249,42 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testRelayWinnerIsRejectedAfterSignOutOrAccountSwitch() {
+    let used = AccountPairingAuthorization(ownerId: "user_123", generation: 7)
+
+    XCTAssertNil(
+      syncRelayReconnectAuthorizationRequirement(
+        usedAuthorization: used,
+        currentAuthorization: used,
+        relayAccountOwnerId: "user_123"
+      )
+    )
+    XCTAssertEqual(
+      syncRelayReconnectAuthorizationRequirement(
+        usedAuthorization: used,
+        currentAuthorization: nil,
+        relayAccountOwnerId: "user_123"
+      ),
+      .signInRequired
+    )
+    XCTAssertEqual(
+      syncRelayReconnectAuthorizationRequirement(
+        usedAuthorization: used,
+        currentAuthorization: AccountPairingAuthorization(ownerId: "user_123", generation: 8),
+        relayAccountOwnerId: "user_123"
+      ),
+      .signInRequired
+    )
+    XCTAssertEqual(
+      syncRelayReconnectAuthorizationRequirement(
+        usedAuthorization: used,
+        currentAuthorization: AccountPairingAuthorization(ownerId: "user_other", generation: 8),
+        relayAccountOwnerId: "user_123"
+      ),
+      .sameAccountRequired
+    )
+  }
+
   func testRelayHostRejectionBecomesTypedAccountRequirement() {
     XCTAssertEqual(
       syncRelayAuthorizationRequirementForHostRejection(
@@ -2665,7 +2701,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testAccountSignOutRemovesOnlyAccountOwnedMachineCredentials() {
+  func testAccountSignOutPreservesDeviceBoundDirectMachineCredentials() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     service.clearSavedProfilesForTesting()
     defer { service.clearSavedProfilesForTesting() }
@@ -2692,20 +2728,32 @@ final class ADETests: XCTestCase {
       lastRemoteDbVersion: 0,
       lastHostDeviceId: "account-host",
       lastSuccessfulAddress: "wss://relay.ade.app/connect/account-host",
-      savedAddressCandidates: [],
-      discoveredLanAddresses: [],
-      tailscaleAddress: nil,
+      savedAddressCandidates: ["192.168.1.9", "100.75.20.64"],
+      discoveredLanAddresses: ["192.168.1.9"],
+      tailscaleAddress: "100.75.20.64",
       savedRelayCandidates: ["wss://relay.ade.app/connect/account-host"],
-      accountOwnerId: "user_123"
+      accountOwnerId: "user_123",
+      relayAccountOwnerId: "user_123"
     )
     service.installSavedProfileForTesting(manual, token: "manual-secret", makeActive: true)
     service.installSavedProfileForTesting(account, token: "account-secret")
 
     service.removeAccountOwnedPairings(exceptOwnerId: nil)
 
-    XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["manual-host"])
+    XCTAssertEqual(
+      Set(service.savedProfilesForTesting().map(\.hostIdentity)),
+      Set(["manual-host", "account-host"])
+    )
     XCTAssertTrue(service.hasCredentialForTesting(manual))
-    XCTAssertFalse(service.hasCredentialForTesting(account))
+    XCTAssertTrue(service.hasCredentialForTesting(account))
+    XCTAssertEqual(
+      syncAddressesAllowedByRelayPolicy(
+        ["192.168.1.9", "100.75.20.64", "wss://relay.ade.app/connect/account-host"],
+        profile: account,
+        currentAccountOwnerId: nil
+      ),
+      ["192.168.1.9", "100.75.20.64"]
+    )
   }
 
   @MainActor
@@ -2786,7 +2834,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testAccountSignOutClearsActiveAccountMachine() {
+  func testAccountSignOutKeepsActiveAccountMachineDeviceTrust() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     service.clearSavedProfilesForTesting()
     defer { service.clearSavedProfilesForTesting() }
@@ -2799,19 +2847,28 @@ final class ADETests: XCTestCase {
       lastRemoteDbVersion: 0,
       lastHostDeviceId: "account-host",
       lastSuccessfulAddress: "wss://relay.ade.app/connect/account-host",
-      savedAddressCandidates: [],
-      discoveredLanAddresses: [],
+      savedAddressCandidates: ["192.168.1.9"],
+      discoveredLanAddresses: ["192.168.1.9"],
       tailscaleAddress: nil,
       savedRelayCandidates: ["wss://relay.ade.app/connect/account-host"],
-      accountOwnerId: "user_123"
+      accountOwnerId: "user_123",
+      relayAccountOwnerId: "user_123"
     )
     service.installSavedProfileForTesting(account, token: "account-secret", makeActive: true)
 
-    service.removeAccountOwnedPairings(ownerId: "user_123")
+    service.removeAccountOwnedPairings(exceptOwnerId: nil)
 
-    XCTAssertTrue(service.savedProfilesForTesting().isEmpty)
-    XCTAssertNil(service.activeHostProfile)
-    XCTAssertFalse(service.hasCredentialForTesting(account))
+    XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["account-host"])
+    XCTAssertEqual(service.activeHostProfile?.hostIdentity, "account-host")
+    XCTAssertTrue(service.hasCredentialForTesting(account))
+    XCTAssertEqual(
+      syncAddressesAllowedByRelayPolicy(
+        ["wss://relay.ade.app/connect/account-host", "192.168.1.9"],
+        profile: account,
+        currentAccountOwnerId: nil
+      ),
+      ["192.168.1.9"]
+    )
   }
 
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
@@ -5485,7 +5542,10 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testSyncServiceAcceptsLegacyHelloInLimitedCompatibilityMode() async throws {
-    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer { UserDefaults.standard.removeObject(forKey: pendingOperationsKey) }
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
 
     try service.applyHelloPayloadForTesting([
       "brain": [
@@ -5687,7 +5747,10 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testScheduledWorkCancellationStaysGatedWhenAdvertisedHostOmitsAction() async throws {
-    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer { UserDefaults.standard.removeObject(forKey: pendingOperationsKey) }
+    let service = SyncService(database: makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory()))
     try service.applyHelloPayloadForTesting([
       "brain": [
         "deviceId": "host-1",
@@ -8911,6 +8974,7 @@ final class ADETests: XCTestCase {
     }
 
     let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-one")
     try await service.archiveLane("lane-child")
     XCTAssertEqual(service.pendingOperationCount, 1)
 
@@ -9189,7 +9253,75 @@ final class ADETests: XCTestCase {
     } catch {
       XCTAssertTrue(error.localizedDescription.contains("not available on this machine version"))
     }
+    XCTAssertFalse(service.supportsRemoteAction("chat.recoverTurn"))
     XCTAssertFalse(service.supportsRemoteAction("chat.recoverCodexTurn"))
+    XCTAssertEqual(service.pendingOperationCount, 0)
+  }
+
+  func testRecoveryActionSelectionPrefersProviderNeutralContract() {
+    XCTAssertEqual(syncProviderNeutralRecoveryAction("wait"), "wait")
+    XCTAssertEqual(syncProviderNeutralRecoveryAction("steer"), "nudge")
+    XCTAssertEqual(
+      syncProviderNeutralRecoveryAction("interrupt_retry_same_thread"),
+      "retry_same_runtime"
+    )
+    XCTAssertEqual(
+      syncProviderNeutralRecoveryAction("restart_resume_thread"),
+      "restart_resume"
+    )
+    XCTAssertNil(syncProviderNeutralRecoveryAction("unknown"))
+
+    XCTAssertEqual(
+      syncPreferredRecoveryActionName(
+        supportsProviderNeutral: true,
+        supportsLegacyCodex: true
+      ),
+      "chat.recoverTurn"
+    )
+    XCTAssertEqual(
+      syncPreferredRecoveryActionName(
+        supportsProviderNeutral: false,
+        supportsLegacyCodex: true
+      ),
+      "chat.recoverCodexTurn"
+    )
+    XCTAssertNil(syncPreferredRecoveryActionName(
+      supportsProviderNeutral: false,
+      supportsLegacyCodex: false
+    ))
+    XCTAssertEqual(
+      syncPreferredRecoveryActionName(
+        supportsProviderNeutral: true,
+        supportsLegacyCodex: true,
+        providerNeutralActionName: "personalChats.recoverTurn",
+        legacyCodexActionName: "personalChats.recoverCodexTurn"
+      ),
+      "personalChats.recoverTurn"
+    )
+  }
+
+  @MainActor
+  func testUnprocessedMessageResolutionIsGatedWithoutAdvertisedCapability() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+
+    do {
+      _ = try await service.resolveUnprocessedMessage(
+        sessionId: "chat-legacy",
+        steerId: "steer-1",
+        action: "run_next"
+      )
+      XCTFail("Expected resolution to be rejected before an unsupported command is sent.")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("not available on this machine version"))
+    }
+    XCTAssertFalse(service.supportsRemoteAction("chat.resolveUnprocessedMessage"))
     XCTAssertEqual(service.pendingOperationCount, 0)
   }
 
@@ -13730,6 +13862,22 @@ final class ADETests: XCTestCase {
     )
   }
 
+  @MainActor
+  func testEditingUnprocessedMessageReplacesComposerDraftAndFocusesIt() {
+    let state = WorkChatComposerDraftState()
+    state.text = "A newer local draft"
+    state.isFocused = false
+
+    state.applyRestore(WorkChatComposerDraftRestore(
+      text: "The original unprocessed message",
+      id: UUID(uuidString: "4D31F415-1FA2-44BC-87C5-2AB71DA11CB5")!,
+      replacesExistingDraft: true
+    ))
+
+    XCTAssertEqual(state.text, "The original unprocessed message")
+    XCTAssertTrue(state.isFocused)
+  }
+
   func testWorkChatComposerPlaceholderUsesPlanReviewCopyForPlanApprovalOnly() {
     let planInput = WorkPendingInputItem.planApproval(WorkPendingPlanApprovalModel(
       id: "plan-1",
@@ -14952,9 +15100,24 @@ final class ADETests: XCTestCase {
       "message": "Codex accepted the turn but has not streamed output yet.",
       "recoveryOptions": ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"],
       "sourceSessionId": "chat-child",
+      "detectedAt": "2026-07-09T00:02:01.000Z",
+      "turnStartedAt": "2026-07-09T00:00:01.000Z",
+      "lastProgressAt": "2026-07-09T00:00:31.000Z",
+      "automaticRecoveryAttempted": true,
     ]
     let decoded = try AgentChatEvent.decode(from: eventObject)
-    guard case .codexTurnStalled(let turnId, let threadId, let reason, let message, let options, let sourceSessionId) = decoded else {
+    guard case .codexTurnStalled(
+      let turnId,
+      let threadId,
+      let reason,
+      let message,
+      let options,
+      let sourceSessionId,
+      let detectedAt,
+      let turnStartedAt,
+      let lastProgressAt,
+      let automaticRecoveryAttempted
+    ) = decoded else {
       return XCTFail("Expected a Codex stalled-turn event.")
     }
     XCTAssertEqual(turnId, "turn-child")
@@ -14962,6 +15125,10 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(reason, "no_output")
     XCTAssertEqual(sourceSessionId, "chat-child")
     XCTAssertEqual(options, ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"])
+    XCTAssertEqual(detectedAt, "2026-07-09T00:02:01.000Z")
+    XCTAssertEqual(turnStartedAt, "2026-07-09T00:00:01.000Z")
+    XCTAssertEqual(lastProgressAt, "2026-07-09T00:00:31.000Z")
+    XCTAssertEqual(automaticRecoveryAttempted, true)
 
     let mapped = makeWorkChatEvent(from: decoded)
     let envelope = WorkChatEnvelope(
@@ -14976,14 +15143,355 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(card.recoverySessionId, "chat-child")
     XCTAssertEqual(card.recoveryTurnId, "turn-child")
     XCTAssertEqual(card.recoveryOptions, options)
+    XCTAssertEqual(card.recoveryContext?.reason, "no_output")
+    XCTAssertEqual(card.recoveryContext?.automaticRecoveryAttempted, true)
+    XCTAssertEqual(
+      workCodexRecoveryPrimaryOptions(options ?? []),
+      ["restart_resume_thread", "wait"]
+    )
+    XCTAssertEqual(
+      workCodexRecoveryMoreOptions(options ?? []),
+      ["steer", "interrupt_retry_same_thread"]
+    )
+    XCTAssertEqual(
+      workCodexRecoveryActionLabel(for: "restart_resume_thread"),
+      "Restart & resume"
+    )
+    XCTAssertEqual(workCodexRecoveryActionLabel(for: "wait"), "Keep waiting")
 
-    let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child"}}"#
-    guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId) = parseWorkChatTranscript(raw).first?.event else {
+    let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child","automaticRecoveryAttempted":true}}"#
+    guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId, let parsedContext) = parseWorkChatTranscript(raw).first?.event else {
       return XCTFail("Expected transcript fallback to preserve the recovery event.")
     }
     XCTAssertEqual(parsedOptions, options)
     XCTAssertEqual(parsedTurnId, "turn-child")
     XCTAssertEqual(parsedSourceSessionId, "chat-child")
+    XCTAssertTrue(parsedContext.automaticRecoveryAttempted)
+  }
+
+  func testUnprocessedMessageResolutionDecodesAndFoldsIntoOriginalBubble() throws {
+    let decoded = try AgentChatEvent.decode(from: [
+      "type": "user_message_resolution",
+      "steerId": "steer-1",
+      "action": "run_next",
+      "state": "completed",
+      "resolvedAt": "2026-07-09T00:01:00.000Z",
+      "replacementMessageId": "message-2",
+      "turnId": "turn-2",
+    ])
+    guard case .userMessageResolution(
+      let steerId,
+      let action,
+      let state,
+      let resolvedAt,
+      let replacementMessageId,
+      let turnId
+    ) = decoded else {
+      return XCTFail("Expected a durable user-message resolution event.")
+    }
+    XCTAssertEqual(steerId, "steer-1")
+    XCTAssertEqual(action, "run_next")
+    XCTAssertEqual(state, "completed")
+    XCTAssertEqual(resolvedAt, "2026-07-09T00:01:00.000Z")
+    XCTAssertEqual(replacementMessageId, "message-2")
+    XCTAssertEqual(turnId, "turn-2")
+
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"Please keep going","turnId":"turn-1","steerId":"steer-1","deliveryState":"unprocessed","processed":false}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:01:00.000Z","sequence":2,"event":{"type":"user_message_resolution","steerId":"steer-1","action":"run_next","state":"completed","resolvedAt":"2026-07-09T00:01:00.000Z","replacementMessageId":"message-2","turnId":"turn-2"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 2)
+    guard case .userMessageResolution = transcript[1].event else {
+      return XCTFail("Expected fallback parsing to preserve the resolution event.")
+    }
+
+    let reloadedTranscript = mergeWorkChatTranscripts(
+      base: [transcript[0]],
+      live: [transcript[1]]
+    )
+    XCTAssertEqual(reloadedTranscript.count, 2)
+    let messages = buildWorkChatMessages(from: reloadedTranscript)
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertEqual(messages[0].steerId, "steer-1")
+    XCTAssertEqual(messages[0].deliveryState, "unprocessed")
+    XCTAssertEqual(messages[0].processed, false)
+    XCTAssertEqual(messages[0].unprocessedResolution?.action, "run_next")
+    XCTAssertEqual(messages[0].unprocessedResolution?.state, "completed")
+    XCTAssertEqual(messages[0].unprocessedResolution?.replacementMessageId, "message-2")
+    XCTAssertTrue(buildWorkEventCards(from: reloadedTranscript).isEmpty)
+  }
+
+  func testDismissedUnprocessedMessageFoldsWithoutStandaloneTimelineCard() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"Never mind","turnId":"turn-1","steerId":"steer-dismiss","deliveryState":"unprocessed","processed":false}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"user_message_resolution","steerId":"steer-dismiss","action":"dismiss","state":"completed","resolvedAt":"2026-07-09T00:00:02.000Z","turnId":"turn-1"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    let messages = buildWorkChatMessages(from: transcript)
+
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertEqual(messages[0].unprocessedResolution?.action, "dismiss")
+    XCTAssertNil(messages[0].unprocessedResolution?.replacementMessageId)
+    XCTAssertTrue(buildWorkEventCards(from: transcript).isEmpty)
+  }
+
+  func testProviderNeutralTurnHealthWinsWhenLegacyAliasAlsoArrives() throws {
+    let decoded = try AgentChatEvent.decode(from: [
+      "type": "turn_health",
+      "provider": "claude",
+      "turnId": "turn-1",
+      "state": "stalled",
+      "reason": "no_output",
+      "message": "The runtime accepted this turn but has not streamed output yet.",
+      "turnStartedAt": "2026-07-09T00:00:00.000Z",
+      "lastProgressAt": "2026-07-09T00:00:10.000Z",
+      "detectedAt": "2026-07-09T00:01:00.000Z",
+      "recoveryCount": 2,
+      "supportedActions": ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+      "automaticRecoveryAttempted": true,
+      "sourceSessionId": "chat-child",
+    ])
+    guard case .codexTurnStalled(
+      _,
+      let decodedOptions,
+      _,
+      let decodedSourceSessionId,
+      let decodedContext
+    ) = makeWorkChatEvent(from: decoded) else {
+      return XCTFail("Expected provider-neutral health to map to the recovery UI.")
+    }
+    XCTAssertEqual(
+      decodedOptions,
+      ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"]
+    )
+    XCTAssertEqual(decodedSourceSessionId, "chat-child")
+    XCTAssertEqual(decodedContext.provider, "claude")
+    XCTAssertEqual(decodedContext.recoveryCount, 2)
+    XCTAssertTrue(decodedContext.providerNeutral)
+
+    let raw = """
+    {"sessionId":"chat-parent","timestamp":"2026-07-09T00:01:00.000Z","sequence":1,"event":{"type":"turn_health","provider":"claude","turnId":"turn-1","state":"stalled","reason":"no_output","message":"Provider-neutral health","turnStartedAt":"2026-07-09T00:00:00.000Z","lastProgressAt":"2026-07-09T00:00:10.000Z","detectedAt":"2026-07-09T00:01:00.000Z","recoveryCount":2,"supportedActions":["wait","nudge","retry_same_runtime","restart_resume"],"automaticRecoveryAttempted":true,"sourceSessionId":"chat-child"}}
+    {"sessionId":"chat-parent","timestamp":"2026-07-09T00:01:00.100Z","sequence":2,"event":{"type":"codex_turn_stalled","turnId":"turn-1","reason":"no_output","message":"Legacy alias","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child","automaticRecoveryAttempted":true}}
+    """
+    let cards = buildWorkEventCards(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards[0].kind, "codexRecovery")
+    XCTAssertEqual(cards[0].body, "Provider-neutral health")
+    XCTAssertEqual(cards[0].recoveryOptions, decodedOptions)
+    XCTAssertEqual(cards[0].recoverySessionId, "chat-child")
+    XCTAssertEqual(cards[0].recoveryContext?.provider, "claude")
+    XCTAssertEqual(cards[0].recoveryContext?.recoveryCount, 2)
+    XCTAssertTrue(cards[0].recoveryContext?.providerNeutral == true)
+  }
+
+  func testProviderNeutralRecoveryEventsDefaultOmittedCompatibilityFields() throws {
+    let health = try AgentChatEvent.decode(from: [
+      "type": "turn_health",
+      "provider": "claude",
+      "turnId": "turn-compat",
+      "state": "stalled",
+      "reason": "no_output",
+      "message": "Waiting for output.",
+      "turnStartedAt": "2026-07-09T00:00:00.000Z",
+      "lastProgressAt": "2026-07-09T00:00:10.000Z",
+      "detectedAt": "2026-07-09T00:01:00.000Z",
+    ])
+    guard case .turnHealth(
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      let recoveryCount,
+      let supportedActions,
+      let automaticRecoveryAttempted,
+      _
+    ) = health else {
+      return XCTFail("Expected provider-neutral turn health.")
+    }
+    XCTAssertEqual(recoveryCount, 0)
+    XCTAssertEqual(supportedActions, [])
+    XCTAssertFalse(automaticRecoveryAttempted)
+
+    let recovery = try AgentChatEvent.decode(from: [
+      "type": "turn_recovery",
+      "provider": "claude",
+      "turnId": "turn-compat",
+      "action": "wait",
+      "state": "recovered",
+      "message": "Output resumed.",
+      "at": "2026-07-09T00:02:00.000Z",
+    ])
+    guard case .turnRecovery(_, _, _, _, _, let automatic, _, let count) = recovery else {
+      return XCTFail("Expected provider-neutral turn recovery.")
+    }
+    XCTAssertFalse(automatic)
+    XCTAssertEqual(count, 0)
+  }
+
+  func testUnprocessedResolutionUsesNewestTimestampInsteadOfArrayOrder() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "Run this next.",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: "steer-1",
+          deliveryState: "unprocessed",
+          processed: false
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:03:00.000Z",
+        sequence: 3,
+        event: .userMessageResolution(
+          steerId: "steer-1",
+          action: "run_next",
+          state: "completed",
+          resolvedAt: "2026-07-09T00:03:00.000Z",
+          replacementMessageId: "message-2",
+          turnId: "turn-2"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:02:00.000Z",
+        sequence: 2,
+        event: .userMessageResolution(
+          steerId: "steer-1",
+          action: "dismiss",
+          state: "completed",
+          resolvedAt: "2026-07-09T00:02:00.000Z",
+          replacementMessageId: nil,
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    XCTAssertEqual(message?.unprocessedResolution?.action, "run_next")
+    XCTAssertEqual(message?.unprocessedResolution?.replacementMessageId, "message-2")
+  }
+
+  func testProviderNeutralRecoveryReceiptWinsWhenLegacyAliasAlsoArrives() throws {
+    let decoded = try AgentChatEvent.decode(from: [
+      "type": "turn_recovery",
+      "provider": "claude",
+      "turnId": "turn-1",
+      "action": "restart_resume",
+      "state": "recovered",
+      "message": "Provider-neutral recovery receipt",
+      "automatic": false,
+      "at": "2026-07-09T00:02:00.000Z",
+      "recoveryCount": 3,
+    ])
+    guard case .codexTurnRecovery(_, let decodedReceipt, _) = makeWorkChatEvent(from: decoded) else {
+      return XCTFail("Expected provider-neutral recovery to map to the recovery receipt UI.")
+    }
+    XCTAssertTrue(decodedReceipt.providerNeutral)
+    XCTAssertEqual(decodedReceipt.provider, "claude")
+    XCTAssertEqual(decodedReceipt.recoveryCount, 3)
+
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:02:00.000Z","sequence":1,"event":{"type":"turn_recovery","provider":"claude","turnId":"turn-1","action":"restart_resume","state":"recovered","message":"Provider-neutral recovery receipt","automatic":false,"at":"2026-07-09T00:02:00.000Z","recoveryCount":3}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:02:00.100Z","sequence":2,"event":{"type":"codex_turn_recovery","turnId":"turn-1","action":"restart_resume_thread","state":"recovered","message":"Legacy recovery receipt","automatic":false,"at":"2026-07-09T00:02:00.100Z"}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    guard case .codexTurnRecovery(_, let fallbackReceipt, _) = transcript[0].event else {
+      return XCTFail("Expected fallback parsing to preserve provider-neutral recovery.")
+    }
+    XCTAssertTrue(fallbackReceipt.providerNeutral)
+    XCTAssertEqual(fallbackReceipt.provider, "claude")
+    XCTAssertEqual(fallbackReceipt.recoveryCount, 3)
+
+    let cards = buildWorkEventCards(from: transcript)
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards[0].kind, "codexRecoveryReceipt")
+    XCTAssertEqual(cards[0].title, "Claude connection recovered")
+    XCTAssertEqual(cards[0].body, "Provider-neutral recovery receipt")
+    XCTAssertEqual(cards[0].recoveryReceipt?.action, "restart_resume")
+    XCTAssertEqual(cards[0].recoveryReceipt?.provider, "claude")
+    XCTAssertEqual(cards[0].recoveryReceipt?.recoveryCount, 3)
+    XCTAssertTrue(cards[0].recoveryReceipt?.providerNeutral == true)
+  }
+
+  func testProviderNeutralRecoveryFallbackUsesNormalizedDefaultAction() {
+    let raw = #"{"sessionId":"chat-1","timestamp":"2026-07-09T00:02:00.000Z","sequence":1,"event":{"type":"turn_recovery","provider":"claude","turnId":"turn-1","state":"recovered","message":"Recovered.","automatic":false,"at":"2026-07-09T00:02:00.000Z"}}"#
+    guard case .codexTurnRecovery(_, let receipt, _) = parseWorkChatTranscript(raw).first?.event else {
+      return XCTFail("Expected fallback recovery receipt.")
+    }
+    XCTAssertEqual(receipt.action, "restart_resume_thread")
+  }
+
+  func testCodexTurnDiagnosticsCollapseRoutineModerationAndIntegrationNoise() throws {
+    let moderation = try AgentChatEvent.decode(from: [
+      "type": "codex_moderation_metadata",
+      "turnId": "turn-1",
+      "metadata": [
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "metadata": [:],
+      ],
+    ])
+    let diagnostics = try AgentChatEvent.decode(from: [
+      "type": "turn_diagnostics",
+      "turnId": "turn-1",
+      "moderationChecks": 3,
+      "optionalIntegrationFailures": [
+        ["integration": "unityMCP", "message": "MCP client unavailable"],
+      ],
+    ])
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:01.000Z",
+        sequence: 1,
+        event: makeWorkChatEvent(from: moderation)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:02.000Z",
+        sequence: 2,
+        event: makeWorkChatEvent(from: diagnostics)
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards[0].kind, "turnDiagnostics")
+    XCTAssertEqual(cards[0].title, "Turn details")
+    XCTAssertEqual(cards[0].diagnosticModerationChecks, 3)
+    XCTAssertEqual(cards[0].diagnosticIntegrationFailures.map(\.integration), ["unityMCP"])
+    if case .unknown(let type) = makeWorkChatEvent(from: moderation) {
+      XCTAssertEqual(type, "codex_moderation_metadata")
+    } else {
+      XCTFail("Routine moderation checks must stay out of the main timeline.")
+    }
+
+    let raw = #"{"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"turn_diagnostics","turnId":"turn-1","moderationChecks":3,"optionalIntegrationFailures":[{"integration":"unityMCP","message":"MCP client unavailable"}]}}"#
+    let fallbackCard = try XCTUnwrap(buildWorkEventCards(from: parseWorkChatTranscript(raw)).first)
+    XCTAssertEqual(fallbackCard.kind, "turnDiagnostics")
+    XCTAssertEqual(fallbackCard.diagnosticModerationChecks, 3)
+    XCTAssertEqual(fallbackCard.diagnosticIntegrationFailures.first?.integration, "unityMCP")
+  }
+
+  func testRecoveredCodexTurnReplacesStallActionsWithAuditReceipt() throws {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-1","reason":"no_output","message":"No output.","recoveryOptions":["wait","restart_resume_thread"]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:03.000Z","sequence":2,"event":{"type":"codex_turn_recovery","turnId":"turn-1","action":"restart_resume_thread","state":"recovered","message":"Restarted and resumed the thread.","automatic":true,"at":"2026-07-09T00:00:03.000Z"}}
+    """
+    let cards = buildWorkEventCards(from: parseWorkChatTranscript(raw))
+    XCTAssertEqual(cards.map(\.kind), ["codexRecoveryReceipt"])
+    XCTAssertEqual(cards.first?.recoveryReceipt?.state, "recovered")
+    XCTAssertEqual(cards.first?.metadata, ["Automatic recovery"])
   }
 
   func testCodexRecoveryRemainsAvailableInSubagentTranscriptWhenHostSupportsIt() {
@@ -16277,7 +16785,7 @@ final class ADETests: XCTestCase {
       laneId: "lane-2",
       laneName: "release",
       toolType: "shell",
-      runtimeState: "idle",
+      runtimeState: "running",
       title: "Deploy logs",
       lastOutputPreview: "Tail the deploy terminal output"
     )
@@ -16308,7 +16816,7 @@ final class ADETests: XCTestCase {
       laneId: "lane-1",
       laneName: "release",
       toolType: "codex-chat",
-      runtimeState: "idle",
+      runtimeState: "running",
       title: "Phone terminal"
     )
     let outputSearch = workSessionOutputSearchIndexBySessionId(buffers: [
@@ -16942,6 +17450,77 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(60), "1m 00s")
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(61), "1m 01s")
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(2610), "43m 30s")
+  }
+
+  func testWorkActivityIndicatorFollowUpDoesNotResetTurnStart() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "Start the work",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: nil,
+          deliveryState: nil,
+          processed: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:01.000Z",
+        sequence: 2,
+        event: .status(turnStatus: "started", message: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:45:00.000Z",
+        sequence: 3,
+        event: .userMessage(
+          text: "Any update?",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: "steer-1",
+          deliveryState: "accepted",
+          processed: nil
+        )
+      ),
+    ]
+
+    XCTAssertEqual(
+      WorkActivityIndicator.activeTurnStartTimestamp(from: transcript),
+      "2026-07-09T00:00:01.000Z"
+    )
+  }
+
+  func testWorkDeliveryBadgeDistinguishesAcceptedFromProcessed() {
+    XCTAssertEqual(
+      workDeliveryBadgeState(deliveryState: "accepted", processed: nil),
+      .accepted
+    )
+    XCTAssertEqual(
+      workDeliveryBadgeState(deliveryState: "delivered", processed: nil),
+      .accepted
+    )
+    XCTAssertEqual(
+      workDeliveryBadgeState(deliveryState: "processed", processed: true),
+      .processed
+    )
+    XCTAssertEqual(
+      workDeliveryBadgeState(deliveryState: "unprocessed", processed: false),
+      .unprocessed
+    )
+    XCTAssertEqual(WorkDeliveryBadge.State.accepted.label, "Accepted")
+    XCTAssertEqual(WorkDeliveryBadge.State.processed.label, "Processed")
+    XCTAssertEqual(WorkDeliveryBadge.State.unprocessed.label, "Not processed")
+  }
+
+  func testProviderNeutralRecoveryFeedbackDoesNotAssumeCodex() {
+    XCTAssertEqual(workTurnRecoveryFeedback(status: "waiting"), "Waiting for runtime output…")
+    XCTAssertEqual(workTurnRecoveryFeedback(status: "nudged"), "Status nudge sent.")
+    XCTAssertEqual(workTurnRecoveryFeedback(status: "retrying"), "Retry started in this thread.")
+    XCTAssertEqual(workTurnRecoveryFeedback(status: "resumed"), "Runtime restarted and the thread resumed.")
   }
 
   func testWorkActivityIndicatorUsesToolSpecificVerbAndArgPreview() {

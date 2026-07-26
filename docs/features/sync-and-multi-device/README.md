@@ -3,9 +3,10 @@
 ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
-direct LAN/Tailscale routes are preferred, while the account-gated cloud tunnel
-relay is a byte-transport fallback whenever the machine is signed in to an ADE
-account. There is no separate relay toggle. Two
+eligible routes are ordered **LAN → Tailscale → Relay** for desktop-to-runtime,
+ADE Code, and iOS connections. The account-gated cloud tunnel relay is a
+byte-transport fallback whenever the machine is signed in to an ADE account;
+there is no separate relay toggle. Two
 machines on the same LAN (or Tailscale tailnet) converge their application
 state directly.
 
@@ -87,6 +88,42 @@ path unless explicitly noted.
 The older terms "brain" and "host" still appear in code, schema, and
 protocol types. In the current product vocabulary, they refer to the
 same thing: the runtime that is the current **sync authority**.
+
+## Connection route policy
+
+Every native paired controller uses the same phase order:
+
+1. current LAN endpoints;
+2. current Tailscale/tailnet endpoints;
+3. ADE Relay, only with a fresh matching account proof.
+
+Within the LAN and tailnet phases, current discovery outranks stale saved
+metadata and recent successful endpoints break ties. iOS may race several
+authenticated candidates within a direct phase, but Relay does not race ahead
+of an eligible direct phase; it starts only after direct routes exhaust. ADE
+Code and the desktop paired-runtime pool use the same
+`buildPairedEndpointCandidates` ordering. First-time same-account adoption also
+uses LAN → tailnet → Relay when the directory row contains a verifiable host
+signing key, because the `ade-adopt-v1` sealed challenge protects the account
+credential on direct routes. An unsigned legacy directory host is Relay-only;
+ADE never sends a plaintext account bearer to an unverified LAN/tailnet peer.
+
+The hosted HTTPS web client applies the same ranking to routes the browser may
+legally dial, but browsers cannot open insecure `ws://` LAN/Tailscale sockets
+from `https://app.ade-app.dev`. In production that eligibility filter normally
+leaves Relay only; local HTTP development and previously verified secure
+direct endpoints can exercise the direct phases.
+
+Successful and failed native paired-runtime connects retain one random
+correlation id plus at most eight privacy-safe ordered attempts. An attempt
+contains route kind, host + optional port, start time, duration, outcome, and a
+coarse failure class; paths, query strings, tokens, pairing secrets, and raw
+error text are excluded. The same correlation id is forwarded on Relay dials
+and appears in tunnel lifecycle logs. Account-directory list/register/delete
+requests send `X-ADE-Correlation-ID`; the Worker validates or replaces it,
+returns it on every response, exposes it to the trusted web origin, and writes
+one structured completion record with route, method, status class, and
+duration.
 
 ## Mobile compatibility contract
 
@@ -225,7 +262,10 @@ Runtime support files outside `services/sync/`:
   written account-owned credential if sign-out or an account switch wins the
   race. The directory's `online` field is a short presence lease, not a
   transport verdict: a machine with a verified secure Relay endpoint remains
-  connectable after that presence bit expires.
+  connectable after that presence bit expires. Every HTTP operation carries
+  one bounded correlation id across the initial request and its one auth-refresh
+  retry, so a user-visible failure can be joined to the Worker's structured
+  lifecycle record without logging an account token or response body.
 - `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
@@ -303,7 +343,10 @@ Runtime support files outside `services/sync/`:
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes
   separate authentication and D1 durations through `Server-Timing`; the
-  trusted web-client CORS response exposes that header.
+  trusted web-client CORS response exposes that header. Every request also
+  receives a validated/generated `X-ADE-Correlation-ID`, echoed on the
+  response and included in one privacy-safe structured completion log; trusted
+  web CORS exposes the id and allows the request header.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, bounded success/error response decoding, route allowlisting, machine
   selection, and paired endpoint validation shared by desktop, the brain, ADE
@@ -951,8 +994,8 @@ iOS service files (`apps/ios/ADE/Services/`):
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, the sealed
   `ade-adopt-v1` account-adoption client (challenge/verify against the
-  directory `pubkey`, sealed `account_sealed` hello, and relay → Tailscale →
-  LAN route fallback with per-stage progress and a PIN-pairing fallback), lane
+  directory `pubkey`, sealed `account_sealed` hello, and LAN → Tailscale →
+  Relay route fallback with per-stage progress and a PIN-pairing fallback), lane
   presence announcements, terminal subscribe/unsubscribe tracking,
   terminal input/resize senders, mobile CLI launch/continuation,
   external-session list/import commands for Work,
@@ -1115,7 +1158,12 @@ access-token refresh. Only a repeated 401/403 is classified as
 failures remain retryable and do not erase pairing trust. Account adoption
 captures the account owner/session generation and rechecks it before and after
 credential persistence so a late result cannot recreate trust after sign-out
-or an account switch.
+or an account switch. Once the host has minted a device-bound paired secret,
+that host-issued direct trust is distinct from the account session that found
+the machine: sign-out removes directory visibility and Relay authorization but
+does not delete the secret needed for LAN/Tailscale reconnect. Forgetting the
+machine is the explicit trust-deletion boundary. Signing into a different
+account cannot use the previous account's directory or Relay lease.
 
 Relay has two related but distinct leases. The machine's control tunnel may
 survive a transient refresh failure only until its last known account-token
@@ -1189,9 +1237,9 @@ grace. Older peers close exactly when their initial token expires.
   Tailscale IP or DNS name, and only falls back to the opaque `saved` kind for a
   host that no longer matches the live address set. This is what lets the account
   directory publish a LAN-backed saved host as a real LAN endpoint. iOS treats
-  relay as an
-  automatic fallback after direct LAN/Tailscale routes and promotes it when the phone has no Tailscale
-  tunnel (see the transport race in `ios-companion.md`). Already-paired
+  Relay as a separate authenticated fallback phase after direct
+  LAN/Tailscale routes exhaust (see the transport race in
+  `ios-companion.md`). Already-paired
   phones also learn the relay URL from `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`) and persist it with the host profile for
   reconnects.
@@ -1566,9 +1614,9 @@ feature is merged or because a deliberately isolated-port host is running.
   outbound HMAC-authenticated tunnel to the `apps/tunnel-relay` Cloudflare
   Worker so a phone off the
   LAN/tailnet can dial the machine over TLS with zero configuration.
-  Phones prefer direct routes when they are currently usable; when an
-  iPhone has no Tailscale tunnel and holds a saved relay URL, reconnect
-  dials the relay ahead of stale saved LAN/Tailscale sweeps. The relay
+  Phones attempt authenticated direct routes in LAN → Tailscale order and use
+  Relay only as the separate fallback phase. Candidate work is bounded, so a
+  stale saved LAN/Tailscale endpoint cannot hold Relay off indefinitely. The relay
   pipes WebSocket bytes after terminating TLS. The normal ADE hello / PIN /
   paired-secret / DPoP handshake still runs inside that pipe, but it is not
   end-to-end encrypted: the relay can read paired secrets and runtime/sync
@@ -1580,9 +1628,10 @@ feature is merged or because a deliberately isolated-port host is running.
   signed in on the host; the proof is never persisted. Direct LAN/Tailscale
   hellos do not need an account token. Sign-out, account switch, expiry, or a
   refresh failure after the last known lease has expired closes Relay peers and
-  revokes account-owned pairing records; a transient refresh exception while
-  that lease is current leaves the route intact. Direct QR/Nearby/SSH records
-  carry local provenance and survive. A verified
+  removes directory access; a transient refresh exception while that lease is
+  current leaves the route intact. The device-bound paired secret remains
+  available for direct LAN/Tailscale reconnect regardless of whether it was
+  minted after PIN pairing or sealed same-account adoption. A verified
   same-owner account hello with the pinned DPoP key may rotate the paired secret
   so a lost credential-delivery response can be retried safely.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
@@ -1661,7 +1710,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
-| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, relay → tailnet → LAN fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
+| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |

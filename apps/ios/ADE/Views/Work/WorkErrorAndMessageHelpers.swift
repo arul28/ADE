@@ -35,6 +35,35 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
 func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMessage] {
   var messages: [WorkChatMessage] = []
   let metadataByTurn = workTurnModelMetadataByTurn(from: transcript)
+  var resolutionBySteerId: [String: WorkUserMessageResolution] = [:]
+  var resolutionOrderBySteerId: [String: (timestamp: String, sequence: Int)] = [:]
+  for envelope in transcript {
+    guard case .userMessageResolution(
+      let steerId,
+      let action,
+      let state,
+      let resolvedAt,
+      let replacementMessageId,
+      _
+    ) = envelope.event else {
+      continue
+    }
+    let normalizedSteerId = steerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedSteerId.isEmpty else { continue }
+    let sequence = envelope.sequence ?? 0
+    if let existing = resolutionOrderBySteerId[normalizedSteerId],
+       envelope.timestamp < existing.timestamp
+        || (envelope.timestamp == existing.timestamp && sequence <= existing.sequence) {
+      continue
+    }
+    resolutionBySteerId[normalizedSteerId] = WorkUserMessageResolution(
+      action: action,
+      state: state,
+      resolvedAt: resolvedAt,
+      replacementMessageId: replacementMessageId
+    )
+    resolutionOrderBySteerId[normalizedSteerId] = (envelope.timestamp, sequence)
+  }
   // Tracks whether the previous envelope was assistantText so nil-itemId
   // streaming fragments can merge into it. MUST be reset to false on every
   // non-assistantText branch below — otherwise a subsequent nil-itemId
@@ -138,6 +167,9 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         ))
       }
       previousEnvelopeWasAssistantText = true
+    case .userMessageResolution:
+      previousEnvelopeWasAssistantText = false
+      continue
     case .transcriptRetraction(let messageIds, _, _, _):
       previousEnvelopeWasAssistantText = false
       let retractedIds = Set(
@@ -158,6 +190,15 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
       previousEnvelopeWasAssistantText = false
       continue
     }
+  }
+
+  for index in messages.indices {
+    guard let steerId = messages[index].steerId?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !steerId.isEmpty,
+          let resolution = resolutionBySteerId[steerId] else {
+      continue
+    }
+    messages[index].unprocessedResolution = resolution
   }
 
   return messages
@@ -1740,6 +1781,16 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     }
     let attachmentDigest = (attachments ?? []).map { "\($0.type):\($0.path)" }.joined(separator: ",")
     return ["user_message", turnId ?? "", steerId ?? "", deliveryState ?? "", processed.map { $0 ? "1" : "0" } ?? "", attachmentDigest, text].joined(separator: "|")
+  case .userMessageResolution(let steerId, let action, let state, let resolvedAt, let replacementMessageId, let turnId):
+    return [
+      "user_message_resolution",
+      turnId ?? "",
+      steerId,
+      action,
+      state,
+      resolvedAt,
+      replacementMessageId ?? "",
+    ].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !normalizedItemId.isEmpty {
@@ -1819,8 +1870,22 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["web_search", turnId ?? "", itemId, query, actionKey, status.rawValue].joined(separator: "|")
   case .codexState(let title, let message, _, let turnId):
     return ["codex_state", turnId ?? "", title, message].joined(separator: "|")
-  case .codexTurnStalled(let message, _, let turnId, let sourceSessionId):
-    return ["codex_turn_stalled", sourceSessionId ?? "", turnId ?? "", message].joined(separator: "|")
+  case .turnDiagnostics(_, _, let turnId):
+    return ["turn_diagnostics", turnId ?? ""].joined(separator: "|")
+  case .codexTurnStalled(let message, _, let turnId, let sourceSessionId, let context):
+    return [
+      "codex_turn_stalled",
+      context.providerNeutral ? "provider_neutral" : "legacy",
+      sourceSessionId ?? "",
+      turnId ?? "",
+      message,
+    ].joined(separator: "|")
+  case .codexTurnRecovery(_, let receipt, let turnId):
+    return [
+      "codex_turn_recovery",
+      receipt.providerNeutral ? "provider_neutral" : "legacy",
+      turnId ?? "",
+    ].joined(separator: "|")
   case .planText(let text, let turnId):
     return ["plan_text", turnId ?? "", text].joined(separator: "|")
   case .toolUseSummary(let text, let turnId):

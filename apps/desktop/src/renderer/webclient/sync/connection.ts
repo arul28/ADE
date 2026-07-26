@@ -28,6 +28,7 @@ import {
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
 import {
   browserEndpointRequiresRelayAccess,
+  browserDialCandidateRouteKind,
   type BrowserDialCandidate,
 } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
@@ -239,6 +240,20 @@ function withRelayReadyNegotiation(endpoint: string): string {
   return url.toString();
 }
 
+function browserConnectionCorrelationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const raw = randomHex(16).toLowerCase();
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-4${raw.slice(13, 16)}-8${raw.slice(17, 20)}-${raw.slice(20, 32)}`;
+}
+
+function withRelayCorrelationId(endpoint: string, correlationId: string): string {
+  const url = new URL(endpoint);
+  url.searchParams.set("cid", correlationId);
+  return url.toString();
+}
+
 function relayTransportFrame(data: unknown): SyncRelayClientAccepted | SyncRelayClientReady | null {
   if (typeof data !== "string") return null;
   try {
@@ -369,12 +384,13 @@ export class SyncConnection {
     this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
     if (dialable.length === 0) throw new Error("That machine has no secure account connection route.");
+    const correlationId = browserConnectionCorrelationId();
     let lastError: Error | null = null;
     for (const candidate of dialable) {
       try {
         const dpop = await args.createDpop();
         if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
-        const result = await this.pairWithAccountOnEndpoint(candidate, args, dpop);
+        const result = await this.pairWithAccountOnEndpoint(candidate, args, dpop, correlationId);
         if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
         return result;
       } catch (error) {
@@ -451,10 +467,11 @@ export class SyncConnection {
       hostName: environment.machineName,
       error: null,
     });
+    const correlationId = browserConnectionCorrelationId();
     let lastError: Error | null = null;
     for (const candidate of dialable) {
       try {
-        await this.connectEndpoint(environment, candidate);
+        await this.connectEndpoint(environment, candidate, correlationId);
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -476,13 +493,17 @@ export class SyncConnection {
     throw lastError ?? new Error(message);
   }
 
-  private async connectEndpoint(environment: WebClientEnvironmentRecord, candidate: BrowserDialCandidate): Promise<void> {
+  private async connectEndpoint(
+    environment: WebClientEnvironmentRecord,
+    candidate: BrowserDialCandidate,
+    correlationId: string,
+  ): Promise<void> {
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
     try {
-      await this.connectEndpointAttempt(environment, candidate, throughRelay);
+      await this.connectEndpointAttempt(environment, candidate, throughRelay, correlationId);
     } catch (error) {
       if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
-      await this.connectEndpointAttempt(environment, candidate, false);
+      await this.connectEndpointAttempt(environment, candidate, false, correlationId);
     }
   }
 
@@ -490,6 +511,7 @@ export class SyncConnection {
     environment: WebClientEnvironmentRecord,
     candidate: BrowserDialCandidate,
     useRelayReadyV2: boolean,
+    correlationId: string,
   ): Promise<void> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
@@ -502,7 +524,12 @@ export class SyncConnection {
     // rejection until onopen awaits the same promise so it cannot be reported
     // as unhandled while the transport is still opening.
     void preparedAuth.catch(() => undefined);
-    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
+    const relayEndpoint = throughRelay
+      ? withRelayCorrelationId(endpoint, correlationId)
+      : endpoint;
+    const socket = this.socketFactory(
+      useRelayReadyV2 ? withRelayReadyNegotiation(relayEndpoint) : relayEndpoint,
+    );
     this.ws = socket;
     this.status.endpoint = endpoint;
     this.emit("statusChanged", this.getStatus());
@@ -643,13 +670,14 @@ export class SyncConnection {
     candidate: BrowserDialCandidate,
     args: AccountPairAndConnectArgs,
     dpop: SyncDpopProof,
+    correlationId: string,
   ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
     try {
-      return await this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, throughRelay);
+      return await this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, throughRelay, correlationId);
     } catch (error) {
       if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
-      return this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, false);
+      return this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, false, correlationId);
     }
   }
 
@@ -658,11 +686,17 @@ export class SyncConnection {
     args: AccountPairAndConnectArgs,
     dpop: SyncDpopProof,
     useRelayReadyV2: boolean,
+    correlationId: string,
   ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
-    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
+    const relayEndpoint = throughRelay
+      ? withRelayCorrelationId(endpoint, correlationId)
+      : endpoint;
+    const socket = this.socketFactory(
+      useRelayReadyV2 ? withRelayReadyNegotiation(relayEndpoint) : relayEndpoint,
+    );
     this.ws = socket;
     this.shouldReconnect = false;
     this.setStatus({ state: "connecting", endpoint, error: null });
@@ -971,10 +1005,31 @@ export class SyncConnection {
   ): boolean {
     if (!this.isCurrentSocket(socket, generation)) return false;
     this.environment = environment;
-    this.endpoints = [
-      ...this.endpoints.filter((candidate) => candidate.url === endpoint),
-      ...this.endpoints.filter((candidate) => candidate.url !== endpoint),
-    ];
+    const winningCandidate = this.endpoints.find(
+      (candidate) => candidate.url === endpoint,
+    );
+    if (winningCandidate) {
+      const winningKind = browserDialCandidateRouteKind(winningCandidate);
+      this.endpoints = this.endpoints
+        .map((candidate, order) => ({
+          candidate,
+          order,
+          winning: candidate.url === endpoint,
+        }))
+        .sort((left, right) => {
+          const leftKind = browserDialCandidateRouteKind(left.candidate);
+          const rightKind = browserDialCandidateRouteKind(right.candidate);
+          const rank = { lan: 0, tailnet: 1, relay: 2 } as const;
+          return rank[leftKind] - rank[rightKind]
+            || (
+              leftKind === winningKind && rightKind === winningKind
+                ? Number(right.winning) - Number(left.winning)
+                : 0
+            )
+            || left.order - right.order;
+        })
+        .map(({ candidate }) => candidate);
+    }
     this.latestHello = helloOk;
     this.consecutiveAuthFailures = 0;
     this.relayAuthorizationTerminalError = null;

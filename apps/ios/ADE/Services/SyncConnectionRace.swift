@@ -49,6 +49,15 @@ func syncRelayLegacyURL(_ rawValue: String) -> String {
   return components.string ?? rawValue
 }
 
+func syncRelayCorrelatedURL(_ rawValue: String, correlationID: String) -> String {
+  guard var components = URLComponents(string: rawValue) else { return rawValue }
+  var queryItems = components.queryItems ?? []
+  queryItems.removeAll(where: { $0.name == "cid" })
+  queryItems.append(URLQueryItem(name: "cid", value: correlationID.lowercased()))
+  components.queryItems = queryItems
+  return components.string ?? rawValue
+}
+
 enum SyncRelayTransportControl: Equatable {
   case accepted
   case ready

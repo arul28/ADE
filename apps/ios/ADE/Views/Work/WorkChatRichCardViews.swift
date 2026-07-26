@@ -1254,16 +1254,20 @@ struct WorkCodexRecoveryCardView: View {
   @State private var feedbackMessage: String?
   @State private var errorMessage: String?
 
-  private let labels: [String: String] = [
-    "wait": "Wait",
-    "steer": "Nudge",
-    "interrupt_retry_same_thread": "Retry",
-    "restart_resume_thread": "Resume",
-  ]
-
-  private var visibleOptions: [String] {
+  private var availableOptions: [String] {
     var seen = Set<String>()
-    return card.recoveryOptions.filter { labels[$0] != nil && seen.insert($0).inserted }.prefix(4).map { $0 }
+    return card.recoveryOptions
+      .filter { workCodexRecoveryActionLabel(for: $0) != nil && seen.insert($0).inserted }
+      .prefix(4)
+      .map { $0 }
+  }
+
+  private var primaryOptions: [String] {
+    workCodexRecoveryPrimaryOptions(availableOptions)
+  }
+
+  private var moreOptions: [String] {
+    workCodexRecoveryMoreOptions(availableOptions)
   }
 
   private var canRecover: Bool {
@@ -1271,6 +1275,28 @@ struct WorkCodexRecoveryCardView: View {
       && onRecover != nil
       && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !(card.recoveryTurnId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
+  private var recoveryProviderName: String {
+    guard card.recoveryContext?.providerNeutral == true else { return "Codex" }
+    return workChatSurfaceProviderName(card.recoveryContext?.provider)
+  }
+
+  private var timingSummary: String? {
+    guard let context = card.recoveryContext,
+          let detectedAt = context.detectedAt.flatMap(workActivityTimestamp) else {
+      return nil
+    }
+    var parts: [String] = []
+    if let turnStartedAt = context.turnStartedAt.flatMap(workActivityTimestamp) {
+      let elapsed = max(0, Int(detectedAt.timeIntervalSince(turnStartedAt)))
+      parts.append("Elapsed \(WorkActivityIndicator.formatElapsedSeconds(elapsed))")
+    }
+    if let lastProgressAt = context.lastProgressAt.flatMap(workActivityTimestamp) {
+      let inactive = max(0, Int(detectedAt.timeIntervalSince(lastProgressAt)))
+      parts.append("No progress for \(WorkActivityIndicator.formatElapsedSeconds(inactive))")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 
   var body: some View {
@@ -1283,7 +1309,7 @@ struct WorkCodexRecoveryCardView: View {
           .font(.caption2.monospaced().weight(.bold))
           .tracking(1.2)
           .foregroundStyle(ADEColor.warning.opacity(0.8))
-        Text("Codex paused unexpectedly")
+        Text("\(recoveryProviderName) stopped responding")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -1296,14 +1322,50 @@ struct WorkCodexRecoveryCardView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      if !visibleOptions.isEmpty {
+      if let timingSummary {
+        Label(timingSummary, systemImage: "clock")
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      if card.recoveryContext?.automaticRecoveryAttempted == true {
+        Label("Automatic restart was already attempted once.", systemImage: "arrow.clockwise")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if !primaryOptions.isEmpty {
         ViewThatFits(in: .horizontal) {
-          HStack(spacing: 7) { recoveryButtons }
-          LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) { recoveryButtons }
+          HStack(spacing: 7) {
+            ForEach(primaryOptions, id: \.self) { recoveryButton(for: $0) }
+          }
+          VStack(spacing: 7) {
+            ForEach(primaryOptions, id: \.self) { recoveryButton(for: $0) }
+          }
         }
       }
 
-      if !canRecover, !visibleOptions.isEmpty {
+      if !moreOptions.isEmpty {
+        Menu {
+          ForEach(moreOptions, id: \.self) { option in
+            Button(workCodexRecoveryActionLabel(for: option) ?? option) {
+              Task { await recover(option) }
+            }
+            .disabled(!canRecover || pendingAction != nil)
+          }
+        } label: {
+          Label("More recovery options", systemImage: "ellipsis")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .disabled(!canRecover || pendingAction != nil)
+        .accessibilityHint("Shows nudge and same-server retry actions.")
+      }
+
+      if !canRecover, !availableOptions.isEmpty {
         Text(enabled ? "Update or reconnect the paired machine to use recovery." : "Reconnect to the paired machine to use recovery.")
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
@@ -1331,29 +1393,35 @@ struct WorkCodexRecoveryCardView: View {
   }
 
   @ViewBuilder
-  private var recoveryButtons: some View {
-    ForEach(visibleOptions, id: \.self) { option in
-      let label = labels[option] ?? option
-      Button {
-        Task { await recover(option) }
-      } label: {
-        Text(pendingAction == option ? "\(label)…" : label)
-          .font(.caption.monospaced().weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(maxWidth: .infinity, minHeight: 44)
-          .padding(.horizontal, 10)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .background(ADEColor.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
-      )
-      .disabled(!canRecover || pendingAction != nil)
-      .accessibilityLabel("\(label) Codex recovery")
-      .accessibilityHint("Runs this recovery action for the stalled Codex turn.")
+  private func recoveryButton(for option: String) -> some View {
+    let label = workCodexRecoveryActionLabel(for: option) ?? option
+    let isPrimary = option == "restart_resume_thread"
+    Button {
+      Task { await recover(option) }
+    } label: {
+      Text(pendingAction == option ? "\(label)…" : label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(isPrimary ? Color.white : ADEColor.warning)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.horizontal, 10)
+        .contentShape(Rectangle())
     }
+    .buttonStyle(.plain)
+    .background(
+      isPrimary ? ADEColor.warning : ADEColor.warning.opacity(0.07),
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(isPrimary ? 0.36 : 0.18), lineWidth: 1)
+    )
+    .disabled(!canRecover || pendingAction != nil)
+    .accessibilityLabel("\(label) \(recoveryProviderName) recovery")
+    .accessibilityHint(
+      isPrimary
+        ? "Restarts the \(recoveryProviderName) runtime once, resumes this thread, and keeps its context."
+        : "Keeps the current \(recoveryProviderName) runtime running while you wait for more output."
+    )
   }
 
   @MainActor
@@ -1372,6 +1440,101 @@ struct WorkCodexRecoveryCardView: View {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
+  }
+}
+
+func workCodexRecoveryActionLabel(for action: String) -> String? {
+  switch action {
+  case "wait": return "Keep waiting"
+  case "steer": return "Send nudge"
+  case "interrupt_retry_same_thread": return "Retry same server"
+  case "restart_resume_thread": return "Restart & resume"
+  default: return nil
+  }
+}
+
+func workCodexRecoveryPrimaryOptions(_ options: [String]) -> [String] {
+  ["restart_resume_thread", "wait"].filter(options.contains)
+}
+
+func workCodexRecoveryMoreOptions(_ options: [String]) -> [String] {
+  ["steer", "interrupt_retry_same_thread"].filter(options.contains)
+}
+
+struct WorkTurnDiagnosticsDisclosureView: View {
+  let card: WorkEventCardModel
+
+  @State private var isExpanded = false
+
+  private var summary: String {
+    var parts: [String] = []
+    if card.diagnosticModerationChecks > 0 {
+      parts.append("Safety checked")
+    }
+    if !card.diagnosticIntegrationFailures.isEmpty {
+      let count = card.diagnosticIntegrationFailures.count
+      parts.append("\(count) optional integration\(count == 1 ? "" : "s") unavailable")
+    }
+    return parts.isEmpty ? "No notable diagnostics" : parts.joined(separator: " · ")
+  }
+
+  var body: some View {
+    DisclosureGroup(isExpanded: $isExpanded) {
+      VStack(alignment: .leading, spacing: 8) {
+        if card.diagnosticModerationChecks > 0 {
+          Label(
+            card.diagnosticModerationChecks == 1
+              ? "Safety check completed"
+              : "\(card.diagnosticModerationChecks) safety checks completed",
+            systemImage: "checkmark.shield"
+          )
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+        }
+
+        ForEach(card.diagnosticIntegrationFailures, id: \.self) { failure in
+          VStack(alignment: .leading, spacing: 2) {
+            Label("\(failure.integration) unavailable for this turn", systemImage: "puzzlepiece.extension")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+            if let message = failure.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !message.isEmpty {
+              Text(message)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+        }
+      }
+      .padding(.top, 4)
+      .padding(.leading, 2)
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "info.circle")
+          .foregroundStyle(ADEColor.textMuted)
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Turn details")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+          Text(summary)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 4)
+    .background(ADEColor.cardBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.7)
+    )
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Turn details. \(summary)")
+    .accessibilityHint(isExpanded ? "Double tap to collapse details." : "Double tap to show safety and integration details.")
   }
 }
 

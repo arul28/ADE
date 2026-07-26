@@ -51,6 +51,16 @@ describe("PersonalChatScope", () => {
       readTranscript: vi.fn(async () => []),
       steer: vi.fn(async () => undefined),
       interrupt: vi.fn(async () => undefined),
+      recoverTurn: vi.fn(async ({ turnId, action }) => ({
+        turnId,
+        action,
+        status: action === "nudge" ? "nudged" : "waiting",
+      })),
+      resolveUnprocessedMessage: vi.fn(async ({ steerId, action }) => ({
+        steerId,
+        action,
+        status: "completed",
+      })),
       respondToInput: vi.fn(async () => undefined),
       approveToolUse: vi.fn(async () => undefined),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt }: {
@@ -207,6 +217,39 @@ describe("PersonalChatScope", () => {
     expect(service.sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "continue" });
   });
 
+  it("routes recovery and durable message resolution only for personal sessions", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("recoverTurn", {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "nudge",
+    })).resolves.toMatchObject({
+      action: "recoverTurn",
+      result: { turnId: "turn-1", action: "nudge", status: "nudged" },
+    });
+    await expect(scope.call("resolveUnprocessedMessage", {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "run_next",
+    })).resolves.toMatchObject({
+      action: "resolveUnprocessedMessage",
+      result: { steerId: "steer-1", action: "run_next", status: "completed" },
+    });
+
+    expect(service.recoverTurn).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "nudge",
+    });
+    expect(service.resolveUnprocessedMessage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "run_next",
+    });
+  });
+
   it("rejects session-scoped calls when the session row is missing", async () => {
     const { createRuntime, service } = fixture();
     service.getSessionSummary.mockResolvedValueOnce(null as never);
@@ -333,6 +376,8 @@ describe("PersonalChatScope", () => {
       "list",
       "create",
       "send",
+      "recoverTurn",
+      "resolveUnprocessedMessage",
       "createScheduledWork",
       "cancelScheduledWork",
       "setScheduledWorkPaused",

@@ -33,7 +33,28 @@ function directoryFetch(machines: AdeAccountMachine[], status = 200): typeof fet
 }
 
 describe("AccountMachineDirectoryService", () => {
-  it("removes account-owned client trust together and preserves direct pairings", () => {
+  it("preserves device-bound trust on sign-out", () => {
+    const pairedPrune = vi.fn();
+    const targetPrune = vi.fn();
+    const remove = vi.fn();
+
+    expect(reconcileAccountOwnedMachineTrust(null, {
+      pairedStore: { pruneAccountOwned: pairedPrune },
+      targetRegistry: {
+        pruneAccountOwned: targetPrune,
+        list: vi.fn(() => []),
+        remove,
+      },
+    })).toEqual({
+      removedTargetIds: [],
+      removedCredentialHostIds: [],
+    });
+    expect(pairedPrune).not.toHaveBeenCalled();
+    expect(targetPrune).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("removes a different account's client trust together and preserves direct pairings", () => {
     const removedCredential = {
       hostIdentity: { deviceId: "account-host" },
       machineKey: "account-key",
@@ -47,7 +68,7 @@ describe("AccountMachineDirectoryService", () => {
       pairedMachine: { hostIdentity: "account-host", machineKey: "account-key" },
     } as RemoteRuntimeTarget;
     const remove = vi.fn((id: string) => id === orphanedHistoricalTarget.id);
-    const result = reconcileAccountOwnedMachineTrust(null, {
+    const result = reconcileAccountOwnedMachineTrust("account-b", {
       pairedStore: {
         pruneAccountOwned: vi.fn(() => [removedCredential]),
       },
@@ -206,6 +227,8 @@ describe("AccountMachineDirectoryService", () => {
       redirect: "error",
     });
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer account-token");
+    expect(new Headers(init?.headers).get("x-ade-correlation-id"))
+      .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   });
 
   it("uses the hosted directory when the machine override is blank", async () => {

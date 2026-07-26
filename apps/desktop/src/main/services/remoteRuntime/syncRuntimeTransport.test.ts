@@ -14,6 +14,7 @@ import {
   buildDesktopPairedHello,
   openSyncEnvelopeConnection,
   openSyncRuntimeTransport,
+  withSyncRelayCorrelationId,
 } from "./syncRuntimeTransport";
 
 class FakeWebSocket extends EventEmitter {
@@ -79,6 +80,29 @@ function credentials(): DesktopPairedMachineCredentials {
 }
 
 describe("openSyncRuntimeTransport", () => {
+  it("adds a validated correlation id without changing the stored endpoint", async () => {
+    const correlationId = "123e4567-e89b-42d3-a456-426614174000";
+    let openedEndpoint = "";
+    const connection = await openSyncEnvelopeConnection({
+      endpoint: "wss://relay.example/connect/machine?ready=2",
+      correlationId,
+      createWebSocket: (endpoint) => {
+        openedEndpoint = endpoint;
+        return new FakeWebSocket(() => {}) as unknown as WebSocket;
+      },
+    });
+
+    expect(openedEndpoint).toBe(
+      "wss://relay.example/connect/machine?ready=2&cid=123e4567-e89b-42d3-a456-426614174000",
+    );
+    expect(connection.endpoint).toBe("wss://relay.example/connect/machine?ready=2");
+    connection.close();
+    expect(() => withSyncRelayCorrelationId(
+      "wss://relay.example/connect/machine",
+      "not-a-correlation-id",
+    )).toThrow("canonical UUID v4");
+  });
+
   it("adds an ephemeral account proof only to the relay hello", () => {
     const paired = credentials();
     const hello = buildDesktopPairedHello(

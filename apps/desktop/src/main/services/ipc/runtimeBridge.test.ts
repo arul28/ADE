@@ -1393,6 +1393,88 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("validates recovery identifiers and target ownership before mutating chat state", async () => {
+    const assertRecoveryTargetOwned = vi.fn(async (args: {
+      sessionId: string;
+      turnId?: string;
+      steerId?: string;
+    }) => {
+      if (
+        args.sessionId !== "chat-1"
+        || (args.turnId !== undefined && args.turnId !== "turn-1")
+        || (args.steerId !== undefined && args.steerId !== "steer-1")
+      ) {
+        throw new Error("Recovery target does not belong to this project chat.");
+      }
+    });
+    const recoverTurn = vi.fn(async (args) => ({
+      action: args.action,
+      turnId: args.turnId,
+      status: "waiting",
+    }));
+    const recoverCodexTurn = vi.fn(async (args) => ({
+      action: args.action,
+      turnId: args.turnId,
+      status: "waiting",
+    }));
+    const resolveUnprocessedMessage = vi.fn(async (args) => ({
+      steerId: args.steerId,
+      action: args.action,
+      status: "completed",
+    }));
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        agentChatService: {
+          assertRecoveryTargetOwned,
+          recoverTurn,
+          recoverCodexTurn,
+          resolveUnprocessedMessage,
+        },
+      }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(ipcHandlers.get(IPC.agentChatRecoverTurn)?.(eventForSender(), {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "wait",
+    })).resolves.toMatchObject({ action: "wait", turnId: "turn-1" });
+    await expect(ipcHandlers.get(IPC.agentChatRecoverCodexTurn)?.(eventForSender(), {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "steer",
+    })).resolves.toMatchObject({ action: "steer", turnId: "turn-1" });
+    await expect(ipcHandlers.get(IPC.agentChatResolveUnprocessedMessage)?.(eventForSender(), {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "dismiss",
+    })).resolves.toMatchObject({ action: "dismiss", steerId: "steer-1" });
+
+    await expect(ipcHandlers.get(IPC.agentChatRecoverTurn)?.(eventForSender(), {
+      sessionId: "../foreign-chat",
+      turnId: "turn-1",
+      action: "wait",
+    })).rejects.toThrow(/sessionId is malformed/i);
+    await expect(ipcHandlers.get(IPC.agentChatRecoverTurn)?.(eventForSender(), {
+      sessionId: "chat-1",
+      turnId: "turn-from-another-chat",
+      action: "wait",
+    })).rejects.toThrow(/does not belong/i);
+    await expect(ipcHandlers.get(IPC.agentChatResolveUnprocessedMessage)?.(eventForSender(), {
+      sessionId: "chat-1",
+      steerId: "steer-from-another-chat",
+      action: "run_next",
+    })).rejects.toThrow(/does not belong/i);
+
+    expect(recoverTurn).toHaveBeenCalledTimes(1);
+    expect(recoverCodexTurn).toHaveBeenCalledTimes(1);
+    expect(resolveUnprocessedMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves and validates exact lookup and launch overrides across external-session IPC parsing", async () => {
     const list = vi.fn(async () => []);
     const importExternalSession = vi.fn(async () => ({

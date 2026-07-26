@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   DesktopPairedMachineCredentials,
 } from "../../../shared/types/pairedRuntime";
@@ -20,7 +21,14 @@ import {
   openSyncRuntimeTransport,
   type SyncRuntimeTransport,
 } from "./syncRuntimeTransport";
-import { buildPairedEndpointCandidates } from "./pairedRuntimeRoutes";
+import {
+  buildPairedEndpointCandidates,
+  classifyPairedRuntimeFailure,
+  createRouteAttemptRecorder,
+  MAX_ROUTE_ATTEMPTS,
+  orderPairedCandidates,
+  pairedRuntimeRouteHost,
+} from "./pairedRuntimeRoutes";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
@@ -108,8 +116,24 @@ export async function bootstrapPairedRuntime(args: {
 
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
   const routeErrors: string[] = [];
+  let omittedRouteErrorCount = 0;
+  const addRouteError = (message: string): void => {
+    if (routeErrors.length < MAX_ROUTE_ATTEMPTS) {
+      routeErrors.push(message);
+      return;
+    }
+    omittedRouteErrorCount += 1;
+  };
+  const correlationId = randomUUID();
+  const attemptRecorder = createRouteAttemptRecorder();
+  const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
-  for (const candidate of candidates) {
+  // Keep the phases explicit even if a future candidate-builder change
+  // accidentally reorders endpoints.
+  const orderedCandidates = orderPairedCandidates(candidates);
+  for (const candidate of orderedCandidates) {
+    const attemptStartedAt = Date.now();
+    const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
     let relayAccountToken: string | null = null;
     let relayAccountOwnerUserId: string | null = null;
     if (candidate.kind === "relay") {
@@ -121,6 +145,14 @@ export async function bootstrapPairedRuntime(args: {
           "Sign in to ADE to connect through ADE Relay.",
           error,
         );
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "skipped",
+          failure: "authentication",
+        });
         continue;
       }
       if (
@@ -130,6 +162,29 @@ export async function bootstrapPairedRuntime(args: {
         relayAuthError = new PairedRuntimeRelayAuthRequiredError(
           "Sign in to ADE to connect through ADE Relay.",
         );
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "skipped",
+          failure: "authentication",
+        });
+        continue;
+      }
+      const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
+      if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
+        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
+          "Sign in with the same ADE account as this machine to connect through ADE Relay.",
+        );
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "skipped",
+          failure: "authentication",
+        });
         continue;
       }
       relayAccountToken = proof.token.trim();
@@ -142,21 +197,45 @@ export async function bootstrapPairedRuntime(args: {
         endpoint: candidate.endpoint,
         appVersion: args.appVersion,
         relayAccountToken,
+        ...(candidate.kind === "relay" ? { correlationId } : {}),
       });
     } catch (error) {
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
         relayAuthError = error;
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "failed",
+          failure: "authentication",
+        });
         continue;
       }
-      routeErrors.push(`${candidate.endpoint}: ${errorMessage(error)}`);
+      const failure = classifyPairedRuntimeFailure(error);
+      recordAttempt({
+        kind: candidate.kind,
+        host: safeHost,
+        startedAt: attemptStartedAt,
+        durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        outcome: "failed",
+        failure,
+      });
+      addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
       continue;
     }
 
     if (transport.connection.hello.features?.portForward !== true) {
       transport.close();
-      routeErrors.push(
-        `${candidate.endpoint}: the paired machine does not advertise port-forward support`,
-      );
+      recordAttempt({
+        kind: candidate.kind,
+        host: safeHost,
+        startedAt: attemptStartedAt,
+        durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        outcome: "failed",
+        failure: "capability",
+      });
+      addRouteError(`${candidate.kind} ${safeHost}: capability`);
       continue;
     }
 
@@ -171,7 +250,16 @@ export async function bootstrapPairedRuntime(args: {
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {
-        routeErrors.push(`${candidate.endpoint}: ${errorMessage(error)}`);
+        const failure = classifyPairedRuntimeFailure(error);
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "failed",
+          failure,
+        });
+        addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
         continue;
       }
       throw compatibilityError(error);
@@ -195,7 +283,16 @@ export async function bootstrapPairedRuntime(args: {
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {
-        routeErrors.push(`${candidate.endpoint}: ${errorMessage(error)}`);
+        const failure = classifyPairedRuntimeFailure(error);
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "failed",
+          failure,
+        });
+        addRouteError(`${candidate.kind} ${safeHost}: ${failure}`);
         continue;
       }
       throw compatibilityError(error);
@@ -203,6 +300,13 @@ export async function bootstrapPairedRuntime(args: {
 
     try {
       const connectedAt = Date.now();
+      recordAttempt({
+        kind: candidate.kind,
+        host: safeHost,
+        startedAt: attemptStartedAt,
+        durationMs: Math.max(0, connectedAt - attemptStartedAt),
+        outcome: "connected",
+      });
       const updated = args.registry.update(args.target.id, {
         lastSeenArch: pairedArch(args.target, credentials),
         runtimeBinaryVersion: initializeInfo.version,
@@ -246,6 +350,11 @@ export async function bootstrapPairedRuntime(args: {
             kind: candidate.kind,
             endpoint: candidate.endpoint,
             latencyMs,
+            correlationId,
+            attempts,
+            ...(attemptRecorder.omittedAttemptCount > 0
+              ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+              : {}),
           },
           capabilities: initializeInfo.capabilities,
           compatibilityWarnings: initializeInfo.compatibilityWarnings,
@@ -262,6 +371,19 @@ export async function bootstrapPairedRuntime(args: {
 
   throw new PairedRuntimeTransportUnavailableError(
     "Could not reach the paired ADE runtime over LAN, tailnet, or relay. "
-      + routeErrors.join("; "),
+      + routeErrors.join("; ")
+      + (
+        omittedRouteErrorCount > 0
+          ? `; ${omittedRouteErrorCount} more route attempts failed`
+          : ""
+      ),
+    undefined,
+    {
+      correlationId,
+      attempts,
+      ...(attemptRecorder.omittedAttemptCount > 0
+        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+        : {}),
+    },
   );
 }

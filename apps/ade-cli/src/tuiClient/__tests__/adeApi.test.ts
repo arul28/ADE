@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, requestSessionAttention, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionStatusNote, settleSession, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionStatusNote, settleSession, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession } from "../adeApi";
 import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -1463,6 +1463,129 @@ describe("steer helpers", () => {
       domain: "chat",
       action: "recoverCodexTurn",
       args: { sessionId: "chat-1", turnId: "turn-1", action: "steer" },
+    }]);
+  });
+
+  it("prefers provider-neutral turn recovery", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { action: "nudge", turnId: "turn-1", status: "nudged" };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "nudge",
+    }, { allowLegacyCodexFallback: true })).resolves.toEqual({ action: "nudge", turnId: "turn-1", status: "nudged" });
+    expect(calls).toEqual([{
+      domain: "chat",
+      action: "recoverTurn",
+      args: { sessionId: "chat-1", turnId: "turn-1", action: "nudge" },
+    }]);
+  });
+
+  it.each([
+    "Unsupported chat method: recoverTurn",
+    "Action not supported",
+    "Unknown action",
+    "chat.recoverTurn is not available",
+  ])("falls back to legacy Codex recovery for compatibility errors: %s", async (message) => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        if (action === "recoverTurn") throw new Error(message);
+        return { action: "restart_resume_thread", turnId: "turn-1", status: "resumed" };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "restart_resume",
+    }, { allowLegacyCodexFallback: true })).resolves.toEqual({ action: "restart_resume", turnId: "turn-1", status: "resumed" });
+    expect(calls.map((call) => call.action)).toEqual(["recoverTurn", "recoverCodexTurn"]);
+    expect(calls[1]?.args).toEqual({
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "restart_resume_thread",
+    });
+  });
+
+  it("does not hide operational recovery failures behind the legacy fallback", async () => {
+    const connection = {
+      action: async () => {
+        throw new Error("Relay disconnected");
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "wait",
+    }, { allowLegacyCodexFallback: true })).rejects.toThrow("Relay disconnected");
+  });
+
+  it("never applies the Codex fallback to another provider", async () => {
+    const calls: string[] = [];
+    const connection = {
+      action: async (_domain: string, action: string) => {
+        calls.push(action);
+        throw new Error("Unknown action");
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "retry_same_runtime",
+    })).rejects.toThrow("Unknown action");
+    expect(calls).toEqual(["recoverTurn"]);
+  });
+
+  it("does not treat an unknown host identity as an unsupported action", async () => {
+    const calls: string[] = [];
+    const connection = {
+      action: async (_domain: string, action: string) => {
+        calls.push(action);
+        throw new Error("Unknown host identity");
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "wait",
+    }, { allowLegacyCodexFallback: true })).rejects.toThrow("Unknown host identity");
+    expect(calls).toEqual(["recoverTurn"]);
+  });
+
+  it("routes durable unprocessed-message resolution through chat actions", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { steerId: "steer-1", action: "run_next", status: "completed", replacementMessageId: "message-2" };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(resolveUnprocessedMessage(connection, {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "run_next",
+    })).resolves.toEqual({
+      steerId: "steer-1",
+      action: "run_next",
+      status: "completed",
+      replacementMessageId: "message-2",
+    });
+    expect(calls).toEqual([{
+      domain: "chat",
+      action: "resolveUnprocessedMessage",
+      args: { sessionId: "chat-1", steerId: "steer-1", action: "run_next" },
     }]);
   });
 });

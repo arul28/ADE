@@ -100,6 +100,18 @@ describe("MachinePicker account states", () => {
     expect(screen.queryByText(/pairing link/i)).toBeNull();
   });
 
+  it("keeps account-created device trust available over a direct route after sign-out", () => {
+    const environment = {
+      ...savedEnvironment(),
+      accountOwnerUserId: "signed-out-account",
+    };
+    const { onSelect } = renderPicker(account(), [environment]);
+
+    const savedButton = screen.getByRole("button", { name: /Saved Studio/i });
+    fireEvent.click(savedButton);
+    expect(onSelect).toHaveBeenCalledWith(environment);
+  });
+
   it("treats directory presence as a hint when a secure route is still available", () => {
     const available = {
       machineKey: "mk-online",

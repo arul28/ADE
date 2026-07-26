@@ -522,10 +522,160 @@ describe("renderChatLines", () => {
     expect(body).toContain("Codex app server docs — example.com");
     expect(body).toContain("Deep dive — docs.example.org +2 more");
     expect(body).toContain("image generated");
-    expect(body).toContain("/recover wait · nudge · retry · resume");
+    expect(body).toContain("/recover resume (restart runtime + resume)");
+    expect(body).toContain("/recover retry (keep current runtime)");
     // Goal/token-usage events are suppressed in the chat transcript.
     expect(body).not.toContain("goal active");
     expect(body).not.toContain("tokens · last");
+  });
+
+  it("folds durable resolution into the original unprocessed user message", () => {
+    const baseEvents = [{
+      sessionId: "s1",
+      timestamp: "2026-01-01T12:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "user_message" as const,
+        text: "Please continue",
+        steerId: "steer-1",
+        deliveryState: "unprocessed" as const,
+      },
+    }];
+
+    const unresolved = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: baseEvents,
+    });
+    expect(unresolved).toEqual([expect.objectContaining({
+      header: "not processed · /run-next steer-1 · /edit-message steer-1 · /dismiss-message steer-1",
+      body: "Please continue",
+    })]);
+
+    const resolved = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        ...baseEvents,
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "user_message_resolution" as const,
+            steerId: "steer-1",
+            action: "run_next" as const,
+            state: "completed" as const,
+            resolvedAt: "2026-01-01T12:00:01.000Z",
+          },
+        },
+      ],
+    });
+    expect(resolved).toEqual([expect.objectContaining({
+      header: "not processed · started as the next turn",
+      body: "Please continue",
+    })]);
+  });
+
+  it("prefers provider-neutral health and recovery events over legacy duplicates", () => {
+    const healthLines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "turn_health",
+            provider: "codex",
+            turnId: "turn-1",
+            state: "stalled",
+            reason: "no_output",
+            message: "No output yet",
+            turnStartedAt: "2026-01-01T11:58:00.000Z",
+            lastProgressAt: "2026-01-01T11:58:00.000Z",
+            detectedAt: "2026-01-01T12:00:00.000Z",
+            recoveryCount: 0,
+            supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+            automaticRecoveryAttempted: false,
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.001Z",
+          sequence: 2,
+          event: {
+            type: "turn_health",
+            provider: "codex",
+            turnId: "turn-1",
+            state: "stalled",
+            reason: "no_progress",
+            message: "Still no output",
+            turnStartedAt: "2026-01-01T11:58:00.000Z",
+            lastProgressAt: "2026-01-01T11:58:00.000Z",
+            detectedAt: "2026-01-01T12:00:00.001Z",
+            recoveryCount: 0,
+            supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+            automaticRecoveryAttempted: false,
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.002Z",
+          sequence: 3,
+          event: {
+            type: "codex_turn_stalled",
+            turnId: "turn-1",
+            reason: "no_output",
+            message: "No output yet",
+          },
+        },
+      ],
+    });
+    expect(healthLines.filter((line) => line.body.startsWith("recovery ·"))).toHaveLength(1);
+    expect(healthLines[0]?.body).toContain("Still no output");
+    expect(healthLines[0]?.body).toContain("keep current runtime");
+
+    const recoveryLines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 3,
+          event: {
+            type: "turn_recovery",
+            provider: "codex",
+            turnId: "turn-1",
+            action: "restart_resume",
+            state: "recovered",
+            message: "Thread resumed",
+            automatic: true,
+            at: "2026-01-01T12:00:01.000Z",
+            recoveryCount: 1,
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.001Z",
+          sequence: 4,
+          event: {
+            type: "codex_turn_recovery",
+            turnId: "turn-1",
+            action: "restart_resume_thread",
+            state: "recovered",
+            message: "Thread resumed",
+            automatic: true,
+            at: "2026-01-01T12:00:01.000Z",
+          },
+        },
+      ],
+    });
+    expect(recoveryLines).toEqual([expect.objectContaining({
+      body: "recovered automatically · Thread resumed",
+    })]);
   });
 
   it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {

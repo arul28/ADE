@@ -147,6 +147,13 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptional(steerId, into: &hasher)
     combineOptional(deliveryState, into: &hasher)
     combineOptional(processed, into: &hasher)
+  case .userMessageResolution(let steerId, let action, let state, let resolvedAt, let replacementMessageId, let turnId):
+    hasher.combine(steerId)
+    hasher.combine(action)
+    hasher.combine(state)
+    hasher.combine(resolvedAt)
+    combineOptional(replacementMessageId, into: &hasher)
+    combineOptional(turnId, into: &hasher)
   case .assistantText(let text, let turnId, let itemId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -311,11 +318,36 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineLongTextSignature(message, into: &hasher)
     hasher.combine(icon)
     combineOptional(turnId, into: &hasher)
-  case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId):
+  case .turnDiagnostics(let moderationChecks, let integrationFailures, let turnId):
+    hasher.combine(moderationChecks)
+    for failure in integrationFailures {
+      hasher.combine(failure.integration)
+      combineOptionalText(failure.message, into: &hasher)
+    }
+    combineOptional(turnId, into: &hasher)
+  case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId, let context):
     combineLongTextSignature(message, into: &hasher)
     recoveryOptions.forEach { hasher.combine($0) }
     hasher.combine(turnId)
     hasher.combine(sourceSessionId)
+    hasher.combine(context.reason)
+    combineOptional(context.detectedAt, into: &hasher)
+    combineOptional(context.turnStartedAt, into: &hasher)
+    combineOptional(context.lastProgressAt, into: &hasher)
+    hasher.combine(context.automaticRecoveryAttempted)
+    combineOptional(context.provider, into: &hasher)
+    hasher.combine(context.recoveryCount)
+    hasher.combine(context.providerNeutral)
+  case .codexTurnRecovery(let message, let receipt, let turnId):
+    combineLongTextSignature(message, into: &hasher)
+    hasher.combine(receipt.action)
+    hasher.combine(receipt.state)
+    hasher.combine(receipt.automatic)
+    hasher.combine(receipt.at)
+    combineOptional(receipt.provider, into: &hasher)
+    hasher.combine(receipt.recoveryCount)
+    hasher.combine(receipt.providerNeutral)
+    combineOptional(turnId, into: &hasher)
   case .planText(let text, let turnId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -2241,6 +2273,14 @@ func buildWorkEventCards(
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
   let terminalDoneTurnIds = workTerminalDoneTurnIds(from: transcript)
+  let recoveredCodexTurnIds = Set(transcript.compactMap { envelope -> String? in
+    guard case .codexTurnRecovery(_, let receipt, let turnId) = envelope.event,
+          receipt.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "recovered"
+    else {
+      return nil
+    }
+    return normalizedWorkTurnId(turnId)
+  })
   // Join `pending_input_resolved` events onto the question / plan / approval
   // card they resolve so those cards can show the outcome inline. Any resolved
   // itemId that lands on such a card gets its standalone "Input resolved" ribbon
@@ -2263,6 +2303,11 @@ func buildWorkEventCards(
       continue
     }
     if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
+      continue
+    }
+    if case .codexTurnStalled(_, _, let turnId, _, _) = envelope.event,
+       let turnId = normalizedWorkTurnId(turnId),
+       recoveredCodexTurnIds.contains(turnId) {
       continue
     }
     guard let card = eventCard(for: envelope, resolutionByItemId: resolutionByItemId) else { continue }
@@ -2497,8 +2542,58 @@ private func truncatedWorkTimelineText(_ value: String, limit: Int) -> String {
   return "\(value.prefix(limit - 3))..."
 }
 
+private func normalizedWorkIntegrationFailures(
+  _ failures: [AgentChatOptionalIntegrationFailure]
+) -> [AgentChatOptionalIntegrationFailure] {
+  var byIntegration: [String: AgentChatOptionalIntegrationFailure] = [:]
+  for failure in failures {
+    let integration = failure.integration.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !integration.isEmpty else { continue }
+    let message = failure.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedMessage = message?.isEmpty == false ? message : byIntegration[integration]?.message
+    byIntegration[integration] = AgentChatOptionalIntegrationFailure(
+      integration: integration,
+      message: resolvedMessage
+    )
+  }
+  return byIntegration.values.sorted {
+    $0.integration.localizedCaseInsensitiveCompare($1.integration) == .orderedAscending
+  }
+}
+
 private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
   guard existing.kind == incoming.kind else { return nil }
+  if existing.kind == "turnDiagnostics" {
+    let normalizedFailures = normalizedWorkIntegrationFailures(
+      existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
+    )
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
+      body: nil,
+      bullets: [],
+      metadata: [],
+      diagnosticModerationChecks: max(
+        existing.diagnosticModerationChecks,
+        incoming.diagnosticModerationChecks
+      ),
+      diagnosticIntegrationFailures: normalizedFailures
+    )
+  }
+  if existing.kind == "codexRecovery",
+     existing.recoveryContext?.providerNeutral == true,
+     incoming.recoveryContext?.providerNeutral != true {
+    return existing
+  }
+  if existing.kind == "codexRecoveryReceipt",
+     existing.recoveryReceipt?.providerNeutral == true,
+     incoming.recoveryReceipt?.providerNeutral != true {
+    return existing
+  }
   if existing.kind == "reasoning" {
     return WorkEventCardModel(
       id: incoming.id,
@@ -2555,6 +2650,9 @@ private func eventCard(
       // work, so persisting them as separate timeline entries just stacks
       // redundant rows under each tool group. Live streaming hints come from
       // WorkActivityIndicator, not the persisted timeline.
+      return nil
+    case .userMessageResolution:
+      // Folded into the originating user bubble by `buildWorkChatMessages`.
       return nil
     case .plan(let steps, let explanation, let turnId):
       guard !steps.isEmpty || nonEmptyWorkTimelineText(explanation) != nil else {
@@ -2771,9 +2869,25 @@ private func eventCard(
         bullets: [],
         metadata: []
       )
-    case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId):
+    case .turnDiagnostics(let moderationChecks, let integrationFailures, let turnId):
+      guard moderationChecks > 0 || !integrationFailures.isEmpty else { return nil }
+      let normalizedTurnId = normalizedWorkTurnId(turnId) ?? "session"
       return WorkEventCardModel(
-        id: envelope.id,
+        id: "turn-diagnostics:\(envelope.sessionId):\(normalizedTurnId)",
+        kind: "turnDiagnostics",
+        title: "Turn details",
+        icon: "checkmark.shield",
+        tint: .secondary,
+        timestamp: envelope.timestamp,
+        body: nil,
+        bullets: [],
+        metadata: [],
+        diagnosticModerationChecks: moderationChecks,
+        diagnosticIntegrationFailures: normalizedWorkIntegrationFailures(integrationFailures)
+      )
+    case .codexTurnStalled(let message, let recoveryOptions, let turnId, let sourceSessionId, let context):
+      return WorkEventCardModel(
+        id: "turn-health:\(envelope.sessionId):\(turnId ?? "unknown")",
         kind: "codexRecovery",
         title: "Recovery",
         icon: "exclamationmark.triangle",
@@ -2784,7 +2898,38 @@ private func eventCard(
         metadata: [],
         recoveryOptions: recoveryOptions,
         recoveryTurnId: turnId,
-        recoverySessionId: sourceSessionId
+        recoverySessionId: sourceSessionId,
+        recoveryContext: context
+      )
+    case .codexTurnRecovery(let message, let receipt, let turnId):
+      let normalizedState = receipt.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let providerName = receipt.providerNeutral
+        ? workChatSurfaceProviderName(receipt.provider)
+        : "Codex"
+      return WorkEventCardModel(
+        id: "codex-recovery-receipt:\(envelope.sessionId):\(turnId ?? "unknown")",
+        kind: "codexRecoveryReceipt",
+        title: normalizedState == "recovered"
+          ? "\(providerName) connection recovered"
+          : normalizedState == "failed"
+            ? "\(providerName) recovery failed"
+            : "Recovering \(providerName) connection",
+        icon: normalizedState == "recovered"
+          ? "checkmark.circle.fill"
+          : normalizedState == "failed"
+            ? "exclamationmark.triangle.fill"
+            : "arrow.clockwise.circle",
+        tint: normalizedState == "recovered"
+          ? .success
+          : normalizedState == "failed"
+            ? .danger
+            : .secondary,
+        timestamp: receipt.at,
+        body: message,
+        bullets: [],
+        metadata: [receipt.automatic ? "Automatic recovery" : "Manual recovery"],
+        recoveryTurnId: turnId,
+        recoveryReceipt: receipt
       )
     case .planText(let text, let turnId):
       return WorkEventCardModel(
@@ -3067,6 +3212,7 @@ private func normalizedWorkTurnId(_ turnId: String?) -> String? {
 private func workTurnId(for event: WorkChatEvent) -> String? {
   switch event {
   case .userMessage(_, _, let turnId, _, _, _),
+       .userMessageResolution(_, _, _, _, _, let turnId),
        .assistantText(_, let turnId, _),
        .toolCall(_, _, _, _, let turnId),
        .toolResult(_, _, _, _, let turnId, _),
@@ -3088,7 +3234,9 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .autoApprovalReview(_, let turnId),
        .webSearch(_, _, _, _, _, _, let turnId),
        .codexState(_, _, _, let turnId),
-       .codexTurnStalled(_, _, let turnId, _),
+       .turnDiagnostics(_, _, let turnId),
+       .codexTurnStalled(_, _, let turnId, _, _),
+       .codexTurnRecovery(_, _, let turnId),
        .planText(_, let turnId),
        .toolUseSummary(_, let turnId),
        .status(_, _, let turnId),

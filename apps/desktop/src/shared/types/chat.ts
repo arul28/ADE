@@ -462,12 +462,29 @@ export type AgentChatScheduledWakeMetadata = {
   late?: boolean;
 };
 
+export type AgentChatUnprocessedReplayMetadata = {
+  sourceSteerId: string;
+  action: "run_next";
+  replacementMessageId: string;
+};
+
+export type AgentChatUnprocessedMessageResolutionMetadata = {
+  action: "run_next" | "dismiss";
+  state: "completed";
+  resolvedAt: string;
+  replacementMessageId?: string;
+};
+
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
   /** Rides the `subagent` completion wake so the renderer can render the
    * "ADE woke this chat" divider off a typed shape (mirrors `scheduledWake`). */
   spawnCompletion?: AgentChatSpawnCompletion;
+  /** Provenance on the replacement message created by Run next. */
+  replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
+  /** Renderer-folded terminal state for the original unprocessed bubble. */
+  unprocessedMessageResolution?: AgentChatUnprocessedMessageResolutionMetadata;
 };
 
 export type AgentChatScheduledWorkKind =
@@ -508,9 +525,28 @@ export type AgentChatEvent =
       contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
       steerId?: string;
-      deliveryState?: "queued" | "delivered" | "inline" | "failed";
+      /**
+       * Durable user-message lifecycle. `delivered` and `inline` remain
+       * accepted legacy values for older transcripts and clients.
+       */
+      deliveryState?: "queued" | "accepted" | "processed" | "unprocessed" | "delivered" | "inline" | "failed";
       processed?: boolean;
       runtime?: AgentChatRuntime;
+    }
+  | {
+      /**
+       * Durable resolution for a terminal accepted-but-unprocessed steer.
+       * Keeping this separate from the replacement user message makes
+       * Run next and Dismiss idempotent across retries, app restarts, and
+       * different ADE surfaces.
+       */
+      type: "user_message_resolution";
+      steerId: string;
+      action: "run_next" | "dismiss";
+      state: "completed";
+      resolvedAt: string;
+      replacementMessageId?: string;
+      turnId?: string;
     }
   | {
       type: "text";
@@ -942,6 +978,15 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      type: "turn_diagnostics";
+      turnId?: string;
+      moderationChecks?: number;
+      optionalIntegrationFailures?: Array<{
+        integration: string;
+        message?: string | null;
+      }>;
+    }
+  | {
       type: "codex_sleep";
       itemId: string;
       turnId?: string;
@@ -1065,11 +1110,56 @@ export type AgentChatEvent =
       type: "codex_turn_stalled";
       turnId: string;
       threadId?: string;
-      reason: "no_output" | "waiting_on_input" | "waiting_on_approval" | "app_server_state_unknown";
+      reason: "no_output" | "no_progress" | "waiting_on_input" | "waiting_on_approval" | "app_server_state_unknown";
       message: string;
       recoveryOptions?: Array<"wait" | "steer" | "interrupt_retry_same_thread" | "restart_resume_thread">;
       sourceSessionId?: string;
       parentSessionId?: string;
+      detectedAt?: string;
+      turnStartedAt?: string;
+      lastProgressAt?: string;
+      automaticRecoveryAttempted?: boolean;
+    }
+  | {
+      /**
+       * Provider-neutral turn-health contract. Codex-specific events remain
+       * readable for backwards compatibility, while new surfaces should prefer
+       * this event when both are present.
+       */
+      type: "turn_health";
+      provider: string;
+      turnId: string;
+      state: "stalled";
+      reason: "no_output" | "no_progress" | "waiting_on_input" | "waiting_on_approval" | "runtime_state_unknown";
+      message: string;
+      turnStartedAt: string;
+      lastProgressAt: string;
+      detectedAt: string;
+      recoveryCount: number;
+      supportedActions: AgentChatTurnRecoveryAction[];
+      automaticRecoveryAttempted: boolean;
+      /** Owning child chat when this health event is mirrored into a parent. */
+      sourceSessionId?: string;
+    }
+  | {
+      type: "codex_turn_recovery";
+      turnId: string;
+      action: "restart_resume_thread";
+      state: "recovering" | "recovered" | "failed";
+      message: string;
+      automatic: boolean;
+      at: string;
+    }
+  | {
+      type: "turn_recovery";
+      provider: string;
+      turnId: string;
+      action: AgentChatTurnRecoveryAction;
+      state: "recovering" | "recovered" | "failed";
+      message: string;
+      automatic: boolean;
+      at: string;
+      recoveryCount: number;
     }
   | {
       type: "codex_thread_deleted";
@@ -2317,6 +2407,45 @@ export type AgentChatCodexRecoveryAction =
   | "interrupt_retry_same_thread"
   | "restart_resume_thread";
 
+export const AGENT_CHAT_TURN_RECOVERY_ACTIONS = [
+  "wait",
+  "nudge",
+  "retry_same_runtime",
+  "restart_resume",
+] as const;
+
+export type AgentChatTurnRecoveryAction =
+  (typeof AGENT_CHAT_TURN_RECOVERY_ACTIONS)[number];
+
+export function isAgentChatTurnRecoveryAction(
+  value: unknown,
+): value is AgentChatTurnRecoveryAction {
+  return typeof value === "string"
+    && (AGENT_CHAT_TURN_RECOVERY_ACTIONS as readonly string[]).includes(value);
+}
+
+export function isUnsupportedAgentChatRecoveryActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\b(?:unsupported|unknown)\s+(?:chat\s+)?(?:method|action|command)\b/i.test(message)
+    || /\b(?:method|action|command)\s+(?:is\s+)?not supported\b/i.test(message)
+    || /\b(?:recoverTurn|chat\.recoverTurn)\b.*\b(?:not supported|not available|not found)\b/i.test(message)
+    || /\b(?:not supported|not available|not found)\b.*\b(?:recoverTurn|chat\.recoverTurn)\b/i.test(message)
+  );
+}
+
+export type AgentChatRecoverTurnArgs = {
+  sessionId: string;
+  turnId: string;
+  action: AgentChatTurnRecoveryAction;
+};
+
+export type AgentChatRecoverTurnResult = {
+  action: AgentChatTurnRecoveryAction;
+  turnId: string;
+  status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+
 export type AgentChatRecoverCodexTurnArgs = {
   sessionId: string;
   turnId: string;
@@ -2327,6 +2456,19 @@ export type AgentChatRecoverCodexTurnResult = {
   action: AgentChatCodexRecoveryAction;
   turnId: string;
   status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+
+export type AgentChatResolveUnprocessedMessageArgs = {
+  sessionId: string;
+  steerId: string;
+  action: "run_next" | "dismiss";
+};
+
+export type AgentChatResolveUnprocessedMessageResult = {
+  steerId: string;
+  action: "run_next" | "dismiss";
+  status: "completed" | "already_completed";
+  replacementMessageId?: string;
 };
 
 export type AgentChatCodexGetGoalArgs = {

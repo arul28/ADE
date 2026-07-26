@@ -41,21 +41,22 @@ reconnect without asking for the PIN again. A signed-in launch enters the app
 directly.
 
 Choosing a signed-in account machine performs first-time adoption through the
-directory-verified WSS relay. The phone stores the returned per-device secret
-and DPoP key for direct reconnects, and adds a fresh in-memory account token to
-every later Relay hello. The token is never saved with the machine. Those
-profiles are tagged with the Clerk user id that created them. Signing out,
-switching accounts, or confirmed session loss removes only that account's
-profiles and Keychain pairing secrets. Machines paired directly by QR,
-Nearby, or SSH have no account owner and remain saved after
-sign-out.
+directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed
+only when the directory row contains the host's Ed25519 signing key and the
+phone verifies a sealed `ade-adopt-v1` challenge before releasing the account
+credential; an unsigned legacy host remains Relay-only. The phone stores the
+returned per-device secret and DPoP key for direct reconnects, and adds a fresh
+in-memory account token to every later Relay hello. The account token is never
+saved with the machine.
 
-Pairing ownership and Relay eligibility are intentionally separate. A direct
-profile can learn verified Relay metadata for the current account without
-becoming account-owned. On sign-out or account switch, an active Relay socket
-is closed immediately and ADE tries the saved LAN/Tailscale routes; the direct
-profile and its pairing secret remain. A transient Clerk or directory outage is
-not treated as logout and does not erase saved machines.
+Device-bound machine trust and account transport authorization are separate.
+Signing out, switching accounts, or confirmed session loss closes an active
+Relay socket, removes account-directory visibility, and blocks every saved
+Relay route. It does not delete the host-issued paired secret, DPoP key, or
+machine profile needed for a LAN/Tailscale reconnect. ADE immediately tries
+those direct routes, and **Forget machine** remains the explicit trust-deletion
+boundary. A transient Clerk or directory outage is not treated as logout and
+does not erase saved machines.
 
 ### Pair with SSH
 
@@ -420,8 +421,10 @@ The Work model/activity parity path is concentrated in these files:
   `WorkUsageActivityCarousel`.
 - `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
   and `WorkSessionDestinationView+Actions.swift` — host-advertised chat action
-  dispatch, including `chat.recoverCodexTurn` for stalled-turn buttons and the
-  non-queueable `chat.cancelScheduledWork` wrapper used by Chat Info.
+  dispatch, including provider-neutral `chat.recoverTurn` (with the legacy
+  Codex action as a compatibility fallback), durable
+  `chat.resolveUnprocessedMessage`, and the non-queueable
+  `chat.cancelScheduledWork` wrapper used by Chat Info.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -644,14 +647,14 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    connect path's recovery sweep. Cloud-relay candidates (full
    `wss://…/connect/<machineKey>` URLs) are zero-config and carry their
    own path/port, so they are never mixed into the host:port TCP probe
-   or fallback-port sweep. When the phone has a Tailscale tunnel,
-   direct routes stay preferred. When the phone has no Tailscale tunnel
-   and a saved relay route exists, reconnect probes only currently live
-   same-LAN routes, then dials the relay before stale saved LAN/Tailscale
-   routes; this prevents "Tailscale off" from waiting behind a dead
-   tailnet sweep. Pairing uses the same endpoint ordering, so a phone
-   without Tailscale can pair through relay without extra user setup.
-   Ordered endpoints then enter an **authenticated** race: candidates start
+   or fallback-port sweep. Connection proceeds in the same explicit phases as
+   desktop and ADE Code: LAN, then Tailscale, then authenticated Relay.
+   Direct candidates enter an **authenticated** race first; only after that
+   phase exhausts does a separate Relay race begin. A phone with Tailscale
+   disabled skips ineligible tailnet routes but does not promote Relay ahead of
+   a currently usable LAN route. Pairing and ordinary reconnect share this
+   policy, so the route order does not change after a pairing code succeeds.
+   Within each race, candidates start
    250 ms apart, at most three are active, the whole wave has a 10-second
    budget, and only a completed `hello_ok` can win. The initial wave covers
    the best candidate plus transport/route diversity, and failures admit the
@@ -670,8 +673,9 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    fresh account token in memory for every Relay attempt and adds it only to the
    paired hello. Missing/different account state reports a clear sign-in or
    same-account requirement without consuming the reconnect retry budget; LAN
-   and Tailscale attempts remain available. `accountOwnerId` separately marks
-   profiles created by account adoption and therefore deleted on owner loss.
+   and Tailscale attempts remain available. A host-issued paired secret remains
+   direct-route trust after account loss; forgetting the machine is the action
+   that removes the profile and Keychain secret.
    The primary Settings status stays route-neutral (for example, "Connected in
    0.3s"); the host-observed LAN/Tailscale/relay route remains available in the
    diagnostics row for troubleshooting. `reconnectIfPossible` is the single
@@ -1711,11 +1715,11 @@ different machine's cached limits.
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
 | Account launch gate + account machine directory | Implemented; sign-in is the primary PIN-less path, while signed-out launches can continue with QR + PIN, Nearby + PIN, or advanced SSH pairing |
-| Account-owned pairing and same-account Relay lifetime | Implemented; exact session-generation commit checks, owner-scoped deletion, fresh Relay token per connection |
+| Account discovery + device-bound direct trust | Implemented; signed directory adoption, exact session-generation commit checks, direct trust retained across sign-out, fresh Relay proof per connection |
 | SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
 | One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay (same-account `relay` transport, promoted when the phone has no Tailscale tunnel) | Implemented; fresh in-memory account proof on every Relay connection |
+| Cloud relay (same-account `relay` transport after LAN and Tailscale direct routes) | Implemented; fresh in-memory account proof on every Relay connection |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
@@ -1763,12 +1767,14 @@ different machine's cached limits.
   account keys, the stable device id and DPoP identity, analytics preferences,
   and pairing-PIN state. The completion marker is written only after Keychain
   token clearing succeeds, so a failed Keychain operation retries next launch.
-- **Account ownership and Relay ownership are different fields.**
-  `accountOwnerId` decides whether sign-out deletes a saved profile;
-  `relayAccountOwnerId` decides whether its Relay route may be used. Never make
-  a QR/Nearby/SSH profile account-owned just because the same Mac
-  later appears in the account directory. On account loss, disconnect Relay
-  and retry direct routes; delete only account-owned profiles. Treat transient
+- **Device-bound direct trust and account-bound Relay access have different
+  lifetimes.** A successful signed directory adoption creates the same
+  machine-scoped direct credential as QR, Nearby, PIN, or SSH pairing. Sign-out
+  removes directory and Relay authorization but retains that direct credential,
+  so LAN and Tailscale reconnects keep working; "Forget machine" is the user
+  boundary that deletes it. Never make a QR/Nearby/SSH profile Relay-dependent
+  just because the same Mac later appears in the account directory. On account
+  loss, disconnect Relay and retry direct routes. Treat transient
   account/directory failures as retryable, not as logout. The directory's
   `online` flag is only its 90-second publisher lease: if a row still contains
   a verified secure endpoint, the phone may dial it and let the authenticated
@@ -1875,14 +1881,19 @@ different machine's cached limits.
   new event or card type, keep the phone's decoders tolerant — a foreign
   event should degrade to "that one event is missing", never "the whole
   transcript is gone".
-- **Codex app-server chat events are first-class on Work.** Mobile
-  mirrors the desktop/TUI Codex runtime rows by decoding
-  `codex_safety_buffering`, `codex_moderation_metadata`, `codex_sleep`,
-  `codex_thread_deleted`, and `codex_turn_stalled` in
-  `RemoteModels.swift`, mapping them through `WorkEventMapping.swift`,
-  and rendering compact timeline cards. Stalled rows preserve the
-  `sourceSessionId` from child chats and expose Wait / Nudge / Retry / Resume
-  only when the host advertises `chat.recoverCodexTurn`. Web-search events also carry
+- **Turn delivery and recovery are provider-neutral on Work.** Mobile mirrors
+  desktop and ADE Code by decoding the durable message-delivery lifecycle,
+  `turn_health`, `turn_recovery`, `turn_diagnostics`, and legacy provider
+  events in `RemoteModels.swift`, then mapping them through
+  `WorkEventMapping.swift`. Accepted-but-unprocessed user messages remain
+  visible and expose Run next / Edit / Dismiss only when the host advertises
+  `chat.resolveUnprocessedMessage`; those resolutions are durable and
+  idempotent across reconnects. Stalled rows preserve the `sourceSessionId`
+  from child chats and expose Wait / Nudge / Retry / Resume through
+  provider-neutral `chat.recoverTurn`, with the Codex-specific action retained
+  only as a compatibility fallback. Raw moderation checks are not rendered as
+  repeated cards: counts and any integration failures are summarized in one
+  quiet turn-diagnostics disclosure. Web-search events also carry
   provider action metadata (`query` / `queries`, `title`, `url`,
   `snippet`); Work keeps those in the enriched web-search tool card so
   URLs are visible without duplicating the same event as a second row.

@@ -523,7 +523,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
+    "recoverTurn",
     "recoverCodexTurn",
+    "resolveUnprocessedMessage",
     "recoverContinuity",
     "killDroidWorker",
     "launchCli",
@@ -986,6 +988,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { sessionId: string, turnId: string, action: \"wait\" | \"steer\" | \"interrupt_retry_same_thread\" | \"restart_resume_thread\" }",
       example: "ade actions run chat.recoverCodexTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"wait\"}'",
     },
+    recoverTurn: {
+      description: "Recover a stalled provider turn using ADE's provider-neutral wait, nudge, same-runtime retry, or restart-and-resume actions.",
+      input: "object { sessionId: string, turnId: string, action: \"wait\" | \"nudge\" | \"retry_same_runtime\" | \"restart_resume\" }",
+      example: "ade actions run chat.recoverTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"restart_resume\"}'",
+    },
+    resolveUnprocessedMessage: {
+      description: "Idempotently run an accepted-but-unprocessed follow-up as the next turn, or dismiss it.",
+      input: "object { sessionId: string, steerId: string, action: \"run_next\" | \"dismiss\" }",
+      example: "ade actions run chat.resolveUnprocessedMessage --input-json '{\"sessionId\":\"chat-123\",\"steerId\":\"steer-456\",\"action\":\"run_next\"}'",
+    },
     recoverContinuity: {
       description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
       input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
@@ -1446,19 +1458,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           sessionId,
           ...(limit !== undefined ? { limit } : {}),
         });
-        if (!since || !isRecord(transcript) || !Array.isArray(transcript.entries)) {
-          return transcript;
-        }
+        const entries = Array.isArray(transcript)
+          ? transcript
+          : isRecord(transcript) && Array.isArray(transcript.entries)
+            ? transcript.entries
+            : [];
+        if (!since) return entries;
         const sinceMs = Date.parse(since);
-        if (!Number.isFinite(sinceMs)) return transcript;
-        return {
-          ...transcript,
-          entries: transcript.entries.filter((entry) => {
-            if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
-            const timestampMs = Date.parse(entry.timestamp);
-            return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
-          }),
-        };
+        if (!Number.isFinite(sinceMs)) return entries;
+        return entries.filter((entry) => {
+          if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
+          const timestampMs = Date.parse(entry.timestamp);
+          return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
+        });
       }
       throw new Error("Chat transcript reads are not available in this runtime.");
     },

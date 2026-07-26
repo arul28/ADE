@@ -744,7 +744,14 @@ async function openPairedRemoteSession(
     });
   } catch (error) {
     if (error instanceof PairedRemoteConnectionUnavailableError) {
-      throw new PairedRuntimeTransportUnavailableError(error.message, error);
+      const reference = error.diagnostic?.correlationId
+        ? ` Connection reference: ${error.diagnostic.correlationId}.`
+        : "";
+      throw new PairedRuntimeTransportUnavailableError(
+        `${error.message}${reference}`,
+        error,
+        error.diagnostic,
+      );
     }
     throw error;
   }
