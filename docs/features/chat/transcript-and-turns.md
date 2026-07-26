@@ -49,26 +49,28 @@ envelope stream into role-tagged entries via `transcriptEntriesFromEnvelopes` in
 hold **both** the live fragment stream and this canonical text (iOS, the web
 client) reconcile the two, so the module owes them one invariant:
 
-> Within one provider message, canonical text is the **verbatim concatenation**
-> of its `text` fragments. ADE only ever adds a separator where the provider
-> itself moved to a new message.
+> Canonical text is byte-identical to what a renderer draws from the same
+> envelopes. ADE never invents a character.
 
-Identity is read at two granularities, and the split is the whole design:
+That is stronger than "don't corrupt text", and it is the property that matters:
+a client holding both renditions can only reconcile them if they agree. The
+moment canonical groups or joins differently from a renderer, the two are no
+longer deltas of each other and the client concatenates them — rendering the
+message twice.
 
-- **`key` groups fragments into an entry** — `messageId` when present, else the
-  turn. It deliberately matches the identity clients key assistant bubbles on
-  (iOS collapses a text event to its `messageId` in
-  `workAssistantMessageStableId`). Grouping an entry more finely than a client
-  groups its bubbles makes the client silently concatenate two entries.
-- **`block` decides whether text continues verbatim** — the `messageId`/`itemId`
-  *pair*. Runtimes disagree about which field is finer-grained: Claude sets only
-  `messageId`, while Codex sets `messageId` to a per-turn UUID and `itemId` to
-  the provider message id, so neither alone can be believed. While the pair
-  holds, fragments are deltas of one message and concatenate verbatim no matter
-  what events interleave. Guessing a boundary from interleaved events instead is
-  what spliced `"\n\n"` into the middle of a word (`"no new mod"` +
-  `"ifier chain needed:"`). The block is tracked *per entry*, so a concurrent
-  message's fragments landing in between cannot fake a boundary.
+So canonical mirrors the renderer exactly:
+
+- **Entries group on `messageId`** (else the turn), because that is what every
+  renderer keys on. Desktop's `shouldMergeTextRows` compares `messageId` and
+  ignores `itemId`; iOS collapses a text event onto its `messageId` in
+  `workAssistantMessageStableId`. Grouping more finely — for example splitting on
+  the `itemId` Codex advances per provider message — makes a client silently
+  concatenate two entries it keyed the same.
+- **Identified fragments concatenate verbatim**, whatever interleaves, because
+  the renderer joins merged rows with a bare `${previous}${next}`. ADE has no
+  block-level identity it can trust, so guessing a boundary from interleaved
+  events is what spliced `"\n\n"` into the middle of a word (`"no new mod"` +
+  `"ifier chain needed:"`).
 
 Only when ADE cannot tie a fragment to a provider message does it fall back to
 inferring boundaries from interleaved events. Ephemeral chrome — `activity`

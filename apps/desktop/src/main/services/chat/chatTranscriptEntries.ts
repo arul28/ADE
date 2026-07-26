@@ -50,6 +50,9 @@ const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEve
   "subagent_progress",
   "subagent_result",
   "subagent_started",
+  "subagent.completed",
+  "subagent.progress",
+  "subagent.started",
   "system_notice",
   "todo_update",
   "tool_call",
@@ -66,26 +69,23 @@ export function isTranscriptContentEvent(type: AgentChatEvent["type"]): boolean 
 type TextEvent = Extract<AgentChatEvent, { type: "text" }>;
 
 /**
- * Which assistant text stream a fragment belongs to, at two granularities.
+ * Which assistant text stream a fragment belongs to.
  *
  * `key` groups fragments into one transcript entry and deliberately matches the
- * identity clients key assistant bubbles on — `messageId` when present, else the
- * turn. Splitting an entry finer would desynchronise iOS, which collapses a text
- * event to its `messageId` (`workAssistantMessageStableId`) and would silently
- * concatenate two entries that shared one.
+ * identity every renderer keys assistant text on — `messageId` when present,
+ * else the turn. Desktop merges same-`messageId` rows with a bare
+ * `${previous}${next}` (`shouldMergeTextRows` in `chatTranscriptRows.ts`, which
+ * ignores `itemId` entirely) and iOS collapses a text event onto its
+ * `messageId`. Canonical text must group and join the same way: the moment it
+ * splits or separates where a renderer does not, a client holding both
+ * renditions sees two texts that are not deltas of each other and concatenates
+ * them — the duplicate-render bug this module exists to prevent.
  *
- * `block` is the finest identity the provider gives: the `messageId`/`itemId`
- * pair. Fragments continue verbatim only while the pair holds, so a pair change
- * — Codex advancing `itemId` to its next provider message — is the one
- * trustworthy signal that a real paragraph boundary was crossed. Runtimes
- * disagree about which field is finer-grained (Claude sets only `messageId`;
- * Codex sets `messageId` to a per-turn UUID and `itemId` to the provider message
- * id), so neither field alone can be believed.
- *
- * `identified` separates both from a fragment carrying no message identity at
- * all, where a boundary can only be inferred from interleaved rendered content.
+ * `identified` marks a fragment ADE can tie to a provider message, so its text
+ * continues verbatim no matter what interleaves. Without it, boundaries have to
+ * be inferred from interleaved rendered content.
  */
-type AssistantStream = { key: string; block: string; identified: boolean };
+type AssistantStream = { key: string; identified: boolean };
 
 function assistantStream(event: TextEvent): AssistantStream | null {
   const messageId = event.messageId?.trim() ?? "";
@@ -93,8 +93,7 @@ function assistantStream(event: TextEvent): AssistantStream | null {
   const turnId = event.turnId?.trim() ?? "";
   const key = messageId ? `message:${messageId}` : turnId ? `turn:${turnId}` : null;
   if (!key) return null;
-  const SEP = "\u0000";
-  return { key, block: `${key}${SEP}${messageId}${SEP}${itemId}`, identified: Boolean(messageId || itemId) };
+  return { key, identified: Boolean(messageId || itemId) };
 }
 
 export type TranscriptEntriesOptions = {
@@ -112,12 +111,6 @@ export function transcriptEntriesFromEnvelopes(
   const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
   const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
   let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
-  /**
-   * Per-entry: the block its last appended fragment belonged to. Tracked per
-   * entry rather than globally so a concurrent message's fragments landing in
-   * between cannot make a resumed stream look like a new paragraph.
-   */
-  const openBlockByStreamKey = new Map<string, string>();
   /**
    * Coarse run key for fragments with no message identity, where rendered
    * content between fragments is the only available boundary signal.
@@ -164,7 +157,6 @@ export function transcriptEntriesFromEnvelopes(
     if (entry.event.type === "user_message") {
       flushAssistantDraft();
       openStreamKey = null;
-      openBlockByStreamKey.clear();
       assistantDraftsByKey.clear();
       const text = entry.event.text.trim();
       if (!text.length) continue;
@@ -194,9 +186,8 @@ export function transcriptEntriesFromEnvelopes(
         // An unchanged id pair proves both fragments are one message's deltas,
         // so they concatenate verbatim no matter what came between. Without any
         // identity, fall back to "nothing rendered since the last fragment".
-        const contiguous = existing != null && (stream.identified
-          ? openBlockByStreamKey.get(stream.key) === stream.block
-          : openStreamKey === stream.key);
+        const contiguous = existing != null
+          && (stream.identified || openStreamKey === stream.key);
         // At a real boundary the paragraph break supersedes edge whitespace.
         if (isBlankFragment && !contiguous) continue;
         flushAssistantDraft();
@@ -205,7 +196,6 @@ export function transcriptEntriesFromEnvelopes(
             ? `${existing.text}${entry.event.text}`
             : joinAsNewParagraph(existing.text, entry.event.text);
           openStreamKey = stream.key;
-          openBlockByStreamKey.set(stream.key, stream.block);
           continue;
         }
         const draft: TranscriptDraftEntry = {
@@ -220,7 +210,6 @@ export function transcriptEntriesFromEnvelopes(
         assistantDraftsByKey.set(stream.key, draft);
         entries.push(draft);
         openStreamKey = stream.key;
-        openBlockByStreamKey.set(stream.key, stream.block);
         continue;
       }
       if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {

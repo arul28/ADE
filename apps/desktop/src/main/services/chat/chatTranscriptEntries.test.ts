@@ -91,17 +91,18 @@ describe("transcriptEntriesFromEnvelopes", () => {
     expect(entries).toEqual(["Alpha.", "Beta."]);
   });
 
-  it("breaks the paragraph when the runtime advances its finer id", () => {
+  it("joins a runtime's finer id exactly as the renderer joins the rows", () => {
     // Codex sets messageId to a per-turn UUID and itemId to the provider message
-    // id, so an itemId change is a real message boundary. The entry stays keyed
-    // on messageId — the identity clients key bubbles on — and takes a paragraph
-    // break rather than running the two messages together.
+    // id. Desktop's shouldMergeTextRows ignores itemId and concatenates the rows
+    // verbatim, and iOS collapses onto the messageId. Canonical text must agree:
+    // separating here would leave clients holding two texts that are not deltas
+    // of each other, which is what made them render the message twice.
     const entries = textsOf([
       envelope({ type: "text", text: "First message.", messageId: "turn-uuid", itemId: "msg_aaa", turnId: "turn-1" }),
       envelope({ type: "text", text: "Second message.", messageId: "turn-uuid", itemId: "msg_bbb", turnId: "turn-1" }),
     ]);
 
-    expect(entries).toEqual(["First message.\n\nSecond message."]);
+    expect(entries).toEqual(["First message.Second message."]);
   });
 
   it("still separates turn-keyed runs that a rendered tool call splits", () => {
