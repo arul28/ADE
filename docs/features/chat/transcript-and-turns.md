@@ -53,18 +53,24 @@ client) reconcile the two, so the module owes them one invariant:
 
 Two rules enforce it, and both exist because breaking them corrupted transcripts:
 
-- **Fragments sharing a provider `messageId` concatenate verbatim**, whatever
-  events interleave. The event carries no block-level identity, so ADE cannot
-  tell "new paragraph" from "next delta"; guessing spliced `"\n\n"` into the
-  middle of a word (`"no new mod"` + `"ifier chain needed:"`), and the client
-  holding both renditions then rendered the message twice.
-- **Only rendered content ends an assistant run.** Ephemeral chrome — `activity`
-  hints, subagent progress, token usage — is invisible to every renderer, so
-  letting it break a run made the canonical text disagree with what desktop, the
-  TUI, and iOS actually draw. `isTranscriptContentEvent` is an allowlist of
-  *content* types on purpose: a new event type defaults to "does not break the
-  run", which at worst drops a paragraph break, whereas the inverse default
-  corrupts words.
+- **Fragments sharing provider identity concatenate verbatim**, whatever events
+  interleave. Identity is the `messageId`/`itemId` *pair*, because runtimes
+  disagree about which field is finer-grained: Claude sets only `messageId`,
+  while Codex sets `messageId` to a per-turn UUID and `itemId` to the provider
+  message id — so keying on either alone merges two distinct messages on one of
+  them. Within one stream ADE has no block-level identity and must not guess
+  where a paragraph starts; guessing spliced `"\n\n"` into the middle of a word
+  (`"no new mod"` + `"ifier chain needed:"`), and the client holding both
+  renditions then rendered the message twice.
+- **Only rendered content ends an assistant run**, and only for fragments with
+  no provider identity at all. Ephemeral chrome — `activity` hints, live context
+  usage — is invisible to every renderer, so letting it break a run made the
+  canonical text disagree with what desktop, the TUI, and iOS actually draw.
+  `isTranscriptContentEvent` is an allowlist of *content* types on purpose: a new
+  event type defaults to "does not break the run", which at worst drops a
+  paragraph break, whereas the inverse default corrupts words. Keep genuinely
+  rendered rows (`todo_update`, the `subagent_*` cards, `done`) in that list —
+  they are not chrome.
 
 A whitespace-only fragment (a word gap, or a markdown hard break `"  \n"`) is a
 real delta and is dropped only when there is no run for it to continue.

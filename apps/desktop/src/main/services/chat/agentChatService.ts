@@ -281,6 +281,7 @@ import type {
   AgentChatSubagentListArgs,
   AgentChatSubagentMetadata,
   AgentChatSubagentSnapshot,
+  AgentChatTranscriptEntry,
   AgentChatSurface,
   AgentChatSteerArgs,
   AgentChatSteerResult,
@@ -2513,16 +2514,6 @@ type ManagedChatSession = {
    */
   seededProviderSessionId?: string;
   seededDroidSdkSessionId?: string;
-};
-
-type AgentChatTranscriptEntry = {
-  role: "user" | "assistant";
-  text: string;
-  displayText?: string;
-  timestamp: string;
-  turnId?: string;
-  messageId?: string;
-  itemId?: string;
 };
 
 type HandoffArtifacts = {

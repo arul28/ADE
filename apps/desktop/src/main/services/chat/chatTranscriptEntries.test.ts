@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
-import { isTranscriptContentEvent, transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
+import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 
 const SESSION = "session-1";
 
@@ -9,7 +9,7 @@ function envelope(event: AgentChatEvent): AgentChatEventEnvelope {
   sequence += 1;
   return {
     sessionId: SESSION,
-    timestamp: `2026-07-26T10:00:${String(sequence).padStart(2, "0")}.000Z`,
+    timestamp: new Date(Date.parse("2026-07-26T10:00:00.000Z") + sequence * 1000).toISOString(),
     sequence,
     event,
   };
@@ -55,11 +55,51 @@ describe("transcriptEntriesFromEnvelopes", () => {
   it("keeps ephemeral chrome from splitting a turn-keyed assistant run", () => {
     const entries = textsOf([
       envelope({ type: "text", text: "Checking the pairing", turnId: "turn-1" }),
-      envelope({ type: "subagent_progress", taskId: "task-1", summary: "still working" }),
+      envelope({ type: "activity", activity: "thinking", turnId: "turn-1" }),
       envelope({ type: "text", text: " connect info now.", turnId: "turn-1" }),
     ]);
 
     expect(entries).toEqual(["Checking the pairing connect info now."]);
+  });
+
+  it("separates turn-keyed runs split by a rendered subagent or todo row", () => {
+    // These render as their own transcript rows, so a run resuming after one is
+    // a different assistant message and must not run on from the previous one.
+    for (const between of [
+      { type: "todo_update", items: [] },
+      { type: "subagent_result", taskId: "task-1", summary: "done" },
+    ] as const) {
+      const entries = textsOf([
+        envelope({ type: "text", text: "Applied the change.", turnId: "turn-1" }),
+        envelope(between as AgentChatEvent),
+        envelope({ type: "text", text: "Now running the tests.", turnId: "turn-1" }),
+      ]);
+
+      expect(entries).toEqual(["Applied the change.\n\nNow running the tests."]);
+    }
+  });
+
+  it("keeps id pairs distinct when a plain separator would collide them", () => {
+    // The pair key joins the two ids with a NUL precisely so no id content can
+    // forge a collision. With a space, ("a b","c") and ("a","b c") key the same
+    // and two unrelated messages concatenate.
+    const entries = textsOf([
+      envelope({ type: "text", text: "Alpha.", messageId: "a b", itemId: "c", turnId: "turn-1" }),
+      envelope({ type: "text", text: "Beta.", messageId: "a", itemId: "b c", turnId: "turn-1" }),
+    ]);
+
+    expect(entries).toEqual(["Alpha.", "Beta."]);
+  });
+
+  it("keeps two provider messages apart when the runtime inverts the id fields", () => {
+    // Codex sets messageId to a per-turn UUID and itemId to the provider message
+    // id, so keying on messageId alone would concatenate two distinct messages.
+    const entries = textsOf([
+      envelope({ type: "text", text: "First message.", messageId: "turn-uuid", itemId: "msg_aaa", turnId: "turn-1" }),
+      envelope({ type: "text", text: "Second message.", messageId: "turn-uuid", itemId: "msg_bbb", turnId: "turn-1" }),
+    ]);
+
+    expect(entries).toEqual(["First message.", "Second message."]);
   });
 
   it("still separates turn-keyed runs that a rendered tool call splits", () => {
@@ -97,6 +137,22 @@ describe("transcriptEntriesFromEnvelopes", () => {
       ["assistant", "First answer."],
       ["user", "follow up"],
       ["assistant", "Second answer."],
+    ]);
+  });
+
+  it("never glues an assistant stream across a user message", () => {
+    // A user turn ends every assistant stream. If a key recurred, keeping the
+    // draft open would concatenate verbatim and file the text before the user.
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "text", text: "wor", messageId: "msg-a", turnId: "turn-1" }),
+      envelope({ type: "user_message", text: "stop", turnId: "turn-2" }),
+      envelope({ type: "text", text: "ld", messageId: "msg-a", turnId: "turn-2" }),
+    ]);
+
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["assistant", "wor"],
+      ["user", "stop"],
+      ["assistant", "ld"],
     ]);
   });
 
@@ -205,15 +261,5 @@ describe("transcriptEntriesFromEnvelopes", () => {
       expect(entries).toHaveLength(1);
       expect(entries[0]!.text).toBe(source);
     }
-  });
-
-  it("classifies rendered content and ephemeral chrome distinctly", () => {
-    expect(isTranscriptContentEvent("tool_call")).toBe(true);
-    expect(isTranscriptContentEvent("command")).toBe(true);
-    expect(isTranscriptContentEvent("reasoning")).toBe(true);
-    expect(isTranscriptContentEvent("activity")).toBe(false);
-    expect(isTranscriptContentEvent("subagent_progress")).toBe(false);
-    expect(isTranscriptContentEvent("context_usage")).toBe(false);
-    expect(isTranscriptContentEvent("todo_update")).toBe(false);
   });
 });

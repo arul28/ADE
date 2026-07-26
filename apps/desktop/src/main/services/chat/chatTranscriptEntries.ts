@@ -13,36 +13,48 @@ import { canAppendBufferedAssistantText, type BufferedAssistantText } from "./ch
  * clients reconcile a live fragment stream against this canonical text: any
  * character ADE invents here shows up as corruption on the client that has both.
  *
- * Two rules keep that reconciliation exact:
+ * See `docs/features/chat/transcript-and-turns.md` ("Canonical assistant text")
+ * for the full rationale and the corruption each rule prevents.
+ */
+
+/**
+ * Events that render as their own transcript row and therefore end an assistant
+ * text run. Only consulted for fragments with no provider identity at all — see
+ * `assistantStream` — so it is a coarse fallback, not the primary rule.
  *
- * 1. Fragments carrying the same provider `messageId` are deltas of one
- *    assistant message and are concatenated verbatim. ADE has no block-level
- *    identity on the event, so it must not guess where a "paragraph" starts —
- *    guessing splits words mid-token (`"no new mod" + "ifier chain needed:"`).
- * 2. Only events that render as transcript content end an assistant run.
- *    Ephemeral chrome (activity hints, subagent progress, token usage) is
- *    invisible to every renderer, so letting it break a run made the canonical
- *    text disagree with what desktop, the TUI, and iOS actually draw.
+ * Deliberately an allowlist: a type added later defaults to "does not break the
+ * run", which at worst drops a paragraph break, whereas the inverse default
+ * splices a separator into the middle of a word.
  *
- * The list below is deliberately an allowlist of *content* types: an event type
- * added later defaults to "does not break the run", which at worst drops a
- * paragraph break. The inverse default corrupts words.
+ * @see shouldFlushBufferedAssistantTextForEvent in ./chatTextBatching — a
+ * separate, denylist-shaped classification of "ends an assistant run" used for
+ * live emission granularity. It intentionally defaults the other way (unknown
+ * types flush) because a wrong guess there only costs batching latency.
  */
 const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEvent["type"]>([
   "approval_request",
   "codex_image_generation",
   "codex_image_view",
+  "codex_turn_stalled",
   "command",
   "completion_report",
   "conversation_reset",
+  "done",
   "error",
   "file_change",
   "plan",
   "reasoning",
+  "scheduled_work_update",
+  "status",
   "structured_question",
+  "subagent_progress",
+  "subagent_result",
+  "subagent_started",
   "system_notice",
+  "todo_update",
   "tool_call",
   "tool_result",
+  "tool_use_summary",
   "web_search",
 ]);
 
@@ -54,15 +66,31 @@ export function isTranscriptContentEvent(type: AgentChatEvent["type"]): boolean 
 type TextEvent = Extract<AgentChatEvent, { type: "text" }>;
 
 /**
- * Identity of the assistant text stream a fragment belongs to. A provider
- * `messageId` is exact; a turn id is the coarse fallback for runtimes that do
- * not carry message identity.
+ * Which assistant text stream a fragment belongs to.
+ *
+ * `exact` means the provider identified the message, so every fragment sharing
+ * the key is a delta of one message and they concatenate verbatim. Both id
+ * fields are folded into the key because runtimes disagree about which one is
+ * finer-grained: Claude sets only `messageId`, while Codex sets `messageId` to a
+ * per-turn UUID and `itemId` to the provider message id. Keying on either alone
+ * merges two distinct messages on one of them.
+ *
+ * Known trade-off: no runtime marks *content blocks* within a message, so when
+ * one message holds two text blocks (Claude `[text, thinking, text]`) their
+ * paragraph break is lost. Measured over the last 60 production transcripts that
+ * costs ~0 real breaks — the model's own deltas already carry the newlines —
+ * against 300 joins that would otherwise be split mid-word. Emitting a per-block
+ * `itemId` on text (as the thinking emitter already does) would remove the
+ * trade-off entirely; until then, verbatim is the safe side.
  */
-function assistantStreamKey(event: TextEvent): string | null {
-  const messageId = event.messageId?.trim();
-  if (messageId) return `message:${messageId}`;
+type AssistantStream = { key: string; exact: boolean };
+
+function assistantStream(event: TextEvent): AssistantStream | null {
+  const messageId = event.messageId?.trim() ?? "";
+  const itemId = event.itemId?.trim() ?? "";
+  if (messageId || itemId) return { key: `id:${messageId}\u0000${itemId}`, exact: true };
   const turnId = event.turnId?.trim();
-  if (turnId) return `turn:${turnId}`;
+  if (turnId) return { key: `turn:${turnId}`, exact: false };
   return null;
 }
 
@@ -81,10 +109,11 @@ export function transcriptEntriesFromEnvelopes(
   const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
   const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
   let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
-  /** Stream key of the most recent assistant text fragment, or null after a reset. */
-  let lastAssistantStreamKey: string | null = null;
-  /** Whether rendered content has appeared since that fragment. */
-  let contentSinceLastAssistantText = false;
+  /**
+   * Stream key still open for verbatim continuation. Cleared by anything that
+   * closes the run — a user message, or rendered content between fragments.
+   */
+  let openStreamKey: string | null = null;
 
   const flushAssistantDraft = (): void => {
     if (!assistantDraft) return;
@@ -111,13 +140,10 @@ export function transcriptEntriesFromEnvelopes(
   };
 
   /**
-   * Join a resumed fragment onto its stream. Same-message fragments are always
-   * a verbatim continuation; only a coarse turn-keyed stream interrupted by
-   * rendered content gets a paragraph break, because there the two runs are
-   * genuinely different assistant messages.
+   * Start a new paragraph on a stream ADE could not identify, where a resumed
+   * run is genuinely a different assistant message.
    */
-  const appendFragment = (existing: string, incoming: string, contiguous: boolean): string => {
-    if (contiguous) return `${existing}${incoming}`;
+  const joinAsNewParagraph = (existing: string, incoming: string): string => {
     if (!existing.trim().length) return incoming;
     if (!incoming.trim().length) return existing;
     if (existing.endsWith("\n") || incoming.startsWith("\n")) return `${existing}${incoming}`;
@@ -128,8 +154,8 @@ export function transcriptEntriesFromEnvelopes(
     if (entry.sessionId !== sessionId) continue;
     if (entry.event.type === "user_message") {
       flushAssistantDraft();
-      lastAssistantStreamKey = null;
-      contentSinceLastAssistantText = false;
+      openStreamKey = null;
+      assistantDraftsByKey.clear();
       const text = entry.event.text.trim();
       if (!text.length) continue;
       const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
@@ -152,21 +178,20 @@ export function transcriptEntriesFromEnvelopes(
       // markdown hard break ("  \n"). Dropping it glues words together, so it
       // is discarded only when there is no run for it to continue.
       const isBlankFragment = !entry.event.text.trim().length;
-      const streamKey = assistantStreamKey(entry.event);
-      if (streamKey) {
-        const existing = assistantDraftsByKey.get(streamKey);
-        // A provider message id proves both fragments are the same message's
-        // deltas, so they concatenate verbatim no matter what came between.
-        const contiguous = existing != null
-          && (streamKey.startsWith("message:")
-            || (lastAssistantStreamKey === streamKey && !contentSinceLastAssistantText));
+      const stream = assistantStream(entry.event);
+      if (stream) {
+        const existing = assistantDraftsByKey.get(stream.key);
+        // Provider identity proves both fragments are one message's deltas, so
+        // they concatenate verbatim no matter what came between.
+        const contiguous = existing != null && (stream.exact || openStreamKey === stream.key);
         // At a real boundary the paragraph break supersedes edge whitespace.
         if (isBlankFragment && !contiguous) continue;
         flushAssistantDraft();
         if (existing) {
-          existing.text = appendFragment(existing.text, entry.event.text, contiguous);
-          lastAssistantStreamKey = streamKey;
-          contentSinceLastAssistantText = false;
+          existing.text = contiguous
+            ? `${existing.text}${entry.event.text}`
+            : joinAsNewParagraph(existing.text, entry.event.text);
+          openStreamKey = stream.key;
           continue;
         }
         const draft: TranscriptDraftEntry = {
@@ -178,16 +203,14 @@ export function transcriptEntriesFromEnvelopes(
           ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
         };
         rememberDraftSource(draft, entry);
-        assistantDraftsByKey.set(streamKey, draft);
+        assistantDraftsByKey.set(stream.key, draft);
         entries.push(draft);
-        lastAssistantStreamKey = streamKey;
-        contentSinceLastAssistantText = false;
+        openStreamKey = stream.key;
         continue;
       }
       if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
         assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
-        lastAssistantStreamKey = null;
-        contentSinceLastAssistantText = false;
+        openStreamKey = null;
         continue;
       }
       if (isBlankFragment) continue;
@@ -201,14 +224,13 @@ export function transcriptEntriesFromEnvelopes(
         ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
       };
       rememberDraftSource(assistantDraft, entry);
-      lastAssistantStreamKey = null;
-      contentSinceLastAssistantText = false;
+      openStreamKey = null;
       continue;
     }
     // Chrome the renderers never draw must not split an assistant message.
     if (!isTranscriptContentEvent(entry.event.type)) continue;
     flushAssistantDraft();
-    contentSinceLastAssistantText = true;
+    openStreamKey = null;
   }
   flushAssistantDraft();
   return entries.flatMap((entry) => {

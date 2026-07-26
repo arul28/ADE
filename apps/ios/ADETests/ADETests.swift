@@ -12943,24 +12943,26 @@ final class ADETests: XCTestCase {
     ])
   }
 
-  func testCanonicalAssistantTextReplacesUnreconcilableLiveFragment() {
-    // A canonical `chat.getTranscript` row is the whole message. When it cannot
-    // be reconciled with what streamed in, concatenating renders the message
-    // twice — the mobile "text cut then repeated" bug.
+  func testCanonicalAndLiveRowsForOneMessageRenderItOnce() {
+    // Production ordering: a canonical `chat.getTranscript` row carries the
+    // first fragment's timestamp and no sequence, so it sorts ahead of the live
+    // fragments for the same message. Whichever way they combine, the message
+    // must render once — the mobile "text cut then repeated" bug was this pair
+    // being concatenated.
     let complete = "Better approach — the surface height is already derivable from two "
       + "existing measurements, no new modifier chain needed:"
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-07-26T01:00:01.000Z",
-        sequence: 42,
-        event: .assistantText(text: "ifier chain needed:", turnId: "turn-1", itemId: "msg-a")
+        sequence: nil,
+        event: .assistantText(text: complete, turnId: "turn-1", itemId: "msg-a")
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
-        timestamp: "2026-07-26T01:00:02.000Z",
-        sequence: nil,
-        event: .assistantText(text: complete, turnId: "turn-1", itemId: "msg-a")
+        timestamp: "2026-07-26T01:00:01.000Z",
+        sequence: 42,
+        event: .assistantText(text: "ifier chain needed:", turnId: "turn-1", itemId: "msg-a")
       ),
     ]
 
@@ -12978,10 +12980,22 @@ final class ADETests: XCTestCase {
       mergeWorkAssistantText("ifier chain needed:", complete, incomingIsLiveFragment: false),
       complete
     )
-    // The shorter rendition wins only when it is the longer text.
+    // The accumulated text wins when the incoming rendition is the shorter one.
     XCTAssertEqual(
       mergeWorkAssistantText(complete, "unrelated stale row", incomingIsLiveFragment: false),
       complete
+    )
+  }
+
+  func testMergeWorkAssistantTextPassesReconciledMergesThrough() {
+    // The common path: the merge reconciles, so the guard must not alter it.
+    XCTAssertEqual(
+      mergeWorkAssistantText("no new mod", "no new modifier chain needed:", incomingIsLiveFragment: false),
+      "no new modifier chain needed:"
+    )
+    XCTAssertEqual(
+      mergeWorkAssistantText("Full answer.", "Full answer.", incomingIsLiveFragment: false),
+      "Full answer."
     )
   }
 

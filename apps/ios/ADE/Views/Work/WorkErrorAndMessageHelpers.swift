@@ -319,10 +319,16 @@ private func mergedDuplicateAssistantText(existing: String, incoming: String) ->
 /// same message.
 ///
 /// A live envelope carries a sequence and is a delta, so appending it is
-/// correct. An envelope with no sequence came from `chat.getTranscript` and is
-/// the *whole* message; appending that to a live accumulation renders the
-/// message twice. When the two renditions cannot be reconciled, keeping the
-/// longer one loses at most a fragment, whereas concatenating always duplicates.
+/// correct. An envelope with no sequence is a *whole* message — normally a
+/// `chat.getTranscript` row — and appending that to a live accumulation renders
+/// the message twice. When the two cannot be reconciled, keeping the longer one
+/// loses at most a fragment, whereas concatenating always duplicates.
+///
+/// This is a backstop, not the fix for the "text cut then repeated" bug: that
+/// was the host rebuilding canonical text that could not match the live stream
+/// (see `chatTranscriptEntries.ts`). Canonical rows also usually sort *ahead* of
+/// their live fragments, since `sequence: nil` orders as 0, so on the common
+/// path the complete rendition arrives as `existing` and this guard is a no-op.
 func mergeWorkAssistantText(
   _ existing: String,
   _ incoming: String,
