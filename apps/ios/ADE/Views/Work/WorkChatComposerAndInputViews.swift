@@ -919,6 +919,10 @@ private struct WorkPendingCardContentHeightKey: PreferenceKey {
 /// actually hit. `WorkStructuredQuestionCard` does its own budgeting (it needs
 /// to keep its footer pinned outside the scroll region) and is not wrapped.
 struct WorkPendingInputHeightBoundedCard<Content: View>: View {
+  /// Placeholder height for the single frame before the content reports its own
+  /// — roughly a two-line permission card.
+  private static var unmeasuredHeightGuess: CGFloat { 120 }
+
   let maxHeight: CGFloat
   @ViewBuilder var content: Content
 
@@ -939,7 +943,13 @@ struct WorkPendingInputHeightBoundedCard<Content: View>: View {
             }
           )
       }
-      .frame(height: max(1, min(measuredHeight ?? maxHeight, maxHeight)))
+      // Before the first measurement, guess small rather than taking the whole
+      // budget. Every card this wraps (permission, approval, plan, model
+      // selection) is short in the common case, and `composerInset` is
+      // fixed-size, so a full-budget first frame visibly shoves the transcript
+      // up and back as it snaps down. Growing into the budget on frame two is
+      // the less jarring direction to be wrong in.
+      .frame(height: max(1, min(measuredHeight ?? Self.unmeasuredHeightGuess, maxHeight)))
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
       .onPreferenceChange(WorkPendingCardContentHeightKey.self) { height in

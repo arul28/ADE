@@ -2332,7 +2332,23 @@ final class WorkChatComposerDraftState: ObservableObject {
     let value = trimmedText
     isFocused = false
     text = ""
+    // Drop the stored copy synchronously rather than letting the 400ms debounce
+    // get to it. A jetsam or force-quit inside that window would otherwise
+    // restore an already-sent message into the composer, where it reads as
+    // unsent and invites sending it twice. The Hub and New Chat composers clear
+    // on send for the same reason.
+    clearStoredDraft()
     return value
+  }
+
+  /// Cancels any pending autosave and removes the persisted draft. Not
+  /// actor-annotated so `consumeSendableText()` — which runs from the send
+  /// button's synchronous action — can call it directly.
+  func clearStoredDraft() {
+    autosaveTask?.cancel()
+    autosaveTask = nil
+    guard !persistenceKey.isEmpty else { return }
+    WorkComposerDraftStore.clear(persistenceKey)
   }
 
   func restoreUnsentText(_ value: String) {

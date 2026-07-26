@@ -10407,6 +10407,13 @@ final class SyncService: ObservableObject {
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      // Unsent composer text and in-progress question answers are scoped to the
+      // machine's chats, so forgetting the machine has to drop them too — the
+      // trust reset already promises to clear machine-scoped drafts, and these
+      // stores are bounded by entry count, not lifetime, so they would otherwise
+      // outlive the pairing indefinitely.
+      WorkComposerDraftStore.clearAll()
+      WorkQuestionDraftStore.clearAll()
       activeHostProfile = nil
       hostName = nil
       hiddenProjectKeys = loadHiddenProjectKeys()

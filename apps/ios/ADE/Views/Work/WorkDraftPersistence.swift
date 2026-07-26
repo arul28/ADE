@@ -123,6 +123,12 @@ enum WorkComposerDraftStore {
   private static func loadAll() -> [String: Entry] {
     WorkDefaultsJSONMap.load(storageKey)
   }
+
+  /// Drops every stored draft. Called when the phone forgets a machine — the
+  /// drafts belong to that machine's chats.
+  static func clearAll() {
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+  }
 }
 
 /// In-progress answers for a still-open question request, persisted per request
@@ -157,8 +163,13 @@ enum WorkQuestionDraftStore {
   }
 
   /// v2 because `updatedAt` moved out of `Snapshot` into the wrapper. Drafts for
-  /// open gates are ephemeral, so the v1 blob is abandoned rather than migrated.
+  /// open gates are ephemeral, so the v1 blob is dropped rather than migrated.
   private static let storageKey = "ade.work.questionDrafts.v2"
+  /// v1 is actively deleted, not just abandoned: an intermediate build of this
+  /// change persisted answers to `isSecret` questions before that exclusion
+  /// landed, so a stale v1 blob can hold a plaintext secret. Never shipped in a
+  /// release, but dev and TestFlight devices ran it.
+  private static let legacyStorageKey = "ade.work.questionDrafts.v1"
   /// Open question gates are short-lived; a small cap is plenty and keeps the
   /// blob from accumulating answers to requests that were resolved elsewhere.
   private static let maxEntries = 30
@@ -191,7 +202,24 @@ enum WorkQuestionDraftStore {
   }
 
   private static func loadAll() -> [String: Stored] {
-    WorkDefaultsJSONMap.load(storageKey)
+    purgeLegacyStoreIfNeeded()
+    return WorkDefaultsJSONMap.load(storageKey)
+  }
+
+  /// Runs on first access rather than at launch so the purge can't be skipped by
+  /// a path that never boots the chat surface.
+  private static func purgeLegacyStoreIfNeeded() {
+    let defaults = ADESharedContainer.defaults
+    guard defaults.object(forKey: legacyStorageKey) != nil else { return }
+    defaults.removeObject(forKey: legacyStorageKey)
+  }
+
+  /// Drops every stored answer. Called when the phone forgets a machine — the
+  /// gates these answer belong to that machine's chats.
+  static func clearAll() {
+    let defaults = ADESharedContainer.defaults
+    defaults.removeObject(forKey: storageKey)
+    defaults.removeObject(forKey: legacyStorageKey)
   }
 }
 

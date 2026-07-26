@@ -1644,18 +1644,19 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   return results
 }
 
+/// Deliberately does NOT match Claude's own `AskUserQuestion` (which normalizes
+/// to `askuserquestion`). The host emits a `tool_call` for the tool-use block
+/// AND a separate `approval_request` for the gate, and those carry different
+/// item ids — the tool-use id versus a fresh `randomUUID()`. Since
+/// `derivePendingWorkInputs` dedupes by item id, matching the tool name here
+/// yields two cards for one question, the tool_call-derived one being
+/// unanswerable (the host has no approval registered under that id, so it
+/// discards the response silently). The `tool_call` branch is only a fallback
+/// for hosts that emit a bare ask-user call with no wrapping approval; adding a
+/// name the real host always wraps turns that fallback into a duplicate.
 func isAskUserToolName(_ tool: String) -> Bool {
   let normalized = normalizedWorkToolIdentity(tool)
-  // `askuserquestion` is the Claude Agent SDK's own `AskUserQuestion` tool after
-  // normalization (CamelCase collapses to one word, no separators to split on).
-  // Desktop hosts wrap it in an `approval_request` so the question card comes
-  // from the request kind, but a bare tool_call from any other host would
-  // otherwise render as a raw tool row with no way to answer.
-  return normalized == "ask_user"
-    || normalized == "askuser"
-    || normalized == "askuserquestion"
-    || normalized == "ask_user_question"
-    || normalized == "mcp_ade_ask_user"
+  return normalized == "ask_user" || normalized == "askuser" || normalized == "mcp_ade_ask_user"
 }
 
 func isRequestUserInputToolName(_ tool: String) -> Bool {
