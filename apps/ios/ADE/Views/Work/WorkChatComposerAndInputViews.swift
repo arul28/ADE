@@ -1102,10 +1102,12 @@ struct WorkStructuredQuestionCard: View {
   private var bodyMaxHeight: CGFloat {
     let budget = maxCardHeight > 0 ? maxCardHeight : 320
     let chrome = topChromeHeight + bottomChromeHeight + Self.cardFixedInsets
-    // Floor at 88pt: if the chrome alone eats the budget (tiny screen, keyboard
-    // up, freeform field expanded) we'd rather let the card overflow slightly
-    // than collapse the option list to nothing.
-    return max(88, budget - chrome)
+    // Floor at 64pt — roughly one option row. On a small phone with the keyboard
+    // up the fixed chrome alone can exceed the budget; collapsing the option
+    // list to nothing would be worse than overflowing slightly, and the overflow
+    // is absorbed by the transcript rather than by the footer (see
+    // `pendingInputMaxHeight`).
+    return max(64, budget - chrome)
   }
 
   /// Fit the scroll area to its content up to the cap: short lists render at
@@ -1221,12 +1223,23 @@ struct WorkStructuredQuestionCard: View {
     }
   }
 
+  /// Questions whose freeform answer is a secret (rendered in a `SecureField`).
+  /// Their text is never written to disk — the resolved card already refuses to
+  /// echo it back, and UserDefaults is an App Group store shared with the widget
+  /// extension, so persisting it would put a credential in plaintext.
+  private var secretQuestionIds: Set<String> {
+    Set(question.questions.filter(\.isSecret).map(\.questionId))
+  }
+
   private func persistDrafts() {
+    let secretIds = secretQuestionIds
     WorkQuestionDraftStore.save(
       WorkQuestionDraftStore.Snapshot(
         selections: selections.mapValues { Array($0).sorted() },
-        freeform: freeformByQuestion,
-        sharedFreeform: singleQuestionFreeformText,
+        freeform: freeformByQuestion.filter { !secretIds.contains($0.key) },
+        // The shared freeform belongs to the single-question card's only
+        // question, so it inherits that question's secrecy.
+        sharedFreeform: question.primary.isSecret ? "" : singleQuestionFreeformText,
         page: currentPage
       ),
       for: question.id

@@ -379,17 +379,8 @@ struct WorkChatSessionView: View {
     max(240, scrollViewportHeight + composerLayoutHeight)
   }
 
-  /// Hard ceiling for the pending-input card. Always leaves room for the
-  /// composer plus a slice of transcript — a gate that covers the entire screen
-  /// reads as a modal takeover and hides the Send button. Long content scrolls
-  /// inside the card instead of growing it.
   var pendingInputMaxHeight: CGFloat {
-    let surface = chatSurfaceHeight
-    // Reserve the composer's own footprint; whatever is left is shared between
-    // the strip and the transcript, with the strip capped at ~82% of it.
-    let composerReserve: CGFloat = 132
-    let available = max(0, surface - composerReserve)
-    return max(160, min(available * 0.82, surface * 0.62))
+    workPendingInputMaxHeight(chatSurfaceHeight: chatSurfaceHeight)
   }
 
   /// Open approval / permission gates that "Accept all" can sweep. Question,
@@ -1311,6 +1302,31 @@ func workLaneListRenderSignature(_ lanes: [LaneSummary]) -> Int {
     hasher.combine(lane.status.behind)
   }
   return hasher.finalize()
+}
+
+/// Hard ceiling for a pending-input card, given the height available to the
+/// whole chat surface. Always leaves room for the composer plus a slice of
+/// transcript — a gate that covers the entire screen reads as a modal takeover
+/// and hides the Send button. Long content scrolls inside the card instead of
+/// growing it.
+///
+/// If a card's irreducible chrome still exceeds this on a small phone with the
+/// keyboard up, the overflow is absorbed by the transcript, not the composer:
+/// the composer inset is `fixedSize(vertical:)` and the transcript scroll view
+/// is the flexible sibling, so Send/Decline stay on screen either way. That
+/// ordering is the actual guarantee — this number just keeps the common case
+/// from getting there.
+///
+/// A free function rather than a view property so previews exercise the same
+/// arithmetic the app uses; the numbers had drifted into three hand-copied
+/// literals otherwise.
+func workPendingInputMaxHeight(chatSurfaceHeight: CGFloat) -> CGFloat {
+  // Roughly the composer card's own height in its resting single-line state.
+  // Measuring it for real is not an option: `composerLayoutHeight` includes the
+  // strip we are sizing, so reading it here would be circular.
+  let composerReserve: CGFloat = 110
+  let available = max(0, chatSurfaceHeight - composerReserve)
+  return max(160, min(available * 0.82, chatSurfaceHeight * 0.62))
 }
 
 private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {

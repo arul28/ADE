@@ -568,7 +568,7 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
       onSubmitAll: { _, _ in },
       onDecline: {},
       fallbackProvider: "claude",
-      maxCardHeight: max(160, min((720 - 132) * 0.82, 720 * 0.62))
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
     )
     .padding(16)
   }
@@ -589,7 +589,7 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
       onSubmitAll: { _, _ in },
       onDecline: {},
       fallbackProvider: "claude",
-      maxCardHeight: max(160, min((340 - 132) * 0.82, 340 * 0.62))
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 340)
     )
     .padding(16)
   }
@@ -624,7 +624,7 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
       onSubmitAll: { _, _ in },
       onDecline: {},
       fallbackProvider: "claude",
-      maxCardHeight: max(160, min((720 - 132) * 0.82, 720 * 0.62))
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
     )
     .padding(16)
   }
