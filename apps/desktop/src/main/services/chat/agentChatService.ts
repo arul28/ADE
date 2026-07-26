@@ -8357,6 +8357,38 @@ export function createAgentChatService(args: {
     return latest;
   };
 
+  /** Everything a rehydrated session has to recover from its own transcript,
+   * read in one pass (the transcript is not cached, so this is deliberately not
+   * two separate scans).
+   *
+   * `maxEventSequence` is the load-bearing part. `eventSequence` is a runtime
+   * counter, but the transcript it numbers is durable and appended across
+   * restarts — so starting a rehydrated session back at 0 mints sequence
+   * numbers that already exist in the file. Consumers that treat
+   * `sessionId + sequence` as an event identity then mistake the new events for
+   * replays of the old ones and drop them; that is exactly how AskUserQuestion
+   * cards silently vanished on iOS for sessions reopened after a desktop
+   * restart. Seeding from the file keeps sequences strictly increasing for the
+   * life of the transcript. */
+  const readTranscriptHydrationState = (
+    managed: ManagedChatSession,
+  ): {
+    todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
+    maxEventSequence: number;
+  } => {
+    let todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
+    let maxEventSequence = 0;
+    for (const entry of readTranscriptEnvelopes(managed)) {
+      if (entry.event.type === "todo_update") {
+        todoItems = entry.event.items;
+      }
+      if (typeof entry.sequence === "number" && entry.sequence > maxEventSequence) {
+        maxEventSequence = entry.sequence;
+      }
+    }
+    return { todoItems, maxEventSequence };
+  };
+
   /** Runtime-lifetime TaskCreate/TaskUpdate tracker, lazily seeded from the
    * transcript's latest todo_update so updates in later turns (or after a
    * host restart) still resolve to the task they reference. */
@@ -15722,7 +15754,11 @@ export function createAgentChatService(args: {
       claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
       compactionEmitterState: createCompactionEmitterState(),
     };
-    managed.todoItems = readLatestTranscriptTodoItems(managed);
+    const transcriptHydration = readTranscriptHydrationState(managed);
+    managed.todoItems = transcriptHydration.todoItems;
+    // Continue the transcript's numbering instead of restarting at 1 — see
+    // `readTranscriptHydrationState`.
+    managed.eventSequence = transcriptHydration.maxEventSequence;
     if (!managed.session.interactionMode && managed.session.orchestrationRole) {
       managed.session.interactionMode = orchestrationInteractionModeForRole(managed.session.orchestrationRole);
     }
