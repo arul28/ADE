@@ -42,44 +42,59 @@ back to the correct activity feed.
 
 ## Canonical assistant text (fragile — read before editing)
 
-`chat.getTranscript` flattens the envelope stream into role-tagged entries via
-`transcriptEntriesFromEnvelopes` in
+`chat.getTranscript` — plus the cursor-paged chat-history reader and the
+internal `readTranscriptEntries` used by auto-title and handoff — flattens the
+envelope stream into role-tagged entries via `transcriptEntriesFromEnvelopes` in
 `apps/desktop/src/main/services/chat/chatTranscriptEntries.ts`. Clients that
 hold **both** the live fragment stream and this canonical text (iOS, the web
 client) reconcile the two, so the module owes them one invariant:
 
-> The canonical text of a message is the **verbatim concatenation** of its
-> `text` fragments. ADE never invents a character.
+> Within one provider message, canonical text is the **verbatim concatenation**
+> of its `text` fragments. ADE only ever adds a separator where the provider
+> itself moved to a new message.
 
-Two rules enforce it, and both exist because breaking them corrupted transcripts:
+Identity is read at two granularities, and the split is the whole design:
 
-- **Fragments sharing provider identity concatenate verbatim**, whatever events
-  interleave. Identity is the `messageId`/`itemId` *pair*, because runtimes
-  disagree about which field is finer-grained: Claude sets only `messageId`,
-  while Codex sets `messageId` to a per-turn UUID and `itemId` to the provider
-  message id — so keying on either alone merges two distinct messages on one of
-  them. Within one stream ADE has no block-level identity and must not guess
-  where a paragraph starts; guessing spliced `"\n\n"` into the middle of a word
-  (`"no new mod"` + `"ifier chain needed:"`), and the client holding both
-  renditions then rendered the message twice.
-- **Only rendered content ends an assistant run**, and only for fragments with
-  no provider identity at all. Ephemeral chrome — `activity` hints, live context
-  usage — is invisible to every renderer, so letting it break a run made the
-  canonical text disagree with what desktop, the TUI, and iOS actually draw.
-  `isTranscriptContentEvent` is an allowlist of *content* types on purpose: a new
-  event type defaults to "does not break the run", which at worst drops a
-  paragraph break, whereas the inverse default corrupts words. Keep genuinely
-  rendered rows (`todo_update`, the `subagent_*` cards, `done`) in that list —
-  they are not chrome.
+- **`key` groups fragments into an entry** — `messageId` when present, else the
+  turn. It deliberately matches the identity clients key assistant bubbles on
+  (iOS collapses a text event to its `messageId` in
+  `workAssistantMessageStableId`). Grouping an entry more finely than a client
+  groups its bubbles makes the client silently concatenate two entries.
+- **`block` decides whether text continues verbatim** — the `messageId`/`itemId`
+  *pair*. Runtimes disagree about which field is finer-grained: Claude sets only
+  `messageId`, while Codex sets `messageId` to a per-turn UUID and `itemId` to
+  the provider message id, so neither alone can be believed. While the pair
+  holds, fragments are deltas of one message and concatenate verbatim no matter
+  what events interleave. Guessing a boundary from interleaved events instead is
+  what spliced `"\n\n"` into the middle of a word (`"no new mod"` +
+  `"ifier chain needed:"`). The block is tracked *per entry*, so a concurrent
+  message's fragments landing in between cannot fake a boundary.
+
+Only when ADE cannot tie a fragment to a provider message does it fall back to
+inferring boundaries from interleaved events. Ephemeral chrome — `activity`
+hints, live `context_usage`, token counters — is invisible to every renderer, so
+letting it break a run made the canonical text disagree with what desktop, the
+TUI, and iOS actually draw. `isTranscriptContentEvent` is an allowlist of
+*content* types on purpose: a new event type defaults to "does not break the
+run", which at worst drops a paragraph break, whereas the inverse default
+corrupts words. Keep genuinely rendered rows (`todo_update`, the `subagent_*`
+cards, `done`) in that list — they are not chrome.
+
+A user message clears every open entry, so a stream key reused in a later turn
+cannot merge backwards into text that preceded the user.
 
 A whitespace-only fragment (a word gap, or a markdown hard break `"  \n"`) is a
 real delta and is dropped only when there is no run for it to continue.
 
 On the client side, `mergeWorkAssistantText`
 (`apps/ios/ADE/Views/Work/WorkErrorAndMessageHelpers.swift`) holds the matching
-guard: an envelope with no `sequence` came from `chat.getTranscript` and is a
-*complete* message, so it may replace the accumulated text or be dropped, but is
-never concatenated onto it.
+backstop: an envelope with no `sequence` came from `chat.getTranscript` and is a
+*whole* message, not a delta. Overlapping renditions still merge on their
+overlap; when no overlap is found, the longer rendition wins instead of the two
+being concatenated, because concatenating a whole message onto a live
+accumulation renders it twice. Canonical rows usually sort *ahead* of their live
+fragments (`sequence: nil` orders as 0), so on the common path the guard is a
+no-op. It is a backstop, not a substitute for the host-side invariant above.
 
 ## Parsing
 

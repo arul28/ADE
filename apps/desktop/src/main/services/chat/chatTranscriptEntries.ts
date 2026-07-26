@@ -66,32 +66,35 @@ export function isTranscriptContentEvent(type: AgentChatEvent["type"]): boolean 
 type TextEvent = Extract<AgentChatEvent, { type: "text" }>;
 
 /**
- * Which assistant text stream a fragment belongs to.
+ * Which assistant text stream a fragment belongs to, at two granularities.
  *
- * `exact` means the provider identified the message, so every fragment sharing
- * the key is a delta of one message and they concatenate verbatim. Both id
- * fields are folded into the key because runtimes disagree about which one is
- * finer-grained: Claude sets only `messageId`, while Codex sets `messageId` to a
- * per-turn UUID and `itemId` to the provider message id. Keying on either alone
- * merges two distinct messages on one of them.
+ * `key` groups fragments into one transcript entry and deliberately matches the
+ * identity clients key assistant bubbles on — `messageId` when present, else the
+ * turn. Splitting an entry finer would desynchronise iOS, which collapses a text
+ * event to its `messageId` (`workAssistantMessageStableId`) and would silently
+ * concatenate two entries that shared one.
  *
- * Known trade-off: no runtime marks *content blocks* within a message, so when
- * one message holds two text blocks (Claude `[text, thinking, text]`) their
- * paragraph break is lost. Measured over the last 60 production transcripts that
- * costs ~0 real breaks — the model's own deltas already carry the newlines —
- * against 300 joins that would otherwise be split mid-word. Emitting a per-block
- * `itemId` on text (as the thinking emitter already does) would remove the
- * trade-off entirely; until then, verbatim is the safe side.
+ * `block` is the finest identity the provider gives: the `messageId`/`itemId`
+ * pair. Fragments continue verbatim only while the pair holds, so a pair change
+ * — Codex advancing `itemId` to its next provider message — is the one
+ * trustworthy signal that a real paragraph boundary was crossed. Runtimes
+ * disagree about which field is finer-grained (Claude sets only `messageId`;
+ * Codex sets `messageId` to a per-turn UUID and `itemId` to the provider message
+ * id), so neither field alone can be believed.
+ *
+ * `identified` separates both from a fragment carrying no message identity at
+ * all, where a boundary can only be inferred from interleaved rendered content.
  */
-type AssistantStream = { key: string; exact: boolean };
+type AssistantStream = { key: string; block: string; identified: boolean };
 
 function assistantStream(event: TextEvent): AssistantStream | null {
   const messageId = event.messageId?.trim() ?? "";
   const itemId = event.itemId?.trim() ?? "";
-  if (messageId || itemId) return { key: `id:${messageId}\u0000${itemId}`, exact: true };
-  const turnId = event.turnId?.trim();
-  if (turnId) return { key: `turn:${turnId}`, exact: false };
-  return null;
+  const turnId = event.turnId?.trim() ?? "";
+  const key = messageId ? `message:${messageId}` : turnId ? `turn:${turnId}` : null;
+  if (!key) return null;
+  const SEP = "\u0000";
+  return { key, block: `${key}${SEP}${messageId}${SEP}${itemId}`, identified: Boolean(messageId || itemId) };
 }
 
 export type TranscriptEntriesOptions = {
@@ -110,8 +113,14 @@ export function transcriptEntriesFromEnvelopes(
   const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
   let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
   /**
-   * Stream key still open for verbatim continuation. Cleared by anything that
-   * closes the run — a user message, or rendered content between fragments.
+   * Per-entry: the block its last appended fragment belonged to. Tracked per
+   * entry rather than globally so a concurrent message's fragments landing in
+   * between cannot make a resumed stream look like a new paragraph.
+   */
+  const openBlockByStreamKey = new Map<string, string>();
+  /**
+   * Coarse run key for fragments with no message identity, where rendered
+   * content between fragments is the only available boundary signal.
    */
   let openStreamKey: string | null = null;
 
@@ -155,6 +164,7 @@ export function transcriptEntriesFromEnvelopes(
     if (entry.event.type === "user_message") {
       flushAssistantDraft();
       openStreamKey = null;
+      openBlockByStreamKey.clear();
       assistantDraftsByKey.clear();
       const text = entry.event.text.trim();
       if (!text.length) continue;
@@ -181,9 +191,12 @@ export function transcriptEntriesFromEnvelopes(
       const stream = assistantStream(entry.event);
       if (stream) {
         const existing = assistantDraftsByKey.get(stream.key);
-        // Provider identity proves both fragments are one message's deltas, so
-        // they concatenate verbatim no matter what came between.
-        const contiguous = existing != null && (stream.exact || openStreamKey === stream.key);
+        // An unchanged id pair proves both fragments are one message's deltas,
+        // so they concatenate verbatim no matter what came between. Without any
+        // identity, fall back to "nothing rendered since the last fragment".
+        const contiguous = existing != null && (stream.identified
+          ? openBlockByStreamKey.get(stream.key) === stream.block
+          : openStreamKey === stream.key);
         // At a real boundary the paragraph break supersedes edge whitespace.
         if (isBlankFragment && !contiguous) continue;
         flushAssistantDraft();
@@ -192,6 +205,7 @@ export function transcriptEntriesFromEnvelopes(
             ? `${existing.text}${entry.event.text}`
             : joinAsNewParagraph(existing.text, entry.event.text);
           openStreamKey = stream.key;
+          openBlockByStreamKey.set(stream.key, stream.block);
           continue;
         }
         const draft: TranscriptDraftEntry = {
@@ -206,6 +220,7 @@ export function transcriptEntriesFromEnvelopes(
         assistantDraftsByKey.set(stream.key, draft);
         entries.push(draft);
         openStreamKey = stream.key;
+        openBlockByStreamKey.set(stream.key, stream.block);
         continue;
       }
       if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {

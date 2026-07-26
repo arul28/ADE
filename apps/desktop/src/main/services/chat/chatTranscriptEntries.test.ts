@@ -91,15 +91,17 @@ describe("transcriptEntriesFromEnvelopes", () => {
     expect(entries).toEqual(["Alpha.", "Beta."]);
   });
 
-  it("keeps two provider messages apart when the runtime inverts the id fields", () => {
+  it("breaks the paragraph when the runtime advances its finer id", () => {
     // Codex sets messageId to a per-turn UUID and itemId to the provider message
-    // id, so keying on messageId alone would concatenate two distinct messages.
+    // id, so an itemId change is a real message boundary. The entry stays keyed
+    // on messageId — the identity clients key bubbles on — and takes a paragraph
+    // break rather than running the two messages together.
     const entries = textsOf([
       envelope({ type: "text", text: "First message.", messageId: "turn-uuid", itemId: "msg_aaa", turnId: "turn-1" }),
       envelope({ type: "text", text: "Second message.", messageId: "turn-uuid", itemId: "msg_bbb", turnId: "turn-1" }),
     ]);
 
-    expect(entries).toEqual(["First message.", "Second message."]);
+    expect(entries).toEqual(["First message.\n\nSecond message."]);
   });
 
   it("still separates turn-keyed runs that a rendered tool call splits", () => {

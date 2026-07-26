@@ -12999,10 +12999,49 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testMergeWorkAssistantTextDoesNotDuplicateAcrossAParagraphOnlyDifference() {
+    // A message whose provider advanced its per-message id inside one
+    // `messageId` — Codex emitting two agent messages in a turn, Droid emitting
+    // two text blocks in one message. The canonical transcript takes a
+    // paragraph break there; the live fragments, which iOS collapses onto the
+    // same `messageId`, concatenate verbatim. The canonical row has no sequence
+    // so it sorts first and arrives as `existing`, with the live accumulation
+    // incoming — appending would render the whole message twice.
+    let canonical = "First message about the thing.\n\nSecond message about the thing."
+    let live = "First message about the thing.Second message about the thing."
+    XCTAssertEqual(mergeWorkAssistantText(canonical, live, incomingIsLiveFragment: true), canonical)
+    XCTAssertEqual(mergeWorkAssistantText(live, canonical, incomingIsLiveFragment: false), canonical)
+    // A markdown hard break is the same shape of whitespace-only disagreement.
+    let hardBreakCanonical = "Line one of the answer here.  \nLine two of the answer here."
+    XCTAssertEqual(
+      mergeWorkAssistantText(
+        hardBreakCanonical,
+        "Line one of the answer here.Line two of the answer here.",
+        incomingIsLiveFragment: true
+      ),
+      hardBreakCanonical
+    )
+  }
+
   func testMergeWorkAssistantTextStillAppendsLiveDeltas() {
     XCTAssertEqual(
       mergeWorkAssistantText("Better approach", " — the surface", incomingIsLiveFragment: true),
       "Better approach — the surface"
+    )
+    // A long, unrelated delta must still append, and a short accumulation that
+    // happens to appear inside the delta must not be mistaken for a rendition.
+    XCTAssertEqual(
+      mergeWorkAssistantText(
+        "I reviewed the transcript rebuild and the merge helpers in detail.",
+        " Next I will check the sync hello contract for new fields.",
+        incomingIsLiveFragment: true
+      ),
+      "I reviewed the transcript rebuild and the merge helpers in detail."
+        + " Next I will check the sync hello contract for new fields."
+    )
+    XCTAssertEqual(
+      mergeWorkAssistantText("I", " think I will look at the reconciliation path", incomingIsLiveFragment: true),
+      "I think I will look at the reconciliation path"
     )
     XCTAssertEqual(
       mergeWorkAssistantText("no new mod", "ifier chain needed:", incomingIsLiveFragment: true),

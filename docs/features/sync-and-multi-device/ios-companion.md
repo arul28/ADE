@@ -1978,6 +1978,21 @@ different machine's cached limits.
   `itemId` or (b) the immediately preceding envelope was also assistant
   text. This keeps the iOS Work chat from fanning a single assistant
   turn into many tiny rows.
+- **A canonical transcript row is a whole message, never a delta.** Live
+  `chat_event` frames carry a `sequence` and are deltas, so appending them is
+  correct. A frame with no `sequence` came from `chat.getTranscript` and is the
+  complete message, so `mergeWorkAssistantText`
+  (`WorkErrorAndMessageHelpers.swift`) guards every merge on that flag: the two
+  renditions still merge on their overlap, but when no overlap is found the
+  longer one wins instead of the two being concatenated — concatenating a whole
+  message onto a live accumulation renders the message twice ("text cut then
+  repeated"). Canonical rows usually sort ahead of their live fragments
+  (`sequence: nil` orders as 0), so the guard is normally a no-op. It is a
+  backstop only: the real fix is host-side, where the canonical text is now the
+  verbatim concatenation of the same fragments the phone streamed (see
+  [Canonical assistant text](../chat/transcript-and-turns.md#canonical-assistant-text-fragile--read-before-editing)).
+  Both `buildWorkChatMessages` and the envelope-level
+  `mergedWorkChatEnvelope` path route through the same helper.
 - **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against
