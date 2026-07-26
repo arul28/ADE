@@ -8347,15 +8347,8 @@ export function createAgentChatService(args: {
 
   const readLatestTranscriptTodoItems = (
     managed: ManagedChatSession,
-  ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
-    let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
-    for (const entry of readTranscriptEnvelopes(managed)) {
-      if (entry.event.type === "todo_update") {
-        latest = entry.event.items;
-      }
-    }
-    return latest;
-  };
+  ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] =>
+    readTranscriptHydrationState(managed).todoItems;
 
   /** Everything a rehydrated session has to recover from its own transcript,
    * read in one pass (the transcript is not cached, so this is deliberately not

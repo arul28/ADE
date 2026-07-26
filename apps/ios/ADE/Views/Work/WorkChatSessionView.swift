@@ -246,11 +246,13 @@ struct WorkChatSessionView: View {
   /// item leaves the derived queue (or rolled back if the command errored). See
   /// `dispatchPendingInputAnswer` / `reconcileOptimisticallyAnsweredInputs`.
   @State var optimisticallyAnsweredInputIds: Set<String> = []
-  /// Id of the pending input the user minimized, if any. Stored as an id rather
-  /// than a Bool so a different request becoming primary re-expands the strip on
-  /// its own — a minimize applies to the gate the user chose to defer, never to
-  /// the next one, and deriving it this way needs no `onChange` (which `body`'s
-  /// modifier chain has no type-inference budget left for).
+  /// Id of the pending input the user minimized, if any.
+  ///
+  /// Derived, not synchronized: a minimize applies to the gate the user chose to
+  /// defer, so it has to expire on its own the moment a different gate becomes
+  /// primary. Storing the id and computing the Bool from it makes that
+  /// impossible to get wrong; a Bool reset from an observer would be one more
+  /// thing that can fall out of step and leave a fresh question hidden.
   @State var collapsedPendingInputId: String?
 
   var sessionStatus: String {
@@ -1327,6 +1329,15 @@ func workPendingInputMaxHeight(chatSurfaceHeight: CGFloat) -> CGFloat {
   let composerReserve: CGFloat = 110
   let available = max(0, chatSurfaceHeight - composerReserve)
   return max(160, min(available * 0.82, chatSurfaceHeight * 0.62))
+}
+
+/// Budget for the inline-in-transcript question card, which is bounded by the
+/// transcript viewport rather than the whole surface (the composer sits below
+/// that viewport either way, so there is nothing to reserve for it). Kept beside
+/// `workPendingInputMaxHeight` so the two rules' divergence is deliberate and
+/// visible instead of an inline literal drifting on its own.
+func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFloat {
+  max(240, transcriptViewportHeight * 0.62)
 }
 
 private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {

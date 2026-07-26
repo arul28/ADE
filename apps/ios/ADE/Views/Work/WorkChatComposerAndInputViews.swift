@@ -964,7 +964,7 @@ struct WorkPendingInputHeightBoundedCard<Content: View>: View {
 /// versioned key, bounded and evicted oldest-first.
 enum WorkQuestionDraftStore {
   struct Snapshot: Codable, Equatable {
-    var selections: [String: [String]] = [:]
+    var selections: [String: Set<String>] = [:]
     var freeform: [String: String] = [:]
     var sharedFreeform: String = ""
     var page: Int = 0
@@ -1091,10 +1091,19 @@ struct WorkStructuredQuestionCard: View {
     return question.questions[index]
   }
 
+  /// Layout constants the height budget depends on. They are named rather than
+  /// literal because the budget arithmetic below has to agree with the actual
+  /// `adeGlassCard` padding and `VStack` spacing used in `body` — a silent
+  /// disagreement re-opens the exact overflow this card exists to prevent, with
+  /// no compile error and no symptom until a long option list appears.
+  private static let cardPadding: CGFloat = 14
+  private static let cardStackSpacing: CGFloat = 12
+
   /// Vertical space the card spends outside the scroll region: the glass card's
-  /// own padding (14 top + 14 bottom) plus the two 12pt VStack gaps that flank
-  /// the scroll view.
-  private static let cardFixedInsets: CGFloat = 14 * 2 + 12 * 2
+  /// padding top and bottom, plus the two stack gaps that flank the scroll view.
+  private static var cardFixedInsets: CGFloat {
+    cardPadding * 2 + cardStackSpacing * 2
+  }
 
   /// Height the scroll region may occupy. When no budget has been measured yet
   /// we fall back to a conservative constant rather than "unbounded" so a slow
@@ -1120,7 +1129,7 @@ struct WorkStructuredQuestionCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: Self.cardStackSpacing) {
       topChrome
         .background(chromeHeightReader(WorkQuestionTopChromeHeightKey.self))
 
@@ -1153,7 +1162,7 @@ struct WorkStructuredQuestionCard: View {
       bottomChrome
         .background(chromeHeightReader(WorkQuestionBottomChromeHeightKey.self))
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeGlassCard(cornerRadius: 18, padding: Self.cardPadding)
     .overlay(
       RoundedRectangle(cornerRadius: 18, style: .continuous)
         .stroke(providerAccent.opacity(0.30), lineWidth: 1)
@@ -1215,7 +1224,7 @@ struct WorkStructuredQuestionCard: View {
     // Only restore into an untouched card — a card already mid-edit (the same
     // request re-rendering) must win over what's on disk.
     guard selections.isEmpty, freeformByQuestion.isEmpty, singleQuestionFreeformText.isEmpty else { return }
-    selections = stored.selections.mapValues(Set.init)
+    selections = stored.selections
     freeformByQuestion = stored.freeform
     singleQuestionFreeformText = stored.sharedFreeform
     if stored.page > 0, stored.page < question.questions.count {
@@ -1235,7 +1244,7 @@ struct WorkStructuredQuestionCard: View {
     let secretIds = secretQuestionIds
     WorkQuestionDraftStore.save(
       WorkQuestionDraftStore.Snapshot(
-        selections: selections.mapValues { Array($0).sorted() },
+        selections: selections,
         freeform: freeformByQuestion.filter { !secretIds.contains($0.key) },
         // The shared freeform belongs to the single-question card's only
         // question, so it inherits that question's secrecy.

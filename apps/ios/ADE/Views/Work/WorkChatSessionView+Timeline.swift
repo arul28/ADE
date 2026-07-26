@@ -163,9 +163,9 @@ extension WorkChatSessionView {
           }
         },
         fallbackProvider: chatSummaryContext.provider,
-        // Inline-in-transcript variant: the transcript viewport is the budget
-        // here, not the whole surface (the composer sits below it either way).
-        maxCardHeight: max(240, scrollViewportHeight * 0.62)
+        maxCardHeight: workInlinePendingInputMaxHeight(
+          transcriptViewportHeight: scrollViewportHeight
+        )
       )
       .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
