@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.37] - 2026-07-25
+
+### Chat delivery and recovery
+
+- Persisted accepted, processed, and unprocessed message state so a relaunch cannot make an unstarted turn look successful.
+- Added **Run next**, **Edit**, and **Dismiss** to unprocessed messages, backed by a crash-safe dispatch receipt that avoids unsafe automatic retries.
+- Shared the provider-neutral recovery contract across desktop, iOS, the hosted client, and `ade code`, with compatibility for older Codex hosts.
+- Collapsed routine moderation checks and repeated optional MCP notices while preserving actionable integration failures.
+
+### Machine connections and continuity
+
+- Standardized account-machine routing on LAN → Tailscale → Relay across clients, with bounded attempts and truthful route diagnostics.
+- Extended signed account adoption across reachable routes and offered nearby PIN pairing when adoption cannot complete.
+- Preserved hosted and personal chat identity and history through remote-project switches, machine changes, and reconnects.
+
+### Mobile
+
+- Reworked PR detail into a readable single-column flow with native GitHub Markdown, chronological activity, review threads, checks, and merge controls.
+- Made lane deletion dismiss immediately after host handoff, retain an updating placeholder, and return navigation cleanly while cleanup finishes.
+
+### Models and browser
+
+- Canonicalized Claude Opus 5 and migrated Opus aliases across desktop, iOS, OpenCode, Droid, and `ade code`, including supported reasoning tiers and controls.
+- Made built-in-browser popups managed tabs with correct background activation, closure, selection, and inspection cleanup.
+
 ## [1.2.36] - 2026-07-24
 
 ### Account connections
@@ -987,7 +1012,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.34...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.37...HEAD
+[1.2.37]: https://github.com/arul28/ADE/compare/v1.2.36...v1.2.37
 [1.2.36]: https://github.com/arul28/ADE/compare/v1.2.35...v1.2.36
 [1.2.35]: https://github.com/arul28/ADE/compare/v1.2.34...v1.2.35
 [1.2.34]: https://github.com/arul28/ADE/compare/v1.2.33...v1.2.34

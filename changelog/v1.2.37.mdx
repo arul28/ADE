@@ -1,0 +1,31 @@
+---
+title: "v1.2.37"
+description: "Release notes for ADE v1.2.37 - July 25, 2026"
+---
+
+v1.2.37 makes chats and machine connections recoverable instead of ambiguous: ADE records whether a message was accepted and processed, offers safe next steps when an agent never started it, and uses the same LAN → Tailscale → Relay connection order across desktop, iPhone, web, and `ade code`.
+
+---
+
+## Messages no longer disappear into "Working"
+
+- **Honest delivery state.** ADE now distinguishes a message that reached the host from one the agent actually processed. That state survives relaunches, so a stalled thread no longer looks like successful work.
+- **Safe recovery choices.** If an accepted message was never processed, its original bubble offers **Run next**, **Edit**, or **Dismiss**. A crash-safe dispatch receipt prevents ADE from suggesting an automatic retry when the backend may already have started the turn.
+- **Recovery across providers and surfaces.** The recovery contract is provider-neutral, retains compatibility with older Codex hosts, and is shared by desktop, iPhone, the hosted client, and `ade code`.
+- **Quieter diagnostics.** Routine moderation checks and repeated optional MCP notices are collapsed into useful turn diagnostics, while actionable integration failures remain visible.
+
+## One connection strategy everywhere
+
+- **LAN → Tailscale → Relay.** Account machines now use the same ordered, bounded route race on every client, with the route and failure stage reported instead of a generic connection error.
+- **Secure adoption with a human fallback.** Saved machines can adopt the signed-in account over any reachable route using the signed identity handshake. If account adoption cannot complete but the Mac is nearby, ADE offers PIN pairing instead of leaving the connection stuck.
+- **Continuity through reconnects.** Hosted and personal chats retain their identity and history across remote-project switches, machine changes, and reconnects instead of reopening as empty or duplicate threads.
+
+## Better mobile PR and lane flows
+
+- **A clearer PR detail view.** Pull requests now read naturally in one column with the description, chronological activity, review threads, checks, and merge controls kept in context. GitHub Markdown is parsed into native, readable mobile content.
+- **Lane deletion gets out of the way.** The deletion sheet closes as soon as cleanup is handed to the host, the lane disappears into an updating state, and navigation returns cleanly while the worktree and sessions finish shutting down.
+
+## Models and browser popups
+
+- **Current model names everywhere.** Claude Opus 5 and migrated Opus aliases resolve to the same canonical model across desktop, iPhone, OpenCode, Droid, and `ade code`, with the supported reasoning tiers and controls shown consistently.
+- **Reliable browser popups.** New windows opened by sites become managed ADE browser tabs, background tabs stay in the background, and popup closure cleans up selection and inspection state correctly.
