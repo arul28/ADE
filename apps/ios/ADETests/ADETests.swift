@@ -13043,6 +13043,18 @@ final class ADETests: XCTestCase {
       mergeWorkAssistantText("I", " think I will look at the reconciliation path", incomingIsLiveFragment: true),
       "I think I will look at the reconciliation path"
     )
+    // A long delta that shares no opening with the accumulation is appended:
+    // the rendition check is anchored at the start, so a mid-message match can
+    // never make a real delta look like a second copy of the whole message.
+    let accumulated = "Applying the guard to every merge call site now, then checking the siblings."
+    XCTAssertEqual(
+      mergeWorkAssistantText(
+        accumulated,
+        " Verification ran the narrowest target that proves the fix.",
+        incomingIsLiveFragment: true
+      ),
+      accumulated + " Verification ran the narrowest target that proves the fix."
+    )
     XCTAssertEqual(
       mergeWorkAssistantText("no new mod", "ifier chain needed:", incomingIsLiveFragment: true),
       "no new modifier chain needed:"

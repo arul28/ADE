@@ -353,15 +353,20 @@ func mergeWorkAssistantText(
   return incoming.count >= existing.count ? incoming : existing
 }
 
-/// True when two irreconcilable renditions are the same text once whitespace is
-/// ignored. Deliberately requires both sides to clear the same minimum length
-/// the other replay heuristics use, so a short accumulation that happens to
-/// appear inside a genuine live delta is still appended.
+/// True when two renditions tell the same story from the start once whitespace
+/// is ignored — the shorter is the longer's opening, so it adds nothing.
+///
+/// Anchored at the start on purpose. Two renditions of one message always share
+/// a beginning, whereas a live delta that merely repeats a phrase from earlier
+/// in the message matches somewhere in the middle. Testing containment anywhere
+/// would swallow that delta and silently drop legitimately repeated output. Both
+/// sides must also clear the same minimum length the other replay heuristics
+/// use, so a short delta echoing the message's opening still appends.
 private func workAssistantTextRenditionsAgreeIgnoringWhitespace(_ lhs: String, _ rhs: String) -> Bool {
   let left = workAssistantTextIgnoringWhitespace(lhs)
   let right = workAssistantTextIgnoringWhitespace(rhs)
   guard min(left.count, right.count) >= workStreamingMergeMinimumRepeatedTailLength else { return false }
-  return left.contains(right) || right.contains(left)
+  return left.hasPrefix(right) || right.hasPrefix(left)
 }
 
 private func workAssistantTextIgnoringWhitespace(_ text: String) -> String {
