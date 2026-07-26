@@ -12943,6 +12943,59 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testCanonicalAssistantTextReplacesUnreconcilableLiveFragment() {
+    // A canonical `chat.getTranscript` row is the whole message. When it cannot
+    // be reconciled with what streamed in, concatenating renders the message
+    // twice — the mobile "text cut then repeated" bug.
+    let complete = "Better approach — the surface height is already derivable from two "
+      + "existing measurements, no new modifier chain needed:"
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-26T01:00:01.000Z",
+        sequence: 42,
+        event: .assistantText(text: "ifier chain needed:", turnId: "turn-1", itemId: "msg-a")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-26T01:00:02.000Z",
+        sequence: nil,
+        event: .assistantText(text: complete, turnId: "turn-1", itemId: "msg-a")
+      ),
+    ]
+
+    let markdown = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+      .map(\.markdown)
+
+    XCTAssertEqual(markdown, [complete])
+  }
+
+  func testMergeWorkAssistantTextNeverConcatenatesACompleteRendition() {
+    let complete = "Better approach — the surface height is already derivable from two "
+      + "existing measurements, no new modifier chain needed:"
+    XCTAssertEqual(
+      mergeWorkAssistantText("ifier chain needed:", complete, incomingIsLiveFragment: false),
+      complete
+    )
+    // The shorter rendition wins only when it is the longer text.
+    XCTAssertEqual(
+      mergeWorkAssistantText(complete, "unrelated stale row", incomingIsLiveFragment: false),
+      complete
+    )
+  }
+
+  func testMergeWorkAssistantTextStillAppendsLiveDeltas() {
+    XCTAssertEqual(
+      mergeWorkAssistantText("Better approach", " — the surface", incomingIsLiveFragment: true),
+      "Better approach — the surface"
+    )
+    XCTAssertEqual(
+      mergeWorkAssistantText("no new mod", "ifier chain needed:", incomingIsLiveFragment: true),
+      "no new modifier chain needed:"
+    )
+  }
+
   func testMakeWorkChatTranscriptPreservesTranscriptEntryMessageId() {
     let transcript = makeWorkChatTranscript(
       from: [

@@ -40,6 +40,41 @@ discriminated `AgentChatEvent` union.
 originate from orchestrator, worker, or user threads and must be routed
 back to the correct activity feed.
 
+## Canonical assistant text (fragile — read before editing)
+
+`chat.getTranscript` flattens the envelope stream into role-tagged entries via
+`transcriptEntriesFromEnvelopes` in
+`apps/desktop/src/main/services/chat/chatTranscriptEntries.ts`. Clients that
+hold **both** the live fragment stream and this canonical text (iOS, the web
+client) reconcile the two, so the module owes them one invariant:
+
+> The canonical text of a message is the **verbatim concatenation** of its
+> `text` fragments. ADE never invents a character.
+
+Two rules enforce it, and both exist because breaking them corrupted transcripts:
+
+- **Fragments sharing a provider `messageId` concatenate verbatim**, whatever
+  events interleave. The event carries no block-level identity, so ADE cannot
+  tell "new paragraph" from "next delta"; guessing spliced `"\n\n"` into the
+  middle of a word (`"no new mod"` + `"ifier chain needed:"`), and the client
+  holding both renditions then rendered the message twice.
+- **Only rendered content ends an assistant run.** Ephemeral chrome — `activity`
+  hints, subagent progress, token usage — is invisible to every renderer, so
+  letting it break a run made the canonical text disagree with what desktop, the
+  TUI, and iOS actually draw. `isTranscriptContentEvent` is an allowlist of
+  *content* types on purpose: a new event type defaults to "does not break the
+  run", which at worst drops a paragraph break, whereas the inverse default
+  corrupts words.
+
+A whitespace-only fragment (a word gap, or a markdown hard break `"  \n"`) is a
+real delta and is dropped only when there is no run for it to continue.
+
+On the client side, `mergeWorkAssistantText`
+(`apps/ios/ADE/Views/Work/WorkErrorAndMessageHelpers.swift`) holds the matching
+guard: an envelope with no `sequence` came from `chat.getTranscript` and is a
+*complete* message, so it may replace the accumulated text or be dropped, but is
+never concatenated onto it.
+
 ## Parsing
 
 `parseAgentChatTranscript(raw)` in

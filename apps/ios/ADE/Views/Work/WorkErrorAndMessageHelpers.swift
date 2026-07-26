@@ -130,7 +130,11 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         turnId: turnId,
         itemId: itemId
       ) {
-        messages[itemIndex].markdown = mergeWorkStreamingText(messages[itemIndex].markdown, text)
+        messages[itemIndex].markdown = mergeWorkAssistantText(
+          messages[itemIndex].markdown,
+          text,
+          incomingIsLiveFragment: isLiveFragment
+        )
         messages[itemIndex].assistantPreview = nil
         if messages[itemIndex].turnProvider == nil {
           messages[itemIndex].turnProvider = metadata?.provider
@@ -143,7 +147,11 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
-        messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+        messages[lastIndex].markdown = mergeWorkAssistantText(
+          messages[lastIndex].markdown,
+          text,
+          incomingIsLiveFragment: isLiveFragment
+        )
         messages[lastIndex].assistantPreview = nil
       } else if let duplicateIndex = duplicateAssistantFragmentIndex(
         in: messages,
@@ -305,6 +313,28 @@ private func mergedDuplicateAssistantText(existing: String, incoming: String) ->
 
   let merged = mergeWorkStreamingText(existing, incoming)
   return merged == existing + incoming ? nil : merged
+}
+
+/// Merge an assistant text fragment into the text already accumulated for the
+/// same message.
+///
+/// A live envelope carries a sequence and is a delta, so appending it is
+/// correct. An envelope with no sequence came from `chat.getTranscript` and is
+/// the *whole* message; appending that to a live accumulation renders the
+/// message twice. When the two renditions cannot be reconciled, keeping the
+/// longer one loses at most a fragment, whereas concatenating always duplicates.
+func mergeWorkAssistantText(
+  _ existing: String,
+  _ incoming: String,
+  incomingIsLiveFragment: Bool
+) -> String {
+  let merged = mergeWorkStreamingText(existing, incoming)
+  guard !incomingIsLiveFragment,
+        !existing.isEmpty,
+        !incoming.isEmpty,
+        merged == existing + incoming
+  else { return merged }
+  return incoming.count >= existing.count ? incoming : existing
 }
 
 func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
@@ -1183,7 +1213,11 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
       timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
       sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
       event: .assistantText(
-        text: mergeWorkStreamingText(existingText, incomingText),
+        text: mergeWorkAssistantText(
+          existingText,
+          incomingText,
+          incomingIsLiveFragment: incoming.sequence != nil
+        ),
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
       )
