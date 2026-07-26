@@ -917,6 +917,11 @@ type PersistedChatState = {
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
   codexTerminalTurnIds?: string[];
   /**
+   * True once ADE consumes the automatic recovery attempt for the current
+   * user-request chain (or the user explicitly chooses to keep waiting).
+   */
+  codexAutomaticRecoveryAttempted?: boolean;
+  /**
    * Fsynced terminal receipts for accepted-but-unprocessed message recovery.
    * These close the crash window between provider dispatch and the async
    * transcript append that normally carries user_message_resolution.
@@ -2474,6 +2479,7 @@ type ManagedChatSession = {
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
   codexTerminalTurnIds: Set<string>;
+  codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
@@ -7231,7 +7237,6 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
-  const codexAutomaticRecoveryAttemptedBySession = new Set<string>();
   const continuityRecoveryInFlight = new Set<string>();
   const unprocessedMessageResolutionInFlight = new Map<
     string,
@@ -11431,6 +11436,9 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      ...(managed.codexAutomaticRecoveryAttempted
+        ? { codexAutomaticRecoveryAttempted: true }
+        : {}),
       ...(managed.unprocessedMessageResolutionReceipts.size
         ? {
             unprocessedMessageResolutionReceipts: [
@@ -11769,6 +11777,9 @@ export function createAgentChatService(args: {
             ? { idleSinceAt: null }
             : {}),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
+        ...(record.codexAutomaticRecoveryAttempted === true
+          ? { codexAutomaticRecoveryAttempted: true }
+          : {}),
         ...(unprocessedMessageResolutionReceipts.length
           ? { unprocessedMessageResolutionReceipts }
           : {}),
@@ -15682,6 +15693,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
+      codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
         normalizeUnprocessedMessageResolutionReceipts(
           persisted?.unprocessedMessageResolutionReceipts,
@@ -24323,6 +24335,26 @@ export function createAgentChatService(args: {
     return flags.filter((flag): flag is string => typeof flag === "string");
   }
 
+  function persistCodexAutomaticRecoveryAttempt(
+    managed: ManagedChatSession,
+  ): boolean {
+    if (managed.codexAutomaticRecoveryAttempted) return true;
+    managed.codexAutomaticRecoveryAttempted = true;
+    if (persistChatState(managed, { fsync: true })) return true;
+    managed.codexAutomaticRecoveryAttempted = false;
+    return false;
+  }
+
+  function clearCodexAutomaticRecoveryAttempt(
+    managed: ManagedChatSession,
+  ): boolean {
+    if (!managed.codexAutomaticRecoveryAttempted) return true;
+    managed.codexAutomaticRecoveryAttempted = false;
+    if (persistChatState(managed, { fsync: true })) return true;
+    managed.codexAutomaticRecoveryAttempted = true;
+    return false;
+  }
+
   function emitCodexTurnStalled(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -24345,7 +24377,7 @@ export function createAgentChatService(args: {
     const detectedAt = nowIso();
     const turnStartedAt = new Date(args.turnStartedAt ?? Date.now()).toISOString();
     const lastProgressAt = new Date(args.lastProgressAt ?? args.turnStartedAt ?? Date.now()).toISOString();
-    const automaticRecoveryAttempted = codexAutomaticRecoveryAttemptedBySession.has(managed.session.id);
+    const automaticRecoveryAttempted = managed.codexAutomaticRecoveryAttempted;
     const providerNeutralReason = args.reason === "app_server_state_unknown"
       ? "runtime_state_unknown"
       : args.reason;
@@ -24704,29 +24736,34 @@ export function createAgentChatService(args: {
 
       if (
         stallReason === "no_output"
-        && !codexAutomaticRecoveryAttemptedBySession.has(managed.session.id)
+        && !managed.codexAutomaticRecoveryAttempted
       ) {
-        codexAutomaticRecoveryAttemptedBySession.add(managed.session.id);
-        emitCodexTurnRecovery(managed, {
-          turnId,
-          action: "restart_resume_thread",
-          state: "recovering",
-          message: "No Codex output arrived. ADE is restarting the app-server and resuming this thread once.",
-          automatic: true,
-        });
-        persistChatState(managed);
-        try {
-          await recoverCodexTurn({
-            sessionId: managed.session.id,
+        if (persistCodexAutomaticRecoveryAttempt(managed)) {
+          emitCodexTurnRecovery(managed, {
             turnId,
             action: "restart_resume_thread",
-          }, { automatic: true });
-          return;
-        } catch (error) {
-          logger.warn("agent_chat.codex_automatic_recovery_failed", {
+            state: "recovering",
+            message: "No Codex output arrived. ADE is restarting the app-server and resuming this thread once.",
+            automatic: true,
+          });
+          try {
+            await recoverCodexTurn({
+              sessionId: managed.session.id,
+              turnId,
+              action: "restart_resume_thread",
+            }, { automatic: true });
+            return;
+          } catch (error) {
+            logger.warn("agent_chat.codex_automatic_recovery_failed", {
+              sessionId: managed.session.id,
+              turnId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else {
+          logger.warn("agent_chat.codex_automatic_recovery_marker_persist_failed", {
             sessionId: managed.session.id,
             turnId,
-            error: error instanceof Error ? error.message : String(error),
           });
         }
       }
@@ -24736,7 +24773,9 @@ export function createAgentChatService(args: {
         reason: threadId && !stateProbeFailed ? stallReason : "app_server_state_unknown",
         message: stallReason === "no_progress"
           ? "Codex has not produced model or tool activity for 10 minutes. ADE left the turn running so long work is not destroyed."
-          : "Codex still has not produced output after ADE's one automatic restart. Restart and resume again, or keep waiting.",
+          : managed.codexAutomaticRecoveryAttempted
+            ? "Codex still has not produced output after ADE's one automatic restart. Restart and resume again, or keep waiting."
+            : "Codex has not produced output. ADE could not safely record an automatic recovery attempt, so it left the turn running.",
         turnStartedAt,
         lastProgressAt,
       });
@@ -27543,6 +27582,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
+      codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -28210,6 +28250,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
+      codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -33973,9 +34014,6 @@ export function createAgentChatService(args: {
     const routableText = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0;
-    if (routableText && !options?.automaticRecovery) {
-      codexAutomaticRecoveryAttemptedBySession.delete(args.sessionId);
-    }
     // Gate BEFORE routing to steer: a send to an already-active chat becomes a
     // steer() (which has no disk gate of its own), so checking after the route
     // would let critical/exhausted pressure keep appending user input and
@@ -34016,6 +34054,13 @@ export function createAgentChatService(args: {
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
+    if (
+      prepared.managed.session.provider === "codex"
+      && !options?.automaticRecovery
+      && !clearCodexAutomaticRecoveryAttempt(prepared.managed)
+    ) {
+      throw new Error("ADE could not save the new Codex turn state. Retry before closing this chat.");
+    }
     clearUserTurnMarkers();
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
@@ -35823,7 +35868,9 @@ export function createAgentChatService(args: {
       if (action === "wait") {
         // The user explicitly chose to keep this exact turn alive. Do not
         // surprise them with ADE's automatic restart on the next watch cycle.
-        codexAutomaticRecoveryAttemptedBySession.add(sessionId);
+        if (!persistCodexAutomaticRecoveryAttempt(managed)) {
+          throw new Error("ADE could not save the recovery choice. Retry before closing this chat.");
+        }
         scheduleCodexNoFirstEventWatchdog(managed, runtime, normalizedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
@@ -35831,7 +35878,6 @@ export function createAgentChatService(args: {
           message: "Continuing to wait for Codex output.",
           turnId: normalizedTurnId,
         });
-        persistChatState(managed);
         return { action, turnId: normalizedTurnId, status: "waiting" };
       }
 
@@ -36784,7 +36830,6 @@ export function createAgentChatService(args: {
 
   const forceDisposeManagedSession = (managed: ManagedChatSession, reason: string): void => {
     const sessionId = managed.session.id;
-    codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
     rejectActiveSessionTurnCollector(sessionId, reason);
     clearSubagentSnapshots(sessionId);
     for (const pending of managed.localPendingInputs.values()) {
@@ -38149,7 +38194,6 @@ export function createAgentChatService(args: {
     { sessionId }: AgentChatDisposeArgs,
     terminalStatus: "disposed" | "detached",
   ): Promise<void> => {
-    codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
 
@@ -38254,8 +38298,6 @@ export function createAgentChatService(args: {
     if (!trimmedSessionId.length) {
       throw new Error("Chat session id is required.");
     }
-    codexAutomaticRecoveryAttemptedBySession.delete(trimmedSessionId);
-
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
       throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
@@ -38398,7 +38440,6 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
-    codexAutomaticRecoveryAttemptedBySession.clear();
     await flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("dispose_all");
   };
@@ -38411,7 +38452,6 @@ export function createAgentChatService(args: {
     }
     for (const [sessionId, managed] of managedSessions) {
       try {
-        codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
         clearSubagentSnapshots(sessionId);
         for (const pending of managed.localPendingInputs.values()) {
           pending.resolve({ decision: "cancel" });
@@ -38431,7 +38471,6 @@ export function createAgentChatService(args: {
       revokeBuiltInBrowserActorCapability(sessionId);
     }
     managedSessions.clear();
-    codexAutomaticRecoveryAttemptedBySession.clear();
     void flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };

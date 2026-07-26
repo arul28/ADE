@@ -24213,6 +24213,94 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("persists the Codex automatic-recovery guard across restart while keeping a new turn eligible", async () => {
+      vi.useFakeTimers();
+      try {
+        const first = createService();
+        const session = await first.service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+        await first.service.sendMessage({
+          sessionId: session.id,
+          text: "Keep this turn running.",
+        }, { awaitDispatch: true });
+        await first.service.recoverCodexTurn({
+          sessionId: session.id,
+          turnId: "turn-1",
+          action: "wait",
+        });
+
+        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
+          .toBe(true);
+        first.service.forceDisposeAll();
+
+        const restartedEvents: AgentChatEventEnvelope[] = [];
+        const restarted = createService({
+          onEvent: (event: AgentChatEventEnvelope) => restartedEvents.push(event),
+        });
+        await restarted.service.resumeSession({ sessionId: session.id });
+        mockState.emitCodexPayload({
+          method: "turn/started",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "inProgress" },
+          },
+        });
+        await Promise.resolve();
+        const resumeRequestsBeforeWatchdog = mockState.codexRequestPayloads
+          .filter((payload) => payload.method === "thread/resume").length;
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await waitForFakeTimerCondition(
+          () => restartedEvents.some((event) =>
+            event.event.type === "codex_turn_stalled"
+            && event.event.turnId === "turn-1"
+            && event.event.automaticRecoveryAttempted === true),
+          "the resumed turn to remain stalled without another automatic recovery",
+        );
+
+        expect(restartedEvents.some((event) =>
+          event.event.type === "codex_turn_recovery"
+          && event.event.turnId === "turn-1"
+          && event.event.automatic)).toBe(false);
+        expect(mockState.codexRequestPayloads
+          .filter((payload) => payload.method === "thread/resume")).toHaveLength(
+            resumeRequestsBeforeWatchdog,
+          );
+
+        mockState.emitCodexPayload({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed", items: [] },
+          },
+        });
+        await Promise.resolve();
+        await restarted.service.sendMessage({
+          sessionId: session.id,
+          text: "Start a genuinely new turn.",
+        }, { awaitDispatch: true });
+        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
+          .not.toBe(true);
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await waitForFakeTimerCondition(
+          () => restartedEvents.some((event) =>
+            event.event.type === "codex_turn_recovery"
+            && event.event.turnId === "turn-2"
+            && event.event.state === "recovered"
+            && event.event.automatic),
+          "the new turn to complete its first automatic recovery",
+        );
+        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
+          .toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("warns without killing a Codex turn after ten minutes of mid-turn inactivity", async () => {
       vi.useFakeTimers();
       try {
