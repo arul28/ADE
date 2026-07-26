@@ -88,15 +88,14 @@ cannot merge backwards into text that preceded the user.
 A whitespace-only fragment (a word gap, or a markdown hard break `"  \n"`) is a
 real delta and is dropped only when there is no run for it to continue.
 
-On the client side, `mergeWorkAssistantText`
-(`apps/ios/ADE/Views/Work/WorkErrorAndMessageHelpers.swift`) holds the matching
-backstop: an envelope with no `sequence` came from `chat.getTranscript` and is a
-*whole* message, not a delta. Overlapping renditions still merge on their
-overlap; when no overlap is found, the longer rendition wins instead of the two
-being concatenated, because concatenating a whole message onto a live
-accumulation renders it twice. Canonical rows usually sort *ahead* of their live
-fragments (`sequence: nil` orders as 0), so on the common path the guard is a
-no-op. It is a backstop, not a substitute for the host-side invariant above.
+Because canonical and rendered text agree, clients need no reconciliation
+heuristic of their own. iOS merges every assistant fragment through
+`mergeWorkStreamingText` regardless of where the envelope came from. An earlier
+attempt to add a client-side guard for whole-message rows had to be removed: it
+could not tell a complete message from one chunk of a paged canonical fetch
+(`getChatTranscriptPage` can split a message at an envelope boundary), so it
+dropped the other chunk. Keep the agreement on the host side; do not reintroduce
+a client rule that has to guess what a sequence-less envelope contains.
 
 ## Parsing
 

@@ -12973,53 +12973,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(markdown, [complete])
   }
 
-  func testMergeWorkAssistantTextNeverConcatenatesACompleteRendition() {
-    let complete = "Better approach — the surface height is already derivable from two "
-      + "existing measurements, no new modifier chain needed:"
-    XCTAssertEqual(
-      mergeWorkAssistantText("ifier chain needed:", complete, incomingIsLiveFragment: false),
-      complete
-    )
-    // The accumulated text wins when the incoming rendition is the shorter one.
-    XCTAssertEqual(
-      mergeWorkAssistantText(complete, "unrelated stale row", incomingIsLiveFragment: false),
-      complete
-    )
-  }
-
-  func testMergeWorkAssistantTextPassesReconciledMergesThrough() {
-    // The common path: the merge reconciles, so the guard must not alter it.
-    XCTAssertEqual(
-      mergeWorkAssistantText("no new mod", "no new modifier chain needed:", incomingIsLiveFragment: false),
-      "no new modifier chain needed:"
-    )
-    XCTAssertEqual(
-      mergeWorkAssistantText("Full answer.", "Full answer.", incomingIsLiveFragment: false),
-      "Full answer."
-    )
-  }
-
-  func testMergeWorkAssistantTextStillAppendsLiveDeltas() {
-    XCTAssertEqual(
-      mergeWorkAssistantText("Better approach", " — the surface", incomingIsLiveFragment: true),
-      "Better approach — the surface"
-    )
-    // A live delta is a delta, never a whole rendition, so it always appends.
-    XCTAssertEqual(
-      mergeWorkAssistantText(
-        "I reviewed the transcript rebuild and the merge helpers in detail.",
-        " Next I will check the sync hello contract for new fields.",
-        incomingIsLiveFragment: true
-      ),
-      "I reviewed the transcript rebuild and the merge helpers in detail."
-        + " Next I will check the sync hello contract for new fields."
-    )
-    XCTAssertEqual(
-      mergeWorkAssistantText("no new mod", "ifier chain needed:", incomingIsLiveFragment: true),
-      "no new modifier chain needed:"
-    )
-  }
-
   func testMakeWorkChatTranscriptPreservesTranscriptEntryMessageId() {
     let transcript = makeWorkChatTranscript(
       from: [

@@ -130,11 +130,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         turnId: turnId,
         itemId: itemId
       ) {
-        messages[itemIndex].markdown = mergeWorkAssistantText(
-          messages[itemIndex].markdown,
-          text,
-          incomingIsLiveFragment: isLiveFragment
-        )
+        messages[itemIndex].markdown = mergeWorkStreamingText(messages[itemIndex].markdown, text)
         messages[itemIndex].assistantPreview = nil
         if messages[itemIndex].turnProvider == nil {
           messages[itemIndex].turnProvider = metadata?.provider
@@ -147,11 +143,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
-        messages[lastIndex].markdown = mergeWorkAssistantText(
-          messages[lastIndex].markdown,
-          text,
-          incomingIsLiveFragment: isLiveFragment
-        )
+        messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
         messages[lastIndex].assistantPreview = nil
       } else if let duplicateIndex = duplicateAssistantFragmentIndex(
         in: messages,
@@ -313,34 +305,6 @@ private func mergedDuplicateAssistantText(existing: String, incoming: String) ->
 
   let merged = mergeWorkStreamingText(existing, incoming)
   return merged == existing + incoming ? nil : merged
-}
-
-/// Merge an assistant text fragment into the text already accumulated for the
-/// same message.
-///
-/// A live envelope carries a sequence and is a delta, so appending it is
-/// correct. An envelope with no sequence is a *whole* message — normally a
-/// `chat.getTranscript` row — and appending that to a live accumulation renders
-/// the message twice. When the two cannot be reconciled, keeping the longer one
-/// loses at most a fragment, whereas concatenating always duplicates.
-///
-/// This is a backstop, not the fix for the "text cut then repeated" bug: that
-/// was the host rebuilding canonical text that could not match the live stream
-/// (see `chatTranscriptEntries.ts`). Canonical rows also usually sort *ahead* of
-/// their live fragments, since `sequence: nil` orders as 0, so on the common
-/// path the complete rendition arrives as `existing` and this guard is a no-op.
-func mergeWorkAssistantText(
-  _ existing: String,
-  _ incoming: String,
-  incomingIsLiveFragment: Bool
-) -> String {
-  let merged = mergeWorkStreamingText(existing, incoming)
-  guard !existing.isEmpty,
-        !incoming.isEmpty,
-        merged == existing + incoming
-  else { return merged }
-  guard !incomingIsLiveFragment else { return merged }
-  return incoming.count >= existing.count ? incoming : existing
 }
 
 func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
@@ -1219,11 +1183,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
       timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
       sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
       event: .assistantText(
-        text: mergeWorkAssistantText(
-          existingText,
-          incomingText,
-          incomingIsLiveFragment: incoming.sequence != nil
-        ),
+        text: mergeWorkStreamingText(existingText, incomingText),
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
       )
