@@ -126,20 +126,6 @@ describe("transcriptEntriesFromEnvelopes", () => {
     expect(entries).toEqual(["Main agent part one and part two.", "Other message"]);
   });
 
-  it("starts a fresh assistant run after a user message", () => {
-    const entries = transcriptEntriesFromEnvelopes(SESSION, [
-      envelope({ type: "text", text: "First answer.", messageId: "msg-a", turnId: "turn-1" }),
-      envelope({ type: "user_message", text: "follow up", turnId: "turn-2" }),
-      envelope({ type: "text", text: "Second answer.", messageId: "msg-b", turnId: "turn-2" }),
-    ]);
-
-    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
-      ["assistant", "First answer."],
-      ["user", "follow up"],
-      ["assistant", "Second answer."],
-    ]);
-  });
-
   it("never glues an assistant stream across a user message", () => {
     // A user turn ends every assistant stream. If a key recurred, keeping the
     // draft open would concatenate verbatim and file the text before the user.
