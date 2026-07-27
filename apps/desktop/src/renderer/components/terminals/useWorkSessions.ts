@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { isLivePinnedBinding } from "../../lib/chatMachineRouting";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -460,9 +461,23 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
-  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
-    !pin || appStore.getState().projectBinding?.key === pin.key
-  ), [appStore]);
+  // A pin that differs from the active binding used to mean "stale detached
+  // launch", so its updates were dropped. Under per-chat runtime routing that
+  // is the normal, correct state for every chat whose lane lives on another
+  // machine — the whole point is that those chats stream without rebinding the
+  // tab. The question is no longer "is this the active binding?" but "is this
+  // binding still open?", so updates for a foreign chat are applied and only a
+  // pin for a closed project is discarded.
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => {
+    const state = appStore.getState();
+    const open: OpenProjectBinding[] = [];
+    if (state.projectBinding) open.push(state.projectBinding);
+    for (const binding of state.openRemoteProjectTabs ?? []) open.push(binding);
+    for (const rootPath of state.openProjectTabRoots ?? []) {
+      open.push({ kind: "local", key: rootPath, rootPath, displayName: rootPath } as OpenProjectBinding);
+    }
+    return isLivePinnedBinding(pin, open);
+  }, [appStore]);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);

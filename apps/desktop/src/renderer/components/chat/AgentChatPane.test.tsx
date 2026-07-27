@@ -8662,3 +8662,92 @@ describe("older transcript paging retries", () => {
     expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
   }, 30_000);
 });
+
+describe("AgentChatPane per-chat runtime routing", () => {
+  const emptyHistory = (sessionId: string): AgentChatEventHistorySnapshot => ({
+    sessionId,
+    events: [],
+    truncated: false,
+    sessionFound: true,
+  });
+  const machineA = {
+    kind: "local" as const,
+    key: "local:/repo-a",
+    rootPath: "/repo-a",
+    displayName: "Machine A",
+  };
+  const machineB = {
+    kind: "remote" as const,
+    key: "remote:target-b:project-b",
+    targetId: "target-b",
+    runtimeName: "machine-b",
+    projectId: "project-b",
+    rootPath: "/repo-b",
+    displayName: "Machine B",
+  };
+
+  function bindWindowToMachineA(options?: { includeMachineB?: boolean; laneOnB?: string }) {
+    useAppStore.setState({
+      project: { rootPath: "/repo-a", displayName: "Machine A" } as any,
+      projectBinding: machineA as any,
+      openProjectTabRoots: ["/repo-a"],
+      openRemoteProjectTabs: (options?.includeMachineB === false ? [] : [machineB]) as any,
+      projectInfoByRoot: { "/repo-a": { rootPath: "/repo-a", displayName: "Machine A" } } as any,
+      lanes: [{ id: "lane-a", name: "lane on A" }] as any,
+      laneCacheByProject: {
+        [machineB.key]: {
+          lanes: [{ id: options?.laneOnB ?? "lane-b", name: "lane on B" }],
+          laneSnapshots: [],
+        },
+      } as any,
+    });
+  }
+
+  it("streams a chat whose lane lives on another machine from THAT machine, without rebinding the tab", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+
+    renderPane(session);
+
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
+    // The chat's history read is pinned to machine B's binding...
+    expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-b" }),
+      machineB,
+    );
+    // ...and the window's project tab is STILL bound to machine A.
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("leaves a chat on the active binding on the unpinned path", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("chat-on-a", { laneId: "lane-a", title: "Local chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-a") });
+
+    renderPane(session);
+
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
+    // No pin argument at all — byte-for-byte the pre-routing call.
+    expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-a" }),
+    );
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("does not pin when the lane's machine is not open in this window", async () => {
+    bindWindowToMachineA({ includeMachineB: false });
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Unreachable machine" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+
+    renderPane(session);
+
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
+    expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-b" }),
+    );
+  });
+});

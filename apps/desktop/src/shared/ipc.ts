@@ -97,7 +97,6 @@ export const IPC = {
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
   remoteRuntimeStreamEvents: "ade.remoteRuntime.streamEvents",
-  remoteRuntimeCheckLocalWork: "ade.remoteRuntime.checkLocalWork",
   remoteRuntimeDisconnect: "ade.remoteRuntime.disconnect",
   localRuntimeListActionRegistry: "ade.localRuntime.listActionRegistry",
   localRuntimeCallAction: "ade.localRuntime.callAction",

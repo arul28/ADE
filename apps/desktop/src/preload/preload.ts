@@ -1541,6 +1541,22 @@ async function callPinnedRuntimeAction<T>(
   return response.result as T;
 }
 
+// Per-chat runtime routing: a chat inherits its machine from its lane, so a
+// chat whose lane lives on another open machine carries an explicit pin and
+// must reach THAT runtime without rebinding this window's project tab. When no
+// pin is supplied the call behaves exactly as before — same bound path, same
+// IPC fallback, no extra await.
+function callPinnedOrBoundRuntimeActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
+  return callProjectRuntimeActionOr<T>(domain, action, request, local);
+}
+
 function callPrReadRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -3797,11 +3813,6 @@ contextBridge.exposeInMainWorld("ade", {
         projectId,
         request,
       }),
-    checkLocalWork: async (
-      id: string,
-      project: RemoteRuntimeProjectRecord,
-    ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
     disconnect: async (
       id: string,
       options: { manual?: boolean } = {},
@@ -5290,7 +5301,15 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.sessionsList, args);
     },
-    get: async (sessionId: string): Promise<TerminalSessionDetail | null> => {
+    get: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalSessionDetail | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<TerminalSessionDetail | null>(pin, "session", "get", {
+          arg: sessionId,
+        });
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<TerminalSessionDetail | null>(
           "session",
@@ -5465,7 +5484,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<string> => {
+      if (pin) {
+        return callPinnedRuntimeAction<string>(pin, "session", "readTranscriptTail", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<string>(
         "session",
         "readTranscriptTail",
@@ -5504,10 +5527,19 @@ contextBridge.exposeInMainWorld("ade", {
     },
     getSummary: async (
       args: AgentChatGetSummaryArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSessionSummary | null> => {
       const sessionId =
         typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return ipcRenderer.invoke(IPC.agentChatGetSummary, args);
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatSessionSummary | null>(
+          pin,
+          "chat",
+          "getSessionSummary",
+          { arg: sessionId },
+        );
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<AgentChatSessionSummary | null>(
           "chat",
@@ -5632,17 +5664,23 @@ contextBridge.exposeInMainWorld("ade", {
       }
       agentChatSummaryCache.clear();
     },
-    steer: async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+    steer: async (
+      args: AgentChatSteerArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatSteerResult>("chat", "steer", { args }, () =>
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatSteerResult>(pin, "chat", "steer", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSteer, args),
       );
       agentChatSummaryCache.clear();
       return result;
     },
-    cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> => {
+    cancelSteer: async (
+      args: AgentChatCancelSteerArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
-      await callProjectRuntimeActionOr("chat", "cancelSteer", { args }, () =>
+      await callPinnedOrBoundRuntimeActionOr(pin, "chat", "cancelSteer", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
       );
       agentChatSummaryCache.clear();
@@ -5656,9 +5694,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     dispatchSteer: async (
       args: AgentChatDispatchSteerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatDispatchSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatDispatchSteerResult>(
+        pin,
         "chat",
         "dispatchSteer",
         { args },
@@ -5680,9 +5720,13 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    interrupt: async (args: AgentChatInterruptArgs): Promise<AgentChatInterruptResult> => {
+    interrupt: async (
+      args: AgentChatInterruptArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatInterruptResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatInterruptResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatInterruptResult>(
+        pin,
         "chat",
         "interrupt",
         { args },
@@ -5693,9 +5737,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     restoreCancelledQueue: async (
       args: AgentChatRestoreCancelledQueueArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRestoreCancelledQueueResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRestoreCancelledQueueResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRestoreCancelledQueueResult>(
+        pin,
         "chat",
         "restoreCancelledQueue",
         { args },
@@ -5706,9 +5752,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverTurn: async (
       args: AgentChatRecoverTurnArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRecoverTurnResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRecoverTurnResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRecoverTurnResult>(
+        pin,
         "chat",
         "recoverTurn",
         { args },
@@ -5719,9 +5767,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverCodexTurn: async (
       args: AgentChatRecoverCodexTurnArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRecoverCodexTurnResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRecoverCodexTurnResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRecoverCodexTurnResult>(
+        pin,
         "chat",
         "recoverCodexTurn",
         { args },
@@ -5732,9 +5782,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     resolveUnprocessedMessage: async (
       args: AgentChatResolveUnprocessedMessageArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatResolveUnprocessedMessageResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatResolveUnprocessedMessageResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatResolveUnprocessedMessageResult>(
+        pin,
         "chat",
         "resolveUnprocessedMessage",
         { args },
@@ -5756,8 +5808,16 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    approve: async (args: AgentChatApproveArgs): Promise<void> => {
+    approve: async (
+      args: AgentChatApproveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "approveToolUse", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "approveToolUse",
@@ -5769,8 +5829,14 @@ contextBridge.exposeInMainWorld("ade", {
     },
     respondToInput: async (
       args: AgentChatRespondToInputArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "respondToInput", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "respondToInput",
@@ -5800,8 +5866,16 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModelCatalog, args ?? {});
     },
-    archive: async (args: AgentChatArchiveArgs): Promise<void> => {
+    archive: async (
+      args: AgentChatArchiveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "archiveSession", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "archiveSession",
@@ -5811,8 +5885,16 @@ contextBridge.exposeInMainWorld("ade", {
         await ipcRenderer.invoke(IPC.agentChatArchive, args);
       agentChatSummaryCache.clear();
     },
-    unarchive: async (args: AgentChatArchiveArgs): Promise<void> => {
+    unarchive: async (
+      args: AgentChatArchiveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "unarchiveSession", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "unarchiveSession",
@@ -5838,8 +5920,19 @@ contextBridge.exposeInMainWorld("ade", {
     },
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        const pinned = await callPinnedRuntimeAction<AgentChatSession>(
+          pin,
+          "chat",
+          "updateSession",
+          { args },
+        );
+        agentChatSummaryCache.clear();
+        return pinned;
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
         "chat",
         "updateSession",
@@ -5899,17 +5992,30 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    warmupModel: async (args: {
-      sessionId: string;
-      modelId: string;
-    }): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "warmupModel", { args }, () =>
+    warmupModel: async (
+      args: {
+        sessionId: string;
+        modelId: string;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "warmupModel", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
       ),
     onEvent: subscribeAgentChatEvents,
     slashCommands: async (
       args: AgentChatSlashCommandsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSlashCommand[]> => {
+      if (pin) {
+        const pinned = await callPinnedRuntimeAction<AgentChatSlashCommand[]>(
+          pin,
+          "chat",
+          "getSlashCommands",
+          { args },
+        );
+        return Array.isArray(pinned) ? pinned : [];
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatSlashCommand[]
       >("chat", "getSlashCommands", { args });
@@ -5966,44 +6072,51 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getMainTranscript: async (
       args: AgentChatMainTranscriptArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
-      callProjectRuntimeActionOr("chat", "getMainTranscript", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getMainTranscript", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetMainTranscript, args),
       ),
     getSubagentTranscript: async (
       args: AgentChatSubagentTranscriptArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
-      callProjectRuntimeActionOr("chat", "getSubagentTranscript", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getSubagentTranscript", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetSubagentTranscript, args),
       ),
     getContextUsage: async (
       args: AgentChatContextUsageArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatContextUsage | null> =>
-      callProjectRuntimeActionOr("chat", "getContextUsage", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getContextUsage", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
       ),
     rewindFiles: async (
       args: AgentChatRewindFilesArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRewindFilesResult> =>
-      callProjectRuntimeActionOr("chat", "rewindFiles", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "rewindFiles", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRewindFiles, args),
       ),
     fileSearch: async (
       args: AgentChatFileSearchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatFileSearchResult[]> =>
-      callProjectRuntimeActionOr("chat", "fileSearch", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "fileSearch", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatFileSearch, args),
       ),
     getTurnFileDiff: async (
       args: AgentChatGetTurnFileDiffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatTurnFileDiff | null> =>
-      callProjectRuntimeActionOr("chat", "getTurnFileDiff", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getTurnFileDiff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetTurnFileDiff, args),
       ),
     listSubagents: async (
       args: AgentChatSubagentListArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentSnapshot[]> =>
-      callProjectRuntimeActionOr("chat", "listSubagents", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
       ),
     killDroidWorker: async (
@@ -6014,18 +6127,23 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getSessionCapabilities: async (
       args: AgentChatSessionCapabilitiesArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSessionCapabilities> =>
-      callProjectRuntimeActionOr(
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "getSessionCapabilities",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
       ),
-    saveTempAttachment: async (args: {
-      data: string;
-      filename: string;
-    }): Promise<{ path: string }> =>
-      callProjectRuntimeActionOr("chat", "saveTempAttachment", { args }, () =>
+    saveTempAttachment: async (
+      args: {
+        data: string;
+        filename: string;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ path: string }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
@@ -6036,10 +6154,18 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
-    getEventHistory: async (args: {
-      sessionId: string;
-      maxEvents?: number;
-    }): Promise<AgentChatEventHistorySnapshot> => {
+    getEventHistory: async (
+      args: {
+        sessionId: string;
+        maxEvents?: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatEventHistorySnapshot> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
+          argsList: [args.sessionId, { maxEvents: args.maxEvents }],
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
         argsList: [args.sessionId, { maxEvents: args.maxEvents }],
       });
@@ -6067,11 +6193,19 @@ contextBridge.exposeInMainWorld("ade", {
       }
       return ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
     },
-    getEventHistoryPage: async (args: {
-      sessionId: string;
-      beforeOffset: number;
-      maxBytes?: number;
-    }): Promise<AgentChatEventHistoryPage> => {
+    getEventHistoryPage: async (
+      args: {
+        sessionId: string;
+        beforeOffset: number;
+        maxBytes?: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatEventHistoryPage> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatEventHistoryPage>(pin, "chat", "getChatEventHistoryPage", {
+          argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
         argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
       });
@@ -6868,7 +7002,14 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.ptySendToSession, args);
     },
-    write: async (arg: { ptyId: string; data: string }): Promise<void> => {
+    write: async (
+      arg: { ptyId: string; data: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "pty", "write", { args: arg });
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "pty",
         "write",
@@ -6876,11 +7017,18 @@ contextBridge.exposeInMainWorld("ade", {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, arg);
     },
-    resize: async (arg: {
-      ptyId: string;
-      cols: number;
-      rows: number;
-    }): Promise<void> => {
+    resize: async (
+      arg: {
+        ptyId: string;
+        cols: number;
+        rows: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "pty", "resize", { args: arg });
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "pty",
         "resize",
