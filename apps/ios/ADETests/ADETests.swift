@@ -17073,7 +17073,13 @@ final class ADETests: XCTestCase {
       searchText: ""
     )
 
-    XCTAssertEqual(filtered.map(\.id), ["chat-parent", "shell-child", "legacy-cli"])
+    // Retention is the contract this test names, not order. The fixtures take
+    // their `startedAt` from wall-clock at construction, so whether the three
+    // share a timestamp — and therefore whether the sort falls through to the
+    // title tiebreak — depends on which second they were built in. Asserting the
+    // sorted array made this fail intermittently.
+    XCTAssertEqual(Set(filtered.map(\.id)), ["chat-parent", "shell-child", "legacy-cli"])
+    XCTAssertEqual(filtered.first?.id, "chat-parent", "The parent chat always leads its owned rows")
   }
 
   func testWorkFilteredSessionsPrioritizesWaitingBeforeActiveAndEnded() {
@@ -19991,6 +19997,17 @@ final class ADETests: XCTestCase {
     let stored = WorkQuestionDraftStore.load(requestId)
     XCTAssertEqual(stored?.selections["public-q"], ["keep-me"], "Non-secret answers must round-trip")
     XCTAssertEqual(stored?.freeform["public-q"], "visible answer")
+
+    // A pasted wall of text is clamped, so one paste can't inflate the shared
+    // defaults store or stall every later keystroke's autosave rewrite.
+    let huge = String(repeating: "x", count: 60_000)
+    WorkQuestionDraftStore.save(
+      WorkQuestionDraftStore.Snapshot(freeform: ["public-q": huge], sharedFreeform: huge),
+      for: requestId
+    )
+    let clamped = WorkQuestionDraftStore.load(requestId)
+    XCTAssertEqual(clamped?.freeform["public-q"]?.count, 20_000, "Freeform answers must be clamped")
+    XCTAssertEqual(clamped?.sharedFreeform.count, 20_000, "Shared freeform must be clamped")
 
     // An all-empty snapshot removes the entry outright, so a card whose only
     // answers were secret leaves nothing behind at all.

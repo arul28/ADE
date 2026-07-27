@@ -173,18 +173,36 @@ enum WorkQuestionDraftStore {
   /// Open question gates are short-lived; a small cap is plenty and keeps the
   /// blob from accumulating answers to requests that were resolved elsewhere.
   private static let maxEntries = 30
+  /// Matches `WorkComposerDraftStore.maxLength`. An answer is a reply, not a
+  /// document — and because autosave decodes, re-encodes, and rewrites the whole
+  /// map on the main actor, one pasted wall of text would otherwise turn every
+  /// subsequent keystroke into a visible stall.
+  private static let maxValueLength = 20_000
 
   static func load(_ requestId: String) -> Snapshot? {
     guard !requestId.isEmpty else { return nil }
     return loadAll()[requestId]?.snapshot
   }
 
-  static func save(_ snapshot: Snapshot, for requestId: String) {
+  /// Clamps every free-text field (and host-supplied option value) so a single
+  /// paste cannot inflate the shared defaults store.
+  private static func bounded(_ snapshot: Snapshot) -> Snapshot {
+    var bounded = snapshot
+    bounded.freeform = snapshot.freeform.mapValues { String($0.prefix(maxValueLength)) }
+    bounded.sharedFreeform = String(snapshot.sharedFreeform.prefix(maxValueLength))
+    bounded.selections = snapshot.selections.mapValues { values in
+      Set(values.map { String($0.prefix(maxValueLength)) })
+    }
+    return bounded
+  }
+
+  static func save(_ rawSnapshot: Snapshot, for requestId: String) {
     guard !requestId.isEmpty else { return }
-    guard !snapshot.isEmpty else {
+    guard !rawSnapshot.isEmpty else {
       clear(requestId)
       return
     }
+    let snapshot = bounded(rawSnapshot)
     var map = loadAll()
     // Autosave runs on a keystroke debounce; skip the write when the answer is
     // unchanged so idle typing pauses cost nothing.
