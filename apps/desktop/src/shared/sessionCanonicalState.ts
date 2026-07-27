@@ -1,4 +1,10 @@
-import type { TerminalRuntimeState, TerminalSessionStatus, TerminalToolType } from "./types/sessions";
+import type {
+  SessionSettleOverride,
+  SessionWakeReason,
+  TerminalRuntimeState,
+  TerminalSessionStatus,
+  TerminalToolType,
+} from "./types/sessions";
 
 /**
  * The ONE vocabulary for "what state is this session in", shared by the Work
@@ -69,6 +75,14 @@ export type CanonicalSessionInputs = {
    */
   settledAt?: string | null;
   /**
+   * Tri-state settle override, consulted BEFORE the derived exit-0 rule.
+   * "settled" behaves like a declared settle; "active" is an explicit
+   * keep-active pin that suppresses settle (derived AND declared) so a clean
+   * PTY exit is not permanently pinned to the quiet tier. Cleared on real
+   * activity at the same write sites that clear `settledAt`.
+   */
+  settleOverride?: SessionSettleOverride | null;
+  /**
    * Escalated ask from `ade chat ask` (chat sessions; CLI sessions ride
    * runtimeState "waiting-input" instead). Cleared by the next user message.
    */
@@ -101,13 +115,15 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  *   1. deterministic needs-input — pendingInputItemId, runtimeState
  *      "waiting-input", or an `ade chat ask` escalation (never outvoted by
  *      anything below),
- *   2. settled — explicitly declared (agent/user); presence wins over failure
- *      because a declared quiet is a human/agent judgment call. Cleared at the
- *      write site on any new activity,
+ *   2. settled — explicitly declared (agent/user) or forced by a "settled"
+ *      override; presence wins over failure because a declared quiet is a
+ *      human/agent judgment call. An "active" override suppresses this tier
+ *      entirely. Cleared at the write site on any new activity,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death,
  *   5. clean exit — a PTY that exited 0 IS the process declaring it's done;
- *      auto-settles without any declaration,
+ *      auto-settles without any declaration, UNLESS an "active" override pins
+ *      it (rule 2's override check runs first),
  *   6. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
  *   7. running (incl. the preview heuristic's needs_you upgrade, LAST),
  *   8. resting states — ready (idle chat, quiet "your move"), idle, ended.
@@ -122,12 +138,20 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
   }
 
-  // 2. Declared settle. No timestamp math: activity un-settles by clearing
-  // the column where the activity happens (user turn start / PTY output).
-  // Only honored AT REST — a settled chat woken by scheduled work shows green
-  // while the turn streams, then re-settles when it goes idle again (the
-  // settledAt column survives background wakes; only user activity clears it).
-  if (args.settledAt && (args.status !== "running" || args.runtimeState === "idle")) {
+  // 2. Declared settle (or a "settled" override). No timestamp math: activity
+  // un-settles by clearing the column where the activity happens (user turn
+  // start / PTY output). Only honored AT REST — a settled chat woken by
+  // scheduled work shows green while the turn streams, then re-settles when it
+  // goes idle again (the settledAt column survives background wakes; only user
+  // activity clears it).
+  //
+  // The tri-state override is consulted here, i.e. BEFORE the derived exit-0
+  // rule below. "active" is an explicit keep-active pin: it beats derived
+  // settle (a clean exit) and a stale declared settle alike, so the row keeps a
+  // real lifecycle action instead of being stuck in the quiet tier forever.
+  const pinnedActive = args.settleOverride === "active";
+  const atRest = args.status !== "running" || args.runtimeState === "idle";
+  if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
     return { phase: "settled", badge: null };
   }
 
@@ -168,7 +192,8 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     }
     // 5. Clean exit auto-settle: exit 0 is the one deterministic "done"
     // declaration a process can make. Unknown exits stay "ended" (red).
-    if (args.exitCode === 0) {
+    // An "active" override vetoes it — that is the whole point of the pin.
+    if (args.exitCode === 0 && !pinnedActive) {
       return { phase: "settled", badge: null };
     }
     return { phase: "ended", badge: null };
@@ -211,6 +236,127 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
  *   settled   — declared or clean-exit done; quiet tier at the bottom.
  */
 export type CanonicalStatusBucket = "running" | "awaiting-input" | "ended" | "settled";
+
+// ---------------------------------------------------------------------------
+// Snooze — a synced VISIBILITY OVERLAY, deliberately NOT a lifecycle state
+// ---------------------------------------------------------------------------
+
+/**
+ * Snooze never alters a session's canonical phase. `canonicalSessionState()`
+ * does not read these fields at all: a snoozed row is still running/failed/
+ * needs_you exactly as before, snooze only decides where the UI files it.
+ * Keeping the two orthogonal is what lets desktop, `ade code`, and iOS derive
+ * "is this hidden right now" from the same two columns without re-deriving the
+ * lifecycle.
+ */
+export type SessionSnoozeState = {
+  /** ISO deadline; expiry is DERIVED by comparing to now — there is no timer. */
+  snoozedUntil?: string | null;
+  /** ISO instant the snooze was taken; the early-wake comparison baseline. */
+  snoozedAt?: string | null;
+};
+
+export type SessionWakeSignals = {
+  /** A pending approval / input request is showing on the row. */
+  hasPendingInput?: boolean;
+  /** ISO timestamp of the session's most recent error, if any. */
+  errorAt?: string | null;
+  /** A running turn just completed. */
+  turnCompleted?: boolean;
+};
+
+function parseIsoMs(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const ms = Date.parse(trimmed);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * The one derivation of "this row is currently snoozed", shared by desktop,
+ * CLI, and iOS. Timer expiry is derived here (`snoozedUntil <= now`), which is
+ * why no scheduler or background watchdog exists for snooze.
+ */
+export function isSessionSnoozed(session: SessionSnoozeState, nowMs: number = Date.now()): boolean {
+  const until = parseIsoMs(session.snoozedUntil);
+  if (until == null) return false;
+  return until > nowMs;
+}
+
+/**
+ * The FILING rule: "should a list hide this row in its Snoozed group?".
+ *
+ * Snooze is a visibility overlay, and an overlay must yield to a session that
+ * is actually blocked on the user — otherwise the "Until I'm asked" window
+ * (~100 years) can bury a row whose hand IS raised. Only three events ever
+ * wrote an early wake (`ade chat ask`, chat turn failure, chat turn complete),
+ * all chat-only, so a tracked CLI session that hits a permission prompt has no
+ * event to fire: for it, `needs_you` is DERIVED (runtimeState "waiting-input"
+ * or the output-preview heuristic) and nothing persists a flag. Deriving the
+ * filing rule from the phase covers chat and CLI identically with no event.
+ *
+ * Deliberately separate from `isSessionSnoozed`, which stays the raw two-column
+ * read: chips, menus, and wake labels legitimately want "is this row snoozed?"
+ * independent of where the list files it. And `canonicalSessionState()` still
+ * never reads the snooze columns — this is a predicate over its output, not a
+ * new phase.
+ */
+export function isSessionFiledAsSnoozed(
+  session: SessionSnoozeState,
+  phase: CanonicalSessionPhase | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isSessionSnoozed(session, nowMs)) return false;
+  return phase !== "needs_you";
+}
+
+/** A snooze that was taken but whose window has already elapsed. */
+export function isSessionSnoozeExpired(session: SessionSnoozeState, nowMs: number = Date.now()): boolean {
+  const until = parseIsoMs(session.snoozedUntil);
+  if (until == null) return false;
+  return until <= nowMs;
+}
+
+/**
+ * The load-bearing early-wake comparison.
+ *
+ * An error only raises a hand when it is STRICTLY NEWER than `snoozedAt`.
+ * Without this, the very error the user snoozed on top of re-wakes the row
+ * immediately and snooze does nothing at all. An error stamped at exactly
+ * `snoozedAt` is the one being snoozed, so it does not wake either.
+ *
+ * If the row carries no parseable `snoozedAt` we fail CLOSED (no wake): an
+ * unknown baseline must not resurrect every historical error.
+ */
+export function isWakingSessionError(
+  session: SessionSnoozeState,
+  errorAt: string | null | undefined,
+): boolean {
+  const errorMs = parseIsoMs(errorAt);
+  if (errorMs == null) return false;
+  const snoozedAtMs = parseIsoMs(session.snoozedAt);
+  if (snoozedAtMs == null) return false;
+  return errorMs > snoozedAtMs;
+}
+
+/**
+ * Resolve why a snoozed row should wake right now, or null to stay asleep.
+ * Hand-raises are reported ahead of plain timer expiry because they carry the
+ * more useful "woke" marker copy. A row that is not snoozed at all never wakes.
+ */
+export function resolveSessionWakeReason(
+  session: SessionSnoozeState,
+  signals: SessionWakeSignals = {},
+  nowMs: number = Date.now(),
+): SessionWakeReason | null {
+  if (parseIsoMs(session.snoozedUntil) == null) return null;
+  if (signals.hasPendingInput === true) return "needs_you";
+  if (isWakingSessionError(session, signals.errorAt)) return "error";
+  if (signals.turnCompleted === true) return "turn_complete";
+  if (isSessionSnoozeExpired(session, nowMs)) return "timer";
+  return null;
+}
 
 export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalStatusBucket {
   switch (phase) {

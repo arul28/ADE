@@ -341,6 +341,121 @@ describe("createCtoOperatorTools", () => {
     });
   });
 
+  // ── Session lifecycle tools ─────────────────────────────────────
+
+  describe("session lifecycle tools", () => {
+    function lifecycleDeps(row: Record<string, unknown> = {}) {
+      const sessionService = {
+        updateMeta: vi.fn(),
+        get: vi.fn(() => ({
+          id: "chat-1",
+          settledAt: null,
+          settleOverride: null,
+          snoozedUntil: null,
+          snoozedAt: null,
+          wokeAt: null,
+          wokeReason: null,
+          ...row,
+        })),
+        settleSession: vi.fn(() => true),
+        unsettleSession: vi.fn(() => true),
+        setSettleOverride: vi.fn(() => true),
+        snoozeSession: vi.fn(() => true),
+        wakeSession: vi.fn(() => true),
+        clearWokeMarker: vi.fn(() => true),
+      };
+      return {
+        sessionService,
+        deps: buildDeps({
+          sessionService: sessionService as any,
+          getChatStatus: vi.fn().mockResolvedValue({ ...baseSession }),
+        }),
+      };
+    }
+
+    it("surfaces the wake reason so the CTO can explain why a row resurfaced", async () => {
+      const { deps } = lifecycleDeps({
+        wokeAt: "2026-07-26T12:00:00.000Z",
+        wokeReason: "needs_you",
+        snoozedUntil: "2026-07-26T18:00:00.000Z",
+        snoozedAt: "2026-07-26T10:00:00.000Z",
+      });
+      const tools = createCtoOperatorTools(deps);
+
+      await expect((tools.getSessionLifecycle as any).execute({ sessionId: "chat-1" }))
+        .resolves.toMatchObject({
+          success: true,
+          sessionId: "chat-1",
+          wokeReason: "needs_you",
+          wokeAt: "2026-07-26T12:00:00.000Z",
+        });
+
+      const status = await (tools.getChatStatus as any).execute({ sessionId: "chat-1" });
+      expect(status.lifecycle).toMatchObject({ wokeReason: "needs_you" });
+    });
+
+    it("reports an expired snooze as no longer snoozed", async () => {
+      const { deps } = lifecycleDeps({ snoozedUntil: "2000-01-01T00:00:00.000Z" });
+      const tools = createCtoOperatorTools(deps);
+      await expect((tools.getSessionLifecycle as any).execute({ sessionId: "chat-1" }))
+        .resolves.toMatchObject({ snoozed: false });
+    });
+
+    it("settles, unsettles, and pins settle state", async () => {
+      const { deps, sessionService } = lifecycleDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await expect((tools.settleSession as any).execute({
+        sessionId: "chat-1",
+        outcome: "CI green",
+      })).resolves.toMatchObject({ success: true });
+      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", { outcome: "CI green" });
+
+      await (tools.unsettleSession as any).execute({ sessionId: "chat-1" });
+      expect(sessionService.unsettleSession).toHaveBeenCalledWith("chat-1");
+
+      await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "active" });
+      expect(sessionService.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+      await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "clear" });
+      expect(sessionService.setSettleOverride).toHaveBeenLastCalledWith("chat-1", null);
+    });
+
+    it("snoozes by duration or explicit deadline and rejects neither", async () => {
+      const { deps, sessionService } = lifecycleDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await expect((tools.snoozeSession as any).execute({
+        sessionId: "chat-1",
+        untilIso: "2026-07-26T18:00:00Z",
+      })).resolves.toMatchObject({ success: true });
+      expect(sessionService.snoozeSession).toHaveBeenCalledWith("chat-1", "2026-07-26T18:00:00.000Z");
+
+      await (tools.snoozeSession as any).execute({ sessionId: "chat-1", durationMinutes: 60 });
+      const deadline = String(
+        (sessionService.snoozeSession.mock.calls[1] as unknown as unknown[])[1],
+      );
+      expect(Date.parse(deadline)).toBeGreaterThan(Date.now());
+
+      await expect((tools.snoozeSession as any).execute({ sessionId: "chat-1" }))
+        .resolves.toMatchObject({ success: false });
+      await expect((tools.snoozeSession as any).execute({
+        sessionId: "chat-1",
+        untilIso: "tomorrow",
+      })).resolves.toMatchObject({ success: false });
+      expect(sessionService.snoozeSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("wakes with a recorded reason, defaulting to manual", async () => {
+      const { deps, sessionService } = lifecycleDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.wakeSession as any).execute({ sessionId: "chat-1" });
+      expect(sessionService.wakeSession).toHaveBeenCalledWith("chat-1", "manual");
+      await (tools.wakeSession as any).execute({ sessionId: "chat-1", reason: "turn_complete" });
+      expect(sessionService.wakeSession).toHaveBeenLastCalledWith("chat-1", "turn_complete");
+    });
+  });
+
   // ── Lane tools ──────────────────────────────────────────────────
 
   describe("lane tools", () => {

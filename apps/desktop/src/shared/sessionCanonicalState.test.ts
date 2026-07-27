@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { parseSessionSettleOverride } from "./types/sessions";
 import {
   canonicalSessionState,
+  isSessionFiledAsSnoozed,
+  isSessionSnoozed,
+  isSessionSnoozeExpired,
+  isWakingSessionError,
+  resolveSessionWakeReason,
   SESSION_STALE_AFTER_MS,
   type CanonicalSessionInputs,
 } from "./sessionCanonicalState";
@@ -79,5 +85,217 @@ describe("stale boundary", () => {
   it("never goes stale without an activity timestamp or with garbage", () => {
     expect(state({ lastActivityAt: null }).phase).toBe("running");
     expect(state({ lastActivityAt: "not-a-date" }).phase).toBe("running");
+  });
+});
+
+describe("settle override tri-state", () => {
+  // The bug this exists to fix: exit 0 auto-settles WITHOUT stamping
+  // settled_at, so the row had no lifecycle action at all and was pinned to
+  // the quiet tier forever.
+  const cleanExit: Partial<CanonicalSessionInputs> = { status: "detached", exitCode: 0, runtimeState: "exited" };
+
+  it("null override leaves the derived exit-0 auto-settle intact", () => {
+    expect(state({ ...cleanExit }).phase).toBe("settled");
+    expect(state({ ...cleanExit, settleOverride: null }).phase).toBe("settled");
+  });
+
+  it("'active' override beats the derived exit-0 rule", () => {
+    const result = state({ ...cleanExit, settleOverride: "active" });
+    expect(result.phase).toBe("ended");
+    expect(result.badge).toBeNull();
+  });
+
+  it("'active' override also suppresses a declared settle", () => {
+    expect(state({ ...cleanExit, settledAt: "2026-07-06T11:00:00.000Z", settleOverride: "active" }).phase)
+      .toBe("ended");
+  });
+
+  it("'settled' override behaves like a declared settle without settled_at", () => {
+    expect(state({ status: "detached", exitCode: 2, settleOverride: "settled" }).phase).toBe("settled");
+    expect(state({ toolType: "claude-chat", runtimeState: "idle", settleOverride: "settled" }).phase)
+      .toBe("settled");
+  });
+
+  it("'settled' override is still only honored at rest", () => {
+    expect(state({ toolType: "claude-chat", runtimeState: "running", settleOverride: "settled" }).phase)
+      .toBe("running");
+  });
+
+  it("deterministic attention still outranks every override", () => {
+    expect(state({ settleOverride: "settled", pendingInputItemId: "i-1", runtimeState: "idle" }).phase)
+      .toBe("needs_you");
+  });
+});
+
+describe("snooze is a visibility overlay, not a phase", () => {
+  const snoozedUntil = new Date(NOW + 60_000).toISOString();
+  const snoozedAt = new Date(NOW - 60_000).toISOString();
+
+  it("never changes the canonical phase", () => {
+    // Snooze fields are deliberately absent from CanonicalSessionInputs; this
+    // asserts the contract holds for the row a snoozed session represents.
+    expect(state({ lastOutputPreview: "compiling..." }).phase).toBe("running");
+    expect(isSessionSnoozed({ snoozedUntil, snoozedAt }, NOW)).toBe(true);
+  });
+
+  it("derives timer expiry from snoozed_until with no scheduler", () => {
+    expect(isSessionSnoozed({ snoozedUntil, snoozedAt }, NOW)).toBe(true);
+    expect(isSessionSnoozeExpired({ snoozedUntil, snoozedAt }, NOW)).toBe(false);
+
+    // One millisecond past the deadline flips both, purely from the clock.
+    const at = Date.parse(snoozedUntil);
+    expect(isSessionSnoozed({ snoozedUntil, snoozedAt }, at)).toBe(false);
+    expect(isSessionSnoozeExpired({ snoozedUntil, snoozedAt }, at)).toBe(true);
+    expect(isSessionSnoozed({ snoozedUntil, snoozedAt }, at + 1)).toBe(false);
+    expect(isSessionSnoozeExpired({ snoozedUntil, snoozedAt }, at + 1)).toBe(true);
+  });
+
+  it("treats a missing or unparseable deadline as not snoozed", () => {
+    expect(isSessionSnoozed({}, NOW)).toBe(false);
+    expect(isSessionSnoozed({ snoozedUntil: null }, NOW)).toBe(false);
+    expect(isSessionSnoozed({ snoozedUntil: "   " }, NOW)).toBe(false);
+    expect(isSessionSnoozed({ snoozedUntil: "not-a-date" }, NOW)).toBe(false);
+    expect(isSessionSnoozeExpired({ snoozedUntil: "not-a-date" }, NOW)).toBe(false);
+  });
+});
+
+// Regression: an "Until I'm asked" snooze (~100 years) hid a needs-you row
+// forever. Every early-wake trigger (`ade chat ask`, chat turn failure, chat
+// turn complete) was chat-only, and a tracked CLI row's needs-input state is
+// DERIVED (runtime "waiting-input" / preview heuristic) with no event to hook —
+// so the filing rule, not an event, is what has to bring the row back.
+describe("snooze filing yields to a raised hand (isSessionFiledAsSnoozed)", () => {
+  const snoozedUntil = new Date(NOW + 60_000).toISOString();
+  const snoozedAt = new Date(NOW - 60_000).toISOString();
+  const snoozed = { snoozedUntil, snoozedAt };
+
+  it("does NOT file a snoozed needs-you row as snoozed", () => {
+    expect(isSessionFiledAsSnoozed(snoozed, "needs_you", NOW)).toBe(false);
+    // An indefinite "until I'm asked" deadline is the case that used to hide
+    // a blocked CLI row for a century.
+    const indefinite = { snoozedUntil: new Date(NOW + 100 * 365 * 86_400_000).toISOString(), snoozedAt };
+    expect(isSessionFiledAsSnoozed(indefinite, "needs_you", NOW)).toBe(false);
+  });
+
+  it("keeps isSessionSnoozed a RAW column read for the same row", () => {
+    // Chips, menus, and wake labels still want "is it snoozed?" regardless of
+    // where the list files it.
+    expect(isSessionSnoozed(snoozed, NOW)).toBe(true);
+    expect(canonicalSessionState({
+      status: "running",
+      runtimeState: "waiting-input",
+      nowMs: NOW,
+    }).phase).toBe("needs_you");
+  });
+
+  it("still files every calm phase as snoozed", () => {
+    for (const phase of ["running", "starting", "stale", "ready", "idle", "failed", "ended", "stopped", "settled"] as const) {
+      expect(isSessionFiledAsSnoozed(snoozed, phase, NOW)).toBe(true);
+    }
+    // No phase known (callers that only have the columns) files as snoozed too.
+    expect(isSessionFiledAsSnoozed(snoozed, null, NOW)).toBe(true);
+    expect(isSessionFiledAsSnoozed(snoozed, undefined, NOW)).toBe(true);
+  });
+
+  it("never files a row that is not snoozed at all", () => {
+    expect(isSessionFiledAsSnoozed({}, "running", NOW)).toBe(false);
+    expect(isSessionFiledAsSnoozed({}, "needs_you", NOW)).toBe(false);
+    // Lapsed deadline: expiry is derived, so the row is simply awake.
+    expect(isSessionFiledAsSnoozed(
+      { snoozedUntil: new Date(NOW - 1).toISOString(), snoozedAt },
+      "running",
+      NOW,
+    )).toBe(false);
+  });
+});
+
+describe("early wake: the newer-than-snoozed_at error comparison", () => {
+  const snoozedAt = "2026-07-06T11:00:00.000Z";
+  const snoozedUntil = "2026-07-06T13:00:00.000Z";
+  const session = { snoozedUntil, snoozedAt };
+
+  it("does NOT wake on the error the snooze was taken on top of", () => {
+    // This is the whole point: an older/equal error must not resurrect the row,
+    // otherwise snooze does nothing at all.
+    expect(isWakingSessionError(session, "2026-07-06T10:59:59.999Z")).toBe(false);
+    expect(isWakingSessionError(session, snoozedAt)).toBe(false);
+  });
+
+  it("wakes on an error strictly newer than snoozed_at", () => {
+    expect(isWakingSessionError(session, "2026-07-06T11:00:00.001Z")).toBe(true);
+    expect(isWakingSessionError(session, "2026-07-06T12:00:00.000Z")).toBe(true);
+  });
+
+  it("fails closed when there is no usable timestamp on either side", () => {
+    expect(isWakingSessionError(session, null)).toBe(false);
+    expect(isWakingSessionError(session, "not-a-date")).toBe(false);
+    expect(isWakingSessionError({ snoozedUntil }, "2026-07-06T12:00:00.000Z")).toBe(false);
+    expect(isWakingSessionError({ snoozedUntil, snoozedAt: "garbage" }, "2026-07-06T12:00:00.000Z")).toBe(false);
+  });
+});
+
+describe("resolveSessionWakeReason", () => {
+  const snoozedAt = "2026-07-06T11:00:00.000Z";
+  const active = { snoozedUntil: "2026-07-06T13:00:00.000Z", snoozedAt };
+  const expired = { snoozedUntil: "2026-07-06T11:30:00.000Z", snoozedAt };
+
+  it("keeps an un-snoozed row awake-agnostic (never reports a wake)", () => {
+    expect(resolveSessionWakeReason({}, { hasPendingInput: true }, NOW)).toBeNull();
+    expect(resolveSessionWakeReason({ snoozedAt }, { turnCompleted: true }, NOW)).toBeNull();
+  });
+
+  it("stays asleep with no qualifying signal", () => {
+    expect(resolveSessionWakeReason(active, {}, NOW)).toBeNull();
+    expect(resolveSessionWakeReason(active, { errorAt: snoozedAt }, NOW)).toBeNull();
+  });
+
+  it("reports each hand-raise ahead of plain timer expiry", () => {
+    expect(resolveSessionWakeReason(active, { hasPendingInput: true }, NOW)).toBe("needs_you");
+    expect(resolveSessionWakeReason(active, { errorAt: "2026-07-06T11:45:00.000Z" }, NOW)).toBe("error");
+    expect(resolveSessionWakeReason(active, { turnCompleted: true }, NOW)).toBe("turn_complete");
+    expect(resolveSessionWakeReason(expired, { turnCompleted: true }, NOW)).toBe("turn_complete");
+  });
+
+  it("falls back to derived timer expiry", () => {
+    expect(resolveSessionWakeReason(expired, {}, NOW)).toBe("timer");
+    expect(resolveSessionWakeReason(expired, { errorAt: snoozedAt }, NOW)).toBe("timer");
+  });
+});
+
+/**
+ * Regression: the settle-override value crosses four boundaries (IPC args, sync
+ * JSON, CLI flags, a SQLite text column) and was parsed four different ways.
+ * The registry/sync parsers were case-sensitive and threw; the service parser
+ * lowercased and returned null for ANYTHING unrecognized — so a typo silently
+ * CLEARED a keep-active pin instead of failing, and `"Settled"` was rejected
+ * over IPC while being accepted underneath it.
+ */
+describe("parseSessionSettleOverride: a typo must not silently clear a pin", () => {
+  it("distinguishes unrecognized input from an explicit clear", () => {
+    // undefined = "I don't recognize this" — throwing callers surface an error,
+    // and the persistence layer can no longer mistake it for "clear".
+    expect(parseSessionSettleOverride("activ")).toBeUndefined();
+    expect(parseSessionSettleOverride("bogus")).toBeUndefined();
+    expect(parseSessionSettleOverride(42)).toBeUndefined();
+    expect(parseSessionSettleOverride({})).toBeUndefined();
+
+    // null = an explicit, intentional clear.
+    expect(parseSessionSettleOverride(null)).toBeNull();
+    expect(parseSessionSettleOverride(undefined)).toBeNull();
+    expect(parseSessionSettleOverride("")).toBeNull();
+    expect(parseSessionSettleOverride("clear")).toBeNull();
+    expect(parseSessionSettleOverride("none")).toBeNull();
+  });
+
+  it("accepts the two real values regardless of case or padding, on every boundary", () => {
+    expect(parseSessionSettleOverride("settled")).toBe("settled");
+    expect(parseSessionSettleOverride("active")).toBe("active");
+    // Previously accepted by the service but rejected over IPC/sync.
+    expect(parseSessionSettleOverride("Settled")).toBe("settled");
+    expect(parseSessionSettleOverride("ACTIVE")).toBe("active");
+    expect(parseSessionSettleOverride("  active  ")).toBe("active");
+    // iOS sends this string because JSON null is not representable in its
+    // [String: Any] argument dictionary.
+    expect(parseSessionSettleOverride("Clear")).toBeNull();
   });
 });

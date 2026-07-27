@@ -141,6 +141,15 @@ the phone leaves Linear connect/reconnect/disconnect hidden (falling back to the
 API-key path or an "update ADE on your Mac" hint) rather than treating their
 absence as a broken connection. Their omission never flips a host to `limited`.
 
+The session-lifecycle commands sit in the same optional list:
+`session.settleSessions`, `session.unsettleSessions`,
+`session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`, and
+`session.clearWokeMarker`. The phone gates its settle and snooze affordances on
+these appearing in `hello_ok.features.commandRouting.actions`, so a current
+brain **must** advertise them — but they must stay out of the required set,
+because a shipped mobile build that predates the feature would otherwise be
+flipped into `limited` mode against a newer host it works with perfectly well.
+
 ## Registry
 
 Commands are registered by calling `register(action, policy, handler,
@@ -191,6 +200,9 @@ over the wire. A controller only invokes an action the host advertises in
 - `listAutoRebaseStatuses`
 - `listTemplates`, `getDefaultTemplate`
 - `initEnv`, `getEnvStatus`, `applyTemplate`
+- `getBranchDrift`, `resolveBranchDrift` — detection and resolution for a
+  lane worktree whose live HEAD has wandered off the lane's recorded
+  `branch_ref`
 - `presence.announce`, `presence.release` — controller marks a lane
   as currently open / no longer open; the brain decorates
   `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
@@ -229,6 +241,34 @@ so the win is transport and decode, not host compute.
 - `listSessions`, `getSession`, `getSessionDelta`, `deleteSession`,
   `updateSessionMeta`, `runQuickCommand`,
   `startCliSession`, `sendToSession`, `stopRuntime`
+
+**Session lifecycle** (`session.*`)
+- `settleSession`, `unsettleSession`, `settleSessions`, `unsettleSessions`
+- `snoozeSession`, `snoozeSessions`, `wakeSession`, `wakeSessions`
+- `setSettleOverride`, `clearWokeMarker`
+
+All ten are `viewerAllowed` and `queueable`. This is deliberately its own
+namespace — matching the ADE action registry's domain name — rather than a
+corner of `work.*`, because mobile and the hosted web client feature-detect it
+independently of the `work.*` read surface. It is also the **only** path to
+session lifecycle for those two controllers: neither has a local database, so
+unlike desktop and `ade code` they cannot write a settle or a snooze locally and
+let replication carry it. Session lifecycle is therefore reachable on all six
+surfaces (desktop, iOS, the `ade code` TUI, hosted web, the `ade` CLI, and CTO
+tools) — it is not a desktop-only capability.
+
+`session.settleSession` routes through the shared `settleTerminalSession`
+transaction, so `dismissPendingInput` behaves identically to desktop.
+
+Snooze deadlines arrive from clients with no local clock authority, so the
+registry validates them rather than trusting them: `parseRemoteSnoozeDeadline`
+accepts either `untilIso` or `snoozedUntil` and validates the instant,
+`parseRemoteWakeReason` validates against `SESSION_WAKE_REASONS`, and
+`parseRemoteSettleOverride` delegates to the shared
+`parseSessionSettleOverride` in `apps/desktop/src/shared/types/sessions.ts` so
+`"clear"` / `"none"` / `""` / null all clear the override and garbage throws
+instead of silently clearing it. The string sentinels exist because a client
+that cannot encode a JSON null (iOS) must still be able to express "clear".
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`

@@ -1,4 +1,4 @@
-import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import type { SessionSettleOverride, TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import {
   canonicalSessionState,
   canonicalStatusBucket,
@@ -108,6 +108,7 @@ type SessionCanonicalUiInput = {
   lastActivityAt?: string | null;
   exitCode?: number | null;
   settledAt?: string | null;
+  settleOverride?: SessionSettleOverride | null;
   attentionRequestedAt?: string | null;
   lastTurnFailedAt?: string | null;
   nowMs?: number;
@@ -128,6 +129,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     lastActivityAt: session.lastActivityAt,
     exitCode: session.exitCode,
     settledAt: session.settledAt,
+    settleOverride: session.settleOverride,
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
   };
@@ -143,6 +145,7 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     lastActivityAt: session.lastActivityAt ?? null,
     exitCode: session.exitCode ?? null,
     settledAt: session.settledAt ?? null,
+    settleOverride: session.settleOverride ?? null,
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     nowMs: session.nowMs,

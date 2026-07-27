@@ -2554,6 +2554,26 @@ button:active, [role="button"]:active {
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
 }
 
+/* Rich composer chips are contentEditable="false", so browsers skip them when
+   painting the native selection and a drag across a chip looks like it breaks
+   in half. AgentChatComposer marks the chips the selection intersects with
+   `data-composer-chip-selected`; overlay those in the platform selection color
+   (kept translucent so the chip's own label stays readable). */
+[data-composer-chip] {
+  position: relative;
+}
+
+[data-composer-chip][data-composer-chip-selected]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-color: -webkit-focus-ring-color;
+  background-color: Highlight;
+  opacity: 0.35;
+}
+
 .ade-liquid-glass-menu {
   border-radius: 16px;
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));

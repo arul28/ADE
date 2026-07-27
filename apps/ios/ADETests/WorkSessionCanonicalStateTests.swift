@@ -659,6 +659,504 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(resultsTotal)
   }
 
+  // MARK: - Settle override tri-state (desktop sessionCanonicalState.ts parity)
+  //
+  // Mirrors `describe("settle override tri-state")`. The bug the override
+  // exists to fix: exit 0 auto-settles WITHOUT stamping settled_at, so the row
+  // had no lifecycle action at all and was pinned to the quiet tier forever.
+
+  func testNullOverrideLeavesDerivedExitZeroAutoSettleIntact() {
+    XCTAssertEqual(
+      cleanExitState(settleOverride: nil).phase, .settled,
+      "no override: a clean exit still auto-settles"
+    )
+    XCTAssertEqual(cleanExitState(settleOverride: "").phase, .settled, "blank override reads as none")
+    XCTAssertEqual(
+      cleanExitState(settleOverride: "nonsense").phase, .settled,
+      "unknown override values must not invent a state"
+    )
+  }
+
+  func testActiveOverrideBeatsDerivedExitZeroRule() {
+    let result = cleanExitState(settleOverride: "active")
+    XCTAssertEqual(result.phase, .ended)
+    XCTAssertNil(result.badge)
+  }
+
+  func testActiveOverrideAlsoSuppressesDeclaredSettle() {
+    XCTAssertEqual(
+      cleanExitState(settledAt: "2026-07-06T11:00:00.000Z", settleOverride: "active").phase,
+      .ended
+    )
+  }
+
+  func testSettledOverrideBehavesLikeDeclaredSettleWithoutSettledAt() {
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "detached", runtimeState: nil, toolType: "codex",
+        exitCode: 2, settleOverride: "settled", now: now
+      ).phase,
+      .settled,
+      "a 'settled' override outranks the non-clean exit failure"
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "idle", toolType: "claude-chat",
+        settleOverride: "settled", now: now
+      ).phase,
+      .settled
+    )
+  }
+
+  func testSettledOverrideIsStillOnlyHonoredAtRest() {
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "running", toolType: "claude-chat",
+        lastActivityAt: iso(now), settleOverride: "settled", now: now
+      ).phase,
+      .running
+    )
+  }
+
+  func testDeterministicAttentionStillOutranksEveryOverride() {
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "idle", toolType: "codex",
+        pendingInputItemId: "i-1", settleOverride: "settled", now: now
+      ).phase,
+      .needsYou,
+      "an escalated ask outranks a 'settled' override"
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running", runtimeState: "idle", toolType: "codex",
+        settleOverride: "active", attentionRequestedAt: iso(now), now: now
+      ).phase,
+      .needsYou,
+      "an escalated ask outranks an 'active' override too"
+    )
+  }
+
+  /// The desktop `cleanExit` fixture: a detached PTY that exited 0.
+  private func cleanExitState(
+    settledAt: String? = nil,
+    settleOverride: String? = nil
+  ) -> CanonicalSessionState {
+    workCanonicalSessionState(
+      status: "detached",
+      runtimeState: "exited",
+      toolType: "codex",
+      exitCode: 0,
+      settledAt: settledAt,
+      settleOverride: settleOverride,
+      now: now
+    )
+  }
+
+  // MARK: - Snooze is a visibility overlay, not a phase
+
+  func testSnoozeNeverChangesTheCanonicalPhase() {
+    // Snooze columns are deliberately absent from the canonical inputs; this
+    // asserts the contract holds for the row a snoozed session represents.
+    let session = snoozedSession(
+      untilOffset: 60,
+      atOffset: -60,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "compiling..."
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(session: session, summary: nil, now: now).phase,
+      .running
+    )
+    XCTAssertTrue(session.isSnoozed(now: now))
+  }
+
+  func testSnoozeExpiryIsDerivedFromSnoozedUntilWithNoScheduler() {
+    let until = now.addingTimeInterval(60)
+    let state = SessionSnoozeState(snoozedUntil: iso(until), snoozedAt: iso(now.addingTimeInterval(-60)))
+    XCTAssertTrue(isSessionSnoozed(state, now: now))
+    XCTAssertFalse(isSessionSnoozeExpired(state, now: now))
+
+    // The deadline itself, and one millisecond past it, flip both — purely
+    // from the clock, with no timer anywhere.
+    XCTAssertFalse(isSessionSnoozed(state, now: until))
+    XCTAssertTrue(isSessionSnoozeExpired(state, now: until))
+    XCTAssertFalse(isSessionSnoozed(state, now: until.addingTimeInterval(0.001)))
+    XCTAssertTrue(isSessionSnoozeExpired(state, now: until.addingTimeInterval(0.001)))
+  }
+
+  func testMissingOrUnparseableDeadlineIsNotSnoozed() {
+    XCTAssertFalse(isSessionSnoozed(SessionSnoozeState(), now: now))
+    XCTAssertFalse(isSessionSnoozed(SessionSnoozeState(snoozedUntil: nil), now: now))
+    XCTAssertFalse(isSessionSnoozed(SessionSnoozeState(snoozedUntil: "   "), now: now))
+    XCTAssertFalse(isSessionSnoozed(SessionSnoozeState(snoozedUntil: "not-a-date"), now: now))
+    XCTAssertFalse(isSessionSnoozeExpired(SessionSnoozeState(snoozedUntil: "not-a-date"), now: now))
+  }
+
+  // MARK: - Snooze filing yields to a raised hand
+  //
+  // Regression: an "Until I'm asked" snooze (~100 years) hid a needs-you row
+  // forever. Every early-wake trigger was chat-only, and a tracked CLI row's
+  // needs-input state is DERIVED (runtime "waiting-input" / preview heuristic)
+  // with no event to hook — so the FILING rule, not an event, is what has to
+  // bring the row back.
+
+  /// Snoozed "until I'm asked": the deadline that used to bury a blocked row.
+  private var indefiniteSnooze: SessionSnoozeState {
+    SessionSnoozeState(
+      snoozedUntil: iso(now.addingTimeInterval(TimeInterval(workSnoozeIndefiniteDays) * 86_400)),
+      snoozedAt: iso(now.addingTimeInterval(-60))
+    )
+  }
+
+  func testSnoozedNeedsYouRowIsNotFiledAsSnoozed() {
+    XCTAssertFalse(isSessionFiledAsSnoozed(indefiniteSnooze, phase: .needsYou, now: now))
+
+    // A tracked CLI row blocked at a permission prompt: the phase is derived
+    // from the runtime, and no early-wake event exists for it at all.
+    let blocked = snoozedSession(
+      untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
+      atOffset: -60,
+      status: "running",
+      runtimeState: "waiting-input"
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(session: blocked, summary: nil, now: now).phase,
+      .needsYou
+    )
+    XCTAssertFalse(blocked.isFiledAsSnoozed(summary: nil, now: now))
+
+    // The RAW column read is unchanged — chips, menus, and the wake label still
+    // see a snoozed row, independent of where the list files it.
+    XCTAssertTrue(blocked.isSnoozed(now: now))
+    XCTAssertTrue(isSessionSnoozed(indefiniteSnooze, now: now))
+  }
+
+  func testEveryCalmPhaseIsStillFiledAsSnoozed() {
+    for phase in [
+      CanonicalSessionPhase.starting, .running, .stale, .ready, .idle,
+      .failed, .stopped, .ended, .settled
+    ] {
+      XCTAssertTrue(
+        isSessionFiledAsSnoozed(indefiniteSnooze, phase: phase, now: now),
+        "phase \(phase) must still be hidden by the overlay"
+      )
+    }
+    // No phase known (callers that only hold the columns) files as snoozed too.
+    XCTAssertTrue(isSessionFiledAsSnoozed(indefiniteSnooze, phase: nil, now: now))
+
+    let calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
+    XCTAssertTrue(calm.isFiledAsSnoozed(summary: nil, now: now))
+  }
+
+  func testARowThatIsNotSnoozedIsNeverFiledAsSnoozed() {
+    XCTAssertFalse(isSessionFiledAsSnoozed(SessionSnoozeState(), phase: .running, now: now))
+    XCTAssertFalse(isSessionFiledAsSnoozed(SessionSnoozeState(), phase: .needsYou, now: now))
+    // A lapsed deadline: expiry is derived, so the row is simply awake.
+    let lapsed = SessionSnoozeState(
+      snoozedUntil: iso(now.addingTimeInterval(-1)),
+      snoozedAt: iso(now.addingTimeInterval(-3_600))
+    )
+    XCTAssertFalse(isSessionFiledAsSnoozed(lapsed, phase: .running, now: now))
+  }
+
+  func testWorkSessionGroupsKeepASnoozedNeedsYouRowInYourMove() {
+    var blocked = snoozedSession(
+      untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
+      atOffset: -60,
+      status: "running",
+      runtimeState: "waiting-input"
+    )
+    blocked.id = "s-blocked"
+    var calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
+    calm.id = "s-calm"
+
+    let groups = workSessionGroups(
+      organization: .byStatus,
+      sessions: [blocked, calm],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [],
+      now: now
+    )
+
+    XCTAssertEqual(groups.map(\.id), ["status:awaiting", workSnoozedSectionId])
+    XCTAssertEqual(groups.first?.sessions.map(\.id), ["s-blocked"])
+    XCTAssertEqual(groups.last?.sessions.map(\.id), ["s-calm"])
+  }
+
+  // MARK: - Early wake: the newer-than-snoozed_at error comparison
+
+  func testDoesNotWakeOnTheErrorTheSnoozeWasTakenOnTopOf() {
+    // This is the whole point: an older/equal error must not resurrect the
+    // row, otherwise snooze does nothing at all.
+    let state = earlyWakeState
+    XCTAssertFalse(isWakingSessionError(state, errorAt: "2026-07-06T10:59:59.999Z"))
+    XCTAssertFalse(isWakingSessionError(state, errorAt: earlyWakeSnoozedAt))
+  }
+
+  func testWakesOnAnErrorStrictlyNewerThanSnoozedAt() {
+    XCTAssertTrue(isWakingSessionError(earlyWakeState, errorAt: "2026-07-06T11:00:00.001Z"))
+    XCTAssertTrue(isWakingSessionError(earlyWakeState, errorAt: "2026-07-06T12:00:00.000Z"))
+  }
+
+  func testEarlyWakeFailsClosedWithoutAUsableTimestampOnEitherSide() {
+    XCTAssertFalse(isWakingSessionError(earlyWakeState, errorAt: nil))
+    XCTAssertFalse(isWakingSessionError(earlyWakeState, errorAt: "not-a-date"))
+    XCTAssertFalse(
+      isWakingSessionError(
+        SessionSnoozeState(snoozedUntil: earlyWakeSnoozedUntil),
+        errorAt: "2026-07-06T12:00:00.000Z"
+      ),
+      "an unknown baseline must not resurrect every historical error"
+    )
+    XCTAssertFalse(
+      isWakingSessionError(
+        SessionSnoozeState(snoozedUntil: earlyWakeSnoozedUntil, snoozedAt: "garbage"),
+        errorAt: "2026-07-06T12:00:00.000Z"
+      )
+    )
+  }
+
+  // MARK: - resolveSessionWakeReason
+
+  func testUnsnoozedRowNeverReportsAWake() {
+    XCTAssertNil(
+      resolveSessionWakeReason(
+        SessionSnoozeState(),
+        signals: SessionWakeSignals(hasPendingInput: true),
+        now: wakeReasonNow
+      )
+    )
+    XCTAssertNil(
+      resolveSessionWakeReason(
+        SessionSnoozeState(snoozedAt: earlyWakeSnoozedAt),
+        signals: SessionWakeSignals(turnCompleted: true),
+        now: wakeReasonNow
+      )
+    )
+  }
+
+  func testStaysAsleepWithNoQualifyingSignal() {
+    XCTAssertNil(resolveSessionWakeReason(activeSnooze, now: wakeReasonNow))
+    XCTAssertNil(
+      resolveSessionWakeReason(
+        activeSnooze,
+        signals: SessionWakeSignals(errorAt: earlyWakeSnoozedAt),
+        now: wakeReasonNow
+      )
+    )
+  }
+
+  func testReportsEachHandRaiseAheadOfPlainTimerExpiry() {
+    XCTAssertEqual(
+      resolveSessionWakeReason(activeSnooze, signals: SessionWakeSignals(hasPendingInput: true), now: wakeReasonNow),
+      .needsYou
+    )
+    XCTAssertEqual(
+      resolveSessionWakeReason(
+        activeSnooze,
+        signals: SessionWakeSignals(errorAt: "2026-07-06T11:45:00.000Z"),
+        now: wakeReasonNow
+      ),
+      .error
+    )
+    XCTAssertEqual(
+      resolveSessionWakeReason(activeSnooze, signals: SessionWakeSignals(turnCompleted: true), now: wakeReasonNow),
+      .turnComplete
+    )
+    XCTAssertEqual(
+      resolveSessionWakeReason(expiredSnooze, signals: SessionWakeSignals(turnCompleted: true), now: wakeReasonNow),
+      .turnComplete,
+      "a hand-raise outranks plain expiry even after the deadline"
+    )
+  }
+
+  func testFallsBackToDerivedTimerExpiry() {
+    XCTAssertEqual(resolveSessionWakeReason(expiredSnooze, now: wakeReasonNow), .timer)
+    XCTAssertEqual(
+      resolveSessionWakeReason(
+        expiredSnooze,
+        signals: SessionWakeSignals(errorAt: earlyWakeSnoozedAt),
+        now: wakeReasonNow
+      ),
+      .timer,
+      "the snoozed-on error is still not a hand-raise; the timer is the reason"
+    )
+  }
+
+  // Fixtures mirroring the TS suite's fixed instants exactly.
+  private let earlyWakeSnoozedAt = "2026-07-06T11:00:00.000Z"
+  private let earlyWakeSnoozedUntil = "2026-07-06T13:00:00.000Z"
+  private var earlyWakeState: SessionSnoozeState {
+    SessionSnoozeState(snoozedUntil: earlyWakeSnoozedUntil, snoozedAt: earlyWakeSnoozedAt)
+  }
+  private var activeSnooze: SessionSnoozeState {
+    SessionSnoozeState(snoozedUntil: "2026-07-06T13:00:00.000Z", snoozedAt: earlyWakeSnoozedAt)
+  }
+  private var expiredSnooze: SessionSnoozeState {
+    SessionSnoozeState(snoozedUntil: "2026-07-06T11:30:00.000Z", snoozedAt: earlyWakeSnoozedAt)
+  }
+  /// The TS suite's NOW — 2026-07-06T12:00:00.000Z.
+  private var wakeReasonNow: Date {
+    ISO8601DateFormatter().date(from: "2026-07-06T12:00:00Z")!
+  }
+
+  // MARK: - Woke marker + settle override projection on the row model
+
+  func testWokeMarkerPrefersThePersistedReason() {
+    var session = snoozedSession(untilOffset: nil, atOffset: nil)
+    session.wokeAt = iso(now)
+    session.wokeReason = "turn_complete"
+    XCTAssertEqual(session.wokeMarker(now: now), .turnComplete)
+
+    session.wokeReason = "TIMER"
+    XCTAssertEqual(session.wokeMarker(now: now), .timer, "persisted reason parse is case-insensitive")
+
+    session.wokeReason = nil
+    XCTAssertEqual(session.wokeMarker(now: now), .timer, "a stamped wake with no reason is a lapsed snooze")
+
+    session.wokeReason = "who-knows"
+    XCTAssertNil(session.wokeMarker(now: now), "an unknown reason is no marker, not an invented state")
+
+    session.wokeAt = nil
+    session.wokeReason = "manual"
+    XCTAssertNil(session.wokeMarker(now: now), "a reason without a timestamp is not a marker")
+  }
+
+  /// Expiry is derived, so nothing ever writes a marker for a snooze that just
+  /// lapsed — the row still has to explain itself.
+  func testWokeMarkerFallsBackToTheDerivedTimerWake() {
+    let lapsed = snoozedSession(untilOffset: -60, atOffset: -3600)
+    XCTAssertEqual(lapsed.wokeMarker(now: now), .timer)
+
+    let stillAsleep = snoozedSession(untilOffset: 3600, atOffset: -60)
+    XCTAssertNil(stillAsleep.wokeMarker(now: now), "an open snooze window has not woken")
+
+    var lapsedWithAsk = snoozedSession(untilOffset: -60, atOffset: -3600)
+    lapsedWithAsk.pendingInputItemId = "item-1"
+    XCTAssertEqual(
+      lapsedWithAsk.wokeMarker(now: now), .needsYou,
+      "a hand-raise outranks plain expiry in the marker copy too"
+    )
+  }
+
+  func testResolvedSettleOverrideParsesTolerantly() {
+    var session = snoozedSession(untilOffset: nil, atOffset: nil)
+    XCTAssertNil(session.resolvedSettleOverride)
+    session.settleOverride = "  Active "
+    XCTAssertEqual(session.resolvedSettleOverride, .active)
+    session.settleOverride = "settled"
+    XCTAssertEqual(session.resolvedSettleOverride, .settled)
+    session.settleOverride = "paused"
+    XCTAssertNil(session.resolvedSettleOverride)
+  }
+
+  // MARK: - Snooze duration presets
+
+  func testSnoozeDurationDeadlinesResolveAgainstTheUsersCalendar() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let morning = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 8))!
+
+    XCTAssertEqual(
+      WorkSnoozeDuration.oneHour.deadline(from: morning, calendar: calendar),
+      morning.addingTimeInterval(3600)
+    )
+
+    let evening = XCTUnwrap2(WorkSnoozeDuration.thisEvening.deadline(from: morning, calendar: calendar))
+    XCTAssertEqual(calendar.component(.hour, from: evening), 18)
+    XCTAssertTrue(calendar.isDate(evening, inSameDayAs: morning))
+
+    let tomorrow = XCTUnwrap2(WorkSnoozeDuration.tomorrowMorning.deadline(from: morning, calendar: calendar))
+    XCTAssertEqual(calendar.component(.hour, from: tomorrow), 9)
+    XCTAssertEqual(
+      calendar.dateComponents([.day], from: calendar.startOfDay(for: morning), to: calendar.startOfDay(for: tomorrow)).day,
+      1,
+      "tomorrow 9am is the next calendar day in the user's own time zone"
+    )
+  }
+
+  /// Past 18:00 "this evening" has gone, so it rolls to the next one rather
+  /// than resolving to a deadline that has already elapsed. Mirrors the desktop
+  /// `snoozeDeadlineIso("evening")`.
+  func testThisEveningRollsToTheNextEveningOncePassed() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let night = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 21))!
+    let evening = XCTUnwrap2(WorkSnoozeDuration.thisEvening.deadline(from: night, calendar: calendar))
+    XCTAssertTrue(evening > night)
+    XCTAssertEqual(calendar.component(.hour, from: evening), 18)
+    XCTAssertEqual(
+      calendar.dateComponents([.day], from: calendar.startOfDay(for: night), to: calendar.startOfDay(for: evening)).day,
+      1
+    )
+  }
+
+  /// "Until I'm asked" parks the row far enough out that the row copy reads as
+  /// open-ended instead of counting down to a date a century away.
+  func testUntilAskedRendersAsOpenEndedRowCopy() {
+    let deadline = XCTUnwrap2(WorkSnoozeDuration.untilAsked.deadline(from: now))
+    XCTAssertEqual(workSnoozeWakeLabel(iso(deadline), now: now), "wakes when asked")
+  }
+
+  /// The wake line mirrors the desktop `snoozeWakeLabel` exactly — same
+  /// thresholds, same calendar-day rounding, same words.
+  func testSnoozeWakeLabelMatchesDesktopCopy() {
+    XCTAssertNil(workSnoozeWakeLabel(nil, now: now))
+    XCTAssertNil(workSnoozeWakeLabel("not-a-date", now: now))
+    XCTAssertEqual(workSnoozeWakeLabel(iso(now.addingTimeInterval(-1)), now: now), "wakes now")
+    XCTAssertEqual(workSnoozeWakeLabel(iso(now.addingTimeInterval(30)), now: now), "wakes in 1m")
+    XCTAssertEqual(workSnoozeWakeLabel(iso(now.addingTimeInterval(25 * 60)), now: now), "wakes in 25m")
+    XCTAssertEqual(workSnoozeWakeLabel(iso(now.addingTimeInterval(3 * 3600)), now: now), "wakes in 3h")
+  }
+
+  private func snoozedSession(
+    untilOffset: TimeInterval?,
+    atOffset: TimeInterval?,
+    status: String = "running",
+    runtimeState: String = "running",
+    lastOutputPreview: String? = nil
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: "s-1",
+      laneId: "lane-1",
+      laneName: "lane",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: "codex",
+      title: "Session",
+      status: status,
+      startedAt: iso(now),
+      endedAt: nil,
+      snoozedUntil: untilOffset.map { iso(now.addingTimeInterval($0)) },
+      snoozedAt: atOffset.map { iso(now.addingTimeInterval($0)) },
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: lastOutputPreview,
+      summary: nil,
+      runtimeState: runtimeState,
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil
+    )
+  }
+
+  /// Force-unwrap helper so the duration assertions read as one line each.
+  private func XCTUnwrap2(_ value: Date?, file: StaticString = #filePath, line: UInt = #line) -> Date {
+    guard let value else {
+      XCTFail("expected a non-nil date", file: file, line: line)
+      return Date()
+    }
+    return value
+  }
+
   // MARK: - buildWorkToolCards web_search preservation (/quality regression)
 
   /// Regression pin for the /quality Medium finding: a later same-itemId

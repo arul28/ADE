@@ -94,7 +94,7 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Chat file-rewind confirmation surface. Claude uses the SDK `rewindFiles` control call; Codex uses ADE's git-backed file restore plan plus a version-gated app-server call — `thread/fork` before the target turn on servers >= 0.145.0, and the deprecated `thread/rollback` fallback on <= 0.144 or when the target turn has no usable id (see [agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)). `rewindFilesPreview.ts` maps the selected user message to turn diff summaries and per-file SHA ranges; the dialog lists every restored file, expands rows into `AdeDiffViewer`, and confirms the provider rewind without using browser-native confirm UI. |
 | `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `chatExecutionSummary.ts`, `chatSubagentIdentity.tsx`, `codex/CodexGoalCard.tsx` | Chat Info drawer content: Codex goal card, capped/collapsible plan and task sections, and capped Subagents/Background/Schedule rosters. Running subagent and background durations derive from the wall clock and tick once per second; terminal rows retain their final compact duration. Terminal work moves into one **Completed** disclosure without reordering survivors; failed and pinned rows stay active; Clear hides only terminal Completed rows and Restore reverses it. Schedule pause/play remains in the Schedule header, recurring rows show last-run plus next-fire timing, and each active ADE-managed durable row exposes Cancel; provider-only/non-durable transcript rows stay visible without a false cancellation control. Spawned-chat snapshots carry a derived `childSessionId`; the derivation preserves the `chat:` task id and `spawnKind` when the canonical dotted lifecycle twin merges into the underscore event. Their roster rows show the child's live session title, put the runtime in the small kind chip, and navigate directly to the child instead of opening a provider transcript drawer. `chatSubagentIdentity.tsx` centralizes deterministic identity and exposes status-optional, size-configurable glyphs for both roster state and compact lineage cues. |
 | `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Its trusted-renderer-only **Profile** panel shows global cookie counts/domains, cache size, last safe flush, and remembered site permissions, with per-row Remove and Clear all controls. Because native `WebContentsView` content sits above the renderer, the panel hides it while ADE overlays, dialogs, menus, or popovers overlap the browser surface so ADE chrome remains reachable. Mounted by `WorkSidebar` under the `browser` tab and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper opens the sidebar Browser tab and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
-| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out, but only when the chat header pill is absent so the two never double up. |
+| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out, but only when the chat header pill is absent so the two never double up. The header also takes a `lifecycleSessionId` (the chat pane passes its selected session id) and renders `work/SessionLifecycleChips.tsx` for it — see [composer-and-ui.md › Header](composer-and-ui.md#header). |
 | `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | Inline install / re-login card for missing or unauthenticated agent CLIs, rendered in the transcript from a decorated `error` event's `errorInfo.agentCli` payload. Copy chips + a tracked-PTY Run button (`window.ade.pty.create`) for the install / auth command. The logged-out (`category: "unauthenticated"`) variant is terracotta-toned for Claude (amber for other agents), retitles to "&lt;Provider&gt; is logged out", and adds an always-on **Retry turn** button that resends the last user message via the `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`) window event; it collapses to a "Reconnected" confirmation when `AgentChatPane` fires `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`) after a later turn succeeds. The "missing CLI" variant keeps the red-free amber install card. |
 | `apps/desktop/src/renderer/components/chat/ProviderFailureRecoveryCard.tsx` | Classifies terminal provider capacity and usage-limit errors into actionable transcript cards. The card explains that the thread remains safe, offers an explicit same-thread **Retry turn**, and opens the composer model picker through a one-shot request for **Choose model**; neither action is enabled while another turn is active. |
 | `apps/desktop/src/renderer/components/chat/chatTurnState.ts` | Shared renderer turn-state invariant used by cache hydration, history snapshots, live event flushes, and locked-session summary refreshes. A terminal `status`/`done` at the end of the transcript outranks an eventually consistent `status: "active"` session summary, so failed/interrupted turns restore an idle composer. Also resolves the user message associated with a failed turn, including Codex optimistic user rows that predate assignment of a provider `turnId`. |
@@ -366,7 +366,16 @@ Controls and summaries project this runtime state rather than owning it:
   disabled; any tagged child tool/stream frames the parent query still emits carry
   `parent_tool_use_id` and are kept out of the parent transcript. The full child
   transcript is read with the backing Claude session id. Claude sessions keep a long-lived idle reader
-  attached after a visible turn completes. ADE also consumes `conversation_reset`
+  attached after a visible turn completes, and the SDK's
+  `system` / `session_state_changed` message with `state: "idle"` is the
+  authoritative turn-over signal that closes an open idle turn: it fires after
+  `heldBackResult` flushes and the background-agent loop exits, and an idle turn
+  is opened by background/subagent output that carries no result envelope of its
+  own, so without it such a turn lingers as permanently "running".
+  `finishClaudeIdleTurn` no-ops when no idle turn is open, which makes the
+  handler safe on every idle transition. Completion here is deliberately
+  event-based — a time-based idle watchdog was removed for false positives during
+  long tool calls and must not be reintroduced. ADE also consumes `conversation_reset`
   as a real SDK continuity change, deduplicates ADE-owned `command_lifecycle`
   frames, preserves the query when an interrupt receipt reports queued messages,
   and calls the runtime's capability-probed `cancelAsyncMessage` control for
@@ -1114,6 +1123,25 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   Task/schedule derivation on “first tool emission” freezes later status
   transitions (for example TASKS staying at 0/N complete). Re-emission must
   reuse the same item id so clients update in place.
+- **Claude system subtypes are triaged at the type level, not at runtime.**
+  `agentChatService.ts` partitions
+  `Extract<SDKMessage, { type: "system" }>["subtype"]` into two explicit unions —
+  `HandledClaudeSystemSubtype` (`api_retry`, `background_tasks_changed`,
+  `commands_changed`, `compact_boundary`, `files_persisted`, `hook_response`,
+  `informational`, `init`, `local_command_output`, `memory_recall`,
+  `mirror_error`, `model_refusal_fallback`, `notification`, `permission_denied`,
+  `session_state_changed`, `status`, `task_notification`, `task_progress`,
+  `task_started`, `task_updated`, `worker_shutting_down`) and
+  `IgnoredClaudeSystemSubtype` (deliberately dropped:
+  `control_request_progress`, `elicitation_complete`, `hook_progress`,
+  `hook_started`, `model_refusal_no_fallback`, `plugin_install`,
+  `thinking_tokens`). Whatever is left over becomes
+  `UntriagedClaudeSystemSubtype`, fed to `AssertNever<T extends never>`. An SDK
+  bump that adds a system subtype therefore fails **typecheck** instead of being
+  silently swallowed. The maintenance contract on an SDK upgrade is to triage the
+  new subtype into the handled or ignored union after checking **both** stream
+  readers (the active-turn reader and `handleClaudeIdleMessage`) and the
+  renderer — never to widen the ignored union just to make the build green.
 - **Provider failures are terminal once, but retry notices are not failures.**
   Codex app-server may send an `error` notification before a failed
   `turn/completed` carrying the same message. ADE emits one visible `error`

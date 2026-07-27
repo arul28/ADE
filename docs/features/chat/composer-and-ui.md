@@ -18,13 +18,14 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Project-scoped AI integration-status and provider-model cache shared across renderer surfaces. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
 | `CrossMachineHandoffModal.tsx` | Modal state and user flow for **Send to machine**. It verifies a local source lane, follows live remote connection snapshots, lets the user pick brief or full-history fork (fork defaults on for fork-capable providers and constrains the model picker to the same provider), handles existing-project versus confirmed-clone setup, decodes destination responses at the renderer boundary, pins acceptance to the reviewed route kind, and exposes retryable source-marker failures after destination success. Once destination acceptance is dispatched, a runtime timeout or connection interruption produces an amber unknown-outcome notice: the destination chat may still appear, the user should check that machine before retrying, and the modal never reports a truthful cancellation that the runtime did not perform. A fork that the destination can't accept (older ADE with no `forkHandoffSupport`, oversize history, or an unforkable provider file) surfaces a plain reason and a one-click **send as brief** that re-runs prepare + preflight; the insecure-route consent line is fork-aware (a fork discloses that the full history is sent exactly as recorded, a brief that only the summary is sent). |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` / `BackgroundFinishChip` rows (from `SubagentActivityCards.tsx`) for real subagents and backgrounded shell commands, and accepts stable row-key jump requests from the while-you-were-away strip and the spawn/result jump affordances. Keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. The last text block of a multi-block assistant turn exposes Copy turn, which joins only that turn's assistant text blocks with blank lines; legacy rows without a turn id and single-block turns keep only the normal block copy. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; terminal provider capacity/usage-limit errors render `ProviderFailureRecoveryCard` with same-thread retry and model-selection actions. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. |
-| `AgentChatComposer.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | Text input, attachments, model selector, compact title-only permission controls, slash commands, smart-link chips (`smartLinkChipMark.ts` returns the inline `currentColor` SVG brand mark each chip renders), pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
+| `AgentChatComposer.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | Text input, attachments, model selector, compact title-only permission controls, slash commands, smart-link chips (`smartLinkChipMark.ts` returns the inline `currentColor` SVG brand mark each chip renders), pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. Every chip also carries a kind-naming `data-composer-chip` attribute, and a scoped `selectionchange` effect marks intersecting chips with `data-composer-chip-selected` so the native selection paints continuously across them (overlay styling lives in `apps/desktop/src/renderer/index.css`). During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
 | `ProviderFailureRecoveryCard.tsx` | Friendly recovery surface for terminal provider capacity and usage-limit failures. Shows human-readable error identity and guidance, then offers **Retry turn** and **Choose model** only after the failed turn has released the composer. |
 | `chatTurnState.ts` | Pure turn-state helpers shared by live and hydration paths. Terminal transcript evidence beats a stale active session summary, and failed-turn retry resolves the associated non-steer user message even when the optimistic row has no provider turn id. |
 | `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | Chat Actions tab shell plus Codex Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
 | `VoiceDictationButton.tsx`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*` | Desktop dictation UI and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. The header indicator and composer pill render the same recording state. |
 | `apps/desktop/src/main/services/transcription/*` | Electron main-process transcription service. Writes captured 16 kHz mono PCM to WAV, runs bundled whisper.cpp `base.en`, parses the JSON sidecar, and applies deterministic glossary cleanup. |
 | `apps/desktop/resources/voice/voice-glossary.json`, `apps/desktop/resources/whisper/README.md` | Shared dictation glossary and release notes for materialized whisper resources. The large model and binary are generated by `materialize-whisper-resources.mjs` and ignored by git. |
+| `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` | Ambient `settled` / `snoozed` chips for the chat surface header, mounted by `WorkSurfaceHeader` through its `lifecycleSessionId` prop (`AgentChatPane` passes the selected session id). `useSessionLifecycleSnapshot(sessionId)` reads the session row out of the per-project session cache the Work tab already mirrors into the app store, so there is no extra IPC; the phase/snooze derivations are the shared `sessionCanonicalUiState` + `isSessionSnoozed` / `snoozeWakeLabel` helpers the Work sidebar uses. Chip menus call `wakeSessionNow` / `setSessionSettleOverride` from `renderer/components/terminals/sessionLifecycleActions.ts`, falling back to `window.ade.sessions.unsettle` for a declared settle. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
 | `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail, open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Pasted images can pass a seeded preview URL from the composer while the temp file is being saved; tray-only image refs fall back to `window.ade.app.getImageDataUrl`. Non-image attachments fall back to the file glyph. |
@@ -92,6 +93,26 @@ and a footer that contains the composer.
   the lane in the Lanes tab via the app store.
 - CTO and resolver surfaces override the title and chips through
   `ChatSurfacePresentation` (`assistantLabel`, `accentColor`, `chips`).
+- Ambient lifecycle chips. `AgentChatPane` passes the selected session id to
+  `WorkSurfaceHeader` as `lifecycleSessionId`, which mounts
+  `renderer/components/work/SessionLifecycleChips.tsx`. A settled or snoozed
+  chat would otherwise look identical to a live one once you are inside it, so
+  the header shows a `settled` and/or `snoozed` chip whose menus call
+  `wakeSessionNow` / `setSessionSettleOverride` (or `sessions.unsettle` for a
+  declared settle) from
+  `renderer/components/terminals/sessionLifecycleActions.ts`. State comes from
+  the same derived helpers the Work sidebar uses (`sessionCanonicalUiState` +
+  `isSessionSnoozed` / `snoozeWakeLabel`) and
+  `useSessionLifecycleSnapshot(sessionId)` reads the `terminal_sessions` row out
+  of the per-project session cache the Work tab already mirrors into the app
+  store — no extra IPC, and a chip can never disagree with its sidebar row. The
+  chips live in the **header** deliberately: the slot directly above the
+  composer belongs to lane branch drift, where `AgentChatPane` renders
+  `<LaneBranchDriftStrip laneId={laneId} />` and arms it
+  (`armLaneBranchDriftWarning`) on submit so a turn about to run against a
+  worktree whose HEAD wandered off the lane's branch warns first. See
+  [Terminals and sessions](../terminals-and-sessions/README.md) and
+  [Lanes › Branch drift](../lanes/README.md#branch-drift).
 
 ## Composer
 
@@ -169,6 +190,19 @@ and a footer that contains the composer.
   `@path`/`/command` tokens while the textarea text goes transparent
   (overlay only mounts when at least one confirmed token exists). IME
   composition freezes trigger re-evaluation until `compositionend`.
+- **Chip selection highlight.** Rich-composer chips are
+  `contentEditable="false"`, so the browser skips them when it paints the native
+  selection and dragging across one renders as two disconnected highlight runs.
+  Every chip therefore carries a `data-composer-chip` attribute naming its kind
+  (`ios-context`, `app-control-context`, `built-in-browser-context`, …), and a
+  `selectionchange`-driven effect marks the chips the current range intersects
+  with `data-composer-chip-selected`. `index.css` paints that marker as a
+  translucent `::after` overlay in the platform selection color, so the
+  highlight reads as one continuous run. `range.getRangeAt(0)` is already
+  start-before-end, so a backwards drag needs no special casing, and a range
+  outside the editor simply drops the marks. The performance contract is
+  load-bearing — see
+  [Chip selection marking must stay cheap](#fragile-and-tricky-wiring).
 - **File attach picker** opened with the `@` key. Runs
   `ade.agentChat.fileSearch` with a 40 ms debounce, a per-menu-session
   query cache (cache hits render same-frame and revalidate silently),
@@ -1086,6 +1120,19 @@ These modules are pure and unit-testable:
   around the caret (`getRichTriggerContext`), NOT on serialized-draft
   offsets: serialization collapses whitespace and flattens chips, so
   serialized indices cannot be mapped back onto DOM positions.
+- **Chip selection marking must stay cheap.** `selectionchange` fires on every
+  caret move on the Work tab's hottest input path, so the chip-highlight effect
+  in `AgentChatComposer` holds five constraints together: the document listener
+  exists **only** while the editor is focused *and* actually holds a chip; a
+  collapsed caret costs one boolean (it returns early unless an earlier
+  selection left marks behind); every DOM write is coalesced into a single
+  `requestAnimationFrame`; all queries are scoped to the editor element, never
+  the document; and because chips are inserted/removed by direct DOM writes
+  rather than React renders, a `MutationObserver` watches the editor's
+  **structure** (`childList` + `subtree`) and never its character data, and only
+  while the editor is focused. Widening any of these — a permanently attached
+  listener, a document-wide query, or a `characterData` observer — puts work on
+  every keystroke of every chat.
 - **Smart-link presentation is not prompt storage.** The chip label, remote
   title, and favicon are presentation only. Preserve the full URL in
   `data-composer-chip-text` and in the controlled draft; reconciliation must

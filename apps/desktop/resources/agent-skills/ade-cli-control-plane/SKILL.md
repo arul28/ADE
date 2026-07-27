@@ -172,6 +172,58 @@ background a raw CLI and then guess at its state:
   the full command line and exclude yourself (`pgrep -f "codex exec" | grep -v $$`),
   never the bare program name.
 
+### Session lifecycle: settle, snooze, wake
+
+The work-session lifecycle is reachable from every surface, including yours. The
+typed family takes the session id as a positional, also accepts `--session`, and
+falls back to `ADE_CHAT_SESSION_ID` when you omit it — so you can drive your own
+session or another one.
+
+```bash
+ade session show <id> --text                 # lifecycle state incl. wake reason
+ade session snooze <id> --for 1h             # also 30m, 4h, 1d (cap 30d)
+ade session snooze <id> --until <iso>        # mutually exclusive with --for
+ade session wake <id> [--reason <reason>]
+ade session settle <id> [--outcome "..."]
+ade session settle <id> --keep-active        # pin: beats a derived clean-exit settle
+ade session unsettle <id>
+ade session clear-woke <id>
+```
+
+Semantics that hold on every surface:
+
+- **Snooze is a visibility overlay, not a lifecycle state.** It never changes a
+  session's canonical phase; it only files the row in a quiet tier. Timer expiry
+  is derived by comparing `snoozedUntil` to now — nothing schedules a wakeup.
+- **A snoozed session hand-raises early** when it needs approval or input, when
+  it hits an error *newer than* the snooze, or when a running turn completes.
+  The row then carries a woke marker plus the reason (`needs approval`,
+  `errored`, `turn finished`, `snooze ended`).
+- **Settle override is tri-state** (`settled` / `active` / cleared). `--keep-active`
+  sets the `active` pin, which is how you un-settle a session that settled itself
+  on a clean exit and therefore has no settle timestamp to clear.
+
+Generic action-domain equivalents: `session.snoozeSession`, `session.snoozeSessions`,
+`session.wakeSession`, `session.wakeSessions`, `session.setSettleOverride`,
+`session.clearWokeMarker`, alongside the existing `session.settleSessions` /
+`session.unsettleSessions`.
+
+### Lane branch drift
+
+A lane's worktree HEAD can drift from the branch ADE recorded (someone runs
+`git checkout` inside it). While drifted, PR matching is paused, because a PR
+created from that lane would target the wrong branch.
+
+```bash
+ade lane drift [--lane <id>] --text
+ade lane drift resolve --switch-back            # restore the recorded branch
+ade lane drift resolve --keep-head              # adopt the live branch instead
+```
+
+`--switch-back` refuses on a dirty worktree rather than risking work. `--keep-head`
+re-points the lane's branch and renames the lane only when its name was literally
+advertising the old branch. Actions: `lane.getBranchDrift`, `lane.resolveBranchDrift`.
+
 ### Scheduled work
 
 Persistent ADE chats and tracked provider CLI sessions can schedule their own

@@ -360,6 +360,73 @@ extension WorkRootScreen {
     }
   }
 
+  // MARK: - Session lifecycle (ADE-125)
+  //
+  // Every one of these is a host command: the phone is a controller and never
+  // runs agents, so it never owns a lifecycle column. `SyncService` writes the
+  // column locally first (so the row doesn't flicker), rolls that back if the
+  // host rejects, and `reload()` reconciles against the replicated truth.
+
+  private func runSessionLifecycle(_ work: @escaping () async throws -> Void) {
+    Task {
+      do {
+        try await work()
+        await reload()
+      } catch {
+        ADEHaptics.error()
+        errorMessage = error.localizedDescription
+        await reload()
+      }
+    }
+  }
+
+  func settleSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.settleSession(sessionId: session.id)
+    }
+  }
+
+  func unsettleSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.unsettleSession(sessionId: session.id)
+    }
+  }
+
+  /// The explicit keep-active pin. Suppresses settle — derived (a clean exit)
+  /// and declared alike — so a finished PTY keeps a real lifecycle action
+  /// instead of being stuck in the quiet tier forever.
+  func keepSessionActive(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.setSessionSettleOverride(sessionId: session.id, override: .active)
+    }
+  }
+
+  func snoozeSession(_ session: TerminalSessionSummary, duration: WorkSnoozeDuration) {
+    guard let deadline = duration.deadline() else { return }
+    runSessionLifecycle { [syncService] in
+      try await syncService.snoozeSession(sessionId: session.id, until: deadline)
+    }
+  }
+
+  func wakeSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.wakeSession(sessionId: session.id, reason: .manual)
+    }
+  }
+
+  /// The woke marker exists to explain why a snoozed row came back. Visiting
+  /// the row is the explanation being read, so drop it then — quietly, since a
+  /// failure here must never block navigation.
+  func clearWokeMarkerOnVisit(_ session: TerminalSessionSummary) {
+    // Only a PERSISTED marker needs clearing. A purely derived one (the snooze
+    // simply lapsed, so the host never wrote a marker) has nothing to clear.
+    let wokeAt = session.wokeAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !wokeAt.isEmpty else { return }
+    Task { [syncService] in
+      try? await syncService.clearSessionWokeMarker(sessionId: session.id)
+    }
+  }
+
   func beginRename(_ session: TerminalSessionSummary) {
     renameTarget = session
     renameText = session.title
@@ -469,6 +536,7 @@ extension WorkRootScreen {
     guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
+    clearWokeMarkerOnVisit(session)
     selectedSessionTransitionId = session.id
     Task { @MainActor in
       await Task.yield()

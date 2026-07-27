@@ -51,9 +51,12 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchDrift,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  ResolveLaneBranchDriftArgs,
+  ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -490,6 +493,8 @@ import type {
   SuggestResolverTargetResult,
   SessionDeltaSummary,
   SessionLinearIssueLink,
+  SessionSettleOverride,
+  SessionWakeReason,
   TerminalSessionChangedEvent,
   StackChainItem,
   StopTestRunArgs,
@@ -1286,6 +1291,10 @@ declare global {
         switchBranch: (
           args: LaneBranchSwitchArgs,
         ) => Promise<LaneBranchSwitchResult>;
+        getBranchDrift: (args: { laneId: string }) => Promise<LaneBranchDrift | null>;
+        resolveBranchDrift: (
+          args: ResolveLaneBranchDriftArgs,
+        ) => Promise<ResolveLaneBranchDriftResult>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
         adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
@@ -1416,6 +1425,27 @@ declare global {
         unsettle: (sessionId: string) => Promise<void>;
         settleMany: (sessionIds: string[]) => Promise<string[]>;
         unsettleMany: (sessionIds: string[]) => Promise<void>;
+        snoozeSession: (
+          sessionId: string,
+          untilIso: string,
+        ) => Promise<boolean>;
+        wakeSession: (
+          sessionId: string,
+          reason?: SessionWakeReason,
+        ) => Promise<boolean>;
+        snoozeSessions: (
+          sessionIds: string[],
+          untilIso: string,
+        ) => Promise<string[]>;
+        wakeSessions: (
+          sessionIds: string[],
+          reason?: SessionWakeReason,
+        ) => Promise<string[]>;
+        setSettleOverride: (
+          sessionId: string,
+          override: SessionSettleOverride | null,
+        ) => Promise<boolean>;
+        clearWokeMarker: (sessionId: string) => Promise<boolean>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
         onChanged: (

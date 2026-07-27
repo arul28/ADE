@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GridFour, WarningCircle, Clock } from "@phosphor-icons/react";
+import { CircleNotch, GridFour, WarningCircle, Clock, Moon } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
@@ -31,6 +31,8 @@ import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
+import { SessionSnoozeControl } from "./SessionSnoozeControl";
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -337,6 +339,70 @@ function NextWakeChip({
   );
 }
 
+/**
+ * Snoozed rows say when they come back. Snooze is a visibility overlay, so this
+ * chip is deliberately calm — it never competes with the attention capsule and
+ * carries a moon glyph so snoozed never reads as settled on shape alone.
+ */
+function SnoozeWakeChip({
+  snoozedUntil,
+  compact,
+}: {
+  snoozedUntil?: string | null;
+  compact: boolean;
+}) {
+  const [, tick] = React.useReducer((value: number) => value + 1, 0);
+  const label = snoozeWakeLabel(snoozedUntil, Date.now());
+
+  React.useEffect(() => {
+    if (!snoozedUntil) return undefined;
+    const intervalId = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [snoozedUntil]);
+
+  if (!label) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border border-white/[0.10] bg-white/[0.04] font-medium leading-none text-muted-fg/70",
+        compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+      )}
+      title={`Snoozed — ${label}`}
+      aria-label={`Snoozed, ${label}`}
+      data-session-snoozed-until={snoozedUntil}
+    >
+      <Moon size={compact ? 8 : 9} weight="fill" aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+/** "Woke" marker + why, carried until the user opens the row. */
+function WokeMarkerChip({
+  label,
+  reason,
+  compact,
+}: {
+  label: string;
+  reason: string;
+  compact: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full border border-white/[0.14] bg-white/[0.07] font-semibold leading-none text-fg/75",
+        compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+      )}
+      title={`Woke — ${label}`}
+      aria-label={`Woke, ${label}`}
+      data-session-woke-reason={reason}
+    >
+      Woke
+      <span className="font-normal text-muted-fg/70">· {label}</span>
+    </span>
+  );
+}
+
 export const SessionCard = React.memo(function SessionCard({
   session,
   lane,
@@ -437,6 +503,10 @@ export const SessionCard = React.memo(function SessionCard({
     : null;
   const isActiveGrid = gridBadge === "active";
   const gridLabel = isActiveGrid ? "In the active grid" : "In another grid";
+  // Snooze never touches the canonical phase — it is read straight off the two
+  // snooze columns via the shared derivation, exactly like the sidebar filing.
+  const snoozed = isSessionSnoozed(session);
+  const wokeMarker = sessionWokeMarker(session);
 
   return (
     <div
@@ -449,6 +519,13 @@ export const SessionCard = React.memo(function SessionCard({
           && "motion-safe:animate-[ade-session-needs-you_900ms_ease-out_1]",
       )}
       data-needs-you-pulse={needsYouJustChanged ? "true" : undefined}
+      // Stable row anchor. ADE Web mounts this same component and has to locate
+      // the row from outside React — for its coarse-pointer styling and for the
+      // long-press bridge that stands in for `contextmenu`, which iOS Safari
+      // never fires. Without this it would have to walk up from an inner
+      // testid, which silently breaks the moment the card's markup shifts.
+      data-session-row=""
+      data-session-id={session.id}
       onContextMenu={disabledReason ? undefined : onContextMenu}
       draggable={!disabledReason}
       onDragStart={(event) => {
@@ -525,6 +602,10 @@ export const SessionCard = React.memo(function SessionCard({
                 </span>
               ) : null}
               {capsuleBadge ? <AttentionCapsule badge={capsuleBadge} compact={compact} /> : null}
+              {snoozed ? <SnoozeWakeChip snoozedUntil={session.snoozedUntil} compact={compact} /> : null}
+              {!snoozed && wokeMarker ? (
+                <WokeMarkerChip label={wokeMarker.label} reason={wokeMarker.reason} compact={compact} />
+              ) : null}
               <div className="flex shrink-0 items-center gap-1.5">
                 {importedFrom ? (
                   <span
@@ -714,6 +795,14 @@ export const SessionCard = React.memo(function SessionCard({
           </span>
         ) : null}
       </button>
+      {/* Row hover actions live OUTSIDE the card button: nesting an interactive
+          control inside a native <button> is invalid HTML and assistive tech
+          flattens it into the outer button. */}
+      {disabledReason ? null : (
+        <div className="pointer-events-none absolute right-1 top-1 z-10 flex items-center gap-0.5 focus-within:pointer-events-auto group-hover:pointer-events-auto">
+          <SessionSnoozeControl session={session} snoozed={snoozed} compact={compact} />
+        </div>
+      )}
     </div>
   );
 });

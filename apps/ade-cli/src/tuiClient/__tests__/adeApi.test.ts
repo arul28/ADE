@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionStatusNote, settleSession, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
 import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -139,6 +139,64 @@ describe("session lifecycle parity", () => {
       }],
       ["session", "unsettleSelfSession", { sessionId: "session-1" }],
     ]);
+  });
+
+  it("maps snooze, wake, settle-override, and clear-woke onto the session action domain", async () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    const connection = { action } as unknown as AdeCodeConnection;
+
+    await snoozeSession(connection, "session-1", "2026-07-26T18:00:00.000Z");
+    await wakeSession(connection, "session-1", "manual");
+    await setSessionSettleOverride(connection, "session-1", "active");
+    await setSessionSettleOverride(connection, "session-1", null);
+    await clearSessionWokeMarker(connection, "session-1");
+
+    expect(action.mock.calls).toEqual([
+      ["session", "snoozeSession", { sessionId: "session-1", untilIso: "2026-07-26T18:00:00.000Z" }],
+      ["session", "wakeSession", { sessionId: "session-1", reason: "manual" }],
+      ["session", "setSettleOverride", { sessionId: "session-1", override: "active" }],
+      // null is a real value here — it CLEARS the pin, so it must be sent, not dropped.
+      ["session", "setSettleOverride", { sessionId: "session-1", override: null }],
+      ["session", "clearWokeMarker", { sessionId: "session-1" }],
+    ]);
+  });
+
+  it("carries the snooze, woke, and settle-override columns onto enriched rows", () => {
+    const lifecycle = {
+      id: "session-1",
+      settledAt: null,
+      statusNote: null,
+      attentionRequestedAt: null,
+      attentionMessage: null,
+      lastTurnFailedAt: null,
+      settleOverride: "active",
+      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedAt: "2026-07-26T12:00:00.000Z",
+      wokeAt: "2026-07-26T13:00:00.000Z",
+      wokeReason: "needs_you",
+    } as TerminalSessionSummary;
+
+    const [chat] = enrichChatSessionsWithLifecycle([{
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-07-26T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-26T11:30:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    }], [lifecycle]);
+
+    expect(chat).toMatchObject({
+      settleOverride: "active",
+      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedAt: "2026-07-26T12:00:00.000Z",
+      wokeAt: "2026-07-26T13:00:00.000Z",
+      wokeReason: "needs_you",
+    });
   });
 });
 

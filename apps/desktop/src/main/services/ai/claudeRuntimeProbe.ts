@@ -140,6 +140,15 @@ export async function probeClaudeRuntimeHealth(args: {
           tools: [],
           abortController,
           pathToClaudeCodeExecutable: claudeExecutable.path,
+          // This probe only answers "can the runtime start and authenticate". Left
+          // unisolated it boots the user's entire MCP fleet and writes a session file on
+          // every cache miss, which is slow and makes a broken MCP server look like a
+          // broken Claude runtime. Slash commands are discovered separately by
+          // claudeSlashCommandDiscovery, so nothing here needs filesystem settings.
+          settingSources: [],
+          mcpServers: {},
+          strictMcpConfig: true,
+          persistSession: false,
         },
       });
 

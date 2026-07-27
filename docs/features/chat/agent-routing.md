@@ -510,6 +510,15 @@ removed.
   bundled Claude Agent SDK binary and auth state before chat launch.
   Missing binary/auth readiness surfaces as `CLAUDE_RUNTIME_AUTH_ERROR`
   before the SDK `query()` stream is allowed to start.
+  `probeClaudeRuntimeHealth` answers exactly one question — can the runtime
+  start and authenticate — so its query is fully isolated: `settingSources: []`,
+  `mcpServers: {}`, `strictMcpConfig: true`, `persistSession: false`. Left
+  unisolated the probe booted the user's entire MCP fleet and wrote a session
+  file on every cache miss, which was slow and made a broken MCP server look
+  like a broken Claude runtime. It needs no filesystem settings because slash
+  commands are discovered separately by `claudeSlashCommandDiscovery`. Keep any
+  new probe option on the same footing: nothing the probe loads should be able
+  to fail the health answer.
 - **Permission mapping is asymmetric.** `mapPermissionModeToNativeFields`
   only handles the abstract-to-native direction. The reverse
   (native-to-abstract) requires provider-specific logic; switching a
@@ -532,5 +541,3 @@ removed.
   permission controls surface in the UI.
 - [Agents identity and personas](../agents/identity-and-personas.md) --
   how the CTO identity and its memory system feed into routing.
-</content>
-</invoke>

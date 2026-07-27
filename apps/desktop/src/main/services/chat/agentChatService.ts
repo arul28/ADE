@@ -16975,6 +16975,50 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  // If this breaks after an SDK update, triage each new subtype into the handled
+  // or deliberately ignored union below after checking both stream readers and the renderer.
+  type ClaudeSystemSubtype = Extract<SDKMessage, { type: "system" }>["subtype"];
+
+  type HandledClaudeSystemSubtype =
+    | "api_retry"
+    | "background_tasks_changed"
+    | "commands_changed"
+    | "compact_boundary"
+    | "files_persisted"
+    | "hook_response"
+    | "informational"
+    | "init"
+    | "local_command_output"
+    | "memory_recall"
+    | "mirror_error"
+    | "model_refusal_fallback"
+    | "notification"
+    | "permission_denied"
+    | "session_state_changed"
+    | "status"
+    | "task_notification"
+    | "task_progress"
+    | "task_started"
+    | "task_updated"
+    | "worker_shutting_down";
+
+  type IgnoredClaudeSystemSubtype =
+    | "control_request_progress"
+    | "elicitation_complete"
+    | "hook_progress"
+    | "hook_started"
+    | "model_refusal_no_fallback"
+    | "plugin_install"
+    | "thinking_tokens";
+
+  type UntriagedClaudeSystemSubtype = Exclude<
+    ClaudeSystemSubtype,
+    HandledClaudeSystemSubtype | IgnoredClaudeSystemSubtype
+  >;
+
+  type AssertNever<T extends never> = T;
+  type _ClaudeSystemSubtypesAreTriaged = AssertNever<UntriagedClaudeSystemSubtype>;
+
   const handleClaudeIdleMessage = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -17026,6 +17070,19 @@ export function createAgentChatService(args: {
 
     if (msg.type === "system" && record.subtype === "background_tasks_changed") {
       applyClaudeBackgroundTasksLevel(managed, runtime, record.tasks);
+      return;
+    }
+
+    // The SDK's authoritative turn-over signal: 'idle' fires after heldBackResult flushes
+    // and the background-agent loop exits. Idle turns are opened by background/subagent
+    // output that carries no result envelope of its own, so before this they could linger
+    // as a permanently "running" turn. finishClaudeIdleTurn no-ops when no idle turn is
+    // open, which makes this safe on every idle transition. Deliberately event-based --
+    // do not reintroduce a time-based idle watchdog, which was removed for false positives.
+    if (msg.type === "system" && record.subtype === "session_state_changed") {
+      if (record.state === "idle") {
+        await finishClaudeIdleTurn(managed, runtime, state);
+      }
       return;
     }
 

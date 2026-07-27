@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { SessionContextMenu } from "./SessionContextMenu";
 
@@ -38,6 +38,7 @@ function renderMenu(
   session: TerminalSessionSummary,
   onSetChatTag = vi.fn(),
   onSettle = vi.fn(),
+  onUnsettle = vi.fn(),
 ) {
   const onClose = vi.fn();
   render(
@@ -54,9 +55,10 @@ function renderMenu(
       onRename={vi.fn()}
       onSetChatTag={onSetChatTag}
       onSettle={onSettle}
+      onUnsettle={onUnsettle}
     />,
   );
-  return { onClose, onSetChatTag, onSettle };
+  return { onClose, onSetChatTag, onSettle, onUnsettle };
 }
 
 describe("SessionContextMenu Claude tags", () => {
@@ -146,5 +148,98 @@ describe("SessionContextMenu settle safety", () => {
     const button = screen.getByRole("button", { name: "Resolve input to settle" });
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect(onSettle).not.toHaveBeenCalled();
+  });
+});
+
+describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
+  let sessionsApi: Record<string, ReturnType<typeof vi.fn>>;
+
+  beforeEach(() => {
+    sessionsApi = {
+      setSettleOverride: vi.fn().mockResolvedValue(true),
+      snoozeSession: vi.fn().mockResolvedValue(true),
+      wakeSession: vi.fn().mockResolvedValue(true),
+    };
+    (window as unknown as { ade: unknown }).ade = { sessions: sessionsApi };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.clearAllMocks();
+  });
+
+  /** exit-0 PTY with no `settledAt`: canonically settled, but nothing declared it. */
+  function derivedSettledSession(): TerminalSessionSummary {
+    return makeSession({
+      toolType: "shell",
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-07-10T12:30:00.000Z",
+      exitCode: 0,
+      settledAt: null,
+    });
+  }
+
+  it("gives a DERIVED settled row an Unsettle action backed by the keep-active override", async () => {
+    // Regression: this row previously fell out of every branch of the settle
+    // chain and rendered no lifecycle action at all.
+    const { onUnsettle } = renderMenu(derivedSettledSession());
+
+    fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
+
+    await waitFor(() => {
+      expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+    });
+    // There is no `settledAt` column to clear, so the declared path stays unused.
+    expect(onUnsettle).not.toHaveBeenCalled();
+    // "Keep active" would be the identical call here, so it is not duplicated.
+    expect(screen.queryByRole("button", { name: "Keep active" })).toBeNull();
+  });
+
+  it("keeps the declared-settle path for settledAt rows and adds a keep-active pin", async () => {
+    const session = makeSession({
+      toolType: "shell",
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-07-10T12:30:00.000Z",
+      exitCode: 0,
+      settledAt: "2026-07-10T12:31:00.000Z",
+    });
+    const { onUnsettle } = renderMenu(session);
+
+    fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
+    expect(onUnsettle).toHaveBeenCalledWith(session);
+    expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
+    await waitFor(() => {
+      expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+    });
+  });
+
+  it("expands Snooze into concrete durations and sends an ISO deadline", async () => {
+    renderMenu(makeSession());
+
+    fireEvent.click(screen.getByRole("button", { name: "Snooze…" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 hour" }));
+
+    await waitFor(() => expect(sessionsApi.snoozeSession).toHaveBeenCalledTimes(1));
+    const [sessionId, untilIso] = sessionsApi.snoozeSession.mock.calls[0]!;
+    expect(sessionId).toBe("chat-1");
+    expect(Date.parse(untilIso as string)).toBeGreaterThan(Date.now());
+  });
+
+  it("replaces Snooze with Wake now while the row is snoozed", async () => {
+    renderMenu(makeSession({
+      snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      snoozedAt: new Date(Date.now() - 60_000).toISOString(),
+    }));
+
+    expect(screen.queryByRole("button", { name: "Snooze…" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Wake now/ }));
+
+    await waitFor(() => {
+      expect(sessionsApi.wakeSession).toHaveBeenCalledWith("chat-1", "manual");
+    });
   });
 });

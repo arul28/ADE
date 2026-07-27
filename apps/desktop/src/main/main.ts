@@ -4,6 +4,15 @@ if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
 }
 
+// When the terminal that launched ADE goes away, the next write to stdout/stderr raises
+// EPIPE. Without a listener that surfaces as an uncaughtException and tears down the app.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") return;
+    throw err;
+  });
+}
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -6057,9 +6066,13 @@ app.whenReady().then(async () => {
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
+  // A dead stdout/stderr pipe (launching terminal closed) must never take the app down.
+  const BROKEN_STREAM_CODES = new Set(["EPIPE", "ERR_STREAM_DESTROYED"]);
   let emfileWarned = false;
   process.on("uncaughtException", (err) => {
-    if (FILE_LIMIT_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    const code = (err as NodeJS.ErrnoException).code ?? "";
+    if (FILE_LIMIT_CODES.has(code)) return;
+    if (BROKEN_STREAM_CODES.has(code)) return;
     const logger = getActiveContext().logger;
     logger.error("process.uncaught_exception", {
       err: String(err),

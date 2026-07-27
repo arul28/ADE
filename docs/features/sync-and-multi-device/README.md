@@ -149,8 +149,13 @@ must not put a host in `limited`. The four Linear connection commands
 `cto.setLinearToken`, `cto.clearLinearToken`) that let the phone connect,
 reconnect, and disconnect Linear are optional: a brain that predates them simply
 doesn't advertise them, and the iOS Linear pane hides those affordances locally
-instead of erroring. See `remote-commands.md` and
-`../linear-integration/README.md`.
+instead of erroring. The session-lifecycle commands
+(`session.settleSessions`, `session.unsettleSessions`,
+`session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`,
+`session.clearWokeMarker`) are optional for the same reason: the phone
+feature-detects them before showing settle and snooze controls, while an older
+mobile build that never calls them must not push a newer host into `limited`.
+See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not
 

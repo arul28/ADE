@@ -25,6 +25,48 @@ export type LaneStatus = {
   remoteBehind: number;
   /** true when the worktree is stuck in an interrupted rebase (rebase-merge / rebase-apply dir exists) */
   rebaseInProgress: boolean;
+  /**
+   * Branch the worktree's HEAD actually points at, read live during the status
+   * refresh. Absent when status was not computed; `null` on a detached HEAD.
+   */
+  headBranchRef?: string | null;
+};
+
+/**
+ * Set when the lane worktree's live HEAD no longer matches `lanes.branch_ref`
+ * (someone ran `git checkout` inside the worktree). Both refs are plain branch
+ * names, `refs/heads/` and `origin/` stripped.
+ */
+export type LaneBranchDrift = {
+  /** What ADE recorded for the lane and still advertises. */
+  expectedBranchRef: string;
+  /** What the worktree is actually on right now. */
+  headBranchRef: string;
+};
+
+export type LaneBranchDriftResolution =
+  /** Restore the worktree to `expectedBranchRef`; refuses if the tree is dirty. */
+  | "switch-back"
+  /** Re-point the lane at `headBranchRef` and rename it to match. */
+  | "keep-head";
+
+export type ResolveLaneBranchDriftArgs = {
+  laneId: string;
+  resolution: LaneBranchDriftResolution;
+  /** Required for `keep-head`; guards against acting on a stale drift reading. */
+  expectedHeadBranchRef?: string;
+  /** `switch-back` only: proceed even though sessions/processes are running. */
+  acknowledgeActiveWork?: boolean;
+};
+
+export type ResolveLaneBranchDriftResult = {
+  lane: LaneSummary;
+  resolution: LaneBranchDriftResolution;
+  previousBranchRef: string;
+  branchRef: string;
+  /** Set by `keep-head` when the lane display name was re-pointed too. */
+  previousLaneName: string | null;
+  laneName: string;
 };
 
 export type DeviceMarker = {
@@ -49,6 +91,8 @@ export type LaneSummary = {
   parentStatus: LaneStatus | null;
   isEditProtected: boolean;
   status: LaneStatus;
+  /** Non-null when the worktree HEAD has drifted off `branchRef`. */
+  branchDrift?: LaneBranchDrift | null;
   color: string | null;
   icon: LaneIcon | null;
   tags: string[];

@@ -13,6 +13,8 @@ import type {
   AutomationRunListArgs,
   GitPullArgs,
   OperatorNavigationSuggestion,
+  SessionSettleOverride,
+  SessionWakeReason,
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
@@ -40,7 +42,17 @@ export interface CtoOperatorToolDeps {
   laneService: ReturnType<typeof createLaneService>;
   prService?: ReturnType<typeof createPrService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
-  sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
+  sessionService: Pick<
+    ReturnType<typeof createSessionService>,
+    | "updateMeta"
+    | "get"
+    | "settleSession"
+    | "unsettleSession"
+    | "setSettleOverride"
+    | "snoozeSession"
+    | "wakeSession"
+    | "clearWokeMarker"
+  >;
   testService?: {
     listSuites: () => TestSuiteDefinition[];
     run: (args: { laneId: string; suiteId: string }) => Promise<TestRunSummary>;
@@ -241,6 +253,65 @@ function resolveWorkspaceIdForLane(
   throw new Error(`Workspace not found for lane ${laneId}.`);
 }
 
+/**
+ * The lifecycle slice the CTO needs to triage a row: whether it is settled,
+ * whether it is deliberately quiet, and — the load-bearing bit — WHY it came
+ * back if a snooze was broken early.
+ */
+function readSessionLifecycle(
+  deps: Pick<CtoOperatorToolDeps, "sessionService">,
+  sessionId: string,
+): {
+  settledAt: string | null;
+  settleOverride: SessionSettleOverride | null;
+  statusNote: string | null;
+  attentionRequestedAt: string | null;
+  attentionMessage: string | null;
+  lastTurnFailedAt: string | null;
+  snoozedUntil: string | null;
+  snoozedAt: string | null;
+  snoozed: boolean;
+  wokeAt: string | null;
+  wokeReason: SessionWakeReason | null;
+} | null {
+  // Not every host wires the full session service (the prompt-manifest preview
+  // and older harnesses pass only `updateMeta`), and a missing lifecycle read
+  // must degrade to "unknown" rather than break the tool it decorates.
+  const session = typeof deps.sessionService?.get === "function"
+    ? deps.sessionService.get(sessionId)
+    : null;
+  if (!session) return null;
+  const snoozedUntil = session.snoozedUntil ?? null;
+  const snoozedUntilMs = snoozedUntil ? Date.parse(snoozedUntil) : NaN;
+  return {
+    settledAt: session.settledAt ?? null,
+    settleOverride: session.settleOverride ?? null,
+    statusNote: session.statusNote ?? null,
+    attentionRequestedAt: session.attentionRequestedAt ?? null,
+    attentionMessage: session.attentionMessage ?? null,
+    lastTurnFailedAt: session.lastTurnFailedAt ?? null,
+    snoozedUntil,
+    snoozedAt: session.snoozedAt ?? null,
+    snoozed: Number.isFinite(snoozedUntilMs) && snoozedUntilMs > Date.now(),
+    wokeAt: session.wokeAt ?? null,
+    wokeReason: session.wokeReason ?? null,
+  };
+}
+
+function resolveSnoozeDeadline(args: {
+  untilIso?: string | null;
+  durationMinutes?: number | null;
+}): string | null {
+  const raw = args.untilIso?.trim();
+  if (raw) {
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  const minutes = args.durationMinutes ?? null;
+  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) return null;
+  return new Date(Date.now() + Math.floor(minutes) * 60_000).toISOString();
+}
+
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
 
@@ -314,7 +385,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.listChats = tool({
-    description: "List ADE chat sessions so you can supervise active work and persistent identity threads.",
+    description:
+      "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
+      "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
+      "needs you versus what is deliberately quiet.",
     inputSchema: z.object({
       laneId: z.string().optional(),
       includeIdentity: z.boolean().optional().default(true),
@@ -324,7 +398,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         includeIdentity,
         includeAutomation: false,
       });
-      return { success: true, count: chats.length, chats };
+      const withLifecycle = chats.map((chat) => {
+        const lifecycle = readSessionLifecycle(deps, chat.sessionId);
+        return lifecycle ? { ...chat, lifecycle } : chat;
+      });
+      return { success: true, count: withLifecycle.length, chats: withLifecycle };
     },
   });
 
@@ -433,14 +511,139 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.getChatStatus = tool({
-    description: "Get the current status for an ADE chat session.",
+    description:
+      "Get the current status for an ADE chat session, including its settle/snooze lifecycle " +
+      "and — when it recently came back from a snooze — the reason it woke.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
     }),
     execute: async ({ sessionId }) => {
       const session = await deps.getChatStatus(sessionId);
       if (!session) return { success: false, error: `Chat not found: ${sessionId}` };
-      return { success: true, session };
+      return { success: true, session, lifecycle: readSessionLifecycle(deps, sessionId) };
+    },
+  });
+
+  tools.getSessionLifecycle = tool({
+    description:
+      "Read the settle/snooze lifecycle for any ADE session (chat or tracked CLI). Use this to triage " +
+      "what needs attention: `snoozed` rows are deliberately quiet until `snoozedUntil`, and `wokeReason` " +
+      "explains why a snoozed row came back early ('needs_you' = blocked on a human, 'error' = the turn " +
+      "failed, 'turn_complete' = the work finished, 'timer' = the snooze simply expired, 'manual' = someone woke it).",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      const lifecycle = readSessionLifecycle(deps, sessionId);
+      if (!lifecycle) return { success: false, error: `Session not found: ${sessionId}` };
+      return { success: true, sessionId, ...lifecycle };
+    },
+  });
+
+  tools.settleSession = tool({
+    description:
+      "Mark an ADE session complete so it drops out of the active tier. Pass `outcome` to record a one-line " +
+      "result on the row. Real activity (a new turn, an approval request, a failed turn) un-settles it again.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+      outcome: z.string().trim().min(1).optional().describe("Short outcome line, e.g. 'PR #841 merged, CI green'."),
+    }),
+    execute: async ({ sessionId, outcome }) => {
+      try {
+        const ok = deps.sessionService.settleSession(sessionId, outcome ? { outcome } : {});
+        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.unsettleSession = tool({
+    description:
+      "Return a settled ADE session to the active lifecycle. An explicit keep-active pin survives; " +
+      "to force a derived-settle row back to active use setSessionSettleOverride with 'active'.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+    }),
+    execute: async ({ sessionId }) => {
+      try {
+        const ok = deps.sessionService.unsettleSession(sessionId);
+        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.setSessionSettleOverride = tool({
+    description:
+      "Pin an ADE session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
+      "pin that beats the derived clean-exit auto-settle, and null hands the row back to the derived rules.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+      override: z.enum(["settled", "active", "clear"]).describe("'clear' removes the pin."),
+    }),
+    execute: async ({ sessionId, override }) => {
+      try {
+        const normalized = override === "clear" ? null : override;
+        const ok = deps.sessionService.setSettleOverride(sessionId, normalized);
+        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.snoozeSession = tool({
+    description:
+      "Hide an ADE session from the attention surfaces until a deadline. Snooze is a visibility overlay, not a " +
+      "lifecycle change: the session keeps running, and a hand-raise (approval request, failed turn, completed " +
+      "turn) wakes it early with a recorded reason. Pass either `untilIso` or `durationMinutes`.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+      untilIso: z.string().trim().min(1).optional().describe("ISO-8601 deadline. Wins over durationMinutes."),
+      durationMinutes: z
+        .number()
+        .int()
+        .positive()
+        .max(60 * 24 * 30)
+        .optional()
+        .describe("Minutes from now. Ignored when untilIso is supplied."),
+    }),
+    execute: async ({ sessionId, untilIso, durationMinutes }) => {
+      try {
+        const deadline = resolveSnoozeDeadline({ untilIso, durationMinutes });
+        if (!deadline) {
+          return { success: false, error: "Pass a valid untilIso timestamp or a positive durationMinutes." };
+        }
+        const ok = deps.sessionService.snoozeSession(sessionId, deadline);
+        if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
+        return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.wakeSession = tool({
+    description: "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+      reason: z
+        .enum(["timer", "needs_you", "error", "turn_complete", "manual"])
+        .optional()
+        .describe("Recorded on the row so the surfaces can explain why it came back. Defaults to 'manual'."),
+    }),
+    execute: async ({ sessionId, reason }) => {
+      try {
+        const woke = deps.sessionService.wakeSession(sessionId, reason ?? "manual");
+        return { success: true, sessionId, woke, ...readSessionLifecycle(deps, sessionId) };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
     },
   });
 

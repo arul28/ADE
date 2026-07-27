@@ -22,7 +22,9 @@ import {
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
   parseCliArgs,
+  parseSnoozeDurationMs,
   readRuntimeIdleExitMs,
+  resolveSnoozeUntilIso,
   renderLaneGraph,
   resolveAdeCodeModulePath,
   resolveRoots,
@@ -2939,6 +2941,267 @@ describe("ADE CLI", () => {
       });
     },
   );
+
+  describe("session lifecycle commands", () => {
+    const NOW = Date.parse("2026-07-26T12:00:00.000Z");
+
+    it.each([
+      ["30m", 30 * 60_000],
+      ["1h", 60 * 60_000],
+      ["4h", 4 * 60 * 60_000],
+      ["1d", 24 * 60 * 60_000],
+      ["1.5h", 90 * 60_000],
+      ["45s", 45_000],
+      ["2w", 14 * 24 * 60 * 60_000],
+      ["  1H  ", 60 * 60_000],
+      ["90", 90 * 60_000],
+      ["2hours", 2 * 60 * 60_000],
+    ])("parses --for %s", (input, expectedMs) => {
+      expect(parseSnoozeDurationMs(input)).toBe(expectedMs);
+    });
+
+    it.each([
+      ["", /positive duration/],
+      ["soon", /positive duration/],
+      ["0h", /positive duration/],
+      ["-1h", /positive duration/],
+      ["1y", /positive duration/],
+      ["0.001s", /at least one second/],
+      ["31d", /30d or less/],
+    ])("rejects --for %s", (input, message) => {
+      expect(() => parseSnoozeDurationMs(input)).toThrow(message);
+    });
+
+    it("turns --for into a future ISO deadline and accepts --until directly", () => {
+      expect(resolveSnoozeUntilIso({ forValue: "1h", untilValue: null }, NOW))
+        .toBe("2026-07-26T13:00:00.000Z");
+      expect(resolveSnoozeUntilIso({ forValue: null, untilValue: "2026-07-26T18:00:00Z" }, NOW))
+        .toBe("2026-07-26T18:00:00.000Z");
+    });
+
+    it("refuses ambiguous, unparseable, or already-elapsed deadlines", () => {
+      expect(() => resolveSnoozeUntilIso({ forValue: "1h", untilValue: "2026-07-26T18:00:00Z" }, NOW))
+        .toThrow("Use either --for or --until, not both.");
+      expect(() => resolveSnoozeUntilIso({ forValue: null, untilValue: null }, NOW))
+        .toThrow(/--for <30m\|1h\|4h\|1d> or --until/);
+      expect(() => resolveSnoozeUntilIso({ forValue: null, untilValue: "next tuesday" }, NOW))
+        .toThrow(/ISO-8601/);
+      expect(() => resolveSnoozeUntilIso({ forValue: null, untilValue: "2026-07-26T11:00:00Z" }, NOW))
+        .toThrow("--until must be in the future.");
+    });
+
+    it("expresses the open-ended 'until asked' deadline the desktop preset writes", () => {
+      const untilIso = resolveSnoozeUntilIso(
+        { forValue: null, untilValue: null, untilAsked: true },
+        NOW,
+      );
+      // Far enough out that only a hand-raise brings the row back, and well past
+      // the 30d cap that guards mistyped *relative* durations.
+      expect(Date.parse(untilIso) - NOW).toBeGreaterThan(365 * 24 * 60 * 60_000);
+      expect(() =>
+        resolveSnoozeUntilIso({ forValue: "1h", untilValue: null, untilAsked: true }, NOW),
+      ).toThrow(/--until-asked or a --for\/--until deadline, not both/);
+    });
+
+    it("plans ade session snooze --until-asked", () => {
+      const plan = expectExecutePlan(buildCliPlan(["session", "snooze", "session-x", "--until-asked"]));
+      const params = plan.steps[0]?.params as {
+        arguments: { action: string; args: Record<string, unknown> };
+      };
+      expect(params.arguments.action).toBe("snoozeSession");
+      expect(params.arguments.args.sessionId).toBe("session-x");
+      expect(Date.parse(params.arguments.args.untilIso as string) - Date.now())
+        .toBeGreaterThan(365 * 24 * 60 * 60_000);
+    });
+
+    it("renders an open-ended snooze as 'when asked' instead of a century-out date", () => {
+      const farFuture = new Date(Date.now() + 100 * 365 * 24 * 60 * 60_000).toISOString();
+      const text = formatOutput(
+        { sessionId: "session-x", snoozedUntil: farFuture },
+        { text: true } as never,
+        "session-lifecycle",
+      );
+      expect(text).toContain("when asked");
+      expect(text).not.toContain(farFuture);
+
+      const soon = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
+      const soonText = formatOutput(
+        { sessionId: "session-x", snoozedUntil: soon },
+        { text: true } as never,
+        "session-lifecycle",
+      );
+      expect(soonText).toContain(soon);
+      expect(soonText).toMatch(/wakes\s+in 3h/);
+    });
+
+    it("plans ade session snooze --for through the session action", () => {
+      const plan = expectExecutePlan(buildCliPlan(["session", "snooze", "session-x", "--for", "1h"]));
+      const params = plan.steps[0]?.params as {
+        arguments: { domain: string; action: string; args: Record<string, unknown> };
+      };
+      expect(params.arguments.domain).toBe("session");
+      expect(params.arguments.action).toBe("snoozeSession");
+      expect(params.arguments.args.sessionId).toBe("session-x");
+      const untilIso = params.arguments.args.untilIso as string;
+      expect(Date.parse(untilIso)).toBeGreaterThan(Date.now());
+      expect(inferFormatter(plan)).toBe("session-lifecycle");
+    });
+
+    it.each([
+      [["wake", "session-x"], "wakeSession", { sessionId: "session-x" }],
+      [["wake", "session-x", "--reason", "needs_you"], "wakeSession", {
+        sessionId: "session-x",
+        reason: "needs_you",
+      }],
+      [["settle", "session-x", "--outcome", "done"], "settleSelfSession", {
+        sessionId: "session-x",
+        outcome: "done",
+      }],
+      [["settle", "session-x", "--keep-active"], "setSettleOverride", {
+        sessionId: "session-x",
+        override: "active",
+      }],
+      [["unsettle", "session-x"], "unsettleSelfSession", { sessionId: "session-x" }],
+      [["clear-woke", "session-x"], "clearWokeMarker", { sessionId: "session-x" }],
+      [["show", "session-x"], "get", { sessionId: "session-x" }],
+    ])("plans ade session %s", (commandArgs, action, expectedArgs) => {
+      const plan = expectExecutePlan(buildCliPlan(["session", ...commandArgs]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { domain: "session", action, args: expectedArgs },
+      });
+    });
+
+    it("accepts --session and falls back to the caller's session id", () => {
+      const flagPlan = expectExecutePlan(buildCliPlan([
+        "session",
+        "wake",
+        "--session",
+        "session-flag",
+      ]));
+      expect(flagPlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { sessionId: "session-flag" } },
+      });
+
+      const previous = process.env.ADE_CHAT_SESSION_ID;
+      process.env.ADE_CHAT_SESSION_ID = "session-env";
+      try {
+        const envPlan = expectExecutePlan(buildCliPlan(["session", "unsettle"]));
+        expect(envPlan.steps[0]?.params).toMatchObject({
+          arguments: { action: "unsettleSelfSession", args: { sessionId: "session-env" } },
+        });
+      } finally {
+        if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+        else process.env.ADE_CHAT_SESSION_ID = previous;
+      }
+    });
+
+    it("requires a snooze deadline and a resolvable session", () => {
+      expect(() => buildCliPlan(["session", "snooze", "session-x"]))
+        .toThrow(/--for <30m\|1h\|4h\|1d> or --until/);
+      const previous = process.env.ADE_CHAT_SESSION_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+      try {
+        expect(() => buildCliPlan(["session", "wake"])).toThrow("sessionId is required.");
+      } finally {
+        if (previous !== undefined) process.env.ADE_CHAT_SESSION_ID = previous;
+      }
+      expect(() => buildCliPlan(["session", "hibernate", "session-x"]))
+        .toThrow(/Unknown session subcommand 'hibernate'/);
+    });
+
+    it("documents the session surface in help", () => {
+      const help = buildCliPlan(["session", "--help"]);
+      expect(help.kind).toBe("help");
+      if (help.kind === "help") {
+        expect(help.text).toContain("ade session snooze <id> --for 1h");
+        expect(help.text).toContain("ade session wake <id>");
+        expect(help.text).toContain("--until-asked");
+        expect(help.text).toContain("--keep-active");
+      }
+      const top = buildCliPlan([]);
+      if (top.kind === "help") {
+        expect(top.text).toContain("ade session snooze | wake | settle | unsettle");
+      }
+    });
+  });
+
+  describe("lane branch drift commands", () => {
+    it("reads drift status for a lane", () => {
+      const plan = expectExecutePlan(buildCliPlan(["lane", "drift", "--lane", "lane-1"]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { domain: "lane", action: "getBranchDrift", args: { laneId: "lane-1" } },
+      });
+      expect(inferFormatter(plan)).toBe("lane-drift");
+      expect(formatOutput(null, { text: true } as any, inferFormatter(plan)))
+        .toContain("No branch drift");
+    });
+
+    it("accepts a positional lane id for the status read", () => {
+      const plan = expectExecutePlan(buildCliPlan(["lane", "drift", "lane-2"]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: { action: "getBranchDrift", args: { laneId: "lane-2" } },
+      });
+    });
+
+    it.each([
+      ["--switch-back", "switch-back"],
+      ["--keep-head", "keep-head"],
+    ])("resolves drift with %s", (flag, resolution) => {
+      const plan = expectExecutePlan(buildCliPlan([
+        "lane",
+        "drift",
+        "resolve",
+        "--lane",
+        "lane-1",
+        flag,
+      ]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "lane",
+          action: "resolveBranchDrift",
+          args: { laneId: "lane-1", resolution },
+        },
+      });
+    });
+
+    it("requires exactly one resolution flag", () => {
+      expect(() => buildCliPlan(["lane", "drift", "resolve", "--lane", "lane-1"]))
+        .toThrow(/exactly one of --switch-back or --keep-head/);
+      expect(() => buildCliPlan([
+        "lane",
+        "drift",
+        "resolve",
+        "--lane",
+        "lane-1",
+        "--switch-back",
+        "--keep-head",
+      ])).toThrow(/exactly one of --switch-back or --keep-head/);
+    });
+
+    it("passes the stale-read guard and active-work acknowledgement through", () => {
+      const plan = expectExecutePlan(buildCliPlan([
+        "lane",
+        "drift",
+        "resolve",
+        "lane-3",
+        "--keep-head",
+        "--expected-head",
+        "hotfix-auth",
+        "--force",
+      ]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          action: "resolveBranchDrift",
+          args: {
+            laneId: "lane-3",
+            resolution: "keep-head",
+            expectedHeadBranchRef: "hotfix-auth",
+            acknowledgeActiveWork: true,
+          },
+        },
+      });
+    });
+  });
 
   it("routes chat send through the normalized message primitive", () => {
     const executePlan = expectExecutePlan(buildCliPlan([

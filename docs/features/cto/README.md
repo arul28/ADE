@@ -36,7 +36,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 
 - `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`) with label, description, and `systemOverlay`.
 - `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone.
-- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface registered for the CTO session, including the memory tools `saveMemory`, `searchMemory`, and `readMemory`.
+- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface registered for the CTO session, including the memory tools `saveMemory`, `searchMemory`, and `readMemory` and the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools).
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind, the memory flush hooks, and the reconstruction-context injection (all detailed below).
 
 ### iOS companion (`apps/ios/ADE/Views/Cto/`)
@@ -102,6 +102,40 @@ The guarantee is that a deterministic flush always runs before anything can be l
 ### Single session, project-level
 
 `AgentChatIdentityKey` is just `"cto"`. `ensureIdentitySession` reuses the newest CTO session regardless of which lane it was last active on: if nothing lives on the canonical lane but a CTO session exists elsewhere, it reuses that session and rebinds it to the canonical lane instead of forking a parallel thread. There is only ever one CTO thread per project.
+
+### Session lifecycle tools
+
+Session lifecycle is not desktop-only and settle is not the only quiet tier. A
+session carries a canonical phase plus two independent controls, and both are
+reachable from every surface — desktop, iOS, `ade code`, hosted web, the `ade`
+CLI, and the CTO's own tools:
+
+- **Settle override** — the tri-state `null | "settled" | "active"` pin. It is
+  consulted at the declared-settle tier, *before* the derived exit-0 rule:
+  `"active"` is a keep-active pin that suppresses settle entirely, and
+  `"settled"` counts as a declared settle alongside `settledAt`.
+- **Snooze** — a synced **visibility overlay** that never touches the canonical
+  phase. It is stored as `snoozedUntil` / `snoozedAt`, expiry is *derived* by
+  comparing the deadline to now, and no scheduler exists anywhere.
+
+The CTO reaches both through `ctoOperatorTools.ts`:
+
+| Tool | Purpose |
+| --- | --- |
+| `getSessionLifecycle` | Read the settle/snooze slice for any ADE session (chat or tracked CLI). |
+| `settleSession` / `unsettleSession` | Declare a session done (optionally with a one-line `outcome`) or return it to the active lifecycle. |
+| `setSessionSettleOverride` | Pin the tri-state override; `"active"` is what forces a derived clean-exit settle back to active. |
+| `snoozeSession` | Hide a row until a deadline (`untilIso` or `durationMinutes`). The session keeps running. |
+| `wakeSession` | "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed." Records `wokeReason` (default `manual`). |
+
+`listChats` and `getChatStatus` carry the same lifecycle block, including
+`wokeReason` (`timer | needs_you | error | turn_complete | manual`), so the CTO
+can reason about **why** a row resurfaced instead of only that it did. The
+lifecycle read degrades to "unknown" rather than failing when a host wires only
+a partial session service (the prompt-manifest preview and older harnesses do).
+
+See [Terminals and sessions › Session lifecycle](../terminals-and-sessions/README.md#session-lifecycle)
+for the canonical derivation and the full cross-surface matrix.
 
 ## Tab model
 

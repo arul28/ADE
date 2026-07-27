@@ -3426,6 +3426,19 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
+  /// Tri-state settle override (`"settled"` / `"active"` / nil), consulted at
+  /// the declared-settle tier BEFORE the derived exit-0 rule. Mirrors the
+  /// desktop `SessionSettleOverride`.
+  var settleOverride: String? = nil
+  /// Snooze visibility overlay. `snoozedUntil` is the derived-expiry deadline
+  /// (no scheduler exists — every surface compares it to now); `snoozedAt` is
+  /// the load-bearing baseline for the early-wake error comparison.
+  var snoozedUntil: String? = nil
+  var snoozedAt: String? = nil
+  /// "Woke" marker, set when a snooze is cleared so the row can explain why.
+  /// Cleared once the user visits the session.
+  var wokeAt: String? = nil
+  var wokeReason: String? = nil
   var exitCode: Int?
   var transcriptPath: String
   var headShaStart: String?
@@ -3466,6 +3479,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.attentionRequestedAt == rhs.attentionRequestedAt
       && lhs.attentionMessage == rhs.attentionMessage
       && lhs.lastTurnFailedAt == rhs.lastTurnFailedAt
+      && lhs.settleOverride == rhs.settleOverride
+      && lhs.snoozedUntil == rhs.snoozedUntil
+      && lhs.snoozedAt == rhs.snoozedAt
+      && lhs.wokeAt == rhs.wokeAt
+      && lhs.wokeReason == rhs.wokeReason
       && lhs.exitCode == rhs.exitCode
       && lhs.transcriptPath == rhs.transcriptPath
       && lhs.headShaStart == rhs.headShaStart
@@ -3510,6 +3528,11 @@ extension TerminalSessionSummary {
     case attentionRequestedAt
     case attentionMessage
     case lastTurnFailedAt
+    case settleOverride
+    case snoozedUntil
+    case snoozedAt
+    case wokeAt
+    case wokeReason
     case exitCode
     case transcriptPath
     case headShaStart
@@ -3548,6 +3571,11 @@ extension TerminalSessionSummary {
     attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
     attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
     lastTurnFailedAt = try container.decodeIfPresent(String.self, forKey: .lastTurnFailedAt)
+    settleOverride = try container.decodeIfPresent(String.self, forKey: .settleOverride)
+    snoozedUntil = try container.decodeIfPresent(String.self, forKey: .snoozedUntil)
+    snoozedAt = try container.decodeIfPresent(String.self, forKey: .snoozedAt)
+    wokeAt = try container.decodeIfPresent(String.self, forKey: .wokeAt)
+    wokeReason = try container.decodeIfPresent(String.self, forKey: .wokeReason)
     exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
     transcriptPath = try container.decode(String.self, forKey: .transcriptPath)
     headShaStart = try container.decodeIfPresent(String.self, forKey: .headShaStart)

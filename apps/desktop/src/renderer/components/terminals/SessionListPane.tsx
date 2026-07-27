@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, CircleNotch, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, CircleNotch, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -38,6 +38,7 @@ import {
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
+const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -153,6 +154,7 @@ function StickyGroupHeader({
   headerAction = null,
   variant = "default",
   busyLabel = null,
+  heading = false,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -163,6 +165,12 @@ function StickyGroupHeader({
   onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   accentColor?: string | null;
   children: React.ReactNode;
+  /**
+   * Expose the row as a real section heading with an explicit "<label> (<count>)"
+   * accessible name, so a screen reader can navigate to the group rather than
+   * inferring it from a bare toggle button.
+   */
+  heading?: boolean;
   /** Branch label shown on the right for `variant="lane"` (e.g. from `branchNameFromRef`). */
   subLabel?: string | null;
   /** Compact PR badge shown left of the count for `variant="lane"`. */
@@ -259,12 +267,18 @@ function StickyGroupHeader({
             borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
           }}
           data-section-id={sectionId}
+          {...(heading
+            ? { role: "heading" as const, "aria-level": 3, "aria-label": `${label} (${count})` }
+            : {})}
         >
           <button
             type="button"
             className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
             onClick={onToggleCollapsed}
             onContextMenu={onContextMenu}
+            {...(heading
+              ? { "aria-label": `${label} (${count})`, "aria-expanded": !collapsed }
+              : {})}
           >
             {collapsed ? (
               <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
@@ -387,6 +401,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   awaitingInputFiltered,
   endedFiltered,
   settledFiltered,
+  snoozedFiltered = EMPTY_SESSIONS,
   allSessionsUnfiltered,
   loading: _loading,
   filterLaneId,
@@ -420,6 +435,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
   settledFiltered: TerminalSessionSummary[];
+  /**
+   * Rows currently under a snooze, already pulled out of every other partition
+   * by `useWorkSessions` (snooze is a visibility overlay, not a status).
+   */
+  snoozedFiltered?: TerminalSessionSummary[];
   /** All sessions before the search/lane filter — the live-children badge counts
    * from this so a filtered-out running child doesn't undercount its parent. */
   allSessionsUnfiltered: TerminalSessionSummary[];
@@ -478,13 +498,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [allSessionsUnfiltered, handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
 
   const visibleSettled = settledFiltered;
+  const visibleSnoozed = snoozedFiltered;
   const hasAnySessions =
     runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length
-      + visibleSettled.length + filteredHandoffJobs.length > 0;
+      + visibleSettled.length + visibleSnoozed.length + filteredHandoffJobs.length > 0;
 
   const allSessions = useMemo(
-    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered, ...visibleSettled],
-    [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSettled],
+    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered, ...visibleSnoozed, ...visibleSettled],
+    [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSnoozed, visibleSettled],
   );
   // Settled rows live in their own quiet tier: excluded from lane folders' main
   // run and from time buckets, rendered in a per-group settled tail instead.
@@ -492,6 +513,16 @@ export const SessionListPane = React.memo(function SessionListPane({
     () => new Set(settledFiltered.map((session) => session.id)),
     [settledFiltered],
   );
+  // Snoozed rows get the same treatment one tier above settled: out of the main
+  // run, into their own group/tail, so a snooze actually removes noise.
+  const snoozedIdSet = useMemo(
+    () => new Set(snoozedFiltered.map((session) => session.id)),
+    [snoozedFiltered],
+  );
+  const quietIdSet = useMemo(() => {
+    if (snoozedIdSet.size === 0) return settledIdSet;
+    return new Set([...settledIdSet, ...snoozedIdSet]);
+  }, [settledIdSet, snoozedIdSet]);
   const visibleSessionIdSet = useMemo(
     () => new Set(allSessions.map((session) => session.id)),
     [allSessions],
@@ -556,8 +587,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     [toggleWorkSectionCollapsed],
   );
   const timeBuckets = useMemo(
-    () => bucketByTime(allSessions.filter((session) => !settledIdSet.has(session.id))),
-    [allSessions, settledIdSet],
+    () => bucketByTime(allSessions.filter((session) => !quietIdSet.has(session.id))),
+    [allSessions, quietIdSet],
   );
   const handoffTimeBuckets = useMemo(() => bucketHandoffJobsByTime(filteredHandoffJobs), [filteredHandoffJobs]);
   const selectedCount = selectedSessionIds?.size ?? 0;
@@ -678,13 +709,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     if (isByLane) {
       const ids: string[] = [];
       const laneVisibleIds = (laneId: string, list: TerminalSessionSummary[]): string[] => {
-        const active = list.filter((session) => !settledIdSet.has(session.id));
-        const activeIds = collectVisibleIds(active);
-        if (!workCollapsedSectionIds.includes(`settled-open:${laneId}`)) {
-          return activeIds;
+        const active = list.filter((session) => !quietIdSet.has(session.id));
+        const ids = collectVisibleIds(active);
+        if (workCollapsedSectionIds.includes(`snoozed-open:${laneId}`)) {
+          ids.push(...collectVisibleIds(list.filter((session) => snoozedIdSet.has(session.id))));
         }
-        const settled = list.filter((session) => settledIdSet.has(session.id));
-        return [...activeIds, ...collectVisibleIds(settled)];
+        if (workCollapsedSectionIds.includes(`settled-open:${laneId}`)) {
+          ids.push(...collectVisibleIds(list.filter((session) => settledIdSet.has(session.id))));
+        }
+        return ids;
       };
       for (const lane of orderedLanes) {
         if (workCollapsedLaneIds.includes(lane.id)) continue;
@@ -701,6 +734,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (!workCollapsedSectionIds.includes("time:today")) ids.push(...collectVisibleIds(timeBuckets.today));
       if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...collectVisibleIds(timeBuckets.yesterday));
       if (!workCollapsedSectionIds.includes("time:older")) ids.push(...collectVisibleIds(timeBuckets.older));
+      if (!workCollapsedSectionIds.includes("status:snoozed")) ids.push(...collectVisibleIds(visibleSnoozed));
       if (!workCollapsedSectionIds.includes("status:settled")) ids.push(...collectVisibleIds(visibleSettled));
       return ids;
     }
@@ -708,6 +742,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(runningFiltered));
     if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(awaitingInputFiltered));
     if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(endedFiltered));
+    if (!workCollapsedSectionIds.includes("status:snoozed")) ids.push(...collectVisibleIds(visibleSnoozed));
     if (!workCollapsedSectionIds.includes("status:settled")) ids.push(...collectVisibleIds(visibleSettled));
     return ids;
   }, [
@@ -718,13 +753,16 @@ export const SessionListPane = React.memo(function SessionListPane({
     isByTime,
     missingLaneSessionGroups,
     orderedLanes,
+    quietIdSet,
     runningFiltered,
     sessionsGroupedByLane,
     settledIdSet,
+    snoozedIdSet,
     timeBuckets.older,
     timeBuckets.today,
     timeBuckets.yesterday,
     visibleSettled,
+    visibleSnoozed,
     workCollapsedLaneIds,
     workCollapsedSectionIds,
   ]);
@@ -839,46 +877,78 @@ export const SessionListPane = React.memo(function SessionListPane({
       style={{ borderColor: "rgba(255,255,255,0.35)" }}
     />
   );
+  // A moon, not another dot: snoozed and settled are both quiet tiers, so the
+  // difference must be readable from shape alone, never from colour.
+  const snoozedSectionIcon = (
+    <Moon size={10} weight="fill" className="shrink-0 text-muted-fg/45" aria-hidden />
+  );
+
+  /** Shared collapsible tail used for a lane folder's quiet snoozed/settled rows. */
+  const renderLaneQuietTail = (
+    openMarker: string,
+    icon: React.ReactNode,
+    label: string,
+    list: TerminalSessionSummary[],
+  ) => {
+    if (list.length === 0) return null;
+    // Quiet tails start collapsed without needing to persist one entry per lane.
+    // Presence of the open marker means the user explicitly expanded it.
+    const collapsed = !workCollapsedSectionIds.includes(openMarker);
+    return (
+      <div className="mt-px">
+        <button
+          type="button"
+          onClick={() => toggleWorkSectionCollapsed(openMarker)}
+          className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] font-medium uppercase tracking-wide text-muted-fg/40 transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70"
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? (
+            <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+          ) : (
+            <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+          )}
+          {icon}
+          <span className="truncate">
+            {list.length} {label}
+          </span>
+        </button>
+        {!collapsed ? <div className="space-y-px">{renderCards(list)}</div> : null}
+      </div>
+    );
+  };
 
   /**
-   * Lane folder body: active rows first, then a quiet collapsible settled tail
-   * (`settled:<laneId>` section) so finished work stays openable in-stream
-   * without occupying the folder's prime rows.
+   * Lane folder body: active rows first, then quiet collapsible snoozed and
+   * settled tails so hidden work stays openable in-stream without occupying the
+   * folder's prime rows.
    */
   const renderLaneSessionLists = (laneKey: string, list: TerminalSessionSummary[]) => {
-    const active = list.filter((session) => !settledIdSet.has(session.id));
+    const active = list.filter((session) => !quietIdSet.has(session.id));
+    const snoozed = list.filter((session) => snoozedIdSet.has(session.id));
     const settled = list.filter((session) => settledIdSet.has(session.id));
-    // Settled tails start collapsed without needing to persist one entry per
-    // lane. Presence of the open marker means the user explicitly expanded it.
-    const settledOpenMarker = `settled-open:${laneKey}`;
-    const settledCollapsed = !workCollapsedSectionIds.includes(settledOpenMarker);
     return (
       <>
         {renderCards(active)}
-        {settled.length > 0 ? (
-          <div className="mt-px">
-            <button
-              type="button"
-              onClick={() => toggleWorkSectionCollapsed(settledOpenMarker)}
-              className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] font-medium uppercase tracking-wide text-muted-fg/40 transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70"
-              aria-expanded={!settledCollapsed}
-            >
-              {settledCollapsed ? (
-                <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-              ) : (
-                <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-              )}
-              {settledSectionIcon}
-              <span className="truncate">
-                {settled.length === 1 ? "1 settled" : `${settled.length} settled`}
-              </span>
-            </button>
-            {!settledCollapsed ? <div className="space-y-px">{renderCards(settled)}</div> : null}
-          </div>
-        ) : null}
+        {renderLaneQuietTail(`snoozed-open:${laneKey}`, snoozedSectionIcon, "snoozed", snoozed)}
+        {renderLaneQuietTail(`settled-open:${laneKey}`, settledSectionIcon, "settled", settled)}
       </>
     );
   };
+
+  // Snoozed sits directly ABOVE Settled: hidden-for-now ranks above done.
+  const snoozedStatusSection = visibleSnoozed.length > 0 ? (
+    <StickyGroupHeader
+      sectionId="status:snoozed"
+      icon={snoozedSectionIcon}
+      label="Snoozed"
+      heading
+      count={visibleSnoozed.length}
+      collapsed={workCollapsedSectionIds.includes("status:snoozed")}
+      onToggleCollapsed={() => toggleWorkSectionCollapsed("status:snoozed")}
+    >
+      {renderCards(visibleSnoozed)}
+    </StickyGroupHeader>
+  ) : null;
 
   const settledStatusSection = visibleSettled.length > 0 ? (
     <StickyGroupHeader
@@ -950,6 +1020,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       >
         {renderCards(endedFiltered)}
       </StickyGroupHeader>
+      {snoozedStatusSection}
       {settledStatusSection}
     </div>
   );
@@ -1079,6 +1150,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         {renderHandoffCards(handoffTimeBuckets.older)}
         {renderCards(timeBuckets.older)}
       </StickyGroupHeader>
+      {snoozedStatusSection}
       {settledStatusSection}
     </div>
   );

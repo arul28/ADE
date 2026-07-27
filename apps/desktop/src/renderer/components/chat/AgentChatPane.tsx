@@ -157,6 +157,7 @@ import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
 import {
   effectiveNewLaneBaseSource,
   fetchNewLaneBaseBranches,
@@ -8787,6 +8788,9 @@ export function AgentChatPane({
   }, [refreshSessions, selectedSessionId, touchSession]);
 
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
+    // A turn is about to run against this worktree — surface the branch-drift
+    // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
+    armLaneBranchDriftWarning(laneId);
     if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) {
       if (submitInFlightRef.current) {
         setError("Still sending the previous message. Wait a moment and try again.");
@@ -10757,6 +10761,9 @@ export function AgentChatPane({
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        // Ambient settled/snoozed chips — the chat pane otherwise has no
+        // lifecycle awareness at all. The composer slot below stays with drift.
+        lifecycleSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
         prPaneOpen={prPaneOpen}
@@ -11517,6 +11524,7 @@ export function AgentChatPane({
       })}
       {authStickyBar}
       {awayDigestStrip}
+      <LaneBranchDriftStrip laneId={laneId} />
       {composerElement}
     </div>
   );
@@ -11876,6 +11884,7 @@ export function AgentChatPane({
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
                         {awayDigestStrip}
+                        <LaneBranchDriftStrip laneId={laneId} />
                         {composerElement}
                       </div>
                     ) : null}

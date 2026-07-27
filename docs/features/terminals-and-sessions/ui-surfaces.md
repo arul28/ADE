@@ -95,17 +95,28 @@ Lists sessions grouped by one of three modes (controlled by
 `sessionListOrganization` in the work view state):
 
 - `by-lane` — one group per active lane
-- `all-lanes-by-status` — Running / Your move / Ended / Settled
+- `all-lanes-by-status` — Running / Your move / Ended / Snoozed / Settled
 - `by-time` — today / yesterday / older
 
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
-via `workCollapsedLaneIds` / `workCollapsedSectionIds`. Settled is a quiet
-fourth tier: status and time views render one final Settled section, while lane
-view renders a collapsible settled tail inside each lane. Settled rows are
-always reachable; there is no separate visibility tier because Status grouping
-already exposes the complete lifecycle. The global Settled section and every
-per-lane tail start collapsed. User-expanded state is persisted, and collapsed
-tails do not contribute ids to shift-range selection.
+via `workCollapsedLaneIds` / `workCollapsedSectionIds`. There are **two** quiet
+tiers, not one. Settled is a lifecycle phase; Snoozed sits one tier above it and
+is a visibility overlay — a snoozed row keeps its own status dot and is simply
+filed elsewhere. Status and time views render one final section per tier, while
+lane view renders collapsible snoozed and settled tails inside each lane. Rows
+in either tail are always reachable; there is no separate visibility filter
+because Status grouping already exposes the complete lifecycle. Every global
+section and per-lane tail starts collapsed. User-expanded state is persisted,
+and collapsed tails do not contribute ids to shift-range selection.
+
+Snoozed membership comes from `isSessionFiledAsSnoozed`, never from the
+canonical phase, and it yields to a `needs_you` phase so a snoozed row that is
+blocked on the user stays in its normal section. Ordering inside the quiet tiers
+diverges from the default `startedAt` sort: settled rows rank by `settledAt`
+(so a session settled just now sits at the top rather than under sessions
+settled long ago) and snoozed rows rank by `snoozedUntil` ascending, because the
+group answers "what comes back first". Group headers carry an explicit
+`role="heading"` and a `"<label> (<count>)"` accessible name.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
@@ -205,7 +216,16 @@ Three rows:
    lane icon/name, `ClaudeCacheTtlBadge` (Claude chat only), delta chips
    from `useSessionDelta`, exit code badge.
 
-Hover actions include the info button. Ended agent CLI sessions are
+Hover actions include the info button and `SessionSnoozeControl`, the snooze
+affordance. It lives in its own component rather than inside the card body so
+the hot Work list pays only for one always-mounted button revealed with CSS —
+a hover *state* would re-render the row — plus menu state that exists only after
+a click. Its duration menu is a locally-owned fixed popover clamped to the
+viewport, with no document-level listener; an already-snoozed row offers **Wake
+now** instead. A row whose snooze ended early shows a compact woke marker naming
+the reason (`needs_you` / `error` / `turn_complete` / `timer` / `manual`) until
+it is opened, at which point `TerminalsPage` clears the marker — opening *is*
+the acknowledgement. Ended agent CLI sessions are
 continued from the transcript surface by typing into the lightweight
 composer; the card itself does not expose a separate continuation action.
 
@@ -695,6 +715,21 @@ Right-click menu with branches per session type:
   explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
   prompt shows the disabled **Resolve input to settle** row.
 
+Every row also carries one exhaustive lifecycle block holding each action that
+changes where the sidebar files it. **Snooze…** expands in place into the four
+durations (`1 hour`, `Until this evening`, `Until tomorrow 9am`,
+`Until I'm asked`); an already-snoozed row instead shows **Wake now** with its
+wake label. Settle actions branch on declared vs derived: a declared settle has
+`settledAt` for **Unsettle** to clear and can additionally be pinned with
+**Keep active**, while a derived settle — a clean exit 0, or
+`settleOverride: "settled"` — has nothing to clear, so writing the `"active"`
+keep-active pin *is* its unsettle. The block is kept exhaustive on purpose: a
+row that reaches the end of it with nothing rendered is a row the user cannot
+un-hide. All writes go through
+`components/terminals/sessionLifecycleActions.ts`, which also owns the
+five-second undo toast, so the row menu, the hover `SessionSnoozeControl`, and
+the chat header chips can never disagree about what an action does.
+
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
 up to `renameError` in `TerminalsPage`.
@@ -859,6 +894,19 @@ nothing when no delta is available.
   itself done. Chat settle is cleared at the next user turn; only PTY output
   clears settle on activity. Scheduled/background chat wakes temporarily render
   Running and return to Settled when idle.
+- Do not derive anything from the snooze columns except *where a row is filed*.
+  Snooze is a visibility overlay: `canonicalSessionState()` never reads it, the
+  status dot never changes, and the counts, badges, and Dock badge stay
+  truthful. Use `isSessionFiledAsSnoozed` for grouping and the raw
+  `isSessionSnoozed` for row chrome.
+- Do not schedule anything for snooze expiry. Expiry is derived by comparing
+  `snoozedUntil` to now. The Work hook's single timer only bumps a counter to
+  force a re-derive; a watchdog that mutated rows on expiry would give a second,
+  divergent answer on every surface not running it.
+- A derived settle has no `settledAt`, so plain Unsettle does nothing to it. Any
+  new lifecycle affordance must branch on declared vs derived or it will ship a
+  row the user cannot lift out of the quiet tier — the `"active"` keep-active
+  pin is the only unsettle those rows have.
 - Refresh ordering for launches — use the synchronous `ptyCreate` /
   chat-create result to `openSessionTab` before the background forced
   refresh, then merge any stale persisted row with the optimistic row.

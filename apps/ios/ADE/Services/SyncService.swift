@@ -6925,6 +6925,172 @@ final class SyncService: ObservableObject {
     }
   }
 
+  // MARK: - Session lifecycle (settle / settle override / snooze / woke marker)
+  //
+  // The phone is a controller and never runs agents, so every lifecycle change
+  // is a host command — `session.*` in the ADE action registry — not a local
+  // write we then hope replicates. We still write the columns locally first so
+  // the row doesn't flicker for a round trip, and roll that write back if the
+  // host rejects the command.
+
+  /// Whether this host advertises the ADE-125 lifecycle actions at all. Older
+  /// desktop builds simply do not have them; the UI hides the affordances
+  /// instead of offering a control that always fails.
+  var supportsSessionLifecycleActions: Bool {
+    supportsRemoteAction("session.settleSessions")
+  }
+
+  var supportsSessionSnoozeActions: Bool {
+    supportsRemoteAction("session.snoozeSession")
+  }
+
+  private func sessionLifecycleUnsupportedError(_ action: String) -> NSError {
+    NSError(domain: "ADE", code: 27, userInfo: [
+      NSLocalizedDescriptionKey:
+        "This machine's ADE is too old for \(action). Update the desktop app and try again.",
+    ])
+  }
+
+  /// Optimistic local write + host command, with rollback on failure.
+  private func sendSessionLifecycleCommand(
+    sessionId: String,
+    action: String,
+    args: [String: Any],
+    settledAt: String?? = nil,
+    settleOverride: String?? = nil,
+    snoozedUntil: String?? = nil,
+    snoozedAt: String?? = nil,
+    wokeAt: String?? = nil,
+    wokeReason: String?? = nil
+  ) async throws {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    guard supportsRemoteAction(action) else {
+      throw sessionLifecycleUnsupportedError(action)
+    }
+
+    let previous = database.fetchSession(id: trimmed)
+    try? database.updateSessionLifecycle(
+      sessionId: trimmed,
+      settledAt: settledAt,
+      settleOverride: settleOverride,
+      snoozedUntil: snoozedUntil,
+      snoozedAt: snoozedAt,
+      wokeAt: wokeAt,
+      wokeReason: wokeReason
+    )
+
+    let scope = chatCommandScope(for: trimmed)
+    do {
+      _ = try await sendCommand(
+        action: action,
+        args: args,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath
+      )
+    } catch {
+      // Restore the exact prior columns — a half-applied lifecycle is worse
+      // than none, because settle and snooze both decide where a row files.
+      if let previous {
+        try? database.updateSessionLifecycle(
+          sessionId: trimmed,
+          settledAt: .some(previous.settledAt),
+          settleOverride: .some(previous.settleOverride),
+          snoozedUntil: .some(previous.snoozedUntil),
+          snoozedAt: .some(previous.snoozedAt),
+          wokeAt: .some(previous.wokeAt),
+          wokeReason: .some(previous.wokeReason)
+        )
+      }
+      throw error
+    }
+  }
+
+  /// Declared settle. Stamps `settled_at` locally to match what the host writes.
+  func settleSession(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.settleSessions",
+      args: ["sessionIds": [sessionId]],
+      settledAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
+      settleOverride: .some(nil)
+    )
+  }
+
+  /// Clear a declared settle.
+  ///
+  /// The host clears a `"settled"` override ONLY — see `sessionService`'s
+  /// `settle_override = case when settle_override = 'settled' then null else
+  /// settle_override end`. An `"active"` keep-alive pin deliberately SURVIVES
+  /// unsettle. So this must NOT write `settle_override` at all: the phone
+  /// cannot know which of the two branches the machine will take, and
+  /// `terminal_sessions` is a CRR table whose local writes are captured by the
+  /// update trigger and pushed upstream in `changeset_batch`. Claiming a clear
+  /// here would replicate a null back over the pin the host just preserved.
+  /// Leave the column alone and let hydration deliver the machine's answer —
+  /// this mirrors the web overlay's `UNSETTLE_PATCH`, which is `settledAt` only.
+  func unsettleSession(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.unsettleSessions",
+      args: ["sessionIds": [sessionId]],
+      settledAt: .some(nil),
+      settleOverride: nil
+    )
+  }
+
+  /// Set (or clear, with `nil`) the tri-state settle override. `"active"` is the
+  /// "keep active" pin that suppresses settle including the exit-0 auto-settle.
+  func setSessionSettleOverride(sessionId: String, override: SessionSettleOverride?) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.setSettleOverride",
+      // The host reads "clear" as null; sending a JSON null through the
+      // `[String: Any]` arg dictionary is not representable here.
+      args: ["sessionId": sessionId, "override": override?.rawValue ?? "clear"],
+      settleOverride: .some(override?.rawValue)
+    )
+  }
+
+  /// Snooze until `deadline`. Stamps `snoozed_at` (the early-wake baseline) and
+  /// clears any stale woke marker, exactly like the host's `snoozeSession`.
+  func snoozeSession(sessionId: String, until deadline: Date) async throws {
+    let untilIso = iso8601WithFractionalSecondsFormatter.string(from: deadline)
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.snoozeSession",
+      args: ["sessionId": sessionId, "untilIso": untilIso],
+      snoozedUntil: .some(untilIso),
+      snoozedAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
+      wokeAt: .some(nil),
+      wokeReason: .some(nil)
+    )
+  }
+
+  /// Wake a snoozed session now, recording why.
+  func wakeSession(sessionId: String, reason: SessionWakeReason = .manual) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.wakeSession",
+      args: ["sessionId": sessionId, "reason": reason.rawValue],
+      snoozedUntil: .some(nil),
+      snoozedAt: .some(nil),
+      wokeAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
+      wokeReason: .some(reason.rawValue)
+    )
+  }
+
+  /// Drop the "woke" marker once the user has visited the row.
+  func clearSessionWokeMarker(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.clearWokeMarker",
+      args: ["sessionId": sessionId],
+      wokeAt: .some(nil),
+      wokeReason: .some(nil)
+    )
+  }
+
   func fetchPullRequests() async throws -> [PrSummary] {
     database.fetchPullRequests()
   }

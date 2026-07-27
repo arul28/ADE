@@ -1342,6 +1342,175 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       "monotonic-input"
     )
   }
+
+  // MARK: - Session lifecycle host compatibility (ADE-125)
+  //
+  // The six `session.*` actions are OPTIONAL in the mobile compatibility
+  // contract, so a new phone must keep working against a brain that predates
+  // them. These tests pin the two directions that can regress: a legacy host
+  // that omits `features.mobileCompatibility` entirely must still complete the
+  // handshake, and an unadvertised lifecycle action must be refused locally
+  // BEFORE it can be optimistically written or queued for send.
+
+  private func lifecycleActionDescriptors() -> [[String: Any]] {
+    [
+      "session.settleSessions",
+      "session.unsettleSessions",
+      "session.setSettleOverride",
+      "session.snoozeSession",
+      "session.wakeSession",
+      "session.clearWokeMarker",
+    ].map { action in
+      ["action": action, "policy": ["viewerAllowed": true]] as [String: Any]
+    }
+  }
+
+  @MainActor
+  func testLegacyHostWithoutMobileCompatibilityStillConnectsInLimitedMode() throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    // An older brain: it routes commands, but has never heard of the mobile
+    // compatibility block or of any `session.*` lifecycle action.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "legacy-host", "deviceName": "Mac Studio"],
+      "features": [
+        "commandRouting": [
+          "actions": [
+            ["action": "work.listSessions", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    // The handshake must SUCCEED (applyHelloPayload did not throw) and simply
+    // degrade — a missing compatibility block is not an authentication failure.
+    XCTAssertEqual(
+      service.hostCompatibilityMode,
+      .limited,
+      "A host that omits mobileCompatibility must degrade to limited, not fail the handshake."
+    )
+    XCTAssertEqual(
+      service.hostCompatibilityMissingActions,
+      ["mobileCompatibility"],
+      "The phone should attribute the degrade to the absent block, not invent missing actions."
+    )
+    XCTAssertTrue(
+      service.supportsRemoteAction("work.listSessions"),
+      "Command routing from a legacy host must still be honored."
+    )
+    XCTAssertFalse(
+      service.supportsSessionLifecycleActions,
+      "A legacy host advertises no session.* actions, so settle/unsettle must stay hidden."
+    )
+    XCTAssertFalse(
+      service.supportsSessionSnoozeActions,
+      "Snooze must stay hidden on a host that never advertised session.snoozeSession."
+    )
+  }
+
+  @MainActor
+  func testNewHostAdvertisingLifecycleActionsUnlocksTheAffordances() throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": ["actions": lifecycleActionDescriptors()],
+      ],
+    ])
+
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertTrue(service.supportsSessionLifecycleActions)
+    XCTAssertTrue(service.supportsSessionSnoozeActions)
+  }
+
+  @MainActor
+  func testUnsupportedLifecycleActionIsRefusedBeforeAnyLocalWriteOrSend() async throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    // A host that advertises settle but NOT snooze — the partial-rollout case.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "partial-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": [
+          "actions": [
+            ["action": "session.settleSessions", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+    XCTAssertFalse(service.supportsSessionSnoozeActions)
+
+    service.resetOutboundEnvelopeCaptureForTesting()
+    // `terminal_sessions` is a CRR table: any optimistic write here would be
+    // captured by the update trigger and pushed upstream. Pinning the local
+    // db_version proves the guard runs BEFORE the write, not after it.
+    let dbVersionBefore = database.currentDbVersion()
+
+    do {
+      try await service.snoozeSession(
+        sessionId: "session-1",
+        until: Date().addingTimeInterval(3_600)
+      )
+      XCTFail("Snoozing against a host that never advertised the action must throw.")
+    } catch {
+      XCTAssertTrue(
+        error.localizedDescription.contains("session.snoozeSession"),
+        "The refusal should name the unsupported action so the user can act on it."
+      )
+    }
+
+    XCTAssertEqual(
+      database.currentDbVersion(),
+      dbVersionBefore,
+      "An unsupported lifecycle action must not leave an optimistic local write behind."
+    )
+    XCTAssertEqual(
+      service.capturedOutboundEnvelopeCountForTesting(type: "command"),
+      0,
+      "An unsupported lifecycle action must never reach the wire or the durable queue."
+    )
+  }
 }
 
 @MainActor

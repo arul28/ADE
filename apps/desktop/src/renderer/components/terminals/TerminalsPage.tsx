@@ -37,6 +37,7 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
+import { clearSessionWokeMarker } from "./sessionLifecycleActions";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
@@ -232,6 +233,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setSelectionAnchorId(id);
       work.setSelectedSessionId(id);
       work.openSessionTab(id);
+      // Opening the row IS the acknowledgement — the "woke" marker only exists
+      // to explain an unexpected return, so it goes as soon as it is seen.
+      const opened = selectableSessions.find((session) => session.id === id);
+      if (opened?.wokeAt) clearSessionWokeMarker(id);
     },
     [selectableSessions, selectionAnchorId, work],
   );
@@ -1110,6 +1115,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
             settledFiltered={work.settledFiltered}
+            snoozedFiltered={work.snoozedFiltered}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}

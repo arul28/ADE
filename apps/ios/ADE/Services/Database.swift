@@ -103,6 +103,11 @@ final class DatabaseService {
     let attentionRequestedAt: String?
     let attentionMessage: String?
     let lastTurnFailedAt: String?
+    let settleOverride: String?
+    let snoozedUntil: String?
+    let snoozedAt: String?
+    let wokeAt: String?
+    let wokeReason: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -1116,8 +1121,9 @@ final class DatabaseService {
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
             last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id,
-            pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, last_turn_failed_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, last_turn_failed_at,
+            settle_override, snoozed_until, snoozed_at, woke_at, woke_reason
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -1149,7 +1155,12 @@ final class DatabaseService {
             status_note = excluded.status_note,
             attention_requested_at = excluded.attention_requested_at,
             attention_message = excluded.attention_message,
-            last_turn_failed_at = excluded.last_turn_failed_at
+            last_turn_failed_at = excluded.last_turn_failed_at,
+            settle_override = excluded.settle_override,
+            snoozed_until = excluded.snoozed_until,
+            snoozed_at = excluded.snoozed_at,
+            woke_at = excluded.woke_at,
+            woke_reason = excluded.woke_reason
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -1258,6 +1269,31 @@ final class DatabaseService {
             try bindText(lastTurnFailedAt, to: statement, index: 32)
           } else {
             sqlite3_bind_null(statement, 32)
+          }
+          if let settleOverride = session.settleOverride {
+            try bindText(settleOverride, to: statement, index: 33)
+          } else {
+            sqlite3_bind_null(statement, 33)
+          }
+          if let snoozedUntil = session.snoozedUntil {
+            try bindText(snoozedUntil, to: statement, index: 34)
+          } else {
+            sqlite3_bind_null(statement, 34)
+          }
+          if let snoozedAt = session.snoozedAt {
+            try bindText(snoozedAt, to: statement, index: 35)
+          } else {
+            sqlite3_bind_null(statement, 35)
+          }
+          if let wokeAt = session.wokeAt {
+            try bindText(wokeAt, to: statement, index: 36)
+          } else {
+            sqlite3_bind_null(statement, 36)
+          }
+          if let wokeReason = session.wokeReason {
+            try bindText(wokeReason, to: statement, index: 37)
+          } else {
+            sqlite3_bind_null(statement, 37)
           }
         }
       }
@@ -1844,7 +1880,8 @@ final class DatabaseService {
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
-             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at,
+             s.settle_override, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1868,7 +1905,8 @@ final class DatabaseService {
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
-             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at,
+             s.settle_override, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where s.id = ? and (l.project_id = ? or l.id is null)
@@ -1914,7 +1952,12 @@ final class DatabaseService {
       statusNote: stringValue(statement, index: 27),
       attentionRequestedAt: stringValue(statement, index: 28),
       attentionMessage: stringValue(statement, index: 29),
-      lastTurnFailedAt: stringValue(statement, index: 30)
+      lastTurnFailedAt: stringValue(statement, index: 30),
+      settleOverride: stringValue(statement, index: 31),
+      snoozedUntil: stringValue(statement, index: 32),
+      snoozedAt: stringValue(statement, index: 33),
+      wokeAt: stringValue(statement, index: 34),
+      wokeReason: stringValue(statement, index: 35)
     )
   }
 
@@ -1939,6 +1982,11 @@ final class DatabaseService {
       attentionRequestedAt: row.attentionRequestedAt,
       attentionMessage: row.attentionMessage,
       lastTurnFailedAt: row.lastTurnFailedAt,
+      settleOverride: row.settleOverride,
+      snoozedUntil: row.snoozedUntil,
+      snoozedAt: row.snoozedAt,
+      wokeAt: row.wokeAt,
+      wokeReason: row.wokeReason,
       exitCode: row.exitCode,
       transcriptPath: row.transcriptPath,
       headShaStart: row.headShaStart,
@@ -2018,6 +2066,81 @@ final class DatabaseService {
         try binder(statement, Int32(offset + 1))
       }
       try self.bindText(trimmedSessionId, to: statement, index: Int32(binders.count + 1))
+    }
+    notifyDidChange(touchedTables: ["terminal_sessions"])
+  }
+
+  /// Optimistic local write for the ADE-125 session lifecycle columns
+  /// (settle / settle override / snooze overlay / woke marker). The phone is a
+  /// controller and never owns these values — the host's remote command is the
+  /// source of truth and reconciles over sync — but writing locally first keeps
+  /// the row from flickering back for a round trip.
+  ///
+  /// Each parameter is a two-level optional so "leave alone" and "clear" are
+  /// distinguishable: `nil` skips the column, `.some(nil)` sets it to NULL,
+  /// `.some(value)` writes the value.
+  func updateSessionLifecycle(
+    sessionId: String,
+    settledAt: String?? = nil,
+    settleOverride: String?? = nil,
+    snoozedUntil: String?? = nil,
+    snoozedAt: String?? = nil,
+    wokeAt: String?? = nil,
+    wokeReason: String?? = nil
+  ) throws {
+    try withLock {
+      try updateSessionLifecycleLocked(
+        sessionId: sessionId,
+        settledAt: settledAt,
+        settleOverride: settleOverride,
+        snoozedUntil: snoozedUntil,
+        snoozedAt: snoozedAt,
+        wokeAt: wokeAt,
+        wokeReason: wokeReason
+      )
+    }
+  }
+
+  private func updateSessionLifecycleLocked(
+    sessionId: String,
+    settledAt: String?? = nil,
+    settleOverride: String?? = nil,
+    snoozedUntil: String?? = nil,
+    snoozedAt: String?? = nil,
+    wokeAt: String?? = nil,
+    wokeReason: String?? = nil
+  ) throws {
+    guard db != nil else { return }
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+
+    var assignments: [String] = []
+    var values: [String?] = []
+
+    func assign(_ column: String, _ update: String??) {
+      guard let update else { return }
+      assignments.append("\(column) = ?")
+      values.append(update)
+    }
+
+    assign("settled_at", settledAt)
+    assign("settle_override", settleOverride)
+    assign("snoozed_until", snoozedUntil)
+    assign("snoozed_at", snoozedAt)
+    assign("woke_at", wokeAt)
+    assign("woke_reason", wokeReason)
+
+    guard !assignments.isEmpty else { return }
+    _ = try execute("update terminal_sessions set \(assignments.joined(separator: ", ")) where id = ?") { statement in
+      for (offset, value) in values.enumerated() {
+        let index = Int32(offset + 1)
+        if let value {
+          try self.bindText(value, to: statement, index: index)
+        } else {
+          sqlite3_bind_null(statement, index)
+        }
+      }
+      try self.bindText(trimmedSessionId, to: statement, index: Int32(values.count + 1))
     }
     notifyDidChange(touchedTables: ["terminal_sessions"])
   }
@@ -2787,6 +2910,36 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "last_turn_failed_at",
+      definition: "text"
+    )
+    // Settle override + snooze visibility overlay. Must mirror the desktop
+    // schema (kvDb.ts) exactly: `terminal_sessions` replicates through
+    // cr-sqlite, and a column the phone does not know about surfaces as a
+    // changeset-apply error here rather than failing on desktop. All nullable
+    // with no unique index — `crsql_as_crr` rejects non-PK unique indices.
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_override",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "snoozed_until",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "snoozed_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "woke_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "woke_reason",
       definition: "text"
     )
     try exec("""

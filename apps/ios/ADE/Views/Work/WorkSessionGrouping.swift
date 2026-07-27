@@ -376,6 +376,11 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.attentionRequestedAt)
     hasher.combine(session.attentionMessage)
     hasher.combine(session.lastTurnFailedAt)
+    hasher.combine(session.settleOverride)
+    hasher.combine(session.snoozedUntil)
+    hasher.combine(session.snoozedAt)
+    hasher.combine(session.wokeAt)
+    hasher.combine(session.wokeReason)
     hasher.combine(session.endedAt)
     hasher.combine(session.pinned)
     hasher.combine(statusBySessionId[session.id])
@@ -505,6 +510,19 @@ private let workSessionISO8601FormatterNoFractional: ISO8601DateFormatter = {
 }()
 
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
+///
+/// Snooze is applied here as a visibility overlay on top of whichever
+/// organization is active: snoozed rows are lifted out of every other section
+/// into a single quiet "Snoozed" tail. Their canonical phase is untouched —
+/// this only decides where the list files them. Expiry is derived from the
+/// clock (`isSessionSnoozed`), so there is no timer or scheduler on iOS either.
+///
+/// The one exception is the shared FILING rule (`isFiledAsSnoozed`): a row whose
+/// canonical phase is `needsYou` stays in its normal section even while snoozed.
+/// Snooze must yield to a session actually blocked on the user, otherwise an
+/// "Until I'm asked" snooze (~100 years) hides a tracked CLI row that hit a
+/// permission prompt forever — nothing wakes it, because its needs-input state
+/// is derived and no early-wake event exists for it.
 func workSessionGroups(
   organization: WorkSessionOrganization,
   sessions: [TerminalSessionSummary],
@@ -512,26 +530,53 @@ func workSessionGroups(
   statusBySessionId: [String: String] = [:],
   archivedSessionIds: Set<String>,
   orderedLanes: [LaneSummary],
-  deletingLaneIds: Set<String> = []
+  deletingLaneIds: Set<String> = [],
+  now: Date = Date()
 ) -> [WorkSessionGroup] {
+  var snoozed: [TerminalSessionSummary] = []
+  var awake: [TerminalSessionSummary] = []
+  for session in sessions {
+    if session.isFiledAsSnoozed(summary: chatSummaries[session.id], now: now) {
+      snoozed.append(session)
+    } else {
+      awake.append(session)
+    }
+  }
+
+  var groups: [WorkSessionGroup]
   switch organization {
   case .byStatus:
-    return workSessionGroupsByStatus(
-      sessions: sessions,
+    groups = workSessionGroupsByStatus(
+      sessions: awake,
       chatSummaries: chatSummaries,
       statusBySessionId: statusBySessionId,
       archivedSessionIds: archivedSessionIds
     )
   case .byLane:
-    return workSessionGroupsByLane(
-      sessions: sessions,
+    groups = workSessionGroupsByLane(
+      sessions: awake,
       orderedLanes: orderedLanes,
       deletingLaneIds: deletingLaneIds
     )
   case .byTime:
-    return workSessionGroupsByTime(sessions: sessions)
+    groups = workSessionGroupsByTime(sessions: awake)
   }
+
+  if !snoozed.isEmpty {
+    groups.append(WorkSessionGroup(
+      id: workSnoozedSectionId,
+      label: "Snoozed",
+      icon: .statusDot,
+      tint: ADEColor.info,
+      sessions: snoozed
+    ))
+  }
+  return groups
 }
+
+/// Stable id for the snoozed tail so its collapse state persists like any other
+/// section, independent of the active organization.
+let workSnoozedSectionId = "status:snoozed"
 
 func workSessionGroupsByStatus(
   sessions: [TerminalSessionSummary],

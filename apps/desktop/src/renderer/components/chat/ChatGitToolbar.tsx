@@ -15,6 +15,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
 import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
+import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { useAppStore } from "../../state/appStore";
@@ -270,6 +271,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   }, [laneId, linkedPr, refreshPr]);
 
   const handlePr = useCallback(async () => {
+    // A PR operation is about to run against this worktree — arm the drift
+    // warning strip so a wrong-branch PR is caught before it is opened.
+    armLaneBranchDriftWarning(laneId);
     if (linkedPr) {
       navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
       return;
@@ -562,7 +566,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           <button
             type="button"
             className={cn(btnBase, onTogglePrPane && prPaneOpen && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
-            onClick={onTogglePrPane ?? handlePr}
+            onClick={() => {
+              armLaneBranchDriftWarning(laneId);
+              if (onTogglePrPane) onTogglePrPane();
+              else void handlePr();
+            }}
             disabled={isBusy}
           >
             <GitPullRequest size={10} weight="bold" />

@@ -126,15 +126,21 @@ function sessionStatusBucket(args: {
   runtimeState?: string | null;
   toolType?: string | null;
   settledAt?: string | null;
+  settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // `ade chat ask` escalation outranks everything; a declared settle maps to
   // the quiet bucket for lane rollups (badges/counters) but only AT REST so a
   // background wake still counts as running; a dead chat turn is not running.
-  // Mirrors canonicalSessionState in shared/sessionCanonicalState.ts.
+  // The tri-state override is consulted at the same declared-settle tier:
+  // "active" is an explicit keep-active pin, "settled" acts like a declared
+  // settle. Mirrors canonicalSessionState in shared/sessionCanonicalState.ts.
   if (args.attentionRequestedAt) return "awaiting-input";
-  if (args.settledAt && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
+  const effectiveSettled = args.settleOverride === "active"
+    ? false
+    : args.settleOverride === "settled" || Boolean(args.settledAt);
+  if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
   if (args.lastTurnFailedAt) return "ended";
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "awaiting-input";

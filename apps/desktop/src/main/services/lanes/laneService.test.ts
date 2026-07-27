@@ -471,7 +471,7 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n?? src/new.ts\n", stderr: "" };
         }
@@ -535,7 +535,7 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && options.cwd === sourceWorktreePath) {
         return { exitCode: 0, stdout: "M  src/file.ts\n", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
@@ -594,7 +594,7 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M README.md\n", stderr: "" };
         }
@@ -697,7 +697,7 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n", stderr: "" };
         }
@@ -747,7 +747,7 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && options.cwd === sourceWorktreePath) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
@@ -811,7 +811,7 @@ describe("laneService create", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -910,7 +910,7 @@ describe("laneService create", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -999,7 +999,7 @@ describe("laneService create", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1080,7 +1080,7 @@ describe("laneService create", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1154,7 +1154,7 @@ describe("laneService create", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1498,7 +1498,7 @@ describe("laneService importBranch", () => {
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/import") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1706,7 +1706,7 @@ describe("laneService importBranch", () => {
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/existing-local") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1760,7 +1760,7 @@ describe("laneService importBranch", () => {
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/import-race") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -1974,7 +1974,7 @@ describe("laneService rebaseStart", () => {
         expect(args[3]).toBe("sha-root-before");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2039,7 +2039,7 @@ describe("laneService rebaseStart", () => {
         expect(args[3]).toBe("sha-root-before");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2091,7 +2091,7 @@ describe("laneService rebaseStart", () => {
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
       }
       if (args[0] === "rebase") {
@@ -2164,7 +2164,7 @@ describe("laneService rebaseStart", () => {
         expect(args[3]).toBe("sha-root-pre");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2230,7 +2230,7 @@ describe("laneService rebaseStart", () => {
         expect(args[3]).toBe("sha-parent");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2287,7 +2287,7 @@ describe("laneService rebaseStart", () => {
         expect(args[2]).toBe("sha-origin-main");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2393,7 +2393,7 @@ describe("laneService rebaseStart", () => {
         expect(args[3]).toBe("sha-child-head");
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rebase") {
@@ -2532,7 +2532,7 @@ describe("laneService rebaseStart", () => {
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         // Worktree is dirty
         return { exitCode: 0, stdout: " M src/file.ts\n", stderr: "" };
       }
@@ -2855,7 +2855,7 @@ describe("laneService createChild", () => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "push" && args[1] === "-u") return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "status" && args[1] === "--porcelain=v1") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) return { exitCode: 0, stdout: "", stderr: "" };
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") return { exitCode: 1, stdout: "", stderr: "" };
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") return { exitCode: 1, stdout: "", stderr: "" };
@@ -2916,7 +2916,7 @@ describe("laneService createChild", () => {
         if (args[0] === "push" && args[1] === "-u") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -2999,7 +2999,7 @@ describe("laneService createChild", () => {
       if (args[0] === "push" && args[1] === "-u") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
@@ -3161,6 +3161,7 @@ describe("laneService stale worktree status", () => {
       behind: 0,
       remoteBehind: -1,
       rebaseInProgress: false,
+      headBranchRef: null,
     });
     expect(vi.mocked(runGit).mock.calls.some(([args, opts]) =>
       args[0] === "status" && (opts as { cwd?: string } | undefined)?.cwd === childPath
@@ -3980,7 +3981,7 @@ describe("laneService - branchSwitch", () => {
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
         return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
       }
-      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       return { exitCode: 1, stdout: "", stderr: `unhandled: ${args.join(" ")}` };
@@ -4152,7 +4153,7 @@ describe("laneService - branchSwitch", () => {
           if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
             if (args[3] === "refs/heads/feature/target") return { exitCode: 0, stdout: "", stderr: "" };
           }
-          if (args[0] === "status" && args[1] === "--porcelain=v1" && opts.cwd === path.join(repoRoot, "src")) {
+          if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && opts.cwd === path.join(repoRoot, "src")) {
             return { exitCode: 0, stdout: " M file.ts\n", stderr: "" };
           }
           return null;
@@ -4243,7 +4244,7 @@ describe("laneService - branchSwitch", () => {
 
         vi.mocked(runGit).mockImplementation(makeRunGitResponder((args, opts) => {
           if (args[0] === "show-ref" && args[3] === "refs/heads/main") return { exitCode: 0, stdout: "", stderr: "" };
-          if (args[0] === "status" && args[1] === "--porcelain=v1" && opts.cwd === path.join(repoRoot, "d")) {
+          if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && opts.cwd === path.join(repoRoot, "d")) {
             return { exitCode: 0, stdout: " M src/foo.ts\n", stderr: "" };
           }
           return null;
@@ -5258,5 +5259,259 @@ describe("laneService rename", () => {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("laneService branch drift", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  /**
+   * Permissive git stub: everything the lane-status refresh needs, with a
+   * per-worktree HEAD branch so drift can be simulated.
+   */
+  function stubDriftGit(args: {
+    repoRoot: string;
+    headBranchByPath: Record<string, string>;
+    dirtyPaths?: string[];
+  }) {
+    const checkouts: Array<{ cwd: string; branch: string }> = [];
+    vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+      if (gitArgs[0] === "checkout") {
+        checkouts.push({ cwd: opts?.cwd ?? "", branch: gitArgs[gitArgs.length - 1] ?? "" });
+      }
+      return "";
+    });
+    vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      const cwd = opts?.cwd ?? args.repoRoot;
+      const head = args.headBranchByPath[cwd] ?? "main";
+      const dirty = (args.dirtyPaths ?? []).includes(cwd);
+      if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute" && gitArgs[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
+      }
+      if (gitArgs[0] === "symbolic-ref") {
+        return { exitCode: 0, stdout: `${head}\n`, stderr: "" };
+      }
+      if (gitArgs[0] === "status" && String(gitArgs[1]).startsWith("--porcelain=v2")) {
+        const body = dirty ? "1 .M N... 100644 100644 100644 aaa bbb src/app.ts\n" : "";
+        return { exitCode: 0, stdout: `# branch.oid abc\n# branch.head ${head}\n${body}`, stderr: "" };
+      }
+      if (gitArgs[0] === "status") {
+        return { exitCode: 0, stdout: dirty ? " M src/app.ts\n" : "", stderr: "" };
+      }
+      if (gitArgs[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    return { checkouts };
+  }
+
+  it("surfaces branchDrift on the lane summary when HEAD wandered off branch_ref", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-detect-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-detect", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    stubDriftGit({
+      repoRoot,
+      headBranchByPath: {
+        [childPath]: "hotfix-auth",
+        [path.join(repoRoot, "parent")]: "feature/parent",
+        [path.join(repoRoot, "main")]: "main",
+      },
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-detect",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const lanes = await service.list({ includeStatus: true });
+    expect(lanes.find((lane) => lane.id === "lane-child")?.branchDrift).toEqual({
+      expectedBranchRef: "feature/child",
+      headBranchRef: "hotfix-auth",
+    });
+    expect(lanes.find((lane) => lane.id === "lane-parent")?.branchDrift).toBeNull();
+  });
+
+  it("switch-back refuses on a dirty worktree and leaves branch_ref untouched", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-dirty-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-dirty", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    const { checkouts } = stubDriftGit({
+      repoRoot,
+      headBranchByPath: { [childPath]: "hotfix-auth" },
+      dirtyPaths: [childPath],
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-dirty",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(
+      service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
+    ).rejects.toThrow(/uncommitted changes/i);
+    expect(checkouts).toHaveLength(0);
+    expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+      branch_ref: "feature/child",
+    });
+  });
+
+  it("switch-back checks the recorded branch back out on a clean worktree", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-switchback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-switchback", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    const { checkouts } = stubDriftGit({
+      repoRoot,
+      headBranchByPath: { [childPath]: "hotfix-auth" },
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-switchback",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.resolveBranchDrift({
+      laneId: "lane-child",
+      resolution: "switch-back",
+      expectedHeadBranchRef: "hotfix-auth",
+    });
+
+    expect(result.resolution).toBe("switch-back");
+    expect(result.branchRef).toBe("feature/child");
+    expect(checkouts).toContainEqual({ cwd: childPath, branch: "feature/child" });
+    expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+      branch_ref: "feature/child",
+    });
+  });
+
+  it("keep-head re-points branch_ref and the branch-derived lane name in one write", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-keep-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-keep", repoRoot });
+    // The lane name is literally advertising the branch it tracks.
+    db.run("update lanes set name = ? where id = ?", ["feature/child", "lane-child"]);
+    const childPath = path.join(repoRoot, "child");
+    const { checkouts } = stubDriftGit({
+      repoRoot,
+      headBranchByPath: { [childPath]: "hotfix-auth" },
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-keep",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.resolveBranchDrift({
+      laneId: "lane-child",
+      resolution: "keep-head",
+      expectedHeadBranchRef: "hotfix-auth",
+    });
+
+    expect(result).toMatchObject({
+      resolution: "keep-head",
+      previousBranchRef: "feature/child",
+      branchRef: "hotfix-auth",
+      previousLaneName: "feature/child",
+      laneName: "hotfix-auth",
+    });
+    // keep-head never touches the worktree — HEAD is already where we want it.
+    expect(checkouts).toHaveLength(0);
+    expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
+      branch_ref: "hotfix-auth",
+      name: "hotfix-auth",
+    });
+  });
+
+  it("keep-head preserves a hand-written lane name", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-keep-name-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-keep-name", repoRoot });
+    // A hand-written name — it advertises no branch, so it must survive.
+    db.run("update lanes set name = ? where id = ?", ["Auth work", "lane-child"]);
+    const childPath = path.join(repoRoot, "child");
+    stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-keep-name",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.resolveBranchDrift({ laneId: "lane-child", resolution: "keep-head" });
+
+    expect(result.previousLaneName).toBeNull();
+    expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
+      branch_ref: "hotfix-auth",
+      name: "Auth work",
+    });
+  });
+
+  it("rejects a resolution whose expected HEAD no longer matches the worktree", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-stale-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-stale", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-stale",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(
+      service.resolveBranchDrift({
+        laneId: "lane-child",
+        resolution: "keep-head",
+        expectedHeadBranchRef: "some-other-branch",
+      }),
+    ).rejects.toThrow(/Refresh and try again/i);
+    expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+      branch_ref: "feature/child",
+    });
+  });
+
+  it("refuses when the lane is already on its recorded branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-none-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-drift-none", repoRoot });
+    const childPath = path.join(repoRoot, "child");
+    stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "feature/child" } });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-drift-none",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(
+      service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
+    ).rejects.toThrow(/already on its recorded branch/i);
+    expect(await service.getBranchDrift({ laneId: "lane-child" })).toBeNull();
   });
 });

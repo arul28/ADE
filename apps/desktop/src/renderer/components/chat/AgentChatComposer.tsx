@@ -93,6 +93,15 @@ const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
 
+// Every rich-composer chip carries `data-composer-chip`. Chips are
+// contentEditable="false", so the browser skips them when painting the native
+// selection and a drag across one looks like the highlight breaks in half; we
+// mirror the selection onto them with `data-composer-chip-selected`, which
+// index.css paints as an ::after overlay in the platform selection color.
+const COMPOSER_CHIP_SELECTOR = "[data-composer-chip]";
+const COMPOSER_CHIP_SELECTED_ATTR = "data-composer-chip-selected";
+const COMPOSER_CHIP_SELECTED_SELECTOR = `[${COMPOSER_CHIP_SELECTED_ATTR}]`;
+
 // Icon slot styling for smart-link chips. Real brand marks / favicons render as
 // a clean square glyph; only the text-monogram fallback keeps the tiled badge.
 const SMART_LINK_ICON_MARK_CLASS =
@@ -2539,6 +2548,7 @@ export function AgentChatComposer({
   const createIosContextChipNode = useCallback((item: IosElementContextItem): HTMLElement => {
     const chip = document.createElement("span");
     chip.contentEditable = "false";
+    chip.dataset.composerChip = "ios-context";
     chip.dataset.iosContextId = item.id;
     chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline";
     chip.title = item.sourceFile ? `${iosContextDisplayLabel(item)} - ${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : iosContextDisplayLabel(item);
@@ -2564,6 +2574,7 @@ export function AgentChatComposer({
   const createAppControlContextChipNode = useCallback((item: AppControlContextItem): HTMLElement => {
     const chip = document.createElement("span");
     chip.contentEditable = "false";
+    chip.dataset.composerChip = "app-control-context";
     chip.dataset.appControlContextId = item.id;
     chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-sky-300/22 bg-sky-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-sky-50/85 align-baseline";
     chip.title = item.sourceFile
@@ -2591,6 +2602,7 @@ export function AgentChatComposer({
   const createBuiltInBrowserContextChipNode = useCallback((item: BuiltInBrowserContextItem): HTMLElement => {
     const chip = document.createElement("span");
     chip.contentEditable = "false";
+    chip.dataset.composerChip = "built-in-browser-context";
     chip.dataset.builtInBrowserContextId = item.id;
     chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-teal-300/22 bg-teal-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-teal-50/85 align-baseline";
     chip.title = `${builtInBrowserContextDisplayLabel(item)} - ${builtInBrowserContextSourceDescription(item)}`;
@@ -2710,6 +2722,119 @@ export function AgentChatComposer({
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
   }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+
+  // ── Chip selection highlight ─────────────────────────────────────────────
+  // The native selection is not painted over contentEditable="false" chips, so
+  // a drag across one renders as two disconnected highlight runs. Mark the
+  // chips the selection intersects and let index.css overlay them.
+  //
+  // PERF: `selectionchange` fires on every caret move on the Work tab's hottest
+  // input path. The document listener therefore exists only while the editor is
+  // focused AND holds a chip, a plain caret costs one boolean, every DOM write
+  // is coalesced into a single rAF, and all queries are scoped to the editor.
+  useEffect(() => {
+    const editor = useRichComposer ? richEditorRef.current : null;
+    if (!editor) return;
+
+    let frame: number | null = null;
+    let listening = false;
+    let marked = false;
+
+    const clearMarks = () => {
+      if (!marked) return;
+      editor.querySelectorAll(COMPOSER_CHIP_SELECTED_SELECTOR).forEach((chip) => {
+        chip.removeAttribute(COMPOSER_CHIP_SELECTED_ATTR);
+      });
+      marked = false;
+    };
+
+    const paintSelectedChips = () => {
+      frame = null;
+      const selection = window.getSelection();
+      const range = selection && selection.rangeCount > 0 && !selection.isCollapsed
+        ? selection.getRangeAt(0)
+        : null;
+      // `getRangeAt` is already start-before-end, so backwards drags need no
+      // special casing; anything outside the editor just drops the marks.
+      if (!range || !editor.contains(range.commonAncestorContainer) || typeof range.intersectsNode !== "function") {
+        clearMarks();
+        return;
+      }
+      let anySelected = false;
+      editor.querySelectorAll(COMPOSER_CHIP_SELECTOR).forEach((chip) => {
+        let selected = false;
+        try {
+          selected = range.intersectsNode(chip);
+        } catch {
+          selected = false;
+        }
+        if (selected) {
+          anySelected = true;
+          if (!chip.hasAttribute(COMPOSER_CHIP_SELECTED_ATTR)) chip.setAttribute(COMPOSER_CHIP_SELECTED_ATTR, "true");
+        } else if (chip.hasAttribute(COMPOSER_CHIP_SELECTED_ATTR)) {
+          chip.removeAttribute(COMPOSER_CHIP_SELECTED_ATTR);
+        }
+      });
+      marked = anySelected;
+    };
+
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      // A collapsed caret is the overwhelmingly common case and only needs a
+      // frame when an earlier selection left highlights behind.
+      if (!marked && (!selection || selection.isCollapsed)) return;
+      if (frame != null) return;
+      frame = window.requestAnimationFrame(paintSelectedChips);
+    };
+
+    const stopListening = () => {
+      if (frame != null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (listening) {
+        document.removeEventListener("selectionchange", handleSelectionChange);
+        listening = false;
+      }
+      clearMarks();
+    };
+
+    const syncListener = () => {
+      const shouldListen = document.activeElement === editor && editor.querySelector(COMPOSER_CHIP_SELECTOR) != null;
+      if (shouldListen === listening) return;
+      if (!shouldListen) {
+        stopListening();
+        return;
+      }
+      document.addEventListener("selectionchange", handleSelectionChange);
+      listening = true;
+      handleSelectionChange();
+    };
+
+    // Chips are inserted/removed by direct DOM writes rather than React
+    // renders, so watch the editor's structure — never its character data —
+    // and only while it is focused.
+    const chipObserver = new MutationObserver(syncListener);
+    const handleFocus = () => {
+      chipObserver.observe(editor, { childList: true, subtree: true });
+      syncListener();
+    };
+    const handleBlur = () => {
+      chipObserver.disconnect();
+      stopListening();
+    };
+
+    editor.addEventListener("focus", handleFocus);
+    editor.addEventListener("blur", handleBlur);
+    if (document.activeElement === editor) handleFocus();
+
+    return () => {
+      editor.removeEventListener("focus", handleFocus);
+      editor.removeEventListener("blur", handleBlur);
+      chipObserver.disconnect();
+      stopListening();
+    };
+  }, [useRichComposer]);
 
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
@@ -4910,7 +5035,11 @@ export function AgentChatComposer({
                 aria-label={composerInputAccessibleLabel}
                 className={cn(
                   "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
-                  plainOverlayContent ? "relative z-[1] text-transparent" : "",
+                  // The textarea sits above the token overlay with transparent text, so the
+                  // default (opaque) selection background would paint over the overlay and
+                  // make the selected text vanish entirely. A translucent selection reads as
+                  // a selection while letting the glyphs underneath stay legible.
+                  plainOverlayContent ? "relative z-[1] text-transparent selection:bg-fg/25" : "",
                   dragActive ? "opacity-30" : "",
                   parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                 )}

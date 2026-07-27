@@ -21,6 +21,7 @@ import {
   type DrawerLaneInput,
 } from "../drawerLayout";
 import { Rail, statusGlyph, type StatusKind } from "./designKit";
+import { sessionLifecycleMarker, type SessionLifecycleMarker } from "../sessionLifecycle";
 
 export { visibleDrawerChatCount, visibleDrawerLaneCount };
 
@@ -112,16 +113,46 @@ function sanitizeChatStatusLine(raw: string | null | undefined, maxChars = 120):
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
+/**
+ * The one lifecycle marker a drawer chat row may carry. Thin wrapper so both
+ * drawer modes read snooze/woke/settled from the same shared derivation.
+ */
+function chatLifecycleMarker(
+  session: AgentChatSessionSummary,
+  note: string | null,
+  nowMs: number = Date.now(),
+): SessionLifecycleMarker | null {
+  const lifecycle = session as TuiChatSessionSummary;
+  return sessionLifecycleMarker(
+    { ...lifecycle, isActive: session.status === "active" },
+    { note, nowMs },
+  );
+}
+
+/**
+ * The trailing "· …" fragment on a chat row. Priority, highest first:
+ *   1. an escalated ask / pending input ("needs you"),
+ *   2. the lifecycle marker — snoozed ("z wakes in 3h"), woken ("* needs
+ *      approval"), or settled ("done" / "done: PR merged"),
+ *   3. the most useful free text left (status note, preview, summary, goal).
+ *
+ * Every lifecycle state above is carried by TEXT, never by color alone: the
+ * drawer has to stay readable in a monochrome terminal.
+ */
 function chatStatusLine(
   session: AgentChatSessionSummary,
-  settled: boolean,
+  nowMs: number = Date.now(),
 ): string | null {
   const lifecycle = session as TuiChatSessionSummary;
   if (lifecycle.attentionRequestedAt || session.awaitingInput) {
     return sanitizeChatStatusLine(lifecycle.attentionMessage) || "needs you";
   }
   const note = sanitizeChatStatusLine(lifecycle.statusNote);
-  if (note) return settled ? `done: ${note}` : note;
+  // The marker owns all settled/snoozed/woke copy, so a keep-active pin never
+  // leaks a stale "done:" here.
+  const marker = chatLifecycleMarker(session, note, nowMs);
+  if (marker) return marker.text;
+  if (note) return note;
   const primary = formatSessionLabel(session);
   for (const candidate of [session.lastOutputPreview, session.summary, session.goal]) {
     const fallback = sanitizeChatStatusLine(candidate);
@@ -564,8 +595,14 @@ function LaneCard({
   const dot = statusGlyph(laneStatusDot(status));
   const LEAD_WIDTH = 2; // status dot + space
 
-  // Right cluster, in priority order: a missing/rebasing worktree wins over the
-  // live diff. The diff is the common case and refreshes in place.
+  // Right cluster, in priority order: a missing/rebasing worktree, then branch
+  // drift, then the live diff. The diff is the common case and refreshes in
+  // place. Drift outranks it because the diff is measured against a branch the
+  // lane is no longer on — showing `+12 −3` there would be actively misleading.
+  // The marker is plain words, never color alone, so it survives a terminal
+  // with no color at all. Resolving it stays in `ade lane drift resolve`: the
+  // fix can move the worktree or rename the lane, which is not something to
+  // trigger from a row that is one arrow-key away.
   const diff = worktreeAvailable && diffStats
     ? { add: diffStats.additions, del: diffStats.deletions }
     : null;
@@ -576,9 +613,11 @@ function LaneCard({
     ? { kind: "text", text: "no worktree", color: theme.color.error }
     : lane.status?.rebaseInProgress
       ? { kind: "text", text: "rebasing", color: theme.color.attention }
-      : diff
-        ? { kind: "diff", add: diff.add, del: diff.del }
-        : null;
+      : lane.branchDrift
+        ? { kind: "text", text: "off-branch", color: theme.color.attention }
+        : diff
+          ? { kind: "diff", add: diff.add, del: diff.del }
+          : null;
   const rightWidth = rightCluster == null
     ? 0
     : rightCluster.kind === "text"
@@ -674,7 +713,11 @@ function ChatRow({
 }) {
   const lifecycle = session as TuiChatSessionSummary;
   const attention = Boolean(session.awaitingInput || lifecycle.attentionRequestedAt);
-  const settled = Boolean(lifecycle.settledAt && session.status !== "active");
+  // A snoozed or settled row shares the same quiet tier; a "z wakes in 3h" /
+  // "done" marker in the suffix is what actually distinguishes them without
+  // relying on the dimmer color, which a monochrome terminal drops.
+  const marker = chatLifecycleMarker(session, sanitizeChatStatusLine(lifecycle.statusNote));
+  const quiet = marker?.kind === "settled" || marker?.kind === "snoozed";
   const failed = Boolean(lifecycle.lastTurnFailedAt);
   const running = session.status === "active" && !attention && !failed;
   const provider = (session.provider as AdeCodeProvider) ?? null;
@@ -698,7 +741,7 @@ function ChatRow({
     : null;
   const spawnLabel = spawnKind === "subagent" ? "sub" : spawnKind;
   const spawnReserve = spawnLabel ? spawnLabel.length + 1 : 0;
-  const lifecycleText = chatStatusLine(session, settled);
+  const lifecycleText = chatStatusLine(session);
   const lifecycleSuffix = lifecycleText
     ? truncate(lifecycleText, Math.max(8, Math.floor(max / 2)))
     : null;
@@ -716,7 +759,7 @@ function ChatRow({
     ? theme.color.violet
     : attention
       ? theme.color.attention
-      : settled ? theme.color.t4
+      : quiet ? theme.color.t4
       : failed ? theme.color.error
       : dimTitle ? theme.color.t2 : theme.color.t1;
   return (
@@ -1035,13 +1078,18 @@ function MiniDrawer({
             const lifecycle = session as TuiChatSessionSummary;
             const attention = Boolean(session.awaitingInput || lifecycle.attentionRequestedAt);
             const failed = Boolean(lifecycle.lastTurnFailedAt);
-            const settled = Boolean(lifecycle.settledAt && session.status !== "active");
+            const marker = chatLifecycleMarker(session, sanitizeChatStatusLine(lifecycle.statusNote));
+            const quiet = marker?.kind === "settled" || marker?.kind === "snoozed";
             const running = session.status === "active" && !attention && !failed;
             const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
             const provider = (session.provider as AdeCodeProvider) ?? null;
             const exec = theme.provider(provider);
             const dot = statusGlyph(chatStatusDot(session));
-            const nameMax = Math.max(4, inner - 4);
+            // Reserve the marker's columns so the title truncates ahead of it:
+            // "z wakes in 3h" is the only thing distinguishing a snoozed row in
+            // a terminal with no color.
+            const markerText = marker ? truncate(marker.text, Math.max(6, Math.floor(inner / 2))) : null;
+            const nameMax = Math.max(4, inner - 4 - (markerText ? markerText.length + 1 : 0));
             return (
               <Box key={session.sessionId} paddingX={1}>
                 {running ? <ActiveChatSpin /> : <Text color={dot.color} bold={attention}>{dot.glyph} </Text>}
@@ -1055,7 +1103,7 @@ function MiniDrawer({
                         ? theme.color.attention
                         : failed
                           ? theme.color.error
-                          : settled
+                          : quiet
                             ? theme.color.t4
                             : session.sessionId === activeSessionId || running
                               ? theme.color.violet
@@ -1065,6 +1113,7 @@ function MiniDrawer({
                 >
                   {pad(truncate(formatSessionLabel(session), nameMax), nameMax)}
                 </Text>
+                {markerText ? <Text color={theme.color.t4}>{` ${markerText}`}</Text> : null}
               </Box>
             );
           })}

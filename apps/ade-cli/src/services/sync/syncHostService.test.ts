@@ -4289,16 +4289,25 @@ describe("CTO-gated Linear sync commands", () => {
         "cto.completeLinearMobileOAuth",
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        "session.settleSessions",
+        "session.unsettleSessions",
+        "session.setSettleOverride",
+        "session.snoozeSession",
+        "session.wakeSession",
+        "session.clearWokeMarker",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
       );
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
-        expect(actions).toContainEqual({
+        // Policy shape varies (lifecycle mutations are additionally queueable);
+        // what matters for feature detection is that the action is advertised
+        // and viewer-allowed.
+        expect(actions).toContainEqual(expect.objectContaining({
           action,
           scope: "project",
-          policy: { viewerAllowed: true },
-        });
+          policy: expect.objectContaining({ viewerAllowed: true }),
+        }));
 
         const requestId = `viewer-${action}`;
         peer.ws.send(encodeSyncEnvelope({

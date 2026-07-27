@@ -2344,7 +2344,11 @@ function RightPaneComponent({
           ) : null}
           {content.action && content.rows.length ? (
             <Text color={theme.color.t4} dimColor>
-              {content.action.kind === "copy-secret" ? "arrows move · enter/c copies" : "arrows move · enter opens"}
+              {content.action.kind === "copy-secret"
+                ? "arrows move · enter/c copies"
+                : content.action.kind === "snooze-duration"
+                  ? "arrows move · enter snoozes"
+                  : "arrows move · enter opens"}
             </Text>
           ) : null}
         </Box>

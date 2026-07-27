@@ -2,6 +2,8 @@ import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
   ClaudeSessionPointer,
+  SessionSettleOverride,
+  SessionWakeReason,
   TerminalSessionDetail,
   TerminalSessionChangedEvent,
   TerminalResumeMetadata,
@@ -13,7 +15,12 @@ import type {
   ListSessionsArgs,
   UpdateSessionMetaArgs,
 } from "../../../shared/types";
-import { isTrackedAgentCliToolType } from "../../../shared/types";
+import {
+  isTrackedAgentCliToolType,
+  parseSessionSettleOverride,
+  SESSION_WAKE_REASONS,
+} from "../../../shared/types";
+import { isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import {
@@ -48,6 +55,11 @@ type SessionRow = {
   attentionRequestedAt: string | null;
   attentionMessage: string | null;
   lastTurnFailedAt: string | null;
+  settleOverride: string | null;
+  snoozedUntil: string | null;
+  snoozedAt: string | null;
+  wokeAt: string | null;
+  wokeReason: string | null;
   exitCode: number | null;
   transcriptPath: string;
   headShaStart: string | null;
@@ -95,6 +107,11 @@ const SESSION_COLUMNS = `
   s.attention_requested_at as attentionRequestedAt,
   s.attention_message as attentionMessage,
   s.last_turn_failed_at as lastTurnFailedAt,
+  s.settle_override as settleOverride,
+  s.snoozed_until as snoozedUntil,
+  s.snoozed_at as snoozedAt,
+  s.woke_at as wokeAt,
+  s.woke_reason as wokeReason,
   s.exit_code as exitCode,
   s.transcript_path as transcriptPath,
   s.head_sha_start as headShaStart,
@@ -305,6 +322,27 @@ function normalizeOptionalText(value: unknown, maxChars: number): string | null 
   return text.length ? text.slice(0, maxChars) : null;
 }
 
+function normalizeSettleOverride(value: unknown): SessionSettleOverride | null {
+  // undefined (unrecognized) collapses to null here — this is the persistence
+  // boundary, and the throwing parsers upstream have already rejected garbage.
+  return parseSessionSettleOverride(value) ?? null;
+}
+
+function normalizeWakeReason(value: unknown): SessionWakeReason | null {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return (SESSION_WAKE_REASONS as readonly string[]).includes(text)
+    ? (text as SessionWakeReason)
+    : null;
+}
+
+function normalizeSessionIds(sessionIds: string[]): string[] {
+  return Array.from(new Set(
+    (Array.isArray(sessionIds) ? sessionIds : [])
+      .map((sessionId) => (typeof sessionId === "string" ? sessionId.trim() : ""))
+      .filter(Boolean),
+  ));
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -323,6 +361,77 @@ export function createSessionService({ db }: { db: AdeDb }) {
     run(trimmed);
     emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     return true;
+  };
+
+  /**
+   * Early wake (hand-raising), shared by every trigger site.
+   *
+   * A snoozed row wakes BEFORE its timer when a pending approval / input
+   * request appears, when a session error strictly NEWER than `snoozed_at`
+   * lands, or when a running turn completes. The newer-than comparison is
+   * load-bearing: without it the very error the user snoozed on top of
+   * re-wakes the row instantly and snooze does nothing.
+   *
+   * Waking clears the snooze columns and records why, so the UI can show a
+   * "woke" marker with its reason until the user visits the row. Timer expiry
+   * is NOT handled here — it is derived from `snoozed_until` at read time, so
+   * no scheduler or watchdog exists.
+   *
+   * Returns the recorded reason, or null when the row was not snoozed / the
+   * signal did not qualify. Does not broadcast; call sites are already inside
+   * a mutation that emits.
+   */
+  const wakeSnoozedRow = (
+    sessionId: string,
+    reason: SessionWakeReason,
+    opts: { errorAt?: string | null } = {},
+  ): SessionWakeReason | null => {
+    const row = db.get<{ snoozedUntil: string | null; snoozedAt: string | null }>(
+      "select snoozed_until as snoozedUntil, snoozed_at as snoozedAt from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    const snoozedUntil = normalizeIsoTimestamp(row?.snoozedUntil);
+    if (!snoozedUntil) return null;
+    if (
+      reason === "error"
+      && !isWakingSessionError(
+        { snoozedUntil, snoozedAt: normalizeIsoTimestamp(row?.snoozedAt) },
+        opts.errorAt,
+      )
+    ) {
+      return null;
+    }
+    db.run(
+      `
+        update terminal_sessions
+        set snoozed_until = null,
+            snoozed_at = null,
+            woke_at = ?,
+            woke_reason = ?
+        where id = ?
+      `,
+      [new Date().toISOString(), reason, sessionId],
+    );
+    return reason;
+  };
+
+  /**
+   * Did this session END in failure? The PTY-backed mirror of the canonical
+   * failure tier (`canonicalSessionState` rules 3-4), minus the runtime-state
+   * check the end write site cannot see:
+   *   - a non-zero exit code is the process reporting it died,
+   *   - status "failed" covers spawn/setup deaths that never got an exit code,
+   *   - "disposed" is a user/system stop, not a failure,
+   *   - exit code 0 is the SETTLED path — the process declaring it's done — and
+   *     must never raise a hand.
+   */
+  const isFailedSessionEnd = (
+    exitCode: number | null | undefined,
+    status: TerminalSessionStatus,
+  ): boolean => {
+    if (status === "disposed") return false;
+    if (typeof exitCode === "number" && Number.isFinite(exitCode)) return exitCode !== 0;
+    return status === "failed";
   };
 
   const emitChanged = (event: TerminalSessionChangedEvent): void => {
@@ -422,6 +531,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
       attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
       lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
+      settleOverride: normalizeSettleOverride(row.settleOverride),
+      snoozedUntil: normalizeIsoTimestamp(row.snoozedUntil),
+      snoozedAt: normalizeIsoTimestamp(row.snoozedAt),
+      wokeAt: normalizeIsoTimestamp(row.wokeAt),
+      wokeReason: normalizeWakeReason(row.wokeReason),
       chatSessionId: row.chatSessionId ?? null,
       ownerPid: normalizeOwnerPid(row.ownerPid),
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
@@ -822,8 +936,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
           ...params,
         ],
       );
+      // Same hand-raise rule as the single-session `end()`: a reconcile that
+      // ends rows AS FAILED wakes any snoozed row it touched (the exit code is
+      // always null here, so only the status can carry the failure). The usual
+      // "detached" reconcile is not a failure and wakes nothing, and a clean
+      // exit never reaches this path at all.
+      const reconcileFailed = isFailedSessionEnd(null, finalStatus);
       for (const row of rows) {
         if (typeof row.id === "string" && row.id.trim().length) {
+          if (reconcileFailed) wakeSnoozedRow(row.id, "error", { errorAt: finalEndedAt });
           emitChanged({ sessionId: row.id, reason: "meta-updated" });
         }
       }
@@ -1102,7 +1223,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       db.run(
         opts?.clearSettled
-          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null where id = ?"
+          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null, settle_override = null where id = ?"
           : "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
         [preview, new Date().toISOString(), sessionId]
       );
@@ -1125,7 +1246,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run(
         opts?.clearSettled === false
           ? "update terminal_sessions set last_output_at = ? where id = ?"
-          : "update terminal_sessions set last_output_at = ?, settled_at = null where id = ?",
+          : "update terminal_sessions set last_output_at = ?, settled_at = null, settle_override = null where id = ?",
         [at, sessionId]
       );
     },
@@ -1180,6 +1301,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
         status,
         sessionId
       ]);
+      // A session that DIED is a hand-raise, exactly like a failed chat turn:
+      // it wakes a snoozed row early and records why, so the row carries a
+      // persisted "woke · errored" marker instead of staying hidden until its
+      // (possibly ~100-year "until I'm asked") deadline. Reason "error" keeps
+      // the newer-than-`snoozed_at` guard, so snoozing on top of an already
+      // dead session stays snoozed. A clean exit 0 does NOT wake — that is the
+      // settled path.
+      if (isFailedSessionEnd(exitCode, status)) {
+        const woke = wakeSnoozedRow(sessionId, "error", { errorAt: endedAt });
+        if (woke) emitChanged({ sessionId, reason: "meta-updated" });
+      }
     },
 
     archiveSession(sessionId: string, archivedAt: string = new Date().toISOString()): boolean {
@@ -1215,11 +1347,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
       const outcome = normalizeOptionalText(opts.outcome, 200);
       return mutateSessionMeta(sessionId, (id) => {
+        // An explicit settle also drops a stale keep-active pin — otherwise the
+        // override would silently veto the settle the user just asked for.
         if (outcome) {
           db.run(
             `
               update terminal_sessions
               set settled_at = coalesce(settled_at, ?),
+                  settle_override = null,
                   status_note = ?,
                   attention_requested_at = null,
                   attention_message = null
@@ -1232,6 +1367,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
             `
               update terminal_sessions
               set settled_at = coalesce(settled_at, ?),
+                  settle_override = null,
                   attention_requested_at = null,
                   attention_message = null
               where id = ?
@@ -1242,18 +1378,63 @@ export function createSessionService({ db }: { db: AdeDb }) {
       });
     },
 
+    /**
+     * Clears a declared settle plus any `'settled'` override. An `'active'`
+     * pin survives, because un-settling must not undo an explicit keep-active
+     * decision. Rows that derive settle from a clean exit need
+     * `setSettleOverride(id, "active")`, not unsettle — there is no
+     * `settled_at` for unsettle to clear on those.
+     */
     unsettleSession(sessionId: string): boolean {
       return mutateSessionMeta(sessionId, (id) => {
-        db.run("update terminal_sessions set settled_at = null where id = ?", [id]);
+        db.run(
+          `
+            update terminal_sessions
+            set settled_at = null,
+                settle_override = case when settle_override = 'settled' then null else settle_override end
+            where id = ?
+          `,
+          [id],
+        );
       });
     },
 
+    /**
+     * Tri-state settle override: `"settled"` behaves like a declared settle,
+     * `"active"` is the explicit keep-active pin that beats the derived exit-0
+     * auto-settle, `null` hands the row back to the derived rules. Real
+     * activity clears it at the same write sites that clear `settled_at`.
+     */
+    setSettleOverride(sessionId: string, override: SessionSettleOverride | null): boolean {
+      const normalized = override == null ? null : normalizeSettleOverride(override);
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set settle_override = ? where id = ?", [normalized, id]);
+      });
+    },
+
+    setSettleOverrides(sessionIds: string[], override: SessionSettleOverride | null): string[] {
+      const ids = normalizeSessionIds(sessionIds);
+      if (!ids.length) return [];
+      const normalized = override == null ? null : normalizeSettleOverride(override);
+      const placeholders = ids.map(() => "?").join(", ");
+      const present = db.all<{ id: string }>(
+        `select id from terminal_sessions where id in (${placeholders})`,
+        ids,
+      ).map((row) => row.id);
+      if (!present.length) return [];
+      const updatePlaceholders = present.map(() => "?").join(", ");
+      db.run(
+        `update terminal_sessions set settle_override = ? where id in (${updatePlaceholders})`,
+        [normalized, ...present],
+      );
+      for (const id of present) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return present;
+    },
+
     settleSessions(sessionIds: string[]): string[] {
-      const ids = Array.from(new Set(
-        sessionIds
-          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
-          .filter(Boolean),
-      ));
+      const ids = normalizeSessionIds(sessionIds);
       if (!ids.length) return [];
       const placeholders = ids.map(() => "?").join(", ");
       const newlySettled = db.all<{ id: string }>(
@@ -1266,6 +1447,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `
           update terminal_sessions
           set settled_at = ?,
+              settle_override = null,
               attention_requested_at = null,
               attention_message = null
           where id in (${updatePlaceholders})
@@ -1279,20 +1461,141 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     unsettleSessions(sessionIds: string[]): void {
-      const ids = Array.from(new Set(
-        sessionIds
-          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
-          .filter(Boolean),
-      ));
+      const ids = normalizeSessionIds(sessionIds);
       if (!ids.length) return;
       const placeholders = ids.map(() => "?").join(", ");
       db.run(
-        `update terminal_sessions set settled_at = null where id in (${placeholders})`,
+        `
+          update terminal_sessions
+          set settled_at = null,
+              settle_override = case when settle_override = 'settled' then null else settle_override end
+          where id in (${placeholders})
+        `,
         ids,
       );
       for (const id of ids) {
         emitChanged({ sessionId: id, reason: "meta-updated" });
       }
+    },
+
+    // -----------------------------------------------------------------------
+    // Snooze — synced VISIBILITY overlay. It never touches lifecycle columns
+    // and `canonicalSessionState()` never reads it; only the UI's filing does.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Snooze a session until `untilIso`. Stamps `snoozed_at` (the baseline the
+     * early-wake error comparison needs) and clears any stale "woke" marker.
+     * Returns false for a missing row or an unparseable deadline.
+     */
+    snoozeSession(
+      sessionId: string,
+      untilIso: string,
+      opts: { snoozedAt?: string } = {},
+    ): boolean {
+      const until = normalizeIsoTimestamp(untilIso);
+      if (!until) return false;
+      const snoozedAt = normalizeIsoTimestamp(opts.snoozedAt) ?? new Date().toISOString();
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          `
+            update terminal_sessions
+            set snoozed_until = ?,
+                snoozed_at = ?,
+                woke_at = null,
+                woke_reason = null
+            where id = ?
+          `,
+          [until, snoozedAt, id],
+        );
+      });
+    },
+
+    /** Bulk snooze; mirrors `settleSessions` and returns the ids it changed. */
+    snoozeSessions(sessionIds: string[], untilIso: string, opts: { snoozedAt?: string } = {}): string[] {
+      const until = normalizeIsoTimestamp(untilIso);
+      if (!until) return [];
+      const ids = normalizeSessionIds(sessionIds);
+      if (!ids.length) return [];
+      const placeholders = ids.map(() => "?").join(", ");
+      const present = db.all<{ id: string }>(
+        `select id from terminal_sessions where id in (${placeholders})`,
+        ids,
+      ).map((row) => row.id);
+      if (!present.length) return [];
+      const snoozedAt = normalizeIsoTimestamp(opts.snoozedAt) ?? new Date().toISOString();
+      const updatePlaceholders = present.map(() => "?").join(", ");
+      db.run(
+        `
+          update terminal_sessions
+          set snoozed_until = ?,
+              snoozed_at = ?,
+              woke_at = null,
+              woke_reason = null
+          where id in (${updatePlaceholders})
+        `,
+        [until, snoozedAt, ...present],
+      );
+      for (const id of present) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return present;
+    },
+
+    /**
+     * Wake a snoozed session now and record why. Returns false when the row is
+     * missing or was not snoozed (nothing to wake).
+     */
+    wakeSession(sessionId: string, reason: SessionWakeReason = "manual"): boolean {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return false;
+      const woke = wakeSnoozedRow(trimmed, normalizeWakeReason(reason) ?? "manual");
+      if (!woke) return false;
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    /** Bulk wake; mirrors `unsettleSessions`. */
+    wakeSessions(sessionIds: string[], reason: SessionWakeReason = "manual"): string[] {
+      const ids = normalizeSessionIds(sessionIds);
+      if (!ids.length) return [];
+      const normalizedReason = normalizeWakeReason(reason) ?? "manual";
+      const woken: string[] = [];
+      for (const id of ids) {
+        if (wakeSnoozedRow(id, normalizedReason)) woken.push(id);
+      }
+      for (const id of woken) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return woken;
+    },
+
+    /**
+     * Early-wake entry point for hand-raise signals owned by other services
+     * (chat runtimes, PTY, the action registry). `reason: "error"` additionally
+     * requires `errorAt` to be strictly newer than the row's `snoozed_at`;
+     * everything else wakes unconditionally when the row is snoozed. Returns
+     * the recorded reason, or null when the row stayed asleep.
+     */
+    wakeSessionIfSnoozed(
+      sessionId: string,
+      reason: SessionWakeReason,
+      opts: { errorAt?: string | null } = {},
+    ): SessionWakeReason | null {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return null;
+      const normalizedReason = normalizeWakeReason(reason);
+      if (!normalizedReason) return null;
+      const woke = wakeSnoozedRow(trimmed, normalizedReason, opts);
+      if (woke) emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return woke;
+    },
+
+    /** Drop the "woke" marker once the user has visited the row. */
+    clearWokeMarker(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set woke_at = null, woke_reason = null where id = ?", [id]);
+      });
     },
 
     setStatusNote(sessionId: string, note: string | null): boolean {
@@ -1304,6 +1607,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       });
     },
 
+    /**
+     * A pending approval / input request is the loudest hand-raise there is:
+     * it un-settles (including any override) and it wakes a snoozed row early,
+     * before its timer.
+     */
     requestAttention(sessionId: string, message: string | null): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
@@ -1311,11 +1619,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
             update terminal_sessions
             set attention_requested_at = ?,
                 attention_message = ?,
-                settled_at = null
+                settled_at = null,
+                settle_override = null
             where id = ?
           `,
           [new Date().toISOString(), normalizeOptionalText(message, 500), id],
         );
+        wakeSnoozedRow(id, "needs_you");
       });
     },
 
@@ -1329,22 +1639,31 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     markLastTurnFailed(sessionId: string, at?: string): boolean {
+      const failedAt = normalizeIsoTimestamp(at) ?? new Date().toISOString();
       return mutateSessionMeta(sessionId, (id) => {
         // A turn failure also un-settles: the declared outcome is now in doubt
         // and the row must surface red, not hide in the quiet tier. This keeps
         // settled/failed mutually exclusive at write time, so every surface's
         // precedence order agrees by construction.
         db.run(
-          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null where id = ?",
-          [normalizeIsoTimestamp(at) ?? new Date().toISOString(), id],
+          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null, settle_override = null where id = ?",
+          [failedAt, id],
         );
+        // Early wake, but ONLY for an error newer than the snooze. Snoozing on
+        // top of an existing failure must stay snoozed.
+        wakeSnoozedRow(id, "error", { errorAt: failedAt });
       });
     },
 
-    /** A completed turn supersedes an earlier failure; never touches settle/attention. */
+    /**
+     * A completed turn supersedes an earlier failure; never touches
+     * settle/attention. It is also the "running turn completed" early-wake
+     * trigger, so a snoozed row comes back as soon as its work is done.
+     */
     clearLastTurnFailed(sessionId: string): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run("update terminal_sessions set last_turn_failed_at = null where id = ?", [id]);
+        wakeSnoozedRow(id, "turn_complete");
       });
     },
 
@@ -1355,6 +1674,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
             update terminal_sessions
             set last_turn_failed_at = null,
                 settled_at = null,
+                settle_override = null,
                 attention_requested_at = null,
                 attention_message = null
             where id = ?

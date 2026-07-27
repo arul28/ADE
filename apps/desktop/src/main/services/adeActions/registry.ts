@@ -49,6 +49,7 @@ import type {
   DeleteLaneArgs,
   FileChangeEvent,
   FilesWatchArgs,
+  LaneBranchDriftResolution,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneListSnapshot,
@@ -56,6 +57,8 @@ import type {
   LanePreviewInfo,
   ListSessionsArgs,
   ListLanesArgs,
+  SessionSettleOverride,
+  SessionWakeReason,
   PortLease,
   PrAgentPermissionMode,
   PrAiResolutionContext,
@@ -75,6 +78,7 @@ import type {
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
+import { parseSessionSettleOverride, SESSION_WAKE_REASONS } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { mergeAiConfig } from "../config/projectConfigService";
@@ -265,6 +269,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "diagnosticsRunHealthCheck",
     "dismissAutoRebaseStatus",
     "dismissRebaseSuggestion",
+    "getBranchDrift",
     "getChildren",
     "getDefaultTemplate",
     "getDeleteRisk",
@@ -310,6 +315,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rebaseStart",
     "rename",
     "reparent",
+    "resolveBranchDrift",
     "applyTemplate",
     "saveTemplate",
     "setDefaultTemplate",
@@ -619,6 +625,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory"],
   session: [
     "backfillDeltas",
+    "clearWokeMarker",
     "deleteSession",
     "get",
     "getDelta",
@@ -626,11 +633,16 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "readTranscriptTail",
     "requestSessionAttention",
     "setSessionStatusNote",
+    "setSettleOverride",
     "settleSelfSession",
     "settleSessions",
+    "snoozeSession",
+    "snoozeSessions",
     "unsettleSelfSession",
     "unsettleSessions",
     "updateMeta",
+    "wakeSession",
+    "wakeSessions",
   ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
@@ -1751,6 +1763,56 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       sessionService.unsettleSessions(sessionIds);
       return { ok: true };
     },
+    // -----------------------------------------------------------------------
+    // Snooze / wake / settle-override. Snooze is a synced VISIBILITY overlay:
+    // it hides a row until its deadline without touching lifecycle columns, so
+    // an agent can quiet something it is waiting on and let a hand-raise
+    // (needs-you, error, turn-complete) wake it early.
+    // -----------------------------------------------------------------------
+    snoozeSession: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.snoozeSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const untilIso = requireSnoozeDeadline(record.untilIso);
+      if (!sessionService.snoozeSession(sessionId, untilIso)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId, snoozedUntil: untilIso };
+    },
+    snoozeSessions: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.snoozeSessions");
+      const sessionIds = readSessionIdList(record.sessionIds, "session.snoozeSessions");
+      const untilIso = requireSnoozeDeadline(record.untilIso);
+      return sessionService.snoozeSessions(sessionIds, untilIso);
+    },
+    wakeSession: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.wakeSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const reason = readWakeReason(record.reason, "session.wakeSession");
+      return { ok: sessionService.wakeSession(sessionId, reason), sessionId, reason };
+    },
+    wakeSessions: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.wakeSessions");
+      const sessionIds = readSessionIdList(record.sessionIds, "session.wakeSessions");
+      const reason = readWakeReason(record.reason, "session.wakeSessions");
+      return sessionService.wakeSessions(sessionIds, reason);
+    },
+    setSettleOverride: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.setSettleOverride");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const override = readSettleOverride(record.override, "session.setSettleOverride");
+      if (!sessionService.setSettleOverride(sessionId, override)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId, settleOverride: override };
+    },
+    clearWokeMarker: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.clearWokeMarker");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      if (!sessionService.clearWokeMarker(sessionId)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId };
+    },
     deleteSession: (arg?: { sessionId?: string } | string) => {
       const sessionId = typeof arg === "string"
         ? requireNonEmptyString(arg, "sessionId")
@@ -1986,6 +2048,30 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       );
     },
     listRebaseSuggestions: () => runtime.rebaseSuggestionService?.listSuggestions() ?? [],
+    /**
+     * Branch-drift status read. Returns `null` when the worktree HEAD still
+     * matches the lane's recorded branch — the common case — so agents can poll
+     * it cheaply before a PR or checkout operation.
+     */
+    getBranchDrift: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "lane.getBranchDrift");
+      const laneId = requireNonEmptyString(record.laneId, "laneId");
+      return runtime.laneService.getBranchDrift({ laneId });
+    },
+    resolveBranchDrift: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "lane.resolveBranchDrift");
+      const laneId = requireNonEmptyString(record.laneId, "laneId");
+      const resolution = readBranchDriftResolution(record.resolution, "lane.resolveBranchDrift");
+      const expectedHeadBranchRef = typeof record.expectedHeadBranchRef === "string"
+        ? record.expectedHeadBranchRef.trim()
+        : "";
+      return runtime.laneService.resolveBranchDrift({
+        laneId,
+        resolution,
+        ...(expectedHeadBranchRef ? { expectedHeadBranchRef } : {}),
+        ...(record.acknowledgeActiveWork === true ? { acknowledgeActiveWork: true } : {}),
+      });
+    },
     delete: async (args?: DeleteLaneArgs): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const laneEnvironmentService = runtime.laneEnvironmentService;
@@ -2488,6 +2574,56 @@ function readObjectActionArg(value: unknown, actionName: string): Record<string,
     return value as Record<string, unknown>;
   }
   throw new Error(`${actionName} expects an object input. Use --input-json '{...}' or see \`ade actions list --domain chat --text\`.`);
+}
+
+
+/**
+ * Snooze deadlines cross the agent boundary as free text, so they are validated
+ * here rather than swallowed by `sessionService`, which returns a bare `false`
+ * for both "no such row" and "unparseable date".
+ */
+function requireSnoozeDeadline(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    throw new Error("Expected 'untilIso' to be an ISO-8601 timestamp (for example 2026-07-26T18:00:00.000Z).");
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Expected 'untilIso' to be an ISO-8601 timestamp; received '${raw}'.`);
+  }
+  return parsed.toISOString();
+}
+
+function readSessionIdList(value: unknown, actionName: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${actionName} requires a 'sessionIds' array.`);
+  }
+  const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  if (!ids.length) {
+    throw new Error(`${actionName} requires at least one session id.`);
+  }
+  return ids;
+}
+
+function readWakeReason(value: unknown, actionName: string): SessionWakeReason {
+  if (value == null || value === "") return "manual";
+  if (typeof value === "string" && (SESSION_WAKE_REASONS as readonly string[]).includes(value)) {
+    return value as SessionWakeReason;
+  }
+  throw new Error(`${actionName} 'reason' must be one of: ${SESSION_WAKE_REASONS.join(", ")}.`);
+}
+
+function readSettleOverride(value: unknown, actionName: string): SessionSettleOverride | null {
+  const parsed = parseSessionSettleOverride(value);
+  if (parsed === undefined) {
+    throw new Error(`${actionName} 'override' must be 'settled', 'active', or null.`);
+  }
+  return parsed;
+}
+
+function readBranchDriftResolution(value: unknown, actionName: string): LaneBranchDriftResolution {
+  if (value === "switch-back" || value === "keep-head") return value;
+  throw new Error(`${actionName} 'resolution' must be 'switch-back' or 'keep-head'.`);
 }
 
 function readOptionalIntegerActionField(value: unknown, field: string): number | undefined {

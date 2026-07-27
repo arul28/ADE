@@ -748,7 +748,14 @@ struct WorkRootScreen: View {
       onCopyId: copySessionId,
       onCopyDeepLink: copySessionDeepLink,
       onGoToLane: goToLane,
-      onOpenPullRequest: openPullRequest
+      onOpenPullRequest: openPullRequest,
+      lifecycleAvailable: syncService.supportsSessionLifecycleActions,
+      snoozeAvailable: syncService.supportsSessionSnoozeActions,
+      onSettle: settleSession,
+      onUnsettle: unsettleSession,
+      onKeepActive: keepSessionActive,
+      onSnooze: snoozeSession,
+      onWake: wakeSession
     )
     .id(session.id)
     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -789,7 +796,14 @@ struct WorkRootScreen: View {
             onCopyId: copySessionId,
             onCopyDeepLink: copySessionDeepLink,
             onGoToLane: goToLane,
-            onOpenPullRequest: openPullRequest
+            onOpenPullRequest: openPullRequest,
+            lifecycleAvailable: syncService.supportsSessionLifecycleActions,
+            snoozeAvailable: syncService.supportsSessionSnoozeActions,
+            onSettle: settleSession,
+            onUnsettle: unsettleSession,
+            onKeepActive: keepSessionActive,
+            onSnooze: snoozeSession,
+            onWake: wakeSession
           )
           .id(child.id)
         }

@@ -56,6 +56,9 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     },
     previewBranchSwitch: (args: unknown) => call("lanes.previewBranchSwitch", args, null),
     switchBranch: (args: unknown) => call("lanes.switchBranch", args, { ok: false, error: "unsupported" }, false),
+    getBranchDrift: (args: unknown) => call("lanes.getBranchDrift", args, null),
+    resolveBranchDrift: (args: unknown) =>
+      call("lanes.resolveBranchDrift", args, { ok: false, error: "unsupported" }, false),
     attach: (args: unknown) => call("lanes.attach", args, null, false),
     listUnregisteredWorktrees: () => call("lanes.listUnregisteredWorktrees", {}, []),
     adoptAttached: (args: unknown) => call("lanes.adoptAttached", args, null, false),
