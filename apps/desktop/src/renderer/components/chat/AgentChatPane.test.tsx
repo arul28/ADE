@@ -42,11 +42,24 @@ import {
   mergeOlderChatHistoryPageWithCap,
   parallelLaneModelSuffix,
   prependOlderChatHistoryPage,
+  resolveChatHistoryMissAction,
   resolveNextSelectedSessionId,
+  resolveRenderedChatSessionId,
+  resetChatBootModelRefreshMemoForTests,
+  resolveSnapshotHistoryCursor,
+  selectAgentChatSessionViewEvictions,
+  selectDepartedChatSessionViewCacheSessions,
   shouldCacheAgentChatSessionView,
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
+import {
+  DEFAULT_CHAT_COMPANION_UI_STATE,
+  chatCompanionUiStorageKey,
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+  writeChatCompanionUiState,
+} from "./chatCompanionUiState";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { findUserMessageForTurn, isParentUserMessage } from "./chatTurnState";
 
@@ -465,6 +478,7 @@ function installAdeMocks(options?: {
   handoffError?: Error;
   sessions?: AgentChatSessionSummary[];
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
+  eventHistoryPage?: (args: { sessionId: string; beforeOffset: number; maxBytes?: number }) => Promise<unknown> | unknown;
   includeClaudeModel?: boolean;
   cursorModels?: Array<{ id: string }>;
   aiStatus?: AiSettingsStatus;
@@ -597,6 +611,15 @@ function installAdeMocks(options?: {
               if (typeof options.eventHistory === "function") return options.eventHistory(args);
               return options.eventHistory;
             }),
+          }
+        : {}),
+      ...(options?.eventHistoryPage !== undefined
+        ? {
+            getEventHistoryPage: vi.fn().mockImplementation(
+              async (args: { sessionId: string; beforeOffset: number; maxBytes?: number }) => (
+                options.eventHistoryPage!(args)
+              ),
+            ),
           }
         : {}),
       suggestLaneName,
@@ -824,6 +847,8 @@ beforeEach(() => {
   invalidateAiDiscoveryCache();
   invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
+  resetChatBootModelRefreshMemoForTests();
+  resetChatCompanionUiStateCacheForTests();
   window.localStorage.clear();
   window.sessionStorage.clear();
   iosEventListener = null;
@@ -7013,6 +7038,88 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("keeps the rendered transcript when a later history read cannot reach the runtime", async () => {
+    const session = buildSession("session-1", { title: "Remote chat" });
+    let historyReads = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: async () => {
+        historyReads += 1;
+        if (historyReads === 1) {
+          return {
+            sessionId: session.sessionId,
+            events: [{
+              sessionId: session.sessionId,
+              timestamp: "2026-07-10T12:00:00.000Z",
+              sequence: 1,
+              event: { type: "user_message" as const, text: "Ship the release" },
+            }],
+            truncated: false,
+            sessionFound: true,
+          };
+        }
+        // The runtime could not be reached. This is NOT "the chat is gone", so
+        // the transcript already on screen must survive it.
+        return {
+          sessionId: session.sessionId,
+          events: [],
+          truncated: false,
+          sessionFound: false,
+          unavailable: true,
+        };
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Ship the release")).toBeTruthy();
+    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+    // The unavailable read also clears the loaded flag, so the pane keeps
+    // retrying instead of latching a permanently stale view. The recovery loop
+    // is a ~10s stall detector now (the live subscription is the transport), so
+    // the third read is a full interval out.
+    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
+    expect(screen.getByText("Ship the release")).toBeTruthy();
+  }, 25_000);
+
+  it("keeps a rendered transcript when an authoritative history miss arrives after events are on screen", async () => {
+    const session = buildSession("session-1", { title: "Existing chat" });
+    let historyReads = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: async () => {
+        historyReads += 1;
+        if (historyReads === 1) {
+          return {
+            sessionId: session.sessionId,
+            events: [{
+              sessionId: session.sessionId,
+              timestamp: "2026-07-10T12:00:00.000Z",
+              sequence: 1,
+              event: { type: "user_message" as const, text: "Rebase onto main" },
+            }],
+            truncated: false,
+            sessionFound: true,
+          };
+        }
+        return {
+          sessionId: session.sessionId,
+          events: [],
+          truncated: false,
+          sessionFound: false,
+        };
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Rebase onto main")).toBeTruthy();
+    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+    // One full ~10s stall-detector interval — see the sibling test above.
+    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
+    expect(screen.getByText("Rebase onto main")).toBeTruthy();
+  }, 25_000);
+
   it("reloads a previously viewed chat transcript when switching back to recover missed background output", async () => {
     const primarySession = buildSession("session-1", {
       title: "Primary chat",
@@ -8045,18 +8152,156 @@ describe("mergeOlderChatHistoryPageWithCap", () => {
 });
 
 describe("shouldCacheAgentChatSessionView", () => {
-  it("keeps large paged histories in the active view instead of the cross-session cache", () => {
-    expect(shouldCacheAgentChatSessionView(60_000, 60_000, 0)).toBe(false);
-    expect(shouldCacheAgentChatSessionView(1_001, 60_000, 0)).toBe(false);
-    expect(shouldCacheAgentChatSessionView(1_000, 60_000, 0)).toBe(true);
+  const MB = 1024 * 1024;
+
+  it("admits a real selected chat (20k events / ~20MB) instead of refusing every non-trivial transcript", () => {
+    // The old 1,000-event ceiling was below the selected-chat resident limit,
+    // so no chat a user actually reads was ever cacheable and every switch
+    // paid a full transcript re-read.
+    expect(shouldCacheAgentChatSessionView(20_000, 20_000, 20 * MB)).toBe(true);
+    expect(shouldCacheAgentChatSessionView(1_001, 20_000, 2 * MB)).toBe(true);
+    expect(shouldCacheAgentChatSessionView(60_000, 60_000, 31 * MB)).toBe(true);
   });
 
   it("does not cache a trimmed view with a cursor that could skip uncached events", () => {
     expect(shouldCacheAgentChatSessionView(1_001, 1_000, 0)).toBe(false);
   });
 
-  it("rejects a small event list that exceeds the per-session byte budget", () => {
-    expect(shouldCacheAgentChatSessionView(2, 1_000, 2 * 1024 * 1024 + 1)).toBe(false);
+  it("rejects a view over the 32MB per-session byte budget", () => {
+    expect(shouldCacheAgentChatSessionView(2, 20_000, 32 * MB)).toBe(true);
+    expect(shouldCacheAgentChatSessionView(2, 20_000, 32 * MB + 1)).toBe(false);
+  });
+
+  // Detachment is no longer this predicate's concern: the writer returns early
+  // for a detached view, so the predicate never sees one.
+});
+
+describe("selectDepartedChatSessionViewCacheSessions", () => {
+  it("reports only sessions that left this pane's roster", () => {
+    // The module-level view cache outlives every pane, so a chat that is
+    // deleted (or whose project closed) must be named explicitly or its whole
+    // transcript stays resident until newer chats push it out.
+    expect(selectDepartedChatSessionViewCacheSessions(
+      ["gone", "still-here"],
+      new Set(["still-here", "brand-new"]),
+    )).toEqual(["gone"]);
+  });
+
+  it("never reports the session the user is currently reading", () => {
+    // A roster refresh can land momentarily empty; evicting the selected chat's
+    // cache on that would blank-then-refetch the transcript in front of them.
+    expect(selectDepartedChatSessionViewCacheSessions(
+      ["selected", "locked", "other"],
+      new Set<string>(),
+      ["selected", "locked", null],
+    )).toEqual(["other"]);
+  });
+
+  it("reports nothing when the roster only grew", () => {
+    expect(selectDepartedChatSessionViewCacheSessions(
+      ["a"],
+      new Set(["a", "b"]),
+    )).toEqual([]);
+  });
+});
+
+describe("selectAgentChatSessionViewEvictions", () => {
+  const MB = 1024 * 1024;
+
+  it("keeps everything under both ceilings", () => {
+    expect(selectAgentChatSessionViewEvictions([
+      { sessionId: "a", estimatedBytes: 10 * MB },
+      { sessionId: "b", estimatedBytes: 10 * MB },
+    ])).toEqual([]);
+  });
+
+  it("evicts oldest-first until the 128MB total is respected", () => {
+    // 4 x 45MB = 180MB: dropping the two oldest brings the total to 90MB.
+    const entries = ["a", "b", "c", "d"].map((sessionId) => ({ sessionId, estimatedBytes: 45 * MB }));
+    expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["a", "b"]);
+  });
+
+  it("evicts oldest-first until the entry ceiling is respected", () => {
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      sessionId: `s${index}`,
+      estimatedBytes: 1_024,
+    }));
+    expect(selectAgentChatSessionViewEvictions(entries)).toEqual(["s0", "s1"]);
+  });
+});
+
+describe("resolveSnapshotHistoryCursor", () => {
+  it("reports no older history when the runtime says so, whatever the tail offset", () => {
+    // The false-banner fix: a truncated-looking tail offset must not offer a
+    // "load earlier messages" affordance the service can never satisfy.
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: false, tailStartOffset: 1_048_576 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: false, tailStartOffset: 1 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: false })).toBe(0);
+  });
+
+  it("seeds the cursor from the tail offset when older history exists", () => {
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: 4_096 })).toBe(4_096);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: 0 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: -3 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true })).toBe(0);
+  });
+
+  it("falls back to legacy offset-only behaviour for runtimes that omit the field", () => {
+    expect(resolveSnapshotHistoryCursor({ tailStartOffset: 4_096 })).toBe(4_096);
+    expect(resolveSnapshotHistoryCursor({ tailStartOffset: 0 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({})).toBe(0);
+  });
+});
+
+describe("resolveRenderedChatSessionId", () => {
+  it("renders the locked chat even while the selection state still trails it", () => {
+    // The stale-frame fix: the outgoing chat's transcript must never be
+    // visible once the pane has been pointed at a different chat.
+    expect(resolveRenderedChatSessionId({
+      lockSessionId: "incoming",
+      appliedInitialSessionId: null,
+      selectedSessionId: "outgoing",
+    })).toBe("incoming");
+  });
+
+  it("renders an initial session id the sync effect has not applied yet", () => {
+    expect(resolveRenderedChatSessionId({
+      initialSessionId: "incoming",
+      appliedInitialSessionId: "outgoing",
+      selectedSessionId: "outgoing",
+    })).toBe("incoming");
+  });
+
+  it("hands the selection back to in-pane state once the prop has been applied", () => {
+    expect(resolveRenderedChatSessionId({
+      initialSessionId: "opened-with",
+      appliedInitialSessionId: "opened-with",
+      selectedSessionId: "picked-in-pane",
+    })).toBe("picked-in-pane");
+  });
+
+  it("renders nothing for a draft composer", () => {
+    expect(resolveRenderedChatSessionId({
+      appliedInitialSessionId: null,
+      selectedSessionId: null,
+    })).toBeNull();
+  });
+});
+
+describe("resolveChatHistoryMissAction", () => {
+  it("never destroys state when the runtime was merely unreachable", () => {
+    expect(resolveChatHistoryMissAction({ unavailable: true, hasRenderedEvents: true })).toBe("sync-pending");
+    expect(resolveChatHistoryMissAction({ unavailable: true, hasRenderedEvents: false })).toBe("sync-pending");
+  });
+
+  it("keeps a rendered transcript even for an authoritative miss", () => {
+    expect(resolveChatHistoryMissAction({ hasRenderedEvents: true })).toBe("keep-missing");
+    expect(resolveChatHistoryMissAction({ unavailable: false, hasRenderedEvents: true })).toBe("keep-missing");
+  });
+
+  it("only clears when the miss is authoritative and nothing is on screen", () => {
+    expect(resolveChatHistoryMissAction({ hasRenderedEvents: false })).toBe("clear");
+    expect(resolveChatHistoryMissAction({ unavailable: false, hasRenderedEvents: false })).toBe("clear");
   });
 });
 
@@ -8206,4 +8451,164 @@ describe("parallel launch helpers", () => {
       "Lane 2 failed to send. Cleanup could not delete lane lane-a; lane list refresh also failed. Check the lane list before retrying.",
     );
   });
+});
+
+// Companion-state persistence, migration and pruning are the module's own
+// contract and live in `chatCompanionUiState.test.ts`. Only the two cases with
+// no equivalent there are kept here.
+describe("older transcript paging retries", () => {
+  const historySnapshotWithOlderPages = (sessionId: string): AgentChatEventHistorySnapshot => ({
+    sessionId,
+    events: [{
+      sessionId,
+      timestamp: "2026-07-10T12:00:00.000Z",
+      sequence: 1,
+      event: { type: "user_message" as const, text: "newest visible message" },
+    }],
+    truncated: false,
+    sessionFound: true,
+    hasOlderHistory: true,
+    tailStartOffset: 4_096,
+  } as AgentChatEventHistorySnapshot);
+
+  /**
+   * Ask for the next older page the way a reader does. The transcript's own
+   * "underfilled viewport" backfill runs inside `requestAnimationFrame`, which
+   * jsdom does not reliably drive across a whole suite run, so drive the
+   * scroll-driven path instead — same `maybeRequestOlderHistory` entry point.
+   */
+  async function requestOlderHistoryByScroll() {
+    const pane = await waitFor(() => {
+      const el = document.querySelector(".ade-chat-timeline-pane");
+      if (!el) throw new Error("transcript scroller not mounted");
+      return el;
+    });
+    fireEvent.scroll(pane, { target: { scrollTop: 0 } });
+  }
+
+  it("retries a failing page twice with backoff before latching a visible error", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async () => {
+        pageAttempts += 1;
+        throw new Error("remote hop dropped");
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("newest visible message")).toBeTruthy();
+    await requestOlderHistoryByScroll();
+
+    await waitFor(() => expect(pageAttempts).toBeGreaterThanOrEqual(1), { timeout: 4_000 });
+    // The two backoff retries (800ms, 2400ms) run silently — no retry control
+    // is offered to the reader while the ladder is still going.
+    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
+
+    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
+    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+    // The ladder is bounded: a latched error stops it rather than hammering on.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+    });
+    expect(pageAttempts).toBe(3);
+  }, 25_000);
+
+  it("retries an unreachable page instead of treating it as a missing session", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      // Exactly what preload synthesises when the runtime can't be reached:
+      // `sessionFound: false` AND `unavailable: true`. Read as a plain miss it
+      // zeroes the cursor, which unmounts the "load older" sentinel for good —
+      // scroll-back stays dead until a forced re-hydrate, and because nothing
+      // threw, the retry ladder never engaged.
+      eventHistoryPage: async (args) => {
+        pageAttempts += 1;
+        return {
+          sessionId: args.sessionId,
+          events: [],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: false,
+          unavailable: true,
+        };
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("newest visible message")).toBeTruthy();
+    await requestOlderHistoryByScroll();
+
+    // The ladder runs: one attempt plus its two retries.
+    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
+    // And the cursor survives, so the reader still has a way back — a zeroed
+    // cursor would have removed this control along with the sentinel.
+    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+  }, 25_000);
+
+  it("cancels pending paging retries when the session switches", async () => {
+    const sessionA = buildSession("session-1", { title: "Chat A" });
+    const sessionB = buildSession("session-2", { title: "Chat B" });
+    const pageAttemptsBySession = new Map<string, number>();
+    const attemptsFor = (sessionId: string) => pageAttemptsBySession.get(sessionId) ?? 0;
+    installAdeMocks({
+      sessions: [sessionA, sessionB],
+      eventHistory: (args) => historySnapshotWithOlderPages(args.sessionId),
+      eventHistoryPage: async (args) => {
+        pageAttemptsBySession.set(args.sessionId, attemptsFor(args.sessionId) + 1);
+        throw new Error("remote hop dropped");
+      },
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionA.laneId}
+          lockSessionId={sessionA.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionA}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(attemptsFor(sessionA.sessionId)).toBe(1), { timeout: 4_000 });
+
+    // Switching chats cancels the backoff waiters, so the ladder must not keep
+    // firing against the chat nobody is looking at any more.
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionB.laneId}
+          lockSessionId={sessionB.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionB}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("newest visible message");
+    const sessionAAttemptsAtSwitch = attemptsFor(sessionA.sessionId);
+
+    // Comfortably past both backoff steps (800ms + 2400ms) of chat A's ladder.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+    });
+
+    expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
+    // Control: chat B's own ladder DOES run its retries in the same window when
+    // asked, so the assertion above is proving cancellation, not a short wait.
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(attemptsFor(sessionB.sessionId)).toBe(3), { timeout: 8_000 });
+    expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
+  }, 30_000);
 });

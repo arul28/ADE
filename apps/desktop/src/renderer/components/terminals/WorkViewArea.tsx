@@ -768,7 +768,11 @@ function CliSessionSurface({
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
 }) {
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId);
+  // Persist the pane per CLI session so reopening the surface restores it, the
+  // same way the ADE chat pane keys its companion UI state.
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId, {
+    persistKey: session.id,
+  });
   const supportsSplit = layoutVariant !== "grid-tile";
   const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
   return (

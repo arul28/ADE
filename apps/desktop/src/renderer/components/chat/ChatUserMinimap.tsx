@@ -1,153 +1,285 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState, type MouseEvent } from "react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
-import type { ChatUserMinimapDisplayEntry } from "./chatUserMinimap.logic";
-
-const HOVER_OPEN_MS = 60;
-const HOVER_CLOSE_MS = 150;
+import { useChatPrPaneInset } from "./chatPrPaneInset";
+import {
+  CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH,
+  CHAT_USER_MINIMAP_HIT_STRIP_LEFT_PX,
+  minimapHasPersistentGutter,
+  minimapRailInert,
+  resolveMinimapHitStripWidth,
+  resolveMinimapIndexFromPointer,
+  resolveMinimapPreviewTranslateY,
+  resolveMinimapRailHeightStyle,
+  resolveMinimapRailTopInset,
+  resolveMinimapTopPercent,
+  type ChatUserMinimapSourceEntry,
+  type ChatUserMinimapTurnOutcome,
+} from "./chatUserMinimap.logic";
 
 type ChatUserMinimapProps = {
-  displayEntries: ChatUserMinimapDisplayEntry[];
-  activeDisplayIndex: number | null;
+  entries: readonly ChatUserMinimapSourceEntry[];
+  /** `activeFullUserOrdinal` — ticks are 1:1 with entries, so this is already an index. */
+  activeIndex: number | null;
   onJumpToRow: (rowIndex: number) => void;
-  placement?: "inside" | "outsideRight";
+  /** Measured width of the message-list root. */
+  listWidthPx: number;
+  /** Measured height of the message-list root. */
+  listHeightPx: number;
+  /**
+   * Measured viewport-space top edge of the message-list root — the rail's own
+   * origin, and the frame the PR pane's published bottom edge converts into.
+   */
+  listTopViewportPx: number;
+  /** Measured width of the centered content wrapper. */
+  columnWidthPx: number;
 };
 
+/** Lens widths by distance from the hovered tick; index 3+ is "everything else". */
+const LENS_WIDTHS = ["w-6", "w-4", "w-2.5", "w-2"] as const;
+
+function lensWidthClass(distance: number | null): string {
+  if (distance === null) return LENS_WIDTHS[LENS_WIDTHS.length - 1]!;
+  return LENS_WIDTHS[Math.min(distance, LENS_WIDTHS.length - 1)]!;
+}
+
+/**
+ * Tick colour, in precedence order: turn outcome > viewport-active > lens centre
+ * > rest. A failed/stopped turn is rare and worth more than the position cue,
+ * which the lens width still conveys.
+ */
+function tickToneClass(
+  outcome: ChatUserMinimapTurnOutcome | null,
+  isActive: boolean,
+  isLensCentre: boolean,
+): string {
+  if (outcome === "failed") return "bg-red-400/80";
+  if (outcome === "interrupted") return "bg-amber-400/70";
+  if (isActive) return "bg-[var(--chat-accent)]";
+  if (isLensCentre) return "bg-fg/75";
+  return "bg-fg/30";
+}
+
+/** Human label for a non-`completed` turn; `null` means nothing to surface. */
+function turnOutcomeLabel(outcome: ChatUserMinimapTurnOutcome | null): string | null {
+  if (outcome === "failed") return "Turn failed";
+  if (outcome === "interrupted") return "Stopped";
+  return null;
+}
+
+/** Colour alone must never carry the signal, so these ticks also render thicker. */
+function isAttentionOutcome(outcome: ChatUserMinimapTurnOutcome | null): boolean {
+  return outcome === "failed" || outcome === "interrupted";
+}
+
+function targetsPreviewCard(target: EventTarget): boolean {
+  return target instanceof Element && target.closest("[data-minimap-preview]") !== null;
+}
+
+/**
+ * Tick rail down the transcript's left gutter: one hairline per user message,
+ * with a magnetic lens and a hover preview of the prompt plus the reply it got.
+ *
+ * The rail is a SINGLE button — one tab stop for the whole timeline rather than
+ * one per message — and derives which tick is under the pointer from Y instead
+ * of from per-tick hit targets, so tick spacing can compress arbitrarily.
+ */
 export function ChatUserMinimap({
-  displayEntries,
-  activeDisplayIndex,
+  entries,
+  activeIndex,
   onJumpToRow,
-  placement = "inside",
+  listWidthPx,
+  listHeightPx,
+  listTopViewportPx,
+  columnWidthPx,
 }: ChatUserMinimapProps) {
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read from context, never a prop: see `chatPrPaneInset.ts` for why.
+  const prPaneBottomViewportPx = useChatPrPaneInset();
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  const clearOpenTimer = useCallback(() => {
-    if (openTimerRef.current != null) {
-      clearTimeout(openTimerRef.current);
-      openTimerRef.current = null;
-    }
-  }, []);
+  const itemCount = entries.length;
 
-  const clearCloseTimer = useCallback(() => {
-    if (closeTimerRef.current != null) {
-      clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => {
-    clearOpenTimer();
-    clearCloseTimer();
-  }, [clearCloseTimer, clearOpenTimer]);
-
-  const handlePointerEnter = useCallback(() => {
-    clearCloseTimer();
-    clearOpenTimer();
-    openTimerRef.current = setTimeout(() => {
-      openTimerRef.current = null;
-      setMenuOpen(true);
-    }, HOVER_OPEN_MS);
-  }, [clearCloseTimer, clearOpenTimer]);
-
-  const handlePointerLeave = useCallback(() => {
-    clearOpenTimer();
-    clearCloseTimer();
-    closeTimerRef.current = setTimeout(() => {
-      closeTimerRef.current = null;
-      setMenuOpen(false);
-    }, HOVER_CLOSE_MS);
-  }, [clearCloseTimer, clearOpenTimer]);
-
-  const handleSelect = useCallback(
-    (rowIndex: number) => {
-      setMenuOpen(false);
-      clearOpenTimer();
-      clearCloseTimer();
-      onJumpToRow(rowIndex);
+  const resolveIndexFromPointer = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      return resolveMinimapIndexFromPointer({
+        itemCount,
+        railTop: rect.top,
+        railHeight: rect.height,
+        pointerY: event.clientY,
+      });
     },
-    [clearCloseTimer, clearOpenTimer, onJumpToRow],
+    [itemCount],
   );
 
-  if (!chatUserMinimapEnabled || displayEntries.length === 0) {
+  const handleMouseMove = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      setHoverIndex(resolveIndexFromPointer(event));
+    },
+    [resolveIndexFromPointer],
+  );
+
+  const handleClear = useCallback(() => setHoverIndex(null), []);
+
+  const handleFocus = useCallback(() => {
+    setHoverIndex((current) => current ?? activeIndex ?? 0);
+  }, [activeIndex]);
+
+  const jumpToIndex = useCallback(
+    (index: number | null) => {
+      if (index === null) return;
+      const entry = entries[index];
+      if (!entry) return;
+      onJumpToRow(entry.rowIndex);
+    },
+    [entries, onJumpToRow],
+  );
+
+  const hitStripWidth = resolveMinimapHitStripWidth(listWidthPx, columnWidthPx);
+  const hasPersistentGutter = minimapHasPersistentGutter(listWidthPx, columnWidthPx);
+  // Both edges are viewport-space, so the difference is the rail's own frame —
+  // no constant stands in for the chrome between the two boxes' origins.
+  const topInset = resolveMinimapRailTopInset(prPaneBottomViewportPx, listTopViewportPx);
+  // The rail centres in the band left BELOW the floating PR pane, not in the
+  // full list height.
+  const availablePx = listHeightPx - topInset;
+
+  const resolvedHoverIndex = hoverIndex !== null && hoverIndex < itemCount ? hoverIndex : null;
+  const hoverEntry = resolvedHoverIndex === null ? null : (entries[resolvedHoverIndex] ?? null);
+  const hoverOutcomeLabel = turnOutcomeLabel(hoverEntry?.turnOutcome ?? null);
+
+  // A single tick is a rail with nothing to navigate between.
+  if (!chatUserMinimapEnabled || itemCount < 2 || minimapRailInert(availablePx)) {
     return null;
   }
 
-  const dotRail = (
-    <div className="flex flex-col items-center gap-1 py-0.5" aria-hidden={menuOpen}>
-      {displayEntries.map((entry, index) => {
-        const active = activeDisplayIndex != null && index === activeDisplayIndex;
-        return (
-          <button
-            key={entry.key}
-            type="button"
-            title={entry.preview}
-            aria-label={`User message ${index + 1}`}
-            aria-current={active ? "true" : undefined}
-            className={cn(
-              "h-2 w-1.5 shrink-0 rounded-full transition-colors",
-              active ? "bg-[var(--chat-accent)]" : "bg-fg/25 hover:bg-fg/45",
-            )}
-            onClick={() => handleSelect(entry.rowIndex)}
-          />
-        );
-      })}
-    </div>
-  );
-
-  const menu = menuOpen ? (
-    <div
-      className="max-h-[min(22rem,65vh)] w-[min(22rem,calc(100vw-6rem))] overflow-y-auto rounded-md border border-white/[0.06] bg-[color:rgb(12,12,16)]/95 px-1 py-1"
-      role="menu"
-      aria-label="Jump to user message"
-    >
-      <ul className="flex flex-col gap-0.5 p-0.5">
-        {displayEntries.map((entry, index) => {
-          const active = activeDisplayIndex != null && index === activeDisplayIndex;
-          return (
-            <li key={entry.key}>
-              <button
-                type="button"
-                role="menuitem"
-                className={cn(
-                  "w-full rounded px-2 py-1.5 text-left font-sans text-[11px] leading-snug transition-colors",
-                  active
-                    ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg"
-                    : "text-fg/80 hover:bg-white/[0.06]",
-                )}
-                onClick={() => handleSelect(entry.rowIndex)}
-              >
-                <span className="line-clamp-3">{entry.preview}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  ) : null;
-
-  const outside = placement === "outsideRight";
+  const ariaLabel = `Jump to message: ${hoverEntry?.preview ?? "User message"}${
+    hoverOutcomeLabel ? ` (${hoverOutcomeLabel})` : ""
+  }`;
 
   return (
     <div
       className={cn(
-        "pointer-events-none absolute top-3 z-20 flex flex-col",
-        outside
-          ? "left-full ml-3 items-start max-xl:left-auto max-xl:right-3 max-xl:ml-0 max-xl:items-end"
-          : "right-3 items-end",
+        "pointer-events-none absolute left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
+        hasPersistentGutter
+          ? "opacity-100"
+          : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
       )}
       role="region"
       aria-label="User message minimap"
+      data-testid="chat-user-minimap"
+      style={{ top: topInset, bottom: 0 }}
     >
-      <div
-        className="pointer-events-auto flex flex-row items-start gap-2 rounded-lg border border-white/[0.08] bg-card/85 px-1.5 py-1.5 shadow-lg backdrop-blur-md"
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
-      >
-        {outside ? dotRail : menu}
-        {outside ? menu : dotRail}
+      <div className="flex h-full w-full select-none items-center">
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          className={cn(
+            "relative shrink-0 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+            // The strip is width-capped to the side gutter so it never overlays
+            // the centered content column; with no usable gutter it goes inert
+            // and can never swallow message-text selection.
+            hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
+          )}
+          style={{
+            // The rail inset expressed as a flex offset (so `items-center` above
+            // can still centre the rail vertically). Driven by the same constant
+            // the hit-strip width maths subtracts, never by a parallel `ml-3`.
+            marginLeft: CHAT_USER_MINIMAP_HIT_STRIP_LEFT_PX,
+            height: resolveMinimapRailHeightStyle(itemCount, availablePx),
+            width: hoverEntry ? CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : hitStripWidth,
+          }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleClear}
+          onBlur={handleClear}
+          onFocus={handleFocus}
+          onMouseDown={(event) => {
+            if (targetsPreviewCard(event.target)) return;
+            // Keeps the rail from flashing focus styles and from starting a
+            // text drag on press.
+            event.preventDefault();
+          }}
+          onClick={(event) => {
+            // Selecting text inside the preview card must never navigate.
+            if (targetsPreviewCard(event.target)) return;
+            jumpToIndex(resolveIndexFromPointer(event));
+            event.currentTarget.blur();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            jumpToIndex(resolvedHoverIndex);
+          }}
+        >
+          {/* Guide hairline the ticks sit on. */}
+          <span aria-hidden="true" className="absolute left-0 top-0 h-full w-px bg-white/[0.08]" />
+          {entries.map((entry, index) => {
+            const lensDistance =
+              resolvedHoverIndex === null ? null : Math.abs(index - resolvedHoverIndex);
+            const outcome = entry.turnOutcome;
+            return (
+              <span
+                key={entry.key}
+                aria-hidden="true"
+                data-outcome={outcome ?? undefined}
+                className={cn(
+                  "pointer-events-none absolute left-0 -translate-y-1/2 rounded-full transition-[background-color,width] duration-150",
+                  // Thickness, not just colour, marks a turn that needs attention.
+                  isAttentionOutcome(outcome) ? "h-1" : "h-0.5",
+                  lensWidthClass(lensDistance),
+                  tickToneClass(outcome, index === activeIndex, lensDistance === 0),
+                )}
+                style={{ top: `${resolveMinimapTopPercent(index, itemCount)}%` }}
+              />
+            );
+          })}
+          {hoverEntry ? (
+            <span
+              data-minimap-preview
+              className="pointer-events-auto absolute left-8 w-[min(20rem,60vw)] cursor-text select-text"
+              // OFF-SCREEN-PREVIEW FIX: a card centered on its own tick hangs off
+              // the top of the list at the first tick and off the bottom at the
+              // last, so the translate anchors the card's top edge at the first
+              // tick and its bottom edge at the last, centering only in between.
+              style={{
+                top: `${resolveMinimapTopPercent(resolvedHoverIndex ?? 0, itemCount)}%`,
+                transform: `translateY(${resolveMinimapPreviewTranslateY(resolvedHoverIndex ?? 0, itemCount)})`,
+              }}
+              // Moving inside the card must not re-derive the index from Y, or
+              // the card would chase the pointer and reselect messages.
+              onMouseMove={(event) => event.stopPropagation()}
+            >
+              <span className="block rounded-xl border border-white/[0.08] bg-[color:rgb(12,12,16)]/95 p-3 text-left font-sans shadow-xl shadow-black/25 backdrop-blur-md">
+                {hoverOutcomeLabel ? (
+                  <span
+                    className={cn(
+                      "mb-1 block text-[10px] font-semibold uppercase tracking-wide",
+                      hoverEntry.turnOutcome === "failed" ? "text-red-400/90" : "text-amber-400/90",
+                    )}
+                  >
+                    {hoverOutcomeLabel}
+                  </span>
+                ) : null}
+                <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[12px] font-medium leading-5 text-fg/90">
+                  {hoverEntry.preview}
+                </span>
+                {hoverEntry.assistantPreview ? (
+                  <span
+                    className="mt-1 block max-h-[3.75rem] overflow-hidden text-[12px] leading-5 text-fg/55"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitBoxOrient: "vertical",
+                      WebkitLineClamp: 3,
+                    }}
+                  >
+                    {hoverEntry.assistantPreview}
+                  </span>
+                ) : null}
+              </span>
+            </span>
+          ) : null}
+        </button>
       </div>
     </div>
   );

@@ -193,16 +193,19 @@ function PreviewColumn({
 }
 
 /** Identical transcript in each preview column: user prompt, markdown reply, tool/file rows, real-style usage row. */
-/** Static stand-in for the live ChatUserMinimap rail (dots = user turns), so the
- *  appearance toggle has something to reflect without the real scroll/store wiring. */
+/** Static stand-in for the live ChatUserMinimap tick rail (one horizontal tick per
+ *  user turn, in the LEFT gutter), so the appearance toggle has something to
+ *  reflect without the real scroll/measurement/store wiring. */
 function PreviewMinimapRail() {
   return (
-    <div className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 flex-col items-center gap-1.5">
+    <div className="pointer-events-none absolute left-1 top-1/2 z-10 flex -translate-y-1/2 flex-col items-start gap-1.5">
+      {/* Guide hairline the ticks sit on, same as the live rail. */}
+      <span aria-hidden className="absolute left-0 top-0 h-full w-px bg-fg/10" />
       {[0, 1].map((i) => (
         <span
           key={i}
           className={cn(
-            "h-2 w-[3px] rounded-full",
+            "h-0.5 w-2 rounded-full",
             i === 1 ? "bg-[color:var(--color-accent,#A78BFA)]/80" : "bg-fg/25",
           )}
         />

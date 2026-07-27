@@ -563,9 +563,12 @@ export async function getChatHistoryPage(
   );
   // Defensive normalization: an older daemon (or a routing miss) can yield
   // null/partial results — treat those as "nothing pageable" so the scroll-back
-  // loop terminates instead of spinning on a malformed cursor.
+  // loop terminates instead of spinning on a malformed cursor. The fabricated
+  // miss is flagged `unavailable` because it is a transport verdict, not the
+  // host's authoritative "this session does not exist" — no consumer may
+  // tombstone or clear a transcript on it.
   if (!page || typeof page !== "object") {
-    return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false };
+    return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false, unavailable: true };
   }
   return {
     sessionId: typeof page.sessionId === "string" ? page.sessionId : sessionId,
@@ -575,6 +578,7 @@ export async function getChatHistoryPage(
       : 0,
     hasMore: page.hasMore === true,
     sessionFound: page.sessionFound !== false,
+    ...(page.unavailable === true ? { unavailable: true as const } : {}),
   };
 }
 

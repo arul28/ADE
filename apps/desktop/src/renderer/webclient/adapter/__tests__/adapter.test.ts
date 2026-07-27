@@ -313,6 +313,24 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("reports history as unreachable, not missing, when the host cannot serve it", async () => {
+    // The fallback fires when the command cannot be reached/dispatched. A bare
+    // `sessionFound: false` reads as authoritative and makes the renderer
+    // tombstone or wipe a rendered transcript, so it must carry `unavailable`.
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" })).resolves.toEqual({
+      sessionId: "chat-1",
+      events: [],
+      truncated: false,
+      sessionFound: false,
+      unavailable: true,
+    });
+
+    adapter.dispose();
+  });
+
   it("keeps an older-history cursor retryable when the host cannot page it", async () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");

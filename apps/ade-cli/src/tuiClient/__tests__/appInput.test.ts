@@ -92,6 +92,7 @@ import {
   promptTextForTerminal,
   clipboardImageCacheRootForRuntime,
   uploadClipboardImageAttachmentToRuntime,
+  defaultPrTitleForChat,
   defaultPrTitleForLane,
 } from "../app";
 import { formatPromptSmartLinkStrip } from "../promptSmartLinks";
@@ -683,6 +684,25 @@ describe("PR title defaults", () => {
     });
 
     expect(defaultPrTitleForLane(child, [parent, child])).toBe("Child -> Parent");
+  });
+
+  it("prefers the chat title over the lane -> target derivation", () => {
+    const lane = laneForPrTitle({ id: "lane-a", name: "Lane A", branchRef: "feature/a" });
+
+    expect(defaultPrTitleForChat({
+      sessionTitle: "  Fix flaky sync reconnect  ",
+      sourceLane: lane,
+      lanes: [lane],
+    })).toBe("Fix flaky sync reconnect");
+  });
+
+  it("falls back to the lane derivation for the placeholder or an empty chat title", () => {
+    const lane = laneForPrTitle({ id: "lane-a", name: "Lane A", branchRef: "feature/a" });
+    const derived = defaultPrTitleForLane(lane, [lane]);
+
+    expect(defaultPrTitleForChat({ sessionTitle: "New chat", sourceLane: lane, lanes: [lane] })).toBe(derived);
+    expect(defaultPrTitleForChat({ sessionTitle: "   ", sourceLane: lane, lanes: [lane] })).toBe(derived);
+    expect(defaultPrTitleForChat({ sessionTitle: null, sourceLane: lane, lanes: [lane] })).toBe(derived);
   });
 });
 

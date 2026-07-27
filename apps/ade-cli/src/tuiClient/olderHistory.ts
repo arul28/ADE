@@ -92,6 +92,33 @@ export function prependOlderTuiHistory(
   return combined.length > limit ? combined.slice(-limit) : combined;
 }
 
+/**
+ * Resolve the initial scroll-back byte cursor from a hydration snapshot.
+ * Returns 0 when there is nothing to page.
+ *
+ * `hasOlderHistory` is authoritative when the host sends it: the chat service
+ * derives it from the tail READ (transcript/window truncation), never from
+ * envelope object identity. A `false` therefore means there is genuinely
+ * nothing older even when a non-zero `tailStartOffset` is reported — the
+ * offset is the byte position of the oldest RETURNED transcript line, which is
+ * routinely > 0 for an untruncated transcript whose first physical lines carry
+ * no parent-visible event (meta/summary records, filtered subagent lines).
+ * Seeding a cursor from that offset arms a "load earlier…" affordance that can
+ * only ever come back empty. Older hosts omit the field; those fall back to
+ * the legacy offset-only rule.
+ */
+export function resolveSnapshotHistoryCursor(snapshot: {
+  hasOlderHistory?: boolean | null;
+  tailStartOffset?: number | null;
+}): number {
+  if (snapshot.hasOlderHistory === false) return 0;
+  return typeof snapshot.tailStartOffset === "number"
+    && Number.isFinite(snapshot.tailStartOffset)
+    && snapshot.tailStartOffset > 0
+    ? snapshot.tailStartOffset
+    : 0;
+}
+
 export type OlderHistoryCursorAdvance = {
   beforeOffset: number;
   hasMore: boolean;

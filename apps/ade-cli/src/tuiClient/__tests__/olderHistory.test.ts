@@ -3,6 +3,7 @@ import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/type
 import {
   advanceOlderHistoryCursor,
   prependOlderTuiHistory,
+  resolveSnapshotHistoryCursor,
   splitSnapshotForDisplay,
   takeNewestChunk,
   TUI_LOADED_EVENT_CAP,
@@ -211,6 +212,35 @@ describe("takeNewestChunk", () => {
     const { chunk, rest } = takeNewestChunk(buffer);
     expect(chunk.map((entry) => entry.sequence)).toEqual([1, 2]);
     expect(rest).toEqual([]);
+  });
+});
+
+describe("resolveSnapshotHistoryCursor", () => {
+  it("seeds the byte cursor from tailStartOffset when older history exists", () => {
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: 4096 })).toBe(4096);
+  });
+
+  it("refuses to seed a cursor when the host says there is nothing older", () => {
+    // The regression: an untruncated transcript whose first physical lines
+    // carry no parent-visible event still reports tailStartOffset > 0, which
+    // used to arm a "load earlier…" affordance that could only come back empty.
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: false, tailStartOffset: 4096 })).toBe(0);
+  });
+
+  it("falls back to the legacy offset-only rule when the host omits the field", () => {
+    expect(resolveSnapshotHistoryCursor({ tailStartOffset: 4096 })).toBe(4096);
+    expect(resolveSnapshotHistoryCursor({ tailStartOffset: 0 })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ tailStartOffset: null })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({})).toBe(0);
+  });
+
+  it("ignores a non-finite or negative offset", () => {
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: Number.NaN })).toBe(0);
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: -1 })).toBe(0);
+  });
+
+  it("does not invent a cursor when older history exists but no offset was reported", () => {
+    expect(resolveSnapshotHistoryCursor({ hasOlderHistory: true, tailStartOffset: null })).toBe(0);
   });
 });
 

@@ -2052,6 +2052,13 @@ struct AgentChatEventHistorySnapshot: Decodable, Equatable {
   var transcriptTruncated: Bool?
   var windowTruncated: Bool?
   var sessionFound: Bool?
+  /// Authoritative "is there older history to page back to?". The host derives
+  /// it from the transcript tail read and the merge window rather than from
+  /// cursor bookkeeping, so it stays correct when the snapshot was served from
+  /// the in-memory ring buffer. Gate the scroll-back affordance on this instead
+  /// of on `tailStartOffset > 0`, which can hold a conservative end-of-file
+  /// cursor. Older hosts omit it — `nil` means "fall back to the offset rule".
+  var hasOlderHistory: Bool?
   var tailStartOffset: Int?
 }
 
@@ -2573,6 +2580,19 @@ extension AgentChatEvent {
     case "subagent.progress":
       let agentId = try container.decode(String.self, forKey: .agentId)
       let tokens = try container.decodeIfPresent(Int.self, forKey: .tokens)
+      // These two are hoisted out of the `.subagentProgress(...)` call below and
+      // explicitly annotated on purpose. Inline, the three-way `??` chain of
+      // optionals plus the `tokens.map { ... }` closure (whose `$0` the solver
+      // must infer) pushed this single expression past the type-checker's budget
+      // — "unable to type-check this expression in reasonable time", a hard
+      // error, not a warning. Keep them as separate annotated bindings; folding
+      // them back inline reintroduces the failure.
+      let progressSummary: String = try decodeNonEmptyString(forKey: .text)
+        ?? decodeNonEmptyString(forKey: .lastToolName)
+        ?? "Running"
+      let progressUsage: AgentChatSubagentUsage? = tokens.map { (totalTokens: Int) in
+        AgentChatSubagentUsage(totalTokens: totalTokens, toolUses: nil, durationMs: nil, costUsd: nil)
+      }
       self = .subagentProgress(
         taskId: agentId,
         agentId: agentId,
@@ -2580,10 +2600,8 @@ extension AgentChatEvent {
         parentAgentId: nil,
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: nil,
-        summary: try decodeNonEmptyString(forKey: .text)
-          ?? decodeNonEmptyString(forKey: .lastToolName)
-          ?? "Running",
-        usage: tokens.map { AgentChatSubagentUsage(totalTokens: $0, toolUses: nil, durationMs: nil, costUsd: nil) },
+        summary: progressSummary,
+        usage: progressUsage,
         lastToolName: try container.decodeIfPresent(String.self, forKey: .lastToolName),
         label: try container.decodeIfPresent(String.self, forKey: .label),
         model: try container.decodeIfPresent(String.self, forKey: .model),

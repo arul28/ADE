@@ -5426,6 +5426,221 @@ describe("preload OAuth bridge", () => {
     await pendingSwitch;
   });
 
+  it("reports chat history as unavailable instead of asking the local service for a remote session", async () => {
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-2",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-2",
+      rootPath: "/remote/repo",
+      displayName: "Remote Project",
+    };
+    let resolveOpen!: (binding: unknown) => void;
+    const openPromise = new Promise((resolve) => {
+      resolveOpen = resolve;
+    });
+    let resolveClose!: () => void;
+    const closePromise = new Promise<void>((resolve) => {
+      resolveClose = resolve;
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.remoteRuntimeOpenProject) return openPromise;
+      if (channel === IPC.projectCloseCurrent) return closePromise;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+
+    // Switching TO a remote project: the binding is transiently null, so the
+    // in-flight remote open is what identifies the runtime as remote.
+    const pendingOpen = bridge.remoteRuntime.openProject("target-1", "project-2");
+    await expect(
+      bridge.agentChat.getEventHistory({ sessionId: "remote-session" }),
+    ).resolves.toEqual({
+      sessionId: "remote-session",
+      events: [],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: false,
+      hasOlderHistory: false,
+      unavailable: true,
+    });
+    await expect(
+      bridge.agentChat.getEventHistoryPage({
+        sessionId: "remote-session",
+        beforeOffset: 4_096,
+      }),
+    ).resolves.toEqual({
+      sessionId: "remote-session",
+      events: [],
+      startOffset: 4_096,
+      hasMore: false,
+      sessionFound: false,
+      unavailable: true,
+    });
+
+    resolveOpen(remoteBinding);
+    await pendingOpen;
+
+    // Switching AWAY from a remote project: the binding is nulled before the
+    // transition starts, so the remembered binding kind is the only signal.
+    const pendingClose = bridge.project.closeCurrent();
+    const snapshot = await bridge.agentChat.getEventHistory({
+      sessionId: "remote-session",
+    });
+    expect(snapshot.unavailable).toBe(true);
+    expect(snapshot.sessionFound).toBe(false);
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.agentChatGetEventHistory,
+      expect.anything(),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.agentChatGetEventHistoryPage,
+      expect.anything(),
+    );
+
+    resolveClose();
+    await pendingClose;
+  });
+
+  it("stops reporting chat history as unavailable once the remote project has been closed", async () => {
+    // Regression: the remembered runtime kind used to be sticky to the last
+    // NON-NULL binding, so a window that had closed a remote project kept
+    // answering "remote" forever. Every later local transition then reported
+    // `unavailable: true` for projectless/machine-tab chats the local service
+    // can legitimately serve.
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-2",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-2",
+      rootPath: "/remote/repo",
+      displayName: "Remote Project",
+    };
+    const localSnapshot = {
+      sessionId: "local-session",
+      events: [],
+      truncated: false,
+      sessionFound: false,
+    };
+    let resolveOpenRepo!: (project: unknown) => void;
+    const openRepoPromise = new Promise((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.remoteRuntimeOpenProject) return remoteBinding;
+      if (channel === IPC.projectCloseCurrent) return undefined;
+      if (channel === IPC.projectOpenRepo) return openRepoPromise;
+      if (channel === IPC.agentChatGetEventHistory) return localSnapshot;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.remoteRuntime.openProject("target-1", "project-2");
+    await bridge.project.closeCurrent();
+
+    // The window is projectless now. Opening a LOCAL repo must not inherit the
+    // closed remote runtime: the local service is the right answer here.
+    const pendingOpenRepo = bridge.project.openRepo({ rootPath: "/local/repo" });
+    await expect(
+      bridge.agentChat.getEventHistory({ sessionId: "local-session" }),
+    ).resolves.toEqual(localSnapshot);
+    expect(invoke).toHaveBeenCalledWith(IPC.agentChatGetEventHistory, {
+      sessionId: "local-session",
+    });
+
+    resolveOpenRepo({ rootPath: "/local/repo", displayName: "Repo", baseRef: "main" });
+    await pendingOpenRepo;
+  });
+
+  it("still falls back to the local chat history service during a local project switch", async () => {
+    const localSnapshot = {
+      sessionId: "local-session",
+      events: [],
+      truncated: false,
+      sessionFound: false,
+    };
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.projectSwitchToPath) return switchPromise;
+      if (channel === IPC.agentChatGetEventHistory) return localSnapshot;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+    await expect(
+      bridge.agentChat.getEventHistory({ sessionId: "local-session" }),
+    ).resolves.toEqual(localSnapshot);
+    expect(invoke).toHaveBeenCalledWith(IPC.agentChatGetEventHistory, {
+      sessionId: "local-session",
+    });
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
+
   it("blocks mutating local file actions while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {

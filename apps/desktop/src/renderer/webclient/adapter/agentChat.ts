@@ -295,10 +295,16 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           ),
         },
         {
+          // This fallback is only used when the host command could not be
+          // reached or dispatched — i.e. the runtime is unreachable, NOT an
+          // authoritative "no such session". Without `unavailable` the renderer
+          // treats the bare `sessionFound: false` as authoritative and either
+          // tombstones the chat or wipes the rendered transcript.
           sessionId: stringField(record, "sessionId"),
           events: [],
           truncated: false,
           sessionFound: false,
+          unavailable: true,
         }
       );
     },

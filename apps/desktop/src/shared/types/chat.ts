@@ -1251,10 +1251,26 @@ export type AgentChatEventHistorySnapshot = {
   transcriptTruncated?: boolean;
   windowTruncated?: boolean;
   /**
+   * Authoritative answer to "is there older history to page back to?".
+   * Derived from the transcript tail read and the merge window rather than
+   * from cursor bookkeeping, so it stays correct when the snapshot was served
+   * from the in-memory ring buffer. Clients must gate any "load earlier
+   * messages" affordance on this instead of on `tailStartOffset > 0`, which
+   * can hold a conservative end-of-file cursor. Optional for compatibility
+   * with older desktop/runtime pairs.
+   */
+  hasOlderHistory?: boolean;
+  /**
    * Explicitly false means the session id did not resolve in this project
    * runtime. Optional for compatibility with older desktop/runtime pairs.
    */
   sessionFound?: boolean;
+  /**
+   * True when the bound runtime could not be reached, so no history could be
+   * read. This is NOT an authoritative "session does not exist" answer —
+   * clients must not clear or tombstone the chat on it.
+   */
+  unavailable?: boolean;
   /**
    * Byte offset in the transcript file where the hydrated tail window began.
    * Pass it as `beforeOffset` to `getChatEventHistoryPage` to page older
@@ -1271,6 +1287,12 @@ export type AgentChatEventHistoryPage = {
   startOffset: number;
   hasMore: boolean;
   sessionFound: boolean;
+  /**
+   * True when the bound runtime could not be reached, so no page could be
+   * read. This is NOT an authoritative "session does not exist" answer —
+   * clients must not clear or tombstone the chat on it.
+   */
+  unavailable?: boolean;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";

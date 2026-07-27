@@ -88,6 +88,7 @@ import {
   collapseChatTranscriptEvents,
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
+import { ChatPrPaneInsetContext } from "./chatPrPaneInset";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -162,6 +163,138 @@ function renderMessageList(
     </MemoryRouter>,
   );
 }
+
+/** The message list under a floating PR pane publishing `prPaneBottomViewportPx`. */
+function renderMessageListUnderPrPane(
+  events: AgentChatEventEnvelope[],
+  prPaneBottomViewportPx: number | null,
+) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+      <ChatPrPaneInsetContext.Provider value={prPaneBottomViewportPx}>
+        <AgentChatMessageList events={events} />
+      </ChatPrPaneInsetContext.Provider>
+    </MemoryRouter>,
+  );
+}
+
+function makeRect(box: { top?: number; left?: number; width?: number; height?: number }): DOMRect {
+  const top = box.top ?? 0;
+  const left = box.left ?? 0;
+  const width = box.width ?? 0;
+  const height = box.height ?? 0;
+  return {
+    top,
+    left,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/**
+ * jsdom has no layout, so every box measures 0×0: the minimap rail decides it
+ * is inert and `resolveMinimapIndexFromPointer` returns null for every pointer
+ * Y. Stub the two boxes the rail actually reads — the list root it is
+ * positioned against, and its own hit strip.
+ */
+function stubMinimapLayout(options?: {
+  listWidth?: number;
+  listHeight?: number;
+  /** Viewport-space top edge of the list root — the frame the PR pane converts into. */
+  listTop?: number;
+  railTop?: number;
+  railHeight?: number;
+}): { railTop: number; railHeight: number } {
+  const listWidth = options?.listWidth ?? 960;
+  const listHeight = options?.listHeight ?? 600;
+  const listTop = options?.listTop ?? 0;
+  const railTop = options?.railTop ?? 100;
+  const railHeight = options?.railHeight ?? 400;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this.hasAttribute("data-chat-message-list-root")) {
+      return makeRect({ width: listWidth, height: listHeight, top: listTop });
+    }
+    if (this.tagName === "BUTTON" && this.closest("[data-testid='chat-user-minimap']")) {
+      return makeRect({ top: railTop, height: railHeight, width: 24 });
+    }
+    return makeRect({});
+  });
+  return { railTop, railHeight };
+}
+
+function minimapRail(): HTMLButtonElement {
+  const rail = screen.getByTestId("chat-user-minimap").querySelector("button");
+  if (!rail) throw new Error("minimap rail button is not rendered");
+  return rail as HTMLButtonElement;
+}
+
+/**
+ * The scroll container reports 0 for both metrics in jsdom, and scroll restore
+ * is gated on a non-zero container height measured at MOUNT — too early to
+ * stub the node itself. Patch the prototype getters for the timeline pane only.
+ */
+function stubTimelineScrollBox(values: { clientHeight: number; scrollHeight: number }): () => void {
+  const originals: Array<[string, PropertyDescriptor]> = [];
+  for (const [prop, value] of Object.entries(values)) {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, prop);
+    if (!descriptor) continue;
+    originals.push([prop, descriptor]);
+    Object.defineProperty(Element.prototype, prop, {
+      configurable: true,
+      get(this: Element) {
+        return this.classList.contains("ade-chat-timeline-pane") ? value : 0;
+      },
+    });
+  }
+  return () => {
+    for (const [prop, descriptor] of originals) Object.defineProperty(Element.prototype, prop, descriptor);
+  };
+}
+
+function timelinePane(): HTMLDivElement {
+  return document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+function userMessageEvents(texts: string[], sessionId = "session-1"): AgentChatEventEnvelope[] {
+  return texts.map((text, index) => ({
+    sessionId,
+    timestamp: `2026-03-17T10:00:${String(index).padStart(2, "0")}.000Z`,
+    event: { type: "user_message", text, deliveryState: "delivered" },
+  }));
+}
+
+/** Two user turns, each with a reply — the minimum the rail renders for. */
+const MINIMAP_TRANSCRIPT: AgentChatEventEnvelope[] = [
+  {
+    sessionId: "session-1",
+    timestamp: "2026-03-17T10:00:00.000Z",
+    event: { type: "user_message", text: "First checkpoint", deliveryState: "delivered" },
+  },
+  {
+    sessionId: "session-1",
+    timestamp: "2026-03-17T10:00:01.000Z",
+    event: { type: "text", text: "Acknowledged.", itemId: "text-1", turnId: "turn-1" },
+  },
+  {
+    sessionId: "session-1",
+    timestamp: "2026-03-17T10:00:02.000Z",
+    event: { type: "user_message", text: "Second checkpoint", deliveryState: "delivered" },
+  },
+  {
+    sessionId: "session-1",
+    timestamp: "2026-03-17T10:00:03.000Z",
+    event: { type: "text", text: "Shipped it.", itemId: "text-2", turnId: "turn-2" },
+  },
+];
 
 const originalAde = globalThis.window.ade;
 
@@ -1507,45 +1640,228 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcript.scrollTop).toBe(760);
   });
 
-  it("jumps through the user message minimap", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "user_message",
-          text: "First checkpoint",
-          deliveryState: "delivered",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "text",
-          text: "Acknowledged.",
-          itemId: "text-1",
-          turnId: "turn-1",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:02.000Z",
-        event: {
-          type: "user_message",
-          text: "Second checkpoint",
-          deliveryState: "delivered",
-        },
-      },
-    ]);
+  it("jumps through the single minimap rail using the pointer Y", () => {
+    stubMinimapLayout();
+    renderMessageList(MINIMAP_TRANSCRIPT);
 
-    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    const transcript = timelinePane();
     Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
     Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
 
-    fireEvent.click(screen.getByRole("button", { name: "User message 2" }));
+    const rail = minimapRail();
+    // One tab stop for the whole timeline — there is no per-message button.
+    expect(screen.queryByRole("button", { name: "User message 2" })).toBeNull();
+    expect(rail.getAttribute("aria-label")?.startsWith("Jump to message:")).toBe(true);
+
+    fireEvent.mouseMove(rail, { clientY: 500 });
+    fireEvent.click(rail, { clientY: 500 });
 
     expect(transcript.scrollTop).toBeGreaterThan(0);
+  });
+
+  it("previews the hovered prompt with its reply and never jumps from inside the card", () => {
+    stubMinimapLayout();
+    renderMessageList(MINIMAP_TRANSCRIPT);
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+
+    const rail = minimapRail();
+    fireEvent.mouseMove(rail, { clientY: 500 });
+
+    const preview = document.querySelector("[data-minimap-preview]") as HTMLElement | null;
+    expect(preview).not.toBeNull();
+    expect(preview?.textContent).toContain("Second checkpoint");
+    expect(preview?.textContent).toContain("Shipped it.");
+    expect(rail.getAttribute("aria-label")).toBe("Jump to message: Second checkpoint");
+
+    // Selecting text inside the card must not navigate the transcript.
+    fireEvent.click(preview!, { clientY: 500 });
+    expect(transcript.scrollTop).toBe(0);
+  });
+
+  it("insets the rail by the PR pane's rect delta, not by its height", () => {
+    // REGRESSION: the floating PR pane is positioned against the chat surface
+    // while the rail is positioned against the message-list root, which sits
+    // 200px lower (chat header + sync hairline). Converting a published HEIGHT
+    // with the pane's `top-3` constant would read 12 + 240 + 12 = 264 here and
+    // push the rail a whole header below where it belongs.
+    stubMinimapLayout({ listTop: 200 });
+    renderMessageListUnderPrPane(MINIMAP_TRANSCRIPT, 300);
+
+    // 300 (pane bottom) - 200 (list root top) + 12 (gap).
+    expect(screen.getByTestId("chat-user-minimap").style.top).toBe("112px");
+  });
+
+  it("drops the rail inset entirely when no PR pane is floating", () => {
+    stubMinimapLayout({ listTop: 200 });
+    renderMessageListUnderPrPane(MINIMAP_TRANSCRIPT, null);
+
+    expect(screen.getByTestId("chat-user-minimap").style.top).toBe("0px");
+  });
+
+  it("marks a failed turn's tick so colour is not the only signal", () => {
+    stubMinimapLayout();
+    renderMessageList([
+      ...MINIMAP_TRANSCRIPT,
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: { type: "done", turnId: "turn-2", status: "failed" },
+      },
+    ]);
+
+    const outcomes = [...screen.getByTestId("chat-user-minimap").querySelectorAll("[data-outcome]")];
+    expect(outcomes.map((node) => node.getAttribute("data-outcome"))).toEqual(["failed"]);
+  });
+
+  it("backfills older history silently and only speaks up after a failure", () => {
+    const view = render(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[]} hasOlderHistory />
+      </MemoryRouter>,
+    );
+
+    const slot = () => document.querySelector('[role="status"][aria-live="polite"]') as HTMLElement;
+    // Paging happens on its own; the reader is never asked to press anything.
+    expect(slot()).not.toBeNull();
+    expect(slot().textContent).toBe("");
+    expect(slot().querySelector("button")).toBeNull();
+    expect(slot().className).toContain("h-7");
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[]} hasOlderHistory loadingOlderHistory />
+      </MemoryRouter>,
+    );
+    expect(slot().textContent).toBe("");
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[]} hasOlderHistory olderHistoryError="Host disconnected" />
+      </MemoryRouter>,
+    );
+    const retry = screen.getByRole("button", { name: "Retry loading earlier messages" });
+    expect(retry.textContent).toContain("retry");
+    // Same fixed height in both states, so latching the error shifts nothing.
+    expect(slot().className).toContain("h-7");
+  });
+
+  it("counts rows that arrived while detached on the jump pill", async () => {
+    const all = userMessageEvents(["one", "two", "three", "four", "five"]);
+    const view = render(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={all.slice(0, 3)} />
+      </MemoryRouter>,
+    );
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+
+    // Nothing new yet: the pill keeps its plain label.
+    expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={all} />
+      </MemoryRouter>,
+    );
+
+    const pill = screen.getByRole("button", { name: "2 new · jump to latest" });
+    expect(pill.textContent).toContain("2 new · jump to latest");
+
+    fireEvent.click(pill);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
+    });
+
+    await nextFrame();
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+    // The jump cleared the baseline, so detaching again starts from zero.
+    expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
+  });
+
+  it("clamps a long user prompt and remembers the expansion across a remount", () => {
+    const longPrompt = `Migration checklist ${"detail ".repeat(120)}`;
+    const events = userMessageEvents([longPrompt], "collapse-session");
+    const view = renderMessageList(events, { sessionId: "collapse-session" });
+
+    const body = () => screen.getByTestId("user-message-collapsible-body");
+    expect(body().getAttribute("data-collapsed")).toBe("true");
+    // A CSS mask, not line-clamp — markdown/code inside must still render.
+    expect(body().className).toContain("max-h-44");
+    expect(body().className).not.toContain("line-clamp");
+
+    const toggle = screen.getByRole("button", { name: "Show full message" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+
+    expect(body().getAttribute("data-collapsed")).toBe("false");
+    expect(body().className).not.toContain("max-h-44");
+    expect(body().textContent).toContain(longPrompt);
+    expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
+
+    // Virtualization unmounts and remounts rows mid-scroll; the row key is
+    // unchanged, so the expansion must survive.
+    view.unmount();
+    renderMessageList(events, { sessionId: "collapse-session" });
+    expect(screen.getByTestId("user-message-collapsible-body").getAttribute("data-collapsed")).toBe("false");
+    expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
+  });
+
+  it("leaves a short user prompt uncollapsed", () => {
+    renderMessageList(userMessageEvents(["Ship it"], "short-session"), { sessionId: "short-session" });
+    expect(screen.queryByTestId("user-message-collapsible-body")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
+  });
+
+  it("returns a pinned chat to the live tail after a remount", async () => {
+    const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 1_000 });
+    try {
+      const events = userMessageEvents(["a", "b", "c", "d"], "restore-pinned");
+      const view = renderMessageList(events, { sessionId: "restore-pinned" });
+      const transcript = timelinePane();
+      await nextFrame();
+
+      transcript.scrollTop = 300;
+      fireEvent.scroll(transcript);
+      transcript.scrollTop = 800;
+      fireEvent.scroll(transcript);
+      view.unmount();
+
+      renderMessageList(events, { sessionId: "restore-pinned" });
+      await nextFrame();
+      expect(timelinePane().scrollTop).toBe(800);
+    } finally {
+      restoreScrollBox();
+    }
+  });
+
+  it("restores the exact offset a detached chat was left at", async () => {
+    const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 1_000 });
+    try {
+      const events = userMessageEvents(["a", "b", "c", "d", "e", "f", "g", "h"], "restore-detached");
+      const view = renderMessageList(events, { sessionId: "restore-detached" });
+      const transcript = timelinePane();
+      await nextFrame();
+
+      transcript.scrollTop = 400;
+      fireEvent.scroll(transcript);
+      view.unmount();
+
+      renderMessageList(events, { sessionId: "restore-detached" });
+      // Restored synchronously on the first frame that measures a real
+      // viewport — no visible snap to the bottom first.
+      expect(timelinePane().scrollTop).toBe(400);
+      expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeTruthy();
+    } finally {
+      restoreScrollBox();
+    }
   });
 
   it("handles each external row jump request only once across transcript updates", () => {

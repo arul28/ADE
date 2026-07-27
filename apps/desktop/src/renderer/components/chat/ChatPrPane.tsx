@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
+  ArrowsClockwise,
   ArrowSquareOut,
   CheckCircle,
   Clock,
@@ -12,6 +13,7 @@ import {
   GitPullRequest,
   Lightning,
   Sparkle,
+  X,
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -106,6 +108,9 @@ export function detectChatPrDelta(
 }
 
 const DELTA_VISIBLE_MS = 4200;
+
+const titleBarIconButton =
+  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
 const paneAction =
   "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
@@ -365,13 +370,21 @@ function PrDetails({
 export const ChatPrPane = React.memo(function ChatPrPane({
   laneId,
   branchName,
+  sessionTitle = null,
   delta = null,
+  onClose,
 }: {
   laneId: string;
   branchName?: string | null;
+  /**
+   * Title of the chat this pane belongs to. Forwarded to the inline creator so a
+   * new PR defaults to a title that describes the work. Optional — surfaces
+   * without a session (the Work grid) fall back to the lane → target derivation.
+   */
+  sessionTitle?: string | null;
   /** Describes the PR change that triggered this pane's auto-pop (owned by the parent). */
   delta?: ChatPrDelta | null;
-  /** Retained for the caller's toggle wiring; the pane no longer renders its own close affordance (the header PR pill toggles it). */
+  /** Closes the pane — wired to the title bar's ✕ (the header PR pill also toggles it). */
   onClose?: () => void;
 }) {
   const navigate = useNavigate();
@@ -384,6 +397,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [relay, setRelay] = useState<RelayState>(null);
   const [deltaVisible, setDeltaVisible] = useState(false);
+  // Manual title-bar ↻ sync in flight.
+  const [syncing, setSyncing] = useState(false);
+  // Backend reconcile-on-focus running (project-scoped); drives the subtle
+  // "syncing" spin on the ↻. Hidden on idle after a short debounce so a fast
+  // reconcile does not flicker.
+  const [reconciling, setReconciling] = useState(false);
+  const reconcileHideTimerRef = useRef<number | null>(null);
   const currentPrIdRef = useRef<string | null>(null);
   const laneIdRef = useRef(laneId);
   const refreshRequestRef = useRef(0);
@@ -424,6 +444,69 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, [setCurrentPr]);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
+
+  // Manual title-bar ↻: force a best-effort sync of this lane's PR (heals
+  // merged/closed state, or maps a merged-but-unmapped PR on the branch), then
+  // re-read the pane's PR. Moved here from ChatGitToolbar so the chat header
+  // stays a status strip and every PR affordance lives in this pane.
+  const handleSyncLanePr = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await window.ade.prs.syncLanePr(laneId);
+    } catch {
+      // best-effort
+    } finally {
+      setSyncing(false);
+    }
+    void refresh({ live: true });
+  }, [laneId, refresh, syncing]);
+
+  // Backend reconcile-on-focus spinner (project-scoped), in its OWN subscription
+  // keyed only on stable deps (laneId/projectRoot via refresh) — NOT the PR row.
+  // Previously this lived in the PR-row-dependent subscription below, so the
+  // idle branch's own refresh() (which mutates the PR row) re-ran that effect
+  // within the 300ms window and its cleanup clearTimeout'd the pending hide,
+  // stranding `reconciling` at true and spinning the ↻ forever. Here the hide
+  // timer lives in a ref cleared only on unmount, so a PR-row change can no
+  // longer strand it.
+  useEffect(() => {
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type !== "pr-reconcile") return;
+      // Debounce the hide so a fast reconcile doesn't flicker.
+      if (event.state === "running") {
+        if (reconcileHideTimerRef.current != null) {
+          window.clearTimeout(reconcileHideTimerRef.current);
+          reconcileHideTimerRef.current = null;
+        }
+        setReconciling(true);
+      } else {
+        if (reconcileHideTimerRef.current != null) {
+          window.clearTimeout(reconcileHideTimerRef.current);
+        }
+        reconcileHideTimerRef.current = window.setTimeout(() => {
+          setReconciling(false);
+          reconcileHideTimerRef.current = null;
+        }, 300);
+        // A reconcile just healed backend state — re-read the lane's PR.
+        void refresh();
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refresh]);
+
+  // Clear the reconcile hide timer ONLY on unmount — never on a re-subscribe —
+  // so the debounce can't be stranded mid-flight.
+  useEffect(() => {
+    return () => {
+      if (reconcileHideTimerRef.current != null) {
+        window.clearTimeout(reconcileHideTimerRef.current);
+        reconcileHideTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
@@ -548,8 +631,34 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return undefined;
   }, [pr, status, checks]);
 
+  // The ↻ spins for a manual sync in flight OR a backend reconcile-on-focus.
+  const syncSpinning = syncing || reconciling;
+
   return (
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
+        <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
+        <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">Pull request</span>
+        <button
+          type="button"
+          onClick={() => void handleSyncLanePr()}
+          disabled={syncing}
+          className={cn(titleBarIconButton, "ml-auto")}
+          title={syncSpinning ? "Syncing PR status…" : "Refresh pull request"}
+          aria-label="Refresh pull request"
+        >
+          <ArrowsClockwise size={12} weight="bold" className={cn(syncSpinning && "animate-spin")} />
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className={titleBarIconButton}
+          title="Close"
+          aria-label="Close pull request panel"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
         {loading ? (
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
@@ -571,6 +680,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           <ChatPrInlineCreator
             laneId={laneId}
             branchName={branchName ?? null}
+            sessionTitle={sessionTitle}
             onCreated={handleCreated}
           />
         )}

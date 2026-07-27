@@ -326,14 +326,33 @@ describe("getChatHistoryPage", () => {
     expect(page.events).toHaveLength(1);
   });
 
-  it("normalizes a null result into a terminal empty page", async () => {
+  it("normalizes a null result into a terminal empty page flagged unavailable", async () => {
     const connection = {
       actionList: async () => null,
     } as unknown as AdeCodeConnection;
 
     const page = await getChatHistoryPage(connection, "s1", 4096);
 
-    expect(page).toEqual({ sessionId: "s1", events: [], startOffset: 0, hasMore: false, sessionFound: false });
+    // `unavailable` marks the miss as a transport verdict, not an
+    // authoritative "session does not exist" — nothing may tombstone on it.
+    expect(page).toEqual({
+      sessionId: "s1",
+      events: [],
+      startOffset: 0,
+      hasMore: false,
+      sessionFound: false,
+      unavailable: true,
+    });
+  });
+
+  it("preserves the host's unavailable flag on a well-formed page", async () => {
+    const connection = {
+      actionList: async () => ({ sessionId: "s1", events: [], startOffset: 0, hasMore: false, sessionFound: false, unavailable: true }),
+    } as unknown as AdeCodeConnection;
+
+    const page = await getChatHistoryPage(connection, "s1", 4096);
+
+    expect(page.unavailable).toBe(true);
   });
 
   it("normalizes malformed page fields so the scroll-back loop terminates", async () => {

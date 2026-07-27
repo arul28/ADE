@@ -382,7 +382,7 @@ export function AppearanceSection() {
           <div>
             <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>User message minimap</div>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              Compact strip on the agent chat timeline to jump between your prompts in long threads. Hover for previews.
+              Tick rail in the chat's left gutter, one tick per message you sent. Hover a tick to preview that message and the reply it got, click to jump to it. Stopped and failed turns are marked. Mouse only, and hidden when the gutter is too narrow.
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               <button

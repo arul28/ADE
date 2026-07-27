@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  ArrowDown,
   ArrowSquareOut,
   CircleNotch,
   GitPullRequest,
@@ -19,11 +20,15 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
 /**
  * Lightweight pull-request creator embedded in the left PR floating pane. A
  * condensed, single-PR mirror of the PRs-tab `CreatePrModal`, styled with the
- * modal's bold accent. Source + target are 2-line lane/branch rows (lane on top
- * tinted with the lane's color, branch indented below) — the source is a locked
- * tile, the target is the canonical `LaneCombobox` dropdown (no free-text). No
- * PR-type selector here — queue/integration live in the full composer ("Open in
- * PRs tab").
+ * modal's bold accent.
+ *
+ * Layout is a "flow": a flat source row (lane + branch, locked) → an arrow
+ * connector carrying the ahead/behind/dirty comparison → the canonical
+ * `LaneCombobox` target dropdown (no free-text) → title / description / create.
+ * There are no section labels: the source is visibly immutable (lock glyph, no
+ * box) and the target is visibly a dropdown, so the old uppercase captions and
+ * the two identical 46px tiles they distinguished are gone. No PR-type selector
+ * here — queue/integration live in the full composer ("Open in PRs tab").
  *
  * Linear magic words and the "Open in ADE" deeplink footer are owned by
  * prService on create (idempotently), so the editable fields stay clean.
@@ -33,8 +38,6 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
  * `prs.onEvent` poll just enriches the same row with checks/review state).
  */
 
-const sectionLabel = "block text-[10px] font-semibold uppercase tracking-[0.08em] text-fg/45";
-
 // --color-accent is #A78BFA (== Tailwind violet-400); use the named color so the
 // /opacity focus modifier resolves (Tailwind can't apply opacity to a var() color).
 const inputBase =
@@ -43,10 +46,18 @@ const inputBase =
 export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   laneId,
   branchName,
+  sessionTitle,
   onCreated,
 }: {
   laneId: string;
   branchName?: string | null;
+  /**
+   * Title of the chat this creator was opened from. When it's a real title (not
+   * the placeholder "New chat") it seeds the PR title, which is far closer to a
+   * shippable title than the lane → target derivation. Optional: callers without
+   * a session (e.g. the Work grid) simply fall back to the derivation.
+   */
+  sessionTitle?: string | null;
   /**
    * Called the instant `createFromLane` resolves, with the freshly-created PR.
    * The parent swaps to the live PR-details view immediately instead of waiting
@@ -118,10 +129,15 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     () => (targetLane ? branchNameFromRef(targetLane.branchRef) : defaultBase) || "",
     [targetLane, defaultBase],
   );
+  // Prefer the chat's own title — it describes the work, unlike the lane → target
+  // direction, which is never a shippable PR title. "New chat" is the placeholder
+  // a session carries before its background rename lands, so it never wins.
+  const trimmedSessionTitle = sessionTitle?.trim() ?? "";
   const defaultTitle = useMemo(() => {
+    if (trimmedSessionTitle && trimmedSessionTitle !== "New chat") return trimmedSessionTitle;
     const targetName = targetLane?.name?.trim() || resolvedBaseBranch || "target";
     return `${laneName} -> ${targetName}`;
-  }, [laneName, resolvedBaseBranch, targetLane?.name]);
+  }, [laneName, resolvedBaseBranch, targetLane?.name, trimmedSessionTitle]);
 
   // Default the title to the merge direction until the user types their own.
   useEffect(() => {
@@ -182,92 +198,89 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   const interactive = !busy;
 
   return (
-    <div className="flex flex-col gap-3.5">
-      {/* Source lane + branch — locked. Mirrors a LaneCombobox row (lane tinted
-          with its color on top, branch indented below) but immutable. */}
-      <div className="flex flex-col gap-1.5">
-        <span className={sectionLabel}>Source lane and branch</span>
-        <div
-          className="flex min-h-[46px] items-center justify-center gap-1.5 rounded-[6px] bg-white/[0.02] px-2 py-1 text-center"
-          style={{ border: "1px solid var(--work-pane-border)" }}
+    <div className="flex flex-col gap-3">
+      {/* Source — a flat, boxless row. The lock glyph (not a caption) is what
+          says "immutable", so it can't be mistaken for the target dropdown. */}
+      <div className="flex min-w-0 items-center gap-2 px-0.5">
+        <LaneLogoMark color={sourceColor} size={12} />
+        <span
+          className="min-w-0 shrink truncate text-[12px] font-semibold"
+          style={{ color: sourceColor }}
+          title={laneName}
         >
-          <LaneLogoMark color={sourceColor} size={12} />
-          <div className="flex min-w-0 flex-initial flex-col items-center leading-[1.2]">
-            <span className="max-w-[190px] truncate text-[12px] font-semibold" style={{ color: sourceColor }} title={laneName}>
-              {laneName}
+          {laneName}
+        </span>
+        <BranchIcon size={9} weight="regular" className="shrink-0 opacity-55" />
+        <span className="min-w-0 shrink truncate font-mono text-[10px] text-muted-fg/85" title={sourceBranch}>
+          {sourceBranch}
+        </span>
+        <LockSimple size={11} weight="fill" className="ml-auto shrink-0 text-fg/25" />
+      </div>
+
+      {/* Connector — the arrow makes source → target read as one route, and
+          carries the ahead / behind / dirty comparison. Without lane.status we
+          still render the arrow (muted "comparing…") so the flow never collapses. */}
+      <div className="flex items-center gap-2 pl-1 text-[11px] text-fg/40">
+        <ArrowDown size={12} className="shrink-0" />
+        {lane?.status ? (
+          <>
+            <span className="min-w-0 truncate">
+              {lane.status.ahead} ahead · {lane.status.behind} behind ·{" "}
             </span>
-            <span className="mt-0.5 inline-flex max-w-[190px] min-w-0 items-center justify-center gap-1 text-[10px] text-muted-fg/85" title={sourceBranch}>
-              <BranchIcon size={9} weight="regular" className="shrink-0 opacity-55" />
-              <span className="min-w-0 truncate font-mono">{sourceBranch}</span>
+            <span
+              className="shrink-0 font-medium"
+              style={{ color: lane.status.dirty ? "var(--color-warning)" : "var(--color-success)" }}
+            >
+              {lane.status.dirty ? "dirty" : "clean"}
             </span>
-          </div>
-          <LockSimple size={11} weight="fill" className="ml-0.5 shrink-0 text-fg/25" />
-        </div>
+          </>
+        ) : (
+          <span className="text-fg/30">comparing…</span>
+        )}
       </div>
 
       {/* Target lane + branch — canonical 2-line dropdown, no free text. */}
-      <div className="flex flex-col gap-1.5">
-        <span className={sectionLabel}>Target lane and branch</span>
-        <LaneCombobox
-          lanes={targetLanes}
-          value={targetLaneId}
-          onChange={(id) => {
-            targetTouchedRef.current = true;
-            setTargetLaneId(id);
-          }}
-          variant="default"
-          fullWidth
-          placeholder="Select target lane…"
-          aria-label="Target lane and branch"
-        />
-      </div>
+      <LaneCombobox
+        lanes={targetLanes}
+        value={targetLaneId}
+        onChange={(id) => {
+          targetTouchedRef.current = true;
+          setTargetLaneId(id);
+        }}
+        variant="default"
+        fullWidth
+        placeholder="Select target lane…"
+        aria-label="Target lane and branch"
+      />
 
-      {/* Comparison — compact ahead / behind / clean from lane.status. */}
-      {lane?.status ? (
-        <div className="flex items-center justify-center gap-4 text-[11px]">
-          <span><span className="font-semibold text-fg/85">{lane.status.ahead}</span> <span className="text-fg/40">ahead</span></span>
-          <span><span className="font-semibold text-fg/85">{lane.status.behind}</span> <span className="text-fg/40">behind</span></span>
-          <span
-            className="font-semibold uppercase tracking-wide"
-            style={{ color: lane.status.dirty ? "var(--color-warning)" : "var(--color-success)" }}
-          >
-            {lane.status.dirty ? "Dirty" : "Clean"}
-          </span>
-        </div>
-      ) : null}
-
-      {/* Title. */}
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="chat-pr-title" className={sectionLabel}>Title</label>
-        <input
-          id="chat-pr-title"
-          value={title}
-          onChange={(e) => {
-            titleTouchedRef.current = true;
-            setTitle(e.target.value);
-          }}
-          disabled={!interactive}
-          placeholder={defaultTitle}
-          className={inputBase}
-        />
-      </div>
+      {/* Title — labelled by aria-label now that the visible caption is gone. */}
+      <input
+        id="chat-pr-title"
+        aria-label="Pull request title"
+        value={title}
+        onChange={(e) => {
+          titleTouchedRef.current = true;
+          setTitle(e.target.value);
+        }}
+        disabled={!interactive}
+        placeholder={defaultTitle}
+        className={inputBase}
+      />
 
       {/* Body — optional, multi-line. */}
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="chat-pr-body" className={sectionLabel}>Description <span className="normal-case text-fg/25">(optional)</span></label>
-        <textarea
-          id="chat-pr-body"
-          value={body}
-          onChange={(e) => {
-            bodyTouchedRef.current = true;
-            setBody(e.target.value);
-          }}
-          disabled={!interactive}
-          rows={3}
-          placeholder="What does this change do?"
-          className={`${inputBase} resize-none leading-[1.5]`}
-        />
-      </div>
+      <textarea
+        id="chat-pr-body"
+        aria-label="Pull request description"
+        value={body}
+        onChange={(e) => {
+          bodyTouchedRef.current = true;
+          setBody(e.target.value);
+        }}
+        disabled={!interactive}
+        rows={3}
+        placeholder="What does this change do?"
+        className={`${inputBase} resize-none leading-[1.5]`}
+      />
 
       <AnimatePresence initial={false}>
         {error ? (
