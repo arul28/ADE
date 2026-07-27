@@ -1480,6 +1480,50 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  // Regression: the staged deadline is Squirrel.Mac-specific. Only MacUpdater
+  // drives the native updater, so on Windows/Linux the staging signal can never
+  // arrive — the long bound would strand the app in "installing" for five
+  // minutes where the previous code force-quit in ten seconds.
+  it("falls back to the short hard bound when no staging signal can arrive", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const logger = makeLogger();
+    const forceQuit = vi.fn();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      installWatchdogMs: 1_000,
+      // No hard bound supplied: the default must come from whether a staging
+      // signal is possible at all, not from the macOS-only five-minute value.
+      nativeUpdater: null,
+      forceQuit,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(forceQuit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(forceQuit).toHaveBeenCalledWith({
+      blockedPhase: "app_quit",
+      blockedMs: 60_000,
+    });
+
+    service.dispose();
+  });
+
   it("force-quits a handoff that never stages at all, at the hard deadline", async () => {
     vi.useFakeTimers();
     const globalStatePath = makeStatePath();

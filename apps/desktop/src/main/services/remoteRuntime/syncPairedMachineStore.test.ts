@@ -400,6 +400,71 @@ describe("DesktopPairedMachineStore", () => {
     expect(new DesktopPairedMachineStore().list()).toHaveLength(1);
   });
 
+  // Regression: identity recovery once fell back to matching any saved record
+  // holding this endpoint. A bare LAN address is not a host identity — DHCP
+  // handing 192.168.1.240 to a different Mac would have handed that Mac the
+  // identity this desktop uses with the first one.
+  it("does not reuse an identity from a different host that once used this endpoint", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-endpoint-"));
+    process.env.ADE_HOME = adeHome;
+    const presentedDeviceIds: string[] = [];
+    const sharedEndpoint = "ws://192.168.1.240:8806";
+
+    const makeSocket = (hostDeviceId: string) => () => new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      if (envelope.type === "pairing_request") {
+        const payload = envelope.payload as { peer: { deviceId: string } };
+        presentedDeviceIds.push(payload.peer.deviceId);
+        ws.receive(encodeSyncEnvelope({
+          type: "pairing_result",
+          requestId: envelope.requestId,
+          payload: { ok: true, deviceId: payload.peer.deviceId, secret: "host-issued-secret" },
+        }));
+        return;
+      }
+      if (envelope.type !== "hello") return;
+      const payload = envelope.payload as { peer: unknown };
+      ws.receive(encodeSyncEnvelope({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          peer: payload.peer,
+          brain: {
+            deviceId: hostDeviceId,
+            deviceName: hostDeviceId,
+            platform: "macOS",
+            deviceType: "desktop",
+            siteId: `${hostDeviceId}-site`,
+            dbVersion: 0,
+          },
+          serverDbVersion: 0,
+          heartbeatIntervalMs: 5_000,
+          pollIntervalMs: 1_500,
+          features: { rpcChannel: true, portForward: true },
+        },
+      }));
+    }) as unknown as WebSocket;
+
+    const store = new DesktopPairedMachineStore();
+    const first = await store.pairWithMachine(sharedEndpoint, "123456", "Desktop client", {
+      pairingTimeoutMs: 2_000,
+      createWebSocket: makeSocket("mac-a"),
+      hostDeviceId: "mac-a",
+    });
+    // Same address, different machine answering — the record for mac-a still
+    // lists this endpoint.
+    const second = await store.pairWithMachine(sharedEndpoint, "123456", "Desktop client", {
+      pairingTimeoutMs: 2_000,
+      createWebSocket: makeSocket("mac-b"),
+      hostDeviceId: "mac-b",
+    });
+
+    expect(presentedDeviceIds).toHaveLength(2);
+    expect(second.deviceId).not.toBe(first.deviceId);
+    expect(second.siteId).not.toBe(first.siteId);
+    expect(new DesktopPairedMachineStore().list()).toHaveLength(2);
+  });
+
   it("replaces stale relay connection metadata only when explicitly requested", () => {
     const filePath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-pairing-store-")),

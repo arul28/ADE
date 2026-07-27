@@ -80,12 +80,13 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_analytics_budget`
 - `ade_update_install_aborted`
 - `ade_update_quit_escalated`
+- `ade_update_install_did_not_land`
 - `ade_update_auto_applied`
 - `ade_update_auto_apply_cancelled`
 - `ade_brain_recovered`
 - `ade_publish_failing`
 
-The update and reliability events are low-frequency by construction: the four `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6); `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
+The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 

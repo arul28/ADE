@@ -13,6 +13,7 @@ export const EVENTS = Object.freeze({
   ANALYTICS_BUDGET: "ade_analytics_budget",
   UPDATE_INSTALL_ABORTED: "ade_update_install_aborted",
   UPDATE_QUIT_ESCALATED: "ade_update_quit_escalated",
+  UPDATE_INSTALL_DID_NOT_LAND: "ade_update_install_did_not_land",
   UPDATE_AUTO_APPLIED: "ade_update_auto_applied",
   UPDATE_AUTO_APPLY_CANCELLED: "ade_update_auto_apply_cancelled",
   BRAIN_RECOVERED: "ade_brain_recovered",
@@ -30,6 +31,14 @@ export const EVENTS = Object.freeze({
 });
 
 const ALL_INGESTED_EVENTS = Object.freeze(Object.values(EVENTS));
+// PostHog series letters are A..Z, so the catalog cannot exceed 26 events
+// without a different addressing scheme. Fail loudly here rather than emitting
+// a formula containing "[" that PostHog would silently reject.
+if (ALL_INGESTED_EVENTS.length > 26) {
+  throw new Error(
+    `Event catalog has ${ALL_INGESTED_EVENTS.length} events; the volume insight formula only addresses 26 (A..Z).`,
+  );
+}
 const ALL_INGESTED_EVENTS_FORMULA = ALL_INGESTED_EVENTS
   .map((_, index) => String.fromCharCode("A".charCodeAt(0) + index))
   .join("+");
@@ -517,6 +526,7 @@ export const dashboardSpec = Object.freeze({
               eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing"),
               eventNode(EVENTS.UPDATE_INSTALL_ABORTED, "Update install aborted"),
               eventNode(EVENTS.UPDATE_QUIT_ESCALATED, "Update quit escalated"),
+              eventNode(EVENTS.UPDATE_INSTALL_DID_NOT_LAND, "Update did not land"),
               eventNode(EVENTS.UPDATE_AUTO_APPLIED, "Update auto-applied"),
             ],
             interval: "day",
@@ -562,7 +572,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "monthly-analytics-volume",
           "30-day ingested analytics volume",
-          "PostHog's actual ingested count across ADE's closed 25-event catalog. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance. This is an instrumentation health view, not the account billing meter: stray or abusive events sent with the public project token are outside this chart.",
+          "PostHog's actual ingested count across ADE's closed 26-event catalog. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance. This is an instrumentation health view, not the account billing meter: stray or abusive events sent with the public project token are outside this chart.",
           trends({
             series: ALL_INGESTED_EVENTS.map((event) => eventNode(event, event)),
             formula: ALL_INGESTED_EVENTS_FORMULA,

@@ -449,6 +449,34 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  // Regression: stop() left the loopback subscription installed, so the
+  // listener retained a callback into a disposed client for the process
+  // lifetime.
+  it("releases the host listener subscription on stop", async () => {
+    const unsubscribe = vi.fn();
+    const onLoopbackValidated = vi.fn(() => unsubscribe);
+    const fakeListener = {
+      getPort: () => 8787,
+      getExpectedLoopbackNonce: () => "n".repeat(43),
+      getRelayBridgeProof: () => "e".repeat(43),
+      onLoopbackValidated,
+    };
+    const service = createSyncTunnelClientService({
+      configStore: fakeStore("https://relay.example.com"),
+    });
+    try {
+      service.attachHostListener(fakeListener);
+      expect(onLoopbackValidated).toHaveBeenCalledTimes(1);
+      expect(unsubscribe).not.toHaveBeenCalled();
+
+      await service.stop();
+
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+    }
+  });
+
   it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
