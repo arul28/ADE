@@ -84,6 +84,17 @@ cadence means Greptile never actually lands a re-review. Consequences:
   a signal you pushed too often. Once Codex is clean and CI is green on a commit
   you have NOT pushed over, let Greptile finish that commit, then merge.
 
+**No bot signal means off, not pending.** A review bot blocks Phase 1 only when
+there is positive evidence that it started for the current head: a
+queued/pending/in-progress check, a review, a trigger acknowledgement, or a
+current-head comment. After one full 12-minute post-push grace window, if every
+available ADE and GitHub surface shows no check, review, acknowledgement, or
+comment for that bot, classify it as `inactive` / `not-triggered`, treat that as
+terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
+`pendingReviewBots`. Do not schedule a second wait for a bot with zero evidence.
+If branch protection requires an absent check, Phase 3c will surface that as a
+merge-policy block.
+
 **Rebase only on real conflicts.** `behindMain` alone does NOT trigger a rebase.
 Only rebase/merge `main` when there is an actual conflict (`mergeStateStatus`
 shows the PR is dirty/conflicting). If the branch is merely behind but cleanly
@@ -151,9 +162,10 @@ self-resume signal. Either:
 - **Phase 0 (first run):** safety rails (clean tree, GitHub origin, refuse
   `main`) → commit → push → open PR (`ade`, gh fallback) → write state →
   schedule first wake.
-- **Phase 1 — Poll:** wait for BOTH CI terminal AND review bots terminal. Return
-  a structured summary (merged / conflicting / ciFailed / newComments). Don't fix
-  on a partial signal.
+- **Phase 1 — Poll:** wait for CI terminal and every bot that actually started to
+  become terminal. After one 12-minute grace window, classify bots with zero
+  evidence as inactive/terminal-neutral. Return a structured summary (merged /
+  conflicting / ciFailed / newComments). Don't fix on a partial signal.
 - **Phase 2 — Decide:** merged → `done-clean`. Real conflict → Phase 3a rebase
   (rebate). CI or bots running → reschedule. Both terminal, no work → 3c merge.
   Both terminal, work exists, `iter < 5` → 3b fix. `iter >= 5`, not merged → 3d

@@ -18,7 +18,8 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - **Bounded with a force-finalize escape hatch.** Soft cap: 5 normal iterations of fix-and-poll. Exit earlier if clean or blocked. **At the cap, the loop must land the lane**: if the PR is not merged after iteration 5, run **one** additional force-finalize iteration (Phase 3d) that ignores all open review comments, fixes only CI failures so every required check goes green, then routes through Phase 3c (auto-merge). Only if iteration 6 cannot make CI green, or Phase 3c is genuinely blocked (base-branch policy + no admin rights + no auto-merge enabled), do you stop and leave a handoff comment for a human. The playbook's exit contract is "PR merged into `main`, or merge genuinely impossible" — never "PR green and parked".
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
-- **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
+- **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every review bot with current-head start evidence has posted or settled. This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
+- **Absence is not a running review.** A review bot is pending only when the current head has positive start evidence: a queued/pending/in-progress check, review, trigger acknowledgement, or bot comment. Give bots one full 12-minute post-push grace window to appear. After that window, if every available ADE and GitHub surface has zero evidence for a bot, classify it as `inactive` / `not-triggered`, treat it as terminal-neutral, and continue. Put it in `inactiveReviewBots`, not `pendingReviewBots`; never schedule a second wait solely for an unobserved bot. A branch-protection rule that requires the absent check is handled later as merge policy, not invented as bot activity.
 - **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (especially Greptile) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
@@ -33,7 +34,7 @@ Review-comment fixes routinely introduce new CI failures (different file gets to
 
 Therefore:
 
-- **Wait for both signals to be terminal** before doing any fix work. CI terminal = every required check has a final conclusion. Review-bots terminal = every expected bot has posted (or its status check has settled). If only one is back, sleep — don't iterate.
+- **Wait for both signals to be terminal** before doing any fix work. CI terminal = every required check has a final conclusion. Review-bots terminal = every bot with current-head start evidence has posted or settled; bots with zero evidence after the grace window are inactive/terminal-neutral. If only one signal is back, sleep — don't iterate.
 - **Decide holistically.** Read the failing CI list AND the new-comments list together before deciding what to change. A review comment that asks for "guard against null at line 42" and a CI failure in a test asserting null-handling on the same function are *one* fix, not two.
 - **Dispatch `ci-fix-agent` and `review-fix-agent` in parallel** (Phase 3b.3), each with its own minimum scope but in the same iteration.
 - **One commit, one push.** The lead reviews the combined diff, runs the narrow checks below, and pushes once. Never one push for CI and a second push for review feedback in the same iteration.
@@ -89,6 +90,11 @@ These are operational mistakes this playbook explicitly guards against:
 5. **Do not commit scheduler lock drift.** If a stale
    `.claude/scheduled_tasks.lock` blocks rebase or checkout, stash that
    file instead of committing it into the lane.
+6. **Do not wait forever for a bot that never started.** After one full
+   12-minute grace window, zero check/review/acknowledgement/comment evidence
+   means the integration is off or did not trigger for that head. Classify it
+   inactive and continue; only explicit in-flight evidence belongs in
+   `pendingReviewBots`.
 
 ## State file
 
@@ -222,7 +228,16 @@ This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops,
 **Wait for both CI and review bots before iterating.** The poll must treat these as two independent signals and only report "ready to fix" when **both** are terminal:
 
 - **CI terminal** = every required check has a final conclusion (`success`, `failure`, `cancelled`, `skipped`, `neutral`). If any required check is still `QUEUED` or `IN_PROGRESS`, CI is not terminal.
-- **Review bots terminal** = every expected review bot has either posted its review (`gh api repos/.../pulls/{N}/reviews` contains a submission newer than `lastPushSha`'s commit time for each bot) **or** its status check entry has settled. Expected bots for this repo are **Greptile** (appears as the `Greptile Review` status check — wait for it to leave `pending`) and **CodeRabbit** (posts a status check and/or review). GitHub Copilot is neither pinged nor expected: quota exhaustion can stop it without producing a normal review response, so its events never gate the loop. Greptile in particular is slow enough that the 12-minute wait is driven primarily by it.
+- **Review bots terminal** = every bot that started for the current head has
+  either posted its review or has a settled status check. A bot has started only
+  when there is positive current-head evidence: a queued/pending/in-progress
+  check, a review, a trigger acknowledgement, or a bot comment. Give expected
+  bots one full 12-minute post-push grace window to produce that evidence. After
+  the grace window, zero evidence across the available ADE and GitHub surfaces
+  means `inactive` / `not-triggered`, which is terminal-neutral and must not
+  block the loop. Expected integrations for this repo include **Greptile** and
+  **CodeRabbit**, but configuration can disable or skip either one. GitHub
+  Copilot is neither pinged nor expected, so its events never gate the loop.
 
 If either signal is still in flight, return "still waiting" and let Phase 5 reschedule. **Do not push a fix on a partial signal.**
 
@@ -276,6 +291,7 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
   "ciRunning": false,
   "reviewBotsRunning": false,
   "pendingReviewBots": [],
+  "inactiveReviewBots": ["Greptile"],
   "ciFailed": [
     { "name": "test-desktop (3)", "link": "https://github.com/.../runs/123" }
   ],
@@ -293,7 +309,11 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 }
 ```
 
-`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. Populate `pendingReviewBots` with any expected bot that has neither posted a review newer than `lastPushSha` nor has a settled status check (for example, Greptile status is still `pending`).
+`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty.
+Populate `pendingReviewBots` only for bots with explicit current-head in-flight
+evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
+elapsed and every available surface has zero evidence for that bot. Do not infer
+that a bot is running merely because it is usually expected in this repository.
 
 `behindMain` is derived from `mergeStateStatus` being `BEHIND` or `DIRTY`, or from `git merge-base --is-ancestor origin/main HEAD` returning non-zero.
 
