@@ -524,6 +524,44 @@ describe("CrossMachineHandoffModal", () => {
     await waitFor(() => expect((window as any).ade.git.pull).toHaveBeenCalledWith({ laneId: "lane-1" }));
   });
 
+  /**
+   * Regression: the blocker list and two standalone panels rendered the same
+   * blocker and the same fix button twice, with different disabled behavior on
+   * each copy. Every blocker must reach the user exactly once.
+   */
+  it("renders each blocker and its fix exactly once", async () => {
+    (window as any).ade.git.getSyncStatus.mockResolvedValue({
+      hasUpstream: false,
+      upstreamState: "missing",
+      upstreamRef: null,
+      ahead: 2,
+      behind: 0,
+      diverged: false,
+      recommendedAction: "push",
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        sourceProvider="codex"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        modelId="openai/gpt-5.5"
+        onModelChange={vi.fn()}
+        availableModelIds={["openai/gpt-5.5"]}
+        turnActive
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findAllByRole("button", { name: /publish branch/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /stop current response/i })).toHaveLength(1);
+  });
+
   it("blocks a diverged branch without offering a one-click fix", async () => {
     (window as any).ade.git.getSyncStatus.mockResolvedValue({
       hasUpstream: true,

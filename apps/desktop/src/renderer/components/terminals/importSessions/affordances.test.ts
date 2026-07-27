@@ -312,6 +312,18 @@ describe("sessionAnchors", () => {
     expect(anchors.latest).toBeNull();
   });
 
+  it("suppresses a latest anchor that would repeat the started anchor", () => {
+    // A titled single-message thread: heading is the title, so `latest` clears
+    // the heading check but still duplicates `started`.
+    const anchors = sessionAnchors(session({
+      title: "Mobile chat truncation",
+      preview: "text is cut mid-word",
+      messages: [{ role: "user", text: "text is cut mid-word", at: 1 }],
+    }));
+    expect(anchors.started).toBe("text is cut mid-word");
+    expect(anchors.latest).toBeNull();
+  });
+
   it("has no latest anchor on an older host that sends no messages", () => {
     const anchors = sessionAnchors(session({ title: "Something", preview: "a preview" }));
     expect(anchors.started).toBe("a preview");

@@ -53,11 +53,14 @@ export function sessionAnchors(summary: ExternalSessionSummary): {
   const started = asHeadingText(summary.preview);
   const messages = summary.messages ?? [];
   const latest = messages.length > 0 ? messages[messages.length - 1]! : null;
+  const latestText = latest ? asHeadingText(latest.text) : null;
+  const startedText = started && started !== heading ? started : null;
   return {
-    started: started && started !== heading ? started : null,
-    // Same rule as `started`: a one-message thread with no provider title has
-    // heading === firstPrompt === that message, and printing it twice reads as
-    // a rendering bug.
-    latest: latest && asHeadingText(latest.text) !== heading ? latest : null,
+    started: startedText,
+    // `latest` is checked against both anchors. Against the heading because an
+    // untitled single-message thread has heading === preview === that message,
+    // and against `started` because a *titled* one has started === latest. Either
+    // collision prints the same sentence twice, which reads as a rendering bug.
+    latest: latest && latestText !== heading && latestText !== startedText ? latest : null,
   };
 }

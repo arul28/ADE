@@ -310,8 +310,14 @@ struct WorkImportSessionScreen: View {
       return
     }
     do {
-      let configuresChat = action.target == "chat"
-      let wire = workRuntimeWireFields(provider: importProvider, mode: importRuntimeMode)
+      // A chat import continues the provider-native session, so the destination
+      // provider is the session's, not whatever the screen's saved composer
+      // preference happens to hold. Sending a Codex model alongside
+      // `provider: "claude"` would be a mismatch the host cannot honor, so the
+      // model and its dependent settings are only sent when they agree.
+      let providerMatchesSession = importProvider == session.provider
+      let configuresChat = action.target == "chat" && providerMatchesSession
+      let wire = workRuntimeWireFields(provider: session.provider, mode: importRuntimeMode)
       let normalizedReasoning = importReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
       let supportsFastMode = workComposerSupportsFastMode(
         modelId: importModelId,
@@ -333,7 +339,7 @@ struct WorkImportSessionScreen: View {
         target: action.target,
         mode: action.mode,
         model: configuresChat ? importModelId : nil,
-        permissionMode: configuresChat ? wire.permissionMode : nil,
+        permissionMode: action.target == "chat" ? wire.permissionMode : nil,
         reasoningEffort: configuresChat && !normalizedReasoning.isEmpty ? normalizedReasoning : nil,
         fastMode: configuresChat && supportsFastMode ? importFastMode : nil
       )

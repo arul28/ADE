@@ -145,7 +145,9 @@ export function decodeCrossMachineDestinationPreflightResult(
 // refuses "already at the expected source commit" — so reject it at the door
 // rather than rendering an offer that cannot succeed.
 function requirePositiveInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+  // isSafeInteger, not isInteger: Number.isInteger(1e30) is true, and a value
+  // past 2^53 has already lost precision by the time it gets here.
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive integer.`);
   }
   return value;

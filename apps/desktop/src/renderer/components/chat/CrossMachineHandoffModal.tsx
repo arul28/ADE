@@ -975,45 +975,18 @@ export function CrossMachineHandoffModal({
                     />
                   </>
                 )}
-                {turnActive || awaitingInput ? (
-                  <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] p-3">
-                    <div className="flex gap-2">
-                      <Warning size={16} className="mt-0.5 shrink-0 text-amber-200" />
-                      <div>
-                        <div className="text-[11px] font-semibold text-amber-100/90">Current turn is not ready</div>
-                        <div className="mt-1 text-[10px] leading-4 text-amber-100/60">
-                          {turnActive ? "Stop the current response, or wait for it to finish." : "Resolve the pending approval or question in the chat."}
-                        </div>
-                        {turnActive ? (
-                          <button
-                            type="button"
-                            className="mt-2 rounded-md border border-amber-200/20 bg-amber-300/10 px-2 py-1 text-[10px] font-semibold text-amber-100"
-                            onClick={() => void onStopTurn()}
-                          >
-                            Stop current response
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
+                {/*
+                  Every blocker renders here and only here. Standalone panels for
+                  the active turn and the unpublished branch used to sit
+                  alongside this list, so the same blocker and the same fix button
+                  appeared twice — with different disabled behavior on each copy.
+                */}
                 <BlockedReasons
                   reasons={continueBlockers}
                   {...(continueBlockers.length > 1
                     ? { heading: `${continueBlockers.length} things to fix first` }
                     : {})}
                 />
-                {sourceCheck.needsPush && !hasSourceBlock ? (
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={() => void publishBranch()}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-violet-300/24 bg-violet-400/12 px-2.5 text-[10px] font-semibold text-violet-100 transition-colors hover:bg-violet-400/18 disabled:opacity-45"
-                  >
-                    <GitBranch size={13} />
-                    Publish branch
-                  </button>
-                ) : null}
               </div>
 
               <div className="space-y-3">

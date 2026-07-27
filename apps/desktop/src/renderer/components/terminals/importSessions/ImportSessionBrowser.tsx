@@ -644,7 +644,14 @@ function ImportSessionDetail({
               <span>Last {messages.length} {messages.length === 1 ? "message" : "messages"}</span>
               <span className="ml-auto truncate font-mono text-[9.5px] text-muted-fg/40" title={summary.id}>{summary.id}</span>
             </div>
-            <div className="max-h-[280px] overflow-y-auto">
+            {/* Focusable so keyboard-only users can scroll a transcript that
+                overflows; nothing inside it is otherwise focusable. */}
+            <div
+              className="max-h-[280px] overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-400/40"
+              tabIndex={0}
+              role="region"
+              aria-label="Session conversation"
+            >
               {messages.map((message, index) => (
                 <div
                   key={`${message.at ?? index}-${index}`}
