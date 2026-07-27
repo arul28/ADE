@@ -555,7 +555,14 @@ function syncPortRow(input: DoctorInput): DoctorRow {
     label: "Sync port",
     status: "warn",
     detail: `bound on ${input.syncPort} instead of 8787${
-      holders.length ? ` · base holders: ${holders.join("; ")}` : " · first three base ports have no visible holders"
+      holders.length
+        ? ` · base holders: ${holders.join("; ")}`
+        // "No visible holders" reads as "the ports are free", which is exactly
+        // the wrong conclusion: the holder is usually tailscaled, and it runs
+        // as root so this probe cannot see it. Point at the check that can.
+        : " · no holders visible to this user (a root-owned holder such as"
+          + " tailscaled is invisible here — check `tailscale serve status`"
+          + " and `netstat -an -p tcp`)"
     }`,
   };
 }
