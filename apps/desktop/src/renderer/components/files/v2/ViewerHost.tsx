@@ -7,6 +7,7 @@ import { tabIsTextEditable } from "./viewerRegistry";
 import { CodeViewer } from "./viewers/CodeViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
 import { MarkdownViewer } from "./viewers/MarkdownViewer";
+import { HtmlViewer } from "./viewers/HtmlViewer";
 import { CsvViewer } from "./viewers/CsvViewer";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { MediaViewer } from "./viewers/MediaViewer";
@@ -69,6 +70,8 @@ export function ViewerHost(props: ViewerHostProps) {
       return <ImageViewer key={tab.id} {...viewerProps} />;
     case "markdown":
       return <MarkdownViewer key={tab.id} {...viewerProps} />;
+    case "html":
+      return <HtmlViewer key={tab.id} {...viewerProps} />;
     case "csv":
       return <CsvViewer key={tab.id} {...viewerProps} />;
     case "pdf":

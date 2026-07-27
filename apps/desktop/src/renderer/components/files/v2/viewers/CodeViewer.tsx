@@ -172,12 +172,12 @@ export function CodeViewer({
       }, 120);
     });
     // Jump to a line requested by the search overlay (one-shot).
-    const revealLine = takePendingReveal(tab.path);
-    if (revealLine && revealLine > 0) {
+    const reveal = takePendingReveal(tab.path);
+    if (reveal && reveal.line > 0) {
       requestAnimationFrame(() => {
         try {
-          editor.revealLineInCenter(revealLine);
-          editor.setPosition({ lineNumber: revealLine, column: 1 });
+          editor.revealLineInCenter(reveal.line);
+          editor.setPosition({ lineNumber: reveal.line, column: reveal.column ?? 1 });
         } catch {
           /* model swapped out before reveal */
         }

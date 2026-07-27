@@ -23,6 +23,7 @@ const viewerStub = vi.hoisted(
 
 vi.mock("./viewers/CodeViewer", () => ({ CodeViewer: viewerStub("code") }));
 vi.mock("./viewers/MarkdownViewer", () => ({ MarkdownViewer: viewerStub("markdown") }));
+vi.mock("./viewers/HtmlViewer", () => ({ HtmlViewer: viewerStub("html") }));
 vi.mock("./viewers/CsvViewer", () => ({ CsvViewer: viewerStub("csv") }));
 vi.mock("./viewers/ImageViewer", () => ({ ImageViewer: viewerStub("image") }));
 vi.mock("./viewers/PdfViewer", () => ({ PdfViewer: viewerStub("pdf") }));
@@ -75,10 +76,11 @@ afterEach(() => {
 });
 
 describe("ViewerHost editability wiring", () => {
-  it("mounts code, markdown, and csv viewers editable for full text payloads — every workspace, no gates", () => {
+  it("mounts code, markdown, HTML, and csv viewers editable for full text payloads — every workspace, no gates", () => {
     for (const [kind, path, testId] of [
       ["code", "src/a.ts", "viewer-code"],
       ["markdown", "README.md", "viewer-markdown"],
+      ["html", "public/index.html", "viewer-html"],
       ["csv", "data.csv", "viewer-csv"],
     ] as const) {
       const view = renderHost(makeTab(kind, path), textContent());

@@ -107,7 +107,9 @@ Preload bridge:
 Renderer:
 
 - `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
-  route/sidebar entry point. It always renders the workbench.
+  route/sidebar entry point. It always renders the workbench and forwards
+  router-state chat/review file targets as workspace-relative paths, preserving
+  the lane id and source position for local and remote-bound projects.
 - `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
@@ -140,12 +142,13 @@ Renderer:
   workbench shell: editor groups, preview/pinned tabs, split/move
   support, project-scoped tab-scope persistence, warm empty state,
   search/create overlays, and
-  viewers for code, markdown, image, audio/video playback, CSV/TSV,
+  viewers for code, markdown, sandboxed HTML, image, audio/video playback, CSV/TSV,
   PDF, Office-document fallback, large text, binary, and diffs.
   `v2/viewerRegistry.ts` decides both which viewer renders a file and
   whether a tab is editable (`tabIsTextEditable` = editable viewer kind
   AND a full, non-binary text payload). The markdown Preview↔Source and
-  CSV Table↔Source viewers share `viewers/ViewerModeToggle.tsx` for the
+  HTML Preview↔Source and CSV Table↔Source viewers share
+  `viewers/ViewerModeToggle.tsx` for the
   toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
   last mode across viewer remounts (e.g. the reload after a save).
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
@@ -392,6 +395,11 @@ For deeper detail on the watcher + trust boundary, see
   to 256 KB. Oversized text returns a partial first chunk and streams
   through `readFileRange`; oversized images and unsupported binaries
   still return `contentOmitted`.
+- HTML preview is renderer-only and deliberately inert: it uses `srcDoc` in an
+  empty-sandbox iframe plus a restrictive CSP/no-referrer policy. Scripts,
+  forms, parent navigation, downloads, and remote resource fetches stay
+  disabled; oversized HTML follows the large-text streaming path instead of
+  constructing a multi-megabyte iframe document.
 - `listTree` and `listTreeChildren` must share filtering and ordering:
   skip `.git`, skip volatile `.ade` runtime paths, honor
   `includeIgnored`, sort directories before files, and paginate via

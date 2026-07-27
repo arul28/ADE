@@ -128,6 +128,7 @@ function renderMessageList(
     initialState?: Record<string, unknown>;
     showStreamingIndicator?: boolean;
     sessionId?: string | null;
+    laneId?: string | null;
     onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -147,6 +148,7 @@ function renderMessageList(
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionId={options?.sessionId}
+        laneId={options?.laneId}
         onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
@@ -1629,6 +1631,35 @@ describe("AgentChatMessageList transcript rendering", () => {
       ],
       {
         initialState: { laneId: "lane-123" },
+      },
+    );
+
+    const fileLink = screen.getByRole("button", { name: "AgentChatMessageList.tsx" });
+    expect(fileLink.getAttribute("title")).toBe("Open file in Files");
+    expect(fileLink.className).toContain("cursor-pointer");
+    fireEvent.click(fileLink);
+
+    await expectLocationText(
+      "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
+    );
+  });
+
+  it("uses the chat's lane when the Work route has no router state", async () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: {
+            type: "text",
+            text: "Open [AgentChatMessageList.tsx](apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx).",
+            itemId: "text-chat-lane",
+            turnId: "turn-1",
+          },
+        },
+      ],
+      {
+        laneId: "lane-123",
       },
     );
 

@@ -82,6 +82,14 @@ const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
 // refreshes. Reducers never mutate state, so sharing one instance is safe.
 const EMPTY_GROUPS_STATE = createInitialGroupsState();
 
+export type FilesNavigationOpenRequest = {
+  path: string;
+  laneId: string | null;
+  nonce: string;
+  line?: number;
+  column?: number;
+};
+
 // Cross-mount caches survive remounts (the route unmounts FilesWorkbench when
 // you switch tabs), so re-opening Files shows the workspace + tree instantly
 // instead of flashing a loading/empty state while listWorkspaces / listTree
@@ -125,6 +133,7 @@ export function FilesWorkbench({
   externalOpenPath,
   externalOpenNonce,
   externalOpenLine,
+  navigationOpenRequest,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
@@ -132,6 +141,7 @@ export function FilesWorkbench({
   externalOpenPath?: string | null;
   externalOpenNonce?: string | null;
   externalOpenLine?: string | null;
+  navigationOpenRequest?: FilesNavigationOpenRequest | null;
 }) {
   const project = useAppStore((s) => s.project);
   const projectRootPath = project?.rootPath ?? "";
@@ -186,6 +196,8 @@ export function FilesWorkbench({
     path: string | null;
     pathType: "file" | "directory";
     nonce: string;
+    line?: number;
+    column?: number;
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
@@ -826,10 +838,12 @@ export function FilesWorkbench({
 
   /* ---- Open file ---- */
   const openFile = useCallback(
-    async (path: string, opts: { preview?: boolean; line?: number } = {}) => {
+    async (path: string, opts: { preview?: boolean; line?: number; column?: number } = {}) => {
       if (!workspaceId) return;
       setSelectedNodePath(path);
-      if (opts.line && opts.line > 0) setPendingReveal(path, opts.line);
+      if (opts.line && opts.line > 0) {
+        setPendingReveal(path, { line: opts.line, column: opts.column });
+      }
       try {
         const content = await window.ade.files.readFile({ workspaceId, path });
         if (workspaceIdRef.current !== workspaceId) return;
@@ -874,7 +888,7 @@ export function FilesWorkbench({
   );
 
   const openExternalPathRequest = useCallback(
-    async (absolutePath: string, nonce: string) => {
+    async (absolutePath: string, nonce: string, line?: number) => {
       try {
         const result = await window.ade.files.openExternalPath({ path: absolutePath });
         if (result.workspace.kind === "external") {
@@ -886,6 +900,7 @@ export function FilesWorkbench({
           path: result.openPath,
           pathType: result.pathType,
           nonce,
+          line,
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -896,21 +911,70 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active || !externalOpenPath) return;
-    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}:${externalOpenLine ?? ""}`;
+    const key = `external:${externalOpenNonce ?? ""}:${externalOpenPath}:${externalOpenLine ?? ""}`;
     if (handledExternalOpenRef.current === key) return;
     handledExternalOpenRef.current = key;
-    void openExternalPathRequest(externalOpenPath, key);
+    const line = externalOpenLine && /^\d+$/.test(externalOpenLine)
+      ? Number(externalOpenLine)
+      : undefined;
+    void openExternalPathRequest(externalOpenPath, key, line);
   }, [active, externalOpenPath, externalOpenLine, externalOpenNonce, openExternalPathRequest]);
+
+  useEffect(() => {
+    if (!active || !navigationOpenRequest || !workspacesLoaded) return;
+    const key = `navigation:${navigationOpenRequest.nonce}:${navigationOpenRequest.laneId ?? ""}:${navigationOpenRequest.path}:${navigationOpenRequest.line ?? ""}:${navigationOpenRequest.column ?? ""}`;
+    if (handledExternalOpenRef.current === key) return;
+
+    const fallbackWorkspace = workspace
+      ?? workspaces.find((candidate) => candidate.id === defaultFilesWorkspaceId(workspaces, globalLaneId))
+      ?? workspaces[0];
+    const targetWorkspace = navigationOpenRequest.laneId
+      ? workspaces.find((candidate) => candidate.laneId === navigationOpenRequest.laneId)
+      : fallbackWorkspace;
+    if (!targetWorkspace) {
+      // A warm cached roster may predate a just-created lane. Wait for the
+      // authoritative runtime list before declaring the target unavailable.
+      if (workspacesListedCacheKey !== projectCacheKey) return;
+      handledExternalOpenRef.current = key;
+      setError(
+        navigationOpenRequest.laneId
+          ? "The file's lane workspace is no longer available."
+          : "The file's workspace is no longer available.",
+      );
+      return;
+    }
+
+    handledExternalOpenRef.current = key;
+    setWorkspaceId(targetWorkspace.id);
+    setPendingWorkspaceOpen({
+      workspaceId: targetWorkspace.id,
+      path: navigationOpenRequest.path,
+      pathType: "file",
+      nonce: key,
+      line: navigationOpenRequest.line,
+      column: navigationOpenRequest.column,
+    });
+  }, [
+    active,
+    globalLaneId,
+    navigationOpenRequest,
+    projectCacheKey,
+    workspace,
+    workspaces,
+    workspacesLoaded,
+    workspacesListedCacheKey,
+  ]);
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
-      const line = externalOpenLine && /^\d+$/.test(externalOpenLine)
-        ? Number(externalOpenLine)
-        : undefined;
-      void openFile(pending.path, { preview: false, line });
+      void openFile(pending.path, {
+        preview: false,
+        line: pending.line,
+        column: pending.column,
+      });
       return;
     }
     setSelectedNodePath(pending.path);
@@ -927,7 +991,7 @@ export function FilesWorkbench({
     } else {
       void refreshRoot({ preserveLoadedChildren: false });
     }
-  }, [active, externalOpenLine, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
+  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
