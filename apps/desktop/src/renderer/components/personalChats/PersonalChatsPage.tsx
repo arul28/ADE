@@ -30,7 +30,7 @@ import { ProjectlessHero } from "./ProjectlessHero";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
-import { resolveThisMachineProjectRoot } from "../chat/thisMachineProjectRoot";
+import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -522,18 +522,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         // The machine is a dimension of THIS repo's tab, so "This Mac" must
         // resolve to this repo's local checkout — never to whichever local tab
         // happens to be first.
-        const resolved = resolveThisMachineProjectRoot({
+        void switchToThisMachineProject({
           projectBinding,
           openProjectTabRoots,
           localProjectRootPath,
-        });
-        if (!resolved.ok) {
-          setError(resolved.message);
-          return;
-        }
-        void switchProjectToPath(resolved.rootPath).catch((reason) => {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        });
+          switchProjectToPath,
+        }).then(setError);
         return;
       }
       const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);

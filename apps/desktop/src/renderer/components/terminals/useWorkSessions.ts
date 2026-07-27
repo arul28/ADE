@@ -12,6 +12,7 @@ import {
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
+  useRootAppStore,
   type WorkDraftKind,
   type WorkGridSet,
   type WorkProjectViewState,
@@ -450,6 +451,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -473,11 +475,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const open: OpenProjectBinding[] = [];
     if (state.projectBinding) open.push(state.projectBinding);
     for (const binding of state.openRemoteProjectTabs ?? []) open.push(binding);
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (machine.binding) open.push(machine.binding);
+    }
     for (const rootPath of state.openProjectTabRoots ?? []) {
-      open.push({ kind: "local", key: rootPath, rootPath, displayName: rootPath } as OpenProjectBinding);
+      open.push({ kind: "local", key: `local:${rootPath}`, rootPath, displayName: rootPath } as OpenProjectBinding);
     }
     return isLivePinnedBinding(pin, open);
-  }, [appStore]);
+  }, [appStore, crossMachineLanesByMachineId]);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -533,11 +538,20 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
   const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
-  const sessionsById = useMemo(() => {
+  const localSessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+  const sessionsById = useMemo(() => {
+    const map = new Map(localSessionsById);
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      for (const session of machine.sessions) {
+        if (!map.has(session.id)) map.set(session.id, session);
+      }
+    }
+    return map;
+  }, [crossMachineLanesByMachineId, localSessionsById]);
   const missingSessionLaneIdsSignature = useMemo(() => {
     if (sessions.length === 0) return "";
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
@@ -553,11 +567,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
       if (!sessionId) return;
-      const session = sessionsById.get(sessionId);
+      const session = localSessionsById.get(sessionId);
       if (!session) return;
       selectLane(session.laneId);
     },
-    [selectLane, sessionsById],
+    [localSessionsById, selectLane],
   );
 
   const openSessions = useMemo(() => {

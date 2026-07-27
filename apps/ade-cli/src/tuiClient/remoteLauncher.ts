@@ -59,6 +59,7 @@ import {
   createRemoteLaunchBudget,
   REMOTE_CONNECT_TOTAL_TIMEOUT_MS,
   REMOTE_RPC_TIMEOUT_MS,
+  RemoteLaunchTimeoutError,
   withBoundedAttempt,
   withTimeout,
   type RemoteLaunchBudget,
@@ -646,9 +647,13 @@ export async function openRemoteRpcSession(
   for (const attempt of remoteRpcAttempts(target)) {
     const attemptRouteKey = routeKey(attempt.route);
     if (authFailedRoutes.has(attemptRouteKey)) continue;
+    const maximumAttemptTimeoutMs = options.attemptTimeoutMs ?? REMOTE_RPC_TIMEOUT_MS;
     let timeoutMs: number;
+    let timeoutConsumesRemainingBudget: boolean;
     try {
-      timeoutMs = attemptTimeoutMs(budget, options.attemptTimeoutMs ?? REMOTE_RPC_TIMEOUT_MS);
+      timeoutMs = attemptTimeoutMs(budget, maximumAttemptTimeoutMs);
+      timeoutConsumesRemainingBudget =
+        budget.deadline - Date.now() <= maximumAttemptTimeoutMs;
     } catch (error) {
       errors.push(`total deadline: ${errorMessage(error)}`);
       break;
@@ -669,6 +674,16 @@ export async function openRemoteRpcSession(
       // the same route against every channel only repeats the same failure and
       // turns a useful error into a multi-minute stall.
       if (isSshAuthenticationError(error)) authFailedRoutes.add(attemptRouteKey);
+      // When this attempt was capped by the remaining total budget, its timeout
+      // is terminal. A timer may fire a millisecond before the wall-clock
+      // deadline; starting another near-zero attempt only spawns and kills an
+      // extra SSH process without giving it a meaningful chance to initialize.
+      if (error instanceof RemoteLaunchTimeoutError && timeoutConsumesRemainingBudget) {
+        errors.push(
+          `total deadline: Remote connection deadline exceeded after ${budget.totalTimeoutMs}ms.`,
+        );
+        break;
+      }
     }
   }
   throw new Error(

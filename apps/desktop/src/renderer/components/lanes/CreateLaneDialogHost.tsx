@@ -217,6 +217,7 @@ export function CreateLaneDialogHost({
    */
   const bindingOnOpenRef = useRef<OpenProjectBinding | null>(null);
   const machineRebindPendingRef = useRef(false);
+  const pendingMachineSwitchRef = useRef<Promise<unknown> | null>(null);
   const projectBindingRef = useRef<OpenProjectBinding | null>(projectBinding);
   projectBindingRef.current = projectBinding;
 
@@ -323,14 +324,18 @@ export function CreateLaneDialogHost({
     const previous = bindingOnOpenRef.current;
     bindingOnOpenRef.current = null;
     if (!machineRebindPendingRef.current) return;
-    machineRebindPendingRef.current = false;
-    if (!previous || projectBindingRef.current?.key === previous.key) return;
-    const restoring = previous.kind === "remote"
-      ? switchRemoteProject(previous.targetId, previous.projectId).then(() => {})
-      : switchProjectToPath(previous.rootPath);
-    void restoring.catch(() => {
-      // Best effort: the dialog is already gone, and the machine picker in the
-      // top bar remains the way back.
+    const pending = pendingMachineSwitchRef.current ?? Promise.resolve();
+    void pending.catch(() => {}).then(async () => {
+      pendingMachineSwitchRef.current = null;
+      machineRebindPendingRef.current = false;
+      if (!previous || projectBindingRef.current?.key === previous.key) return;
+      const restoring = previous.kind === "remote"
+        ? switchRemoteProject(previous.targetId, previous.projectId).then(() => {})
+        : switchProjectToPath(previous.rootPath);
+      await restoring.catch(() => {
+        // Best effort: the dialog is already gone, and the machine picker in
+        // the top bar remains the way back.
+      });
     });
   }, [switchProjectToPath, switchRemoteProject]);
 
@@ -531,6 +536,7 @@ export function CreateLaneDialogHost({
       failSwitch(`Open this repository on ${machine.name} first, then create the lane there.`);
       return;
     }
+    pendingMachineSwitchRef.current = switching;
 
     void switching.catch((err: unknown) => {
       pendingMachinePrepareRef.current = false;

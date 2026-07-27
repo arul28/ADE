@@ -2914,8 +2914,48 @@ function subscribeRemoteAppControlEvents(
 
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
   const removeLocal = agentChatEventFanout(cb);
+  if (pin?.kind === "local" && pin.key !== currentProjectBinding?.key) {
+    return removeLocal;
+  }
+  if (pin?.kind === "remote" && pin.key !== currentProjectBinding?.key) {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cursor = 0;
+    const poll = async (): Promise<void> => {
+      let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+      try {
+        const batch = await ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+          id: pin.targetId,
+          projectId: pin.projectId,
+          request: { cursor, limit: 200 },
+        }) as RemoteRuntimeStreamEventsResult;
+        if (cancelled) return;
+        cursor = Number.isFinite(batch.nextCursor) ? Math.max(0, Math.floor(batch.nextCursor)) : cursor;
+        for (const event of batch.events ?? []) {
+          const envelope = toAgentChatEventEnvelope(event.payload);
+          if (envelope) cb(envelope);
+        }
+        delay = batch.hasMore
+          ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
+          : batch.events?.length
+            ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
+            : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+      } catch (error) {
+        if (!cancelled) console.warn("ADE pinned chat event polling failed", error);
+        delay = 2_000;
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), delay);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      removeLocal();
+    };
+  }
   const removeRemote = subscribeRemoteAgentChatEvents(cb);
   return () => {
     removeRemote();

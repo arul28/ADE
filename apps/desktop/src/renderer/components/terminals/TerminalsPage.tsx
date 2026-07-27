@@ -936,7 +936,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <WorkViewArea
         pageActive={active}
         lanes={sortedLanes}
-        sessions={work.sessions}
+        sessions={work.visibleSessions}
         visibleSessions={work.visibleSessions}
         activeItemId={work.activeItemId}
         draftKind={work.draftKind}
@@ -1137,6 +1137,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
             handoffJobs={handoffLaunchJobs}
+            crossMachineSyncActive={active}
           />
           </div>
         ),

@@ -147,4 +147,29 @@ describe("CreateLaneDialogHost machine binding", () => {
     expect(switchProjectToPath).not.toHaveBeenCalled();
     expect(switchRemoteProject).not.toHaveBeenCalled();
   });
+
+  it("restores after an in-flight machine switch settles after close", async () => {
+    let resolveSwitch!: () => void;
+    switchRemoteProject.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveSwitch = resolve; }) as never,
+    );
+    const view = render(
+      <CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="close-on-create" />,
+    );
+    fireEvent.click(await screen.findByText("pick:MacBook Pro (97)"));
+    view.rerender(
+      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
+    );
+    expect(switchProjectToPath).not.toHaveBeenCalled();
+
+    storeState.projectBinding = remoteBinding;
+    view.rerender(
+      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
+    );
+    resolveSwitch();
+
+    await waitFor(() =>
+      expect(switchProjectToPath).toHaveBeenCalledWith(localBinding.rootPath),
+    );
+  });
 });

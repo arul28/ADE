@@ -822,6 +822,8 @@ export type CrossMachineMachineLanes = {
   targetId: string | null;
   /** The machine's own project id for the repo the active tab is showing. */
   projectId: string | null;
+  /** Complete call-routing target for this checkout, even without a project tab. */
+  binding?: Extract<OpenProjectBinding, { kind: "remote" }> | null;
   online: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
@@ -977,6 +979,7 @@ export type AppState = {
     machineName: string;
     targetId?: string | null;
     projectId?: string | null;
+    binding?: Extract<OpenProjectBinding, { kind: "remote" }> | null;
     online?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
@@ -1179,6 +1182,25 @@ function formatProjectTransitionError(
     // recovery screen offer Repair instead of the generic banner.
     ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
   };
+}
+
+function reuseStructurallyEqualArray<T>(
+  incoming: T[] | undefined,
+  current: T[] | undefined,
+): T[] | undefined {
+  if (!incoming || !current || incoming.length !== current.length) return incoming;
+  for (let index = 0; index < incoming.length; index += 1) {
+    const nextValue = incoming[index];
+    const currentValue = current[index];
+    if (nextValue === currentValue) continue;
+    if (JSON.stringify(nextValue) !== JSON.stringify(currentValue)) return incoming;
+  }
+  return current;
+}
+
+function reuseStructurallyEqualValue<T>(incoming: T, current: T): T {
+  if (incoming === current) return current;
+  return JSON.stringify(incoming) === JSON.stringify(current) ? current : incoming;
 }
 
 const createAppState: StateCreator<AppState> = (set, get) => {
@@ -1491,16 +1513,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const machineId = entry.machineId.trim();
       if (!machineId || machineId === THIS_MACHINE_ID) return {};
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
+      const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
+      const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
+      const incomingBinding =
+        entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
+      const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
         targetId: entry.targetId !== undefined ? entry.targetId : previous?.targetId ?? null,
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
+        binding,
         online: entry.online !== undefined ? entry.online : previous?.online ?? false,
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
-        lanes: entry.lanes ?? previous?.lanes ?? [],
-        sessions: entry.sessions ?? previous?.sessions ?? [],
+        lanes: lanes ?? previous?.lanes ?? [],
+        sessions: sessions ?? previous?.sessions ?? [],
         lastSyncedAtMs:
           entry.lanes || entry.sessions ? Date.now() : previous?.lastSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
@@ -1510,9 +1538,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.machineName === next.machineName
         && previous.targetId === next.targetId
         && previous.projectId === next.projectId
+        && previous.binding === next.binding
         && previous.online === next.online
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
+        && previous.lastSyncedAtMs === next.lastSyncedAtMs
         && previous.error === next.error
       ) {
         return {};

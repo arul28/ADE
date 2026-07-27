@@ -515,12 +515,27 @@ function MachineSwitcherMenu({
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
+    menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus();
+  }, []);
+  useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
       if (menuRef.current?.contains(event.target as Node)) return;
       onClose();
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      const items = Array.from(
+        menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [],
+      );
+      if (items.length === 0) return;
+      event.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      items[(current + delta + items.length) % items.length]?.focus();
     };
     window.addEventListener("mousedown", onPointerDown);
     window.addEventListener("keydown", onKey);
@@ -2113,6 +2128,7 @@ export function TopBar({
                   aria-expanded={machineMenuOpen}
                   aria-label={`Machines for ${group.displayName}`}
                   title={`Machines for ${group.displayName}`}
+                  onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
                     const rect = event.currentTarget.getBoundingClientRect();

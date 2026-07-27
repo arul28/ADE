@@ -80,7 +80,23 @@ export function resolveThisMachineProjectRoot(input: {
   }).find((option) => option.id === THIS_MACHINE_ID);
 
   const rootPath = thisMachine?.project?.rootPath ?? null;
-  return rootPath
+  return rootPath && thisMachine?.project?.matchedBy === "origin"
     ? { ok: true, rootPath }
     : { ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE };
+}
+
+export async function switchToThisMachineProject(input: {
+  projectBinding: OpenProjectBinding | null;
+  openProjectTabRoots: readonly string[];
+  localProjectRootPath: string | null;
+  switchProjectToPath: (rootPath: string) => Promise<unknown>;
+}): Promise<string | null> {
+  const resolved = resolveThisMachineProjectRoot(input);
+  if (!resolved.ok) return resolved.message;
+  try {
+    await input.switchProjectToPath(resolved.rootPath);
+    return null;
+  } catch (reason) {
+    return reason instanceof Error ? reason.message : String(reason);
+  }
 }

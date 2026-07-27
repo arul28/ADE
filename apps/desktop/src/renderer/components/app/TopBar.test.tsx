@@ -686,11 +686,18 @@ describe("TopBar", () => {
     // A single-machine group spends no tab width naming the machine.
     expect(tab.textContent).not.toContain("This Mac");
 
-    fireEvent.click(screen.getByLabelText("Machines for ADE"));
+    const caret = screen.getByLabelText("Machines for ADE");
+    fireEvent.mouseDown(caret);
+    fireEvent.click(caret);
     expect(screen.getByRole("menuitemradio", { name: /This Mac/ })).toBeTruthy();
-    expect(
-      screen.getByRole("menuitem", { name: /Connect another machine/ }),
-    ).toBeTruthy();
+    const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
+    expect(connectItem).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(connectItem);
+
+    fireEvent.mouseDown(caret);
+    fireEvent.click(caret);
+    expect(screen.queryByRole("menuitemradio", { name: /This Mac/ })).toBeNull();
   });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {

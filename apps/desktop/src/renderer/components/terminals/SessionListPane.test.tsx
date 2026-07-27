@@ -789,6 +789,15 @@ describe("SessionListPane", () => {
             machineName: "Mac Studio (12)",
             targetId: "target-studio",
             projectId: "project-a",
+            binding: {
+              kind: "remote",
+              key: "remote:target-studio:project-a",
+              targetId: "target-studio",
+              runtimeName: "Mac Studio (12)",
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+            },
             online: true,
             lanes: [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
             sessions: [
@@ -809,7 +818,8 @@ describe("SessionListPane", () => {
 
     it("marks only lanes that are not on this machine", () => {
       seedForeignMachine();
-      renderPane();
+      const onSelectSession = vi.fn();
+      renderPane({ onSelectSession });
 
       expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
       expect(screen.getByText("Chat on the other machine")).toBeTruthy();
@@ -821,6 +831,13 @@ describe("SessionListPane", () => {
       expect(foreignHeader?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       const localHeader = screen.getByText("Mobile-created lane").closest(".ade-lane-group-header");
       expect(localHeader?.querySelector("[data-machine-marker-mode]")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: /Chat on the other machine/ }));
+      expect(onSelectSession).toHaveBeenCalledWith(
+        "session-elsewhere",
+        expect.anything(),
+        ["session-elsewhere"],
+      );
     });
 
     it("shows a bare glyph for one online foreign machine and the name when it drops", () => {
@@ -838,6 +855,10 @@ describe("SessionListPane", () => {
       expect(document.querySelector("[data-machine-marker-mode]")?.getAttribute("data-machine-marker-mode"))
         .toBe("name");
       expect(screen.getByText("Mac Studio (12)")).toBeTruthy();
+      expect((screen.getByRole("button", { name: /Chat on the other machine/ }) as HTMLButtonElement).disabled)
+        .toBe(true);
+      expect(screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header")?.parentElement?.className)
+        .toContain("opacity");
     });
   });
 

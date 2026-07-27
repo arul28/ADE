@@ -1577,7 +1577,10 @@ declare global {
           },
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
-        onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
+        onEvent: (
+          cb: (ev: AgentChatEventEnvelope) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         slashCommands: (
           args: AgentChatSlashCommandsArgs,
           pin?: OpenProjectBinding | null,

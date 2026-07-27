@@ -436,6 +436,7 @@ function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
     : `On ${marker.machineName} · offline`;
   return (
     <span
+      role="img"
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none",
         marker.online ? "text-muted-fg/70" : "text-muted-fg/45",
@@ -467,7 +468,7 @@ function CrossMachineSessionRow({
   session: TerminalSessionSummary;
   online: boolean;
   machineName: string;
-  onOpen: (() => void) | null;
+  onOpen: ((event: React.MouseEvent<HTMLButtonElement>) => void) | null;
 }) {
   const label = primarySessionLabel(session);
   const canOpen = online && !!onOpen;
@@ -527,6 +528,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   gridSets = EMPTY_GRID_SETS,
   activeItemId = null,
   handoffJobs = [],
+  crossMachineSyncActive = true,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -567,6 +569,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   toggleWorkSectionCollapsed: (sectionId: string) => void;
   sessionsGroupedByLane: Map<string, TerminalSessionSummary[]> | null;
   handoffJobs?: HandoffLaunchJob[];
+  crossMachineSyncActive?: boolean;
 }) {
   const navigate = useNavigate();
   const prsByLaneId = useLanePrsByLaneId();
@@ -574,8 +577,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // The Work sidebar is a union across every connected machine, always —
   // independent of which machine this tab is bound to. That is the whole point:
   // you see work in flight anywhere without switching tabs.
-  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion();
-  const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
+  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(crossMachineSyncActive);
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
@@ -1150,17 +1152,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   // "No sessions" must not claim an empty machine when another machine is busy.
   const hasForeignSessions = visibleForeignRows.length > 0;
 
-  const openForeignLane = useCallback(
-    (row: CrossMachineLaneRow) => {
-      if (!row.targetId || !row.projectId) return;
-      // Opening foreign work moves the tab's execution context to that machine —
-      // the same thing opening a remote project does today. Nothing is executed
-      // across machines behind the user's back.
-      void switchRemoteProject(row.targetId, row.projectId).catch(() => {});
-    },
-    [switchRemoteProject],
-  );
-
   const byLaneList = (
     <div className="space-y-1 px-2 pb-3">
       {orderedLanes.map((lane) => {
@@ -1253,12 +1244,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         );
       })}
       {visibleForeignRows.map((row) => {
-        const marker = markersByLaneId.get(row.lane.id) ?? null;
-        const collapsed = workCollapsedLaneIds.includes(row.lane.id);
+        const compositeLaneId = `${row.machineId}:${row.lane.id}`;
+        const marker = markersByLaneId.get(compositeLaneId) ?? null;
+        const collapsed = workCollapsedLaneIds.includes(compositeLaneId);
         return (
           <StickyGroupHeader
             key={`${row.machineId}:${row.lane.id}`}
-            sectionId={row.lane.id}
+            sectionId={compositeLaneId}
             icon={
               <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-fg/55">
                 <LaneIcon size={12} weight="regular" />
@@ -1274,7 +1266,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             // Offline machines keep every lane they last reported, dimmed and
             // read-only. A wifi blip must never reflow the sidebar.
             dimmed={!row.online}
-            onToggleCollapsed={() => toggleWorkLaneCollapsed(row.lane.id)}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(compositeLaneId)}
           >
             {row.sessions.map((session) => (
               <CrossMachineSessionRow
@@ -1282,7 +1274,8 @@ export const SessionListPane = React.memo(function SessionListPane({
                 session={session}
                 online={row.online}
                 machineName={row.machineName}
-                onOpen={() => openForeignLane(row)}
+                onOpen={(event) =>
+                  onSelectSession(session.id, event, row.sessions.map((candidate) => candidate.id))}
               />
             ))}
           </StickyGroupHeader>
@@ -1523,12 +1516,20 @@ export const SessionListPane = React.memo(function SessionListPane({
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pt-2"
         data-tour="work.crossLaneSwitch"
       >
-        {!hasAnySessions && !(isByLane && hasForeignSessions) ? (
+        {!hasAnySessions && !hasForeignSessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
             <div className="text-[11px] font-medium text-fg/70">No sessions</div>
             <div className="mt-1 text-[10px] text-muted-fg/40 leading-relaxed max-w-[180px]">
               Start a new session above.
+            </div>
+          </div>
+        ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
+          <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">
+            <Desktop size={16} weight="regular" className="mb-2 text-muted-fg/30" />
+            <div className="text-[11px] font-medium text-fg/70">Sessions are active on another machine</div>
+            <div className="mt-1 max-w-[210px] text-[10px] leading-relaxed text-muted-fg/45">
+              Group by lane to open cross-machine sessions.
             </div>
           </div>
         ) : isByTime ? (

@@ -3382,6 +3382,7 @@ export function AgentChatPane({
   // unchanged unpinned path.
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const laneCacheByProject = useAppStore((s) => s.laneCacheByProject);
+  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
   const openProjectBindings = useMemo<OpenProjectBinding[]>(() => {
     const bindings: OpenProjectBinding[] = [];
     const seen = new Set<string>();
@@ -3400,8 +3401,11 @@ export function AgentChatPane({
         displayName: projectInfoByRoot[root]?.displayName ?? root,
       });
     }
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      push(machine.binding);
+    }
     return bindings;
-  }, [openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectInfoByRoot]);
+  }, [crossMachineLanesByMachineId, openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectInfoByRoot]);
   const openProjectBindingsRef = useRef<OpenProjectBinding[]>(openProjectBindings);
   openProjectBindingsRef.current = openProjectBindings;
   const chatMachineRouter = useMemo(() => {
@@ -3417,12 +3421,17 @@ export function AgentChatPane({
       if (!cached) continue;
       sources.push({ bindingKey: binding.key, laneIds: cached.lanes.map((lane) => lane.id) });
     }
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      const binding = machine.binding;
+      if (!binding) continue;
+      sources.push({ bindingKey: binding.key, laneIds: machine.lanes.map((lane) => lane.id) });
+    }
     return createChatMachineRouter({
       activeBinding: projectBinding ?? null,
       openBindings: openProjectBindings,
       laneBindingIndex: buildLaneBindingIndex(sources),
     });
-  }, [laneCacheByProject, lanes, openProjectBindings, projectBinding]);
+  }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
@@ -3955,13 +3964,21 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const foreignSelectedLaneId = useRootAppStore((state) => {
+    if (!selectedSessionId || selectedSession) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === selectedSessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
   // The binding this chat's runtime calls must target, or null when the chat
   // lives on the tab's own binding (the common case: identical to before).
   // Held in a ref so call sites can read it without perturbing any existing
   // effect/callback dependency array.
   const chatRuntimePin = useMemo(
-    () => chatMachineRouter.pinForLane(selectedSession?.laneId ?? laneId),
-    [chatMachineRouter, laneId, selectedSession?.laneId],
+    () => chatMachineRouter.pinForLane(selectedSession?.laneId ?? foreignSelectedLaneId ?? laneId),
+    [chatMachineRouter, foreignSelectedLaneId, laneId, selectedSession?.laneId],
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
@@ -7397,9 +7414,9 @@ export function AgentChatPane({
             .catch(() => {});
         }
       }
-    });
+    }, chatRuntimePin);
     return unsubscribe;
-  }, [clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;

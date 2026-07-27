@@ -247,45 +247,7 @@ describe("CreateLaneDialog", () => {
 });
 
 function makeMachineProps(overrides: Partial<DialogProps> = {}): DialogProps {
-  return {
-    open: true,
-    onOpenChange: vi.fn(),
-    createLaneName: "lane-x",
-    setCreateLaneName: vi.fn(),
-    createMode: "primary",
-    setCreateMode: vi.fn(),
-    createParentLaneId: "",
-    setCreateParentLaneId: vi.fn(),
-    createBaseSource: "remote",
-    setCreateBaseSource: vi.fn(),
-    createBaseBranch: "origin/main",
-    setCreateBaseBranch: vi.fn(),
-    createImportBranch: "",
-    setCreateImportBranch: vi.fn(),
-    createChildBaseBranch: "",
-    setCreateChildBaseBranch: vi.fn(),
-    createBranches: [
-      { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main", lastCommitAuthor: "x", lastCommitDate: "" } as any,
-    ],
-    lanes: [],
-    onSubmit: vi.fn(),
-    busy: false,
-    error: null,
-    envInitProgress: null,
-    setupSteps: [],
-    templates: [],
-    selectedTemplateId: "",
-    setSelectedTemplateId: vi.fn(),
-    selectedColor: "#999",
-    setSelectedColor: vi.fn(),
-    selectedLinearIssue: null,
-    setSelectedLinearIssue: vi.fn(),
-    branchPullRequests: [],
-    currentGitUserName: "tester",
-    loadingBranches: false,
-    loadingBranchPullRequests: false,
-    ...overrides,
-  };
+  return makeProps(overrides);
 }
 
 function machine(overrides: Partial<LaneMachineOption> & { id: string; name: string }): LaneMachineOption {

@@ -17,16 +17,16 @@
  *   disconnect would make a wifi blip reflow half the sidebar away, which is
  *   strictly worse than the single-machine list this replaces.
  *
- * Performance shape: no polling anywhere. Refreshes are driven by the
- * connection-snapshot subscription the renderer already receives plus the
- * existing lane-lifecycle / session-changed events. Foreign reads are bounded,
- * timed out, and cancellable, and they never gate the local list — local lanes
- * paint first and foreign machines fill in.
+ * Performance shape: active-binding refreshes are event-driven. Other machines
+ * do not have a renderer change feed, so one shared, ref-counted five-second
+ * fallback refresh keeps them current. Foreign reads are bounded, timed out,
+ * generation-cancellable, and never gate the local list.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   LaneSummary,
+  OpenProjectBinding,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
@@ -56,6 +56,9 @@ const REFRESH_COALESCE_MS = 400;
 const MACHINE_READ_TIMEOUT_MS = 8_000;
 /** Upper bound on machines read at once, so ten paired machines can't fan out. */
 const MAX_PARALLEL_MACHINE_READS = 4;
+/** Fallback change feed for machines other than the active binding. */
+const FOREIGN_MACHINE_REFRESH_MS = 5_000;
+const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
 /** Foreign session reads are a sidebar preview, not an archive. */
 const FOREIGN_SESSION_LIMIT = 60;
 
@@ -212,7 +215,7 @@ export function resolveCrossMachineLaneMarkers(
     const sameBranchElsewhere = (machinesByBranch.get(branch)?.size ?? 0) >= 2;
     const mode: CrossMachineLaneMarker["mode"] =
       !row.online || manyForeignMachines || sameBranchElsewhere ? "name" : "glyph";
-    markers.set(row.lane.id, {
+    markers.set(`${row.machineId}:${row.lane.id}`, {
       machineId: row.machineId,
       machineName: row.machineName,
       online: row.online,
@@ -302,6 +305,15 @@ export function selectOtherMachineBranchStates(
   const others: MachineBranchState[] = [];
   for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
     if (entry.machineId === subjectMachineId) continue;
+    if (
+      !entry.online
+      && (
+        entry.lastSyncedAtMs == null
+        || Date.now() - entry.lastSyncedAtMs > OFFLINE_DIVERGENCE_MAX_AGE_MS
+      )
+    ) {
+      continue;
+    }
     for (const lane of entry.lanes) {
       if (normalizeBranchRef(lane.branchRef) !== subjectBranch) continue;
       others.push(
@@ -341,6 +353,8 @@ export type CrossMachineLaneScope = {
   scopeKey: string | null;
   /** Repo folder name, used to find the same checkout on other machines. */
   repoDisplayName: string | null;
+  /** Verified local origin URL; null means this repo has no usable origin. */
+  repoOriginUrl: string | null;
   /** Target id the tab is bound to; null when the tab is on this Mac. */
   boundTargetId: string | null;
   /** Project id on the bound machine, when the tab is bound to a remote one. */
@@ -354,21 +368,30 @@ type SyncRuntime = {
   generation: number;
   disposers: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
+  refreshTimer: ReturnType<typeof setInterval> | null;
 };
 
 const runtime: SyncRuntime = {
   connections: [],
-  scope: { scopeKey: null, repoDisplayName: null, boundTargetId: null, boundProjectId: null },
+  scope: {
+    scopeKey: null,
+    repoDisplayName: null,
+    repoOriginUrl: null,
+    boundTargetId: null,
+    boundProjectId: null,
+  },
   refCount: 0,
   generation: 0,
   disposers: [],
   timer: null,
+  refreshTimer: null,
 };
 
 function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean {
   return (
     a.scopeKey === b.scopeKey
     && a.repoDisplayName === b.repoDisplayName
+    && a.repoOriginUrl === b.repoOriginUrl
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
   );
@@ -450,6 +473,7 @@ async function readMachine(
   machineName: string,
   targetId: string,
   projectId: string,
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
   generation: number,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
@@ -484,6 +508,7 @@ async function readMachine(
       machineName,
       targetId,
       projectId,
+      binding,
       online: true,
       lanes: decodeForeignLanes(laneResult.result),
       sessions: decodeForeignSessions(sessionResult.result),
@@ -512,7 +537,7 @@ async function runRefresh(): Promise<void> {
   const options = deriveLaneMachineOptions({
     connections: runtime.connections,
     boundTargetId: scope.boundTargetId,
-    repoOriginUrl: resolveBoundRepoOriginUrl(scope),
+    repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
     repoDisplayName: scope.repoDisplayName,
   });
 
@@ -520,7 +545,8 @@ async function runRefresh(): Promise<void> {
     (option) =>
       option.id !== THIS_MACHINE_ID
       && option.targetId
-      && option.project?.projectId,
+      && option.project?.projectId
+      && option.repoMatch === "matched",
   );
   store.setCrossMachineMachinesOnline(targets.map((option) => option.id));
 
@@ -539,6 +565,16 @@ async function runRefresh(): Promise<void> {
           option.name,
           option.targetId as string,
           option.project?.projectId as string,
+          {
+            kind: "remote",
+            key: `remote:${option.targetId}:${option.project?.projectId}`,
+            targetId: option.targetId as string,
+            runtimeName: option.name,
+            ...(option.hostname ? { hostname: option.hostname } : {}),
+            projectId: option.project?.projectId as string,
+            rootPath: option.project?.rootPath as string,
+            displayName: option.project?.displayName as string,
+          },
           generation,
         );
       }
@@ -570,13 +606,18 @@ function attach(): void {
   if (!remoteRuntime) return;
   const unsubscribeSnapshot = remoteRuntime.onConnectionSnapshotChanged?.(applySnapshot);
   if (unsubscribeSnapshot) runtime.disposers.push(unsubscribeSnapshot);
-  // Foreign lane/session churn shows up here as local activity; ADE has no
-  // cross-machine change feed, and adding a poll is explicitly not allowed.
+  // These events cover the active binding. Other machines are covered by the
+  // shared bounded refresh below because preload exposes no per-target push
+  // subscription.
   const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh());
   if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
   const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
   if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
   void remoteRuntime.getConnectionSnapshot?.().then(applySnapshot).catch(() => {});
+  // The preload event pump follows the active binding only. A bounded refresh
+  // is therefore required for every other connected machine; without it their
+  // lane/session rows remain stale indefinitely.
+  runtime.refreshTimer = setInterval(scheduleRefresh, FOREIGN_MACHINE_REFRESH_MS);
 }
 
 function detach(): void {
@@ -584,6 +625,10 @@ function detach(): void {
   if (runtime.timer) {
     clearTimeout(runtime.timer);
     runtime.timer = null;
+  }
+  if (runtime.refreshTimer) {
+    clearInterval(runtime.refreshTimer);
+    runtime.refreshTimer = null;
   }
   for (const dispose of runtime.disposers.splice(0)) {
     try {
@@ -600,6 +645,13 @@ function detach(): void {
  */
 export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => void {
   const scopeChanged = !sameScope(runtime.scope, scope);
+  if (scopeChanged) {
+    // Project-tab transitions can briefly overlap React effect cleanup. Retarget
+    // the shared runtime immediately; rejecting the new scope would leave it
+    // permanently unsubscribed once the previous effect cleans up.
+    runtime.generation += 1;
+    rootAppStoreApi.getState().applyCrossMachineLaneScope(scope.scopeKey);
+  }
   runtime.scope = scope;
   runtime.refCount += 1;
   if (runtime.refCount === 1) attach();
@@ -618,6 +670,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,
+    repoOriginUrl: null,
     boundTargetId: null,
     boundProjectId: null,
   };
@@ -633,26 +686,65 @@ export function resetCrossMachineLaneSyncForTest(): void {
  * The returned object is memoized on the store slices it derives from, so a tick
  * that changes nothing hands back identical references and re-renders nothing.
  */
-export function useCrossMachineLaneUnion(): CrossMachineUnion {
+export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const [localRepoIdentity, setLocalRepoIdentity] = useState<{
+    rootPath: string;
+    originUrl: string | null;
+  } | null>(null);
 
   const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
   const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const boundProjectId = projectBinding?.kind === "remote" ? projectBinding.projectId : null;
+  const repoOriginUrl = boundTargetId
+    ? null
+    : localRepoIdentity?.rootPath === projectRoot
+      ? localRepoIdentity.originUrl
+      : undefined;
+
+  useEffect(() => {
+    if (boundTargetId || !projectRoot) return;
+    let cancelled = false;
+    const listRecent = window.ade?.project?.listRecent;
+    if (typeof listRecent !== "function") {
+      setLocalRepoIdentity({ rootPath: projectRoot, originUrl: null });
+      return;
+    }
+    void listRecent()
+      .then((projects) => {
+        if (cancelled) return;
+        const project = projects.find((candidate) => candidate.rootPath === projectRoot);
+        setLocalRepoIdentity({ rootPath: projectRoot, originUrl: project?.gitOriginUrl ?? null });
+      })
+      .catch(() => {
+        if (!cancelled) setLocalRepoIdentity({ rootPath: projectRoot, originUrl: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [boundTargetId, projectRoot]);
 
   useEffect(
-    () =>
-      startCrossMachineLaneSync({
+    () => {
+      if (!active) return undefined;
+      if (repoOriginUrl === undefined) {
+        rootAppStoreApi.getState().applyCrossMachineLaneScope(scopeKey);
+        return undefined;
+      }
+      return startCrossMachineLaneSync({
         scopeKey,
         repoDisplayName,
+        repoOriginUrl,
         boundTargetId,
         boundProjectId,
-      }),
-    [boundProjectId, boundTargetId, repoDisplayName, scopeKey],
+      });
+    },
+    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey],
   );
 
   const rows = useMemo(

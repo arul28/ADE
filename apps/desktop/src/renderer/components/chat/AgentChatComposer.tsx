@@ -75,7 +75,7 @@ import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
-import { resolveThisMachineProjectRoot } from "./thisMachineProjectRoot";
+import { switchToThisMachineProject } from "./thisMachineProjectRoot";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import {
@@ -1669,18 +1669,12 @@ export function AgentChatComposer({
       // THIS repo's checkout on that machine — switching repositories behind
       // the user's back is not a machine switch.
       if (machineId === COMPOSER_LOCAL_MACHINE_ID) {
-        const resolved = resolveThisMachineProjectRoot({
+        void switchToThisMachineProject({
           projectBinding,
           openProjectTabRoots,
           localProjectRootPath,
-        });
-        if (!resolved.ok) {
-          setMachineSwitchError(resolved.message);
-          return;
-        }
-        void switchProjectToPath(resolved.rootPath).catch((reason: unknown) => {
-          setMachineSwitchError(reason instanceof Error ? reason.message : String(reason));
-        });
+          switchProjectToPath,
+        }).then(setMachineSwitchError);
         return;
       }
       const tab = openRemoteProjectTabs.find((entry) => entry.targetId === machineId);

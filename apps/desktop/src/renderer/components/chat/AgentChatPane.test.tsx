@@ -8750,4 +8750,35 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.objectContaining({ sessionId: "chat-on-b" }),
     );
   });
+
+  it("pins a union chat even when its machine has no project tab", async () => {
+    bindWindowToMachineA({ includeMachineB: false });
+    useAppStore.setState({
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "machine-b",
+          targetId: "target-b",
+          projectId: "project-b",
+          binding: machineB,
+          online: true,
+          lanes: [{ id: "lane-b", name: "lane on B" }],
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    } as any);
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Union chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+
+    renderPane(session);
+
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-b" }),
+      machineB,
+    ));
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
 });

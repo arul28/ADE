@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../shared/types";
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
@@ -128,15 +128,53 @@ describe("offline machines keep their lanes", () => {
   });
 
   it("keeps identity stable when nothing changed, so selectors don't re-render", () => {
+    const lane = makeLane();
+    vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
     useAppStore.getState().mergeCrossMachineLanes({
       machineId: "target-studio",
       machineName: "Mac Studio (12)",
       online: true,
-      lanes: [makeLane()],
+      lanes: [lane],
     });
+    const beforeEntry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    vi.setSystemTime(new Date("2026-07-27T10:00:05Z"));
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      online: true,
+      lanes: [lane],
+    });
+    const refreshedEntry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    expect(refreshedEntry.lanes).toBe(beforeEntry.lanes);
+    expect(refreshedEntry.lastSyncedAtMs).toBeGreaterThan(beforeEntry.lastSyncedAtMs ?? 0);
     const before = useAppStore.getState().crossMachineLanesByMachineId;
     useAppStore.getState().setCrossMachineMachinesOnline(["target-studio"]);
     expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(before);
+    vi.useRealTimers();
+  });
+
+  it("reuses decoded lane and session arrays when their content is unchanged", () => {
+    const lane = makeLane();
+    const session = makeSession();
+    const store = useAppStore.getState();
+    store.mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      lanes: [lane],
+      sessions: [session],
+    });
+    const before = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      lanes: [{ ...lane }],
+      sessions: [{ ...session }],
+    });
+    const after = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+
+    expect(after.lanes).toBe(before.lanes);
+    expect(after.sessions).toBe(before.sessions);
   });
 
   it("drops the union when the repo scope changes", () => {
@@ -168,15 +206,15 @@ describe("adaptive machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/foreign" })],
           sessions: [],
-          lastSyncedAtMs: 1,
+          lastSyncedAtMs: Date.now(),
           error: null,
         },
       },
     });
     const markers = resolveCrossMachineLaneMarkers(rows);
     expect(markers.has("lane-local")).toBe(false);
-    expect(markers.get("lane-foreign")?.machineName).toBe("Mac Studio (12)");
-    expect(markers.get("lane-foreign")?.mode).toBe("glyph");
+    expect(markers.get("target-studio:lane-foreign")?.machineName).toBe("Mac Studio (12)");
+    expect(markers.get("target-studio:lane-foreign")?.mode).toBe("glyph");
   });
 
   it("renders no markers at all on a single-machine setup", () => {
@@ -197,12 +235,12 @@ describe("adaptive machine marker", () => {
           online: false,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/foreign" })],
           sessions: [],
-          lastSyncedAtMs: 1,
+          lastSyncedAtMs: Date.now(),
           error: null,
         },
       },
     });
-    expect(resolveCrossMachineLaneMarkers(rows).get("lane-foreign")?.mode).toBe("name");
+    expect(resolveCrossMachineLaneMarkers(rows).get("target-studio:lane-foreign")?.mode).toBe("name");
   });
 
   it("names machines when two distinct foreign machines are visible at once", () => {
@@ -234,8 +272,8 @@ describe("adaptive machine marker", () => {
       },
     });
     const markers = resolveCrossMachineLaneMarkers(rows);
-    expect(markers.get("lane-a")?.mode).toBe("name");
-    expect(markers.get("lane-b")?.mode).toBe("name");
+    expect(markers.get("a:lane-a")?.mode).toBe("name");
+    expect(markers.get("b:lane-b")?.mode).toBe("name");
   });
 
   it("names the machine when the same branch exists here too", () => {
@@ -255,7 +293,7 @@ describe("adaptive machine marker", () => {
         },
       },
     });
-    const marker = resolveCrossMachineLaneMarkers(rows).get("lane-foreign");
+    const marker = resolveCrossMachineLaneMarkers(rows).get("a:lane-foreign");
     expect(marker?.sameBranchElsewhere).toBe(true);
     expect(marker?.mode).toBe("name");
     // The name is always reachable, glyph mode included.
@@ -358,12 +396,33 @@ describe("selectOtherMachineBranchStates", () => {
             }),
           ],
           sessions: [],
-          lastSyncedAtMs: 1,
+          lastSyncedAtMs: Date.now(),
           error: null,
         },
       },
     });
     expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-local")).toHaveLength(1);
+  });
+
+  it("ignores offline branch state that was never synced", () => {
+    useAppStore.setState({
+      lanes: [makeLane({ id: "lane-local", branchRef: "feature/shared" })],
+      crossMachineLanesByMachineId: {
+        a: {
+          machineId: "a",
+          machineName: "Mac Studio (12)",
+          targetId: "a",
+          projectId: "p",
+          online: false,
+          lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/shared" })],
+          sessions: [],
+          lastSyncedAtMs: null,
+          error: "not yet reachable",
+        },
+      },
+    });
+
+    expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-local")).toHaveLength(0);
   });
 });
 

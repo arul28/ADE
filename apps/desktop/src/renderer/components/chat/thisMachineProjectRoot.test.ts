@@ -31,7 +31,7 @@ describe("resolveThisMachineProjectRoot", () => {
     ).toEqual({ ok: true, rootPath: "/Users/admin/Projects/ADE" });
   });
 
-  it("picks this repo's local checkout, not the first open tab", () => {
+  it("refuses a name-only local checkout match", () => {
     expect(
       resolveThisMachineProjectRoot({
         projectBinding: remoteBinding,
@@ -39,7 +39,7 @@ describe("resolveThisMachineProjectRoot", () => {
         openProjectTabRoots: ["/Users/admin/Projects/versic", "/Users/admin/Projects/ADE"],
         localProjectRootPath: null,
       }),
-    ).toEqual({ ok: true, rootPath: "/Users/admin/Projects/ADE" });
+    ).toEqual({ ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE });
   });
 
   it("refuses to switch when no local checkout of this repo is open", () => {

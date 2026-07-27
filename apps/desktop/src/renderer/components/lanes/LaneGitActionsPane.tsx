@@ -1380,7 +1380,9 @@ export function LaneGitActionsPane({
     currentMachineHeadSha,
     currentMachineId,
     currentMachineName,
+    crossMachineLanesByMachineId,
     lane,
+    lanes,
     otherMachineBranchStates,
     syncStatus,
   ]);

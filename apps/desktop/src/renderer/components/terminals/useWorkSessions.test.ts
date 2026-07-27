@@ -30,6 +30,7 @@ function resetFakeAppStoreState() {
     workViewByProject: {},
     setWorkViewState: setWorkViewStateSpy,
     sessionsCacheByProject: {},
+    crossMachineLanesByMachineId: {},
   };
   routerLocation.pathname = "/work";
   routerLocation.search = "";
@@ -135,6 +136,7 @@ vi.mock("../../state/appStore", () => {
     selectActiveProjectStateKey,
     useAppStore,
     useAppStoreApi,
+    useRootAppStore: useAppStore,
   };
 });
 
@@ -706,7 +708,8 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     (window as any).ade.pty.create
       .mockResolvedValueOnce({ sessionId: "foreign-open", ptyId: "pty-foreign", pid: 41 })
-      .mockResolvedValueOnce({ sessionId: "foreign-closed", ptyId: "pty-closed", pid: 42 });
+      .mockResolvedValueOnce({ sessionId: "foreign-closed", ptyId: "pty-closed", pid: 42 })
+      .mockResolvedValueOnce({ sessionId: "local-background", ptyId: "pty-local", pid: 43 });
 
     const { result } = renderHook(() => useWorkSessions());
     await waitFor(() => {
@@ -734,6 +737,83 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.sessions).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "foreign-closed" }),
     ]));
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Open background local tab",
+        pin: {
+          kind: "local",
+          key: "local:/fake/project",
+          rootPath: "/fake/project",
+          displayName: "Fake",
+        },
+      });
+    });
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "local-background", ptyId: "pty-local" }),
+    ]));
+  });
+
+  it("opens a foreign union chat in the Work view without adding it to the local session list", async () => {
+    const foreign = makeSession("foreign-chat", "foreign-lane");
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: {
+        "/fake/project": {
+          openItemIds: ["foreign-chat"],
+          activeItemId: "foreign-chat",
+          selectedItemId: "foreign-chat",
+          gridSets: [],
+          activeGridSetId: null,
+          draftKind: "chat",
+          orchestratorEnabled: false,
+          draftLaneId: null,
+          laneFilter: "all",
+          search: "",
+          sessionListOrganization: "by-lane",
+          workCollapsedLaneIds: [],
+          workCollapsedSectionIds: [],
+          workCollapsedTabGroupIds: [],
+          workFocusSessionsHidden: false,
+          workSidebarOpen: false,
+          workSidebarTab: "git",
+          workSidebarWidthPct: 36,
+          laneSessionOrder: {},
+          pinnedSessionIds: [],
+        },
+      },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-b",
+          projectId: "project-b",
+          binding: {
+            kind: "remote",
+            key: "remote:target-b:project-b",
+            targetId: "target-b",
+            runtimeName: "MacBook Pro (97)",
+            projectId: "project-b",
+            rootPath: "/repo-b",
+            displayName: "Repo B",
+          },
+          online: true,
+          lanes: [],
+          sessions: [foreign],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+
+    expect(result.current.sessions).not.toContainEqual(foreign);
+    expect(result.current.visibleSessions).toContainEqual(foreign);
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("foreign-lane");
   });
 
   it("launchPtySession carries its project pin into stopRuntime", async () => {
