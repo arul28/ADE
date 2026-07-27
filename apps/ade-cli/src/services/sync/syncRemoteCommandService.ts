@@ -178,6 +178,9 @@ import type {
   SyncStartCliSessionResult,
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
+  LaneBranchDriftResolution,
+  SessionSettleOverride,
+  SessionWakeReason,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
   TerminalToolType,
@@ -188,6 +191,10 @@ import type {
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import {
+  parseSessionSettleOverride,
+  SESSION_WAKE_REASONS,
+} from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import {
   PERSONAL_CHAT_ACTIONS,
@@ -266,6 +273,7 @@ import type { createUsageTrackingService } from "../../../../desktop/src/main/se
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
+import { settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
@@ -682,6 +690,70 @@ function parseSessionIdArgs(value: Record<string, unknown>, action: string): { s
   return {
     sessionId: requireString(value.sessionId, `${action} requires sessionId.`),
   };
+}
+
+const REMOTE_WAKE_REASONS: readonly SessionWakeReason[] = SESSION_WAKE_REASONS;
+
+function parseRemoteSessionIds(value: Record<string, unknown>, action: string): string[] {
+  if (!Array.isArray(value.sessionIds)) throw new Error(`${action} requires a sessionIds array.`);
+  const ids = value.sessionIds.filter(
+    (id): id is string => typeof id === "string" && id.trim().length > 0,
+  );
+  if (!ids.length) throw new Error(`${action} requires at least one session id.`);
+  return ids;
+}
+
+/**
+ * Snooze deadlines arrive from clients that have no local clock authority, so
+ * they must be a parseable ISO timestamp; `sessionService` would otherwise
+ * silently return false and the client would show a no-op.
+ *
+ * A deadline at or before now is rejected for the same reason: snoozed-ness is
+ * DERIVED (`snoozedUntilMs > Date.now()`), so writing a past deadline "succeeds"
+ * and leaves the row exactly as visible as it was — a silent no-op the caller
+ * would report as done. The CLI's `--until` and the desktop CTO tool reject
+ * past deadlines identically; the sync path is the third door onto the same
+ * write and must not be the lenient one.
+ */
+function parseRemoteSnoozeDeadline(
+  value: Record<string, unknown>,
+  action: string,
+  nowMs: number = Date.now(),
+): string {
+  const raw = asTrimmedString(value.untilIso) ?? asTrimmedString(value.snoozedUntil);
+  if (!raw) throw new Error(`${action} requires an ISO-8601 untilIso.`);
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${action} requires an ISO-8601 untilIso; received '${raw}'.`);
+  }
+  if (parsed.getTime() <= nowMs) {
+    throw new Error(`${action} requires untilIso to be in the future; received '${raw}'.`);
+  }
+  return parsed.toISOString();
+}
+
+function parseRemoteWakeReason(value: unknown, action: string): SessionWakeReason {
+  if (value == null || value === "") return "manual";
+  if (typeof value === "string" && (REMOTE_WAKE_REASONS as readonly string[]).includes(value)) {
+    return value as SessionWakeReason;
+  }
+  throw new Error(`${action} reason must be one of: ${REMOTE_WAKE_REASONS.join(", ")}.`);
+}
+
+function parseRemoteSettleOverride(value: unknown, action: string): SessionSettleOverride | null {
+  const parsed = parseSessionSettleOverride(value);
+  if (parsed === undefined) {
+    throw new Error(`${action} override must be 'settled', 'active', or null.`);
+  }
+  return parsed;
+}
+
+function parseRemoteBranchDriftResolution(
+  value: unknown,
+  action: string,
+): LaneBranchDriftResolution {
+  if (value === "switch-back" || value === "keep-head") return value;
+  throw new Error(`${action} resolution must be 'switch-back' or 'keep-head'.`);
 }
 
 function parseAgentChatContextUsageArgs(value: Record<string, unknown>): AgentChatContextUsageArgs {
@@ -3362,15 +3434,21 @@ function sessionStatusBucket(argsIn: {
   lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
   settledAt?: string | null;
+  settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
   // an escalated ask outranks everything; a declared settle is the quiet
   // bucket but only AT REST (background wakes count as running); a dead chat
-  // turn is not running.
+  // turn is not running. The tri-state override is consulted at that same
+  // declared-settle tier: "active" is an explicit keep-active pin that
+  // suppresses settle, "settled" behaves like a declared settle.
   if (argsIn.attentionRequestedAt) return "awaiting-input";
-  if (argsIn.settledAt && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
+  const effectiveSettled = argsIn.settleOverride === "active"
+    ? false
+    : argsIn.settleOverride === "settled" || Boolean(argsIn.settledAt);
+  if (effectiveSettled && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
   if (argsIn.lastTurnFailedAt) return "ended";
   if (argsIn.status === "running") {
     if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
@@ -3388,11 +3466,18 @@ function sessionStatusBucket(argsIn: {
 
 function summarizeLaneRuntime(
   laneId: string,
+  // Declares every field sessionStatusBucket actually reads. These arrive on the
+  // rows from sessionService.list() at runtime; leaving them off the type meant the
+  // settled tier looked dead here even though it was being evaluated.
   sessions: Array<{
     laneId: string;
     status: string;
     lastOutputPreview: string | null;
     runtimeState?: string | null;
+    settledAt?: string | null;
+    settleOverride?: "settled" | "active" | null;
+    attentionRequestedAt?: string | null;
+    lastTurnFailedAt?: string | null;
   }>,
 ): LaneListSnapshot["runtime"] {
   let runningCount = 0;
@@ -3555,6 +3640,19 @@ type RemoteCommandRegistrationDeps = {
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
+  register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
+    args.laneService.getBranchDrift({
+      laneId: requireString(payload.laneId, "lanes.getBranchDrift requires laneId."),
+    }));
+  register("lanes.resolveBranchDrift", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const expectedHeadBranchRef = asTrimmedString(payload.expectedHeadBranchRef);
+    return args.laneService.resolveBranchDrift({
+      laneId: requireString(payload.laneId, "lanes.resolveBranchDrift requires laneId."),
+      resolution: parseRemoteBranchDriftResolution(payload.resolution, "lanes.resolveBranchDrift"),
+      ...(expectedHeadBranchRef ? { expectedHeadBranchRef } : {}),
+      ...(payload.acknowledgeActiveWork === true ? { acknowledgeActiveWork: true } : {}),
+    });
+  });
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
     const listArgs = parseListLanesArgs(payload);
     const refreshed = await args.laneService.refreshSnapshots(listArgs);
@@ -3769,6 +3867,69 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
     return { ok: true };
+  });
+  // ---------------------------------------------------------------------
+  // Session lifecycle over sync. Mobile and the hosted web client have no
+  // local DB, so settle/snooze/wake are only reachable through these.
+  // ---------------------------------------------------------------------
+  register("session.settleSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.settleSession requires sessionId.");
+    const outcome = asTrimmedString(payload.outcome);
+    const settled = await settleTerminalSession({
+      sessionId,
+      opts: {
+        ...(outcome ? { outcome } : {}),
+        ...(payload.dismissPendingInput === true ? { dismissPendingInput: true } : {}),
+      },
+      sessionService: args.sessionService,
+      agentChatService: args.agentChatService ?? null,
+      ptyService: args.ptyService,
+    });
+    if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
+    return { ok: true, sessionId };
+  });
+  register("session.unsettleSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.unsettleSession requires sessionId.");
+    return { ok: args.sessionService.unsettleSession(sessionId), sessionId };
+  });
+  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.sessionService.settleSessions(parseRemoteSessionIds(payload, "session.settleSessions")));
+  register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
+    args.sessionService.unsettleSessions(parseRemoteSessionIds(payload, "session.unsettleSessions"));
+    return { ok: true };
+  });
+  register("session.snoozeSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.snoozeSession requires sessionId.");
+    const untilIso = parseRemoteSnoozeDeadline(payload, "session.snoozeSession");
+    const ok = args.sessionService.snoozeSession(sessionId, untilIso);
+    if (!ok) throw new Error(`Session '${sessionId}' was not found.`);
+    return { ok, sessionId, snoozedUntil: untilIso };
+  });
+  register("session.snoozeSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.sessionService.snoozeSessions(
+      parseRemoteSessionIds(payload, "session.snoozeSessions"),
+      parseRemoteSnoozeDeadline(payload, "session.snoozeSessions"),
+    ));
+  register("session.wakeSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.wakeSession requires sessionId.");
+    const reason = parseRemoteWakeReason(payload.reason, "session.wakeSession");
+    return { ok: args.sessionService.wakeSession(sessionId, reason), sessionId, reason };
+  });
+  register("session.wakeSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.sessionService.wakeSessions(
+      parseRemoteSessionIds(payload, "session.wakeSessions"),
+      parseRemoteWakeReason(payload.reason, "session.wakeSessions"),
+    ));
+  register("session.setSettleOverride", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.setSettleOverride requires sessionId.");
+    const override = parseRemoteSettleOverride(payload.override, "session.setSettleOverride");
+    const ok = args.sessionService.setSettleOverride(sessionId, override);
+    if (!ok) throw new Error(`Session '${sessionId}' was not found.`);
+    return { ok, sessionId, settleOverride: override };
+  });
+  register("session.clearWokeMarker", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "session.clearWokeMarker requires sessionId.");
+    return { ok: args.sessionService.clearWokeMarker(sessionId), sessionId };
   });
   register("work.runQuickCommand", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseQuickCommandArgs(payload);

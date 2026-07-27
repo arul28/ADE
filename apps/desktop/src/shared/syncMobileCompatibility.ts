@@ -10,6 +10,16 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.completeLinearMobileOAuth",
   "cto.setLinearToken",
   "cto.clearLinearToken",
+  // Session lifecycle. The phone gates its settle/snooze affordances on these
+  // appearing in hello_ok.features.commandRouting.actions, so they must be
+  // advertised — but they stay OPTIONAL: shipped builds predating the feature
+  // would otherwise be flipped into "limited" mode against a newer host.
+  "session.settleSessions",
+  "session.unsettleSessions",
+  "session.setSettleOverride",
+  "session.snoozeSession",
+  "session.wakeSession",
+  "session.clearWokeMarker",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

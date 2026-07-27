@@ -26,6 +26,27 @@ function createLogger() {
   } as const;
 }
 
+/**
+ * Every unique index on `table` other than the primary key — i.e. exactly what
+ * `crsql_as_crr` refuses to turn into a CRR.
+ *
+ * Must NOT be written as `sqlite_master.sql like '%unique%'`: `sql` is NULL for
+ * implicitly created indexes, so a UNIQUE column/table constraint (which yields
+ * `sqlite_autoindex_<table>_N`) would never match and the guard would pass on
+ * the very schema it exists to catch. `pragma index_list` reports those, with
+ * `origin` distinguishing 'pk' (allowed) from 'u' (UNIQUE constraint) and
+ * 'c' (CREATE UNIQUE INDEX).
+ */
+function blockingUniqueIndexes(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  table: string,
+): { name: string; origin: string }[] {
+  return db
+    .all<{ name: string; unique: number; origin: string }>(`pragma index_list('${table}')`)
+    .filter((index) => Number(index.unique) === 1 && index.origin !== "pk")
+    .map((index) => ({ name: index.name, origin: index.origin }));
+}
+
 function makeProjectRoot(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
@@ -256,6 +277,36 @@ describe("lane_linear_issue_links schema", () => {
   });
 });
 
+describe("terminal_sessions snooze + settle-override schema", () => {
+  it("adds the columns as nullable text", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-terminal-sessions-snooze-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    const columns = db.all<{ name: string; type: string; notnull: number }>(
+      "pragma table_info('terminal_sessions')",
+    );
+    for (const name of ["settle_override", "snoozed_until", "snoozed_at", "woke_at", "woke_reason"]) {
+      const column = columns.find((entry) => entry.name === name);
+      expect(column, `${name} column missing`).toBeTruthy();
+      expect(column?.type.toLowerCase()).toBe("text");
+      // Nullable is mandatory: these columns replicate to iOS through
+      // cr-sqlite and existing rows must merge without a value.
+      expect(column?.notnull).toBe(0);
+    }
+  });
+
+  it("carries no non-PK unique index that would block crsql_as_crr", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-terminal-sessions-index-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(blockingUniqueIndexes(db, "terminal_sessions")).toEqual([]);
+  });
+});
+
 describe("session_linear_issues schema", () => {
   it("creates the table with session/lane/issue columns", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-session-linear-cols-");
@@ -289,10 +340,7 @@ describe("session_linear_issues schema", () => {
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
-    const uniqueIndexes = db.all<{ name: string }>(
-      "select name from sqlite_master where type = 'index' and tbl_name = 'session_linear_issues' and sql like '%unique%'",
-    );
-    expect(uniqueIndexes).toHaveLength(0);
+    expect(blockingUniqueIndexes(db, "session_linear_issues")).toEqual([]);
   });
 });
 

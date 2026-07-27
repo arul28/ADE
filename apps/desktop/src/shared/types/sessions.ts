@@ -69,6 +69,64 @@ export function isTrackedAgentCliToolType(
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
+/**
+ * Tri-state settle override (terminal_sessions.settle_override). It is
+ * consulted by `canonicalSessionState()` BEFORE the derived "exit 0 means
+ * done" rule:
+ *   null       — no override; the derived rules decide,
+ *   "settled"  — behaves exactly like a declared settle,
+ *   "active"   — explicit keep-active pin that beats derived settle, so a
+ *                clean PTY exit stops being permanently pinned to the quiet
+ *                tier with no lifecycle action available.
+ * Cleared on real activity at the same write sites that clear `settled_at`.
+ */
+export type SessionSettleOverride = "settled" | "active";
+
+/**
+ * Why a snoozed session woke. Persisted on `terminal_sessions.woke_reason` so
+ * the row can show a "woke" marker explaining itself until the user visits it.
+ *   "timer"         — the snooze window elapsed (DERIVED from snoozed_until),
+ *   "needs_you"     — a pending approval / input request appeared,
+ *   "error"         — a session error strictly newer than snoozed_at,
+ *   "turn_complete" — a running turn finished,
+ *   "manual"        — the user woke it by hand.
+ */
+export const SESSION_WAKE_REASONS = [
+  "timer",
+  "needs_you",
+  "error",
+  "turn_complete",
+  "manual",
+] as const;
+
+export type SessionWakeReason = typeof SESSION_WAKE_REASONS[number];
+
+/**
+ * The one parser for a settle-override value crossing a boundary — IPC args,
+ * sync-command JSON, CLI flags, a SQLite text column.
+ *
+ * Callers previously hand-rolled this four times with three different
+ * behaviors: the registry and sync parsers were case-sensitive and threw, while
+ * the service lowercased and silently returned null — so `"Settled"` was
+ * rejected over IPC but accepted underneath it, and a typo like `"activ"`
+ * silently CLEARED a pin instead of failing. Returning `undefined` for
+ * unrecognized input lets throwing call sites keep their own error message
+ * while non-throwing ones can no longer mistake garbage for "clear".
+ *
+ * `"clear"` / `"none"` / `""` / null are the explicit clear sentinels — iOS
+ * sends the string because JSON null is not representable in its arg dict.
+ */
+export function parseSessionSettleOverride(
+  value: unknown,
+): SessionSettleOverride | null | undefined {
+  if (value == null) return null;
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().toLowerCase();
+  if (text === "" || text === "clear" || text === "none") return null;
+  if (text === "settled" || text === "active") return text;
+  return undefined;
+}
+
 export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
 
 export type TerminalResumeTargetKind = "session" | "thread";
@@ -158,6 +216,32 @@ export type TerminalSessionSummary = {
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
   lastTurnFailedAt?: string | null;
+  /**
+   * Tri-state settle override (terminal_sessions.settle_override). Optional for
+   * migration tolerance; null/undefined both mean "no override". Unlike
+   * `settledAt` this is a *lifecycle* control that outranks the derived
+   * exit-0 auto-settle in `canonicalSessionState()`.
+   */
+  settleOverride?: SessionSettleOverride | null;
+  /**
+   * Snooze is a synced VISIBILITY OVERLAY, never a lifecycle phase — it does
+   * not touch `canonicalSessionState()`, only where the UI files the row.
+   * `snoozedUntil` is the derived-expiry deadline (there is no scheduler: every
+   * surface compares it to now via `isSessionSnoozed`). `snoozedAt` is when the
+   * snooze was taken and is load-bearing for early wake — an error is only a
+   * hand-raise when it is strictly newer than `snoozedAt`, otherwise the error
+   * you snoozed on top of would instantly re-wake the row. Nullable-ISO
+   * semantics match `settledAt` / `lastActivityAt`.
+   */
+  snoozedUntil?: string | null;
+  snoozedAt?: string | null;
+  /**
+   * "Woke" marker: set when a snooze is cleared, so the UI can explain why the
+   * row came back. `wokeAt` is nullable-ISO; the UI clears both on visit
+   * (`sessionService.clearWokeMarker`).
+   */
+  wokeAt?: string | null;
+  wokeReason?: SessionWakeReason | null;
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;

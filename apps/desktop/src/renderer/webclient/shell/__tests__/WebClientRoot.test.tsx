@@ -122,6 +122,9 @@ function syncClient(overrides: Record<string, unknown> = {}): AdeSyncClient {
     listEnvironments: vi.fn(async () => []),
     pruneAccountOwnedEnvironments: vi.fn(async () => pruneResult([])),
     subscribe: vi.fn(() => () => undefined),
+    // Feature detection for the host's `session.*` command namespace, read by
+    // the session-lifecycle chrome the shell installs on mount.
+    getCommandDescriptors: vi.fn(() => []),
     onProjectCatalog: vi.fn(() => () => undefined),
     onActiveProjectChanged: vi.fn(() => () => undefined),
     ...overrides,

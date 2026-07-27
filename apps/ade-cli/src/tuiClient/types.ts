@@ -275,7 +275,10 @@ export type RightPaneContent =
       rows: string[];
       emptyText?: string;
       action?: {
-        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret";
+        // "snooze-duration" rows are duration choices, not sessions: the ids are
+        // SnoozeDurationKey values and the target session is held alongside the
+        // pane state in app.tsx.
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret" | "snooze-duration";
         ids: string[];
       };
     }

@@ -78,8 +78,41 @@ extension WorkRootScreen {
           sessionPresentation = nextPresentation
         }
         sessionPresentationRebuildTask = nil
+        // Re-arm unconditionally, even when the presentation was unchanged: the
+        // deadline this rebuild just crossed is gone, and the next one has to be
+        // scheduled off the rows that are actually on screen.
+        armSnoozeRegroupRefresh(sessions: nextPresentation.mergedSessions)
       }
     }
+  }
+
+  /// Snooze expiry is DERIVED from the clock (`isSessionSnoozed`) — there is no
+  /// scheduler and no persisted wake event, on any surface. But this screen
+  /// CACHES the grouped output in `sessionPresentation`, so a lapsed deadline
+  /// would otherwise leave the row parked in the Snoozed tail until some
+  /// unrelated change forced a rebuild. Mirrors the desktop `useWorkSessions`
+  /// fix: exactly one pending wait, armed only while something is snoozed,
+  /// fired at the NEAREST deadline, clamped so the ~100-year "Until I'm asked"
+  /// preset can't be scheduled literally. Not a fixed-interval poll.
+  @MainActor
+  func armSnoozeRegroupRefresh(sessions: [TerminalSessionSummary]) {
+    snoozeRegroupTask?.cancel()
+    snoozeRegroupTask = nil
+    guard let delay = workSnoozeRegroupDelay(sessions: sessions) else { return }
+    snoozeRegroupTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled else { return }
+      snoozeRegroupTask = nil
+      // Feeds `sessionPresentationTaskKey`, which re-runs the rebuild against a
+      // fresh `Date()` and re-arms the next wait from there.
+      snoozeEpoch &+= 1
+    }
+  }
+
+  @MainActor
+  func cancelSnoozeRegroupRefresh() {
+    snoozeRegroupTask?.cancel()
+    snoozeRegroupTask = nil
   }
 
   @MainActor
@@ -93,6 +126,7 @@ extension WorkRootScreen {
     sessionPresentationRebuildTask?.cancel()
     sessionPresentationRebuildTask = nil
     sessionPresentationRebuildGeneration += 1
+    cancelSnoozeRegroupRefresh()
     loadedProjectionProjectId = nil
     sessions = []
     lanes = []
@@ -360,6 +394,82 @@ extension WorkRootScreen {
     }
   }
 
+  // MARK: - Session lifecycle (ADE-125)
+  //
+  // Every one of these is a host command: the phone is a controller and never
+  // runs agents, so it never owns a lifecycle column. `SyncService` writes the
+  // column locally first (so the row doesn't flicker), rolls that back if the
+  // host rejects, and `reload()` reconciles against the replicated truth.
+
+  private func runSessionLifecycle(_ work: @escaping () async throws -> Void) {
+    Task {
+      do {
+        try await work()
+        await reload()
+      } catch {
+        ADEHaptics.error()
+        let message = error.localizedDescription
+        // Reconcile against replicated truth first — `SyncService` has already
+        // rolled the optimistic column back — and only then surface the
+        // failure. This must NOT go through `errorMessage`: every successful
+        // projection load clears that (`reload()` here, and
+        // `reloadFromPersistedProjection()` on the very next CRDT tick, which
+        // the rollback write itself schedules), so a host rejection would
+        // leave nothing but a haptic. `actionErrorMessage` is the surface
+        // bulk actions already use for exactly this.
+        await reload()
+        actionErrorMessage = message
+      }
+    }
+  }
+
+  func settleSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.settleSession(sessionId: session.id)
+    }
+  }
+
+  func unsettleSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.unsettleSession(sessionId: session.id)
+    }
+  }
+
+  /// The explicit keep-active pin. Suppresses settle — derived (a clean exit)
+  /// and declared alike — so a finished PTY keeps a real lifecycle action
+  /// instead of being stuck in the quiet tier forever.
+  func keepSessionActive(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.setSessionSettleOverride(sessionId: session.id, override: .active)
+    }
+  }
+
+  func snoozeSession(_ session: TerminalSessionSummary, duration: WorkSnoozeDuration) {
+    guard let deadline = duration.deadline() else { return }
+    runSessionLifecycle { [syncService] in
+      try await syncService.snoozeSession(sessionId: session.id, until: deadline)
+    }
+  }
+
+  func wakeSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.wakeSession(sessionId: session.id, reason: .manual)
+    }
+  }
+
+  /// The woke marker exists to explain why a snoozed row came back. Visiting
+  /// the row is the explanation being read, so drop it then — quietly, since a
+  /// failure here must never block navigation.
+  func clearWokeMarkerOnVisit(_ session: TerminalSessionSummary) {
+    // Only a PERSISTED marker needs clearing. A purely derived one (the snooze
+    // simply lapsed, so the host never wrote a marker) has nothing to clear.
+    let wokeAt = session.wokeAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !wokeAt.isEmpty else { return }
+    Task { [syncService] in
+      try? await syncService.clearSessionWokeMarker(sessionId: session.id)
+    }
+  }
+
   func beginRename(_ session: TerminalSessionSummary) {
     renameTarget = session
     renameText = session.title
@@ -469,6 +579,7 @@ extension WorkRootScreen {
     guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
+    clearWokeMarkerOnVisit(session)
     selectedSessionTransitionId = session.id
     Task { @MainActor in
       await Task.yield()

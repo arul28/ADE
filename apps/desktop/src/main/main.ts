@@ -4,6 +4,19 @@ if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
 }
 
+// When the terminal that launched ADE goes away, the next write to stdout/stderr raises
+// EPIPE. Without a listener that surfaces as an uncaughtException and tears down the app.
+// These targeted listeners are the intended guard for that case: they swallow broken-pipe
+// errors on these two streams only and rethrow everything else. The global
+// `uncaughtException` handler deliberately does NOT exempt EPIPE/ERR_STREAM_DESTROYED, so
+// broken-stream faults from other subsystems still surface.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") return;
+    throw err;
+  });
+}
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -6058,8 +6071,14 @@ app.whenReady().then(async () => {
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
   let emfileWarned = false;
+  // NOTE: a dead stdout/stderr pipe is handled by the targeted `error` listeners on
+  // process.stdout/process.stderr at the top of this file. This handler deliberately does
+  // NOT blanket-exempt EPIPE/ERR_STREAM_DESTROYED: those codes from any other subsystem
+  // (writing to an exited child's stdin, a torn-down socket) are real faults and must be
+  // logged rather than silently swallowed.
   process.on("uncaughtException", (err) => {
-    if (FILE_LIMIT_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    const code = (err as NodeJS.ErrnoException).code ?? "";
+    if (FILE_LIMIT_CODES.has(code)) return;
     const logger = getActiveContext().logger;
     logger.error("process.uncaught_exception", {
       err: String(err),

@@ -144,6 +144,64 @@ describe("SessionListPane", () => {
     expect(onSelectSession).not.toHaveBeenCalled();
   });
 
+  it("renders a Snoozed group above Settled in the by-status list, with each row's wake time", () => {
+    const snoozed = makeSession({
+      id: "session-snoozed",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Snoozed chat",
+      snoozedUntil: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+      snoozedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const settled = makeSession({
+      id: "session-settled",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Settled chat",
+      status: "completed",
+      runtimeState: "exited",
+      exitCode: 0,
+      settledAt: new Date(Date.now() - 600_000).toISOString(),
+    });
+
+    renderPane({
+      sessionListOrganization: "all-lanes-by-status",
+      runningFiltered: [],
+      settledFiltered: [settled],
+      snoozedFiltered: [snoozed],
+      allSessionsUnfiltered: [snoozed, settled],
+      sessionsGroupedByLane: new Map(),
+    });
+
+    const snoozedHeading = screen.getByRole("heading", { name: "Snoozed (1)" });
+    expect(snoozedHeading).toBeTruthy();
+    expect(screen.getByText("Snoozed chat")).toBeTruthy();
+    expect(screen.getByLabelText("Snoozed, wakes in 3h")).toBeTruthy();
+
+    // Snoozed must sit ABOVE Settled in DOM order.
+    const settledHeader = screen.getByText("Settled").closest("[data-section-id]");
+    expect(snoozedHeading.compareDocumentPosition(settledHeader as Node))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("offers a snooze duration menu from the row hover control", async () => {
+    const snoozeSession = vi.fn().mockResolvedValue(true);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { sessions: { snoozeSession } },
+    });
+
+    renderPane();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Snooze session" })[0]!);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Until tomorrow 9am" }));
+
+    await waitFor(() => expect(snoozeSession).toHaveBeenCalledTimes(1));
+    const [sessionId, untilIso] = snoozeSession.mock.calls[0]!;
+    expect(sessionId).toBe("session-mobile");
+    expect(Date.parse(untilIso as string)).toBeGreaterThan(Date.now());
+  });
+
   it("renders in-flight handoff placeholders in the matching lane group", () => {
     renderPane({
       runningFiltered: [],

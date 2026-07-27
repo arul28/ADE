@@ -157,6 +157,15 @@ export type TuiSessionLifecycleFields = Pick<
   | "attentionRequestedAt"
   | "attentionMessage"
   | "lastTurnFailedAt"
+  // Lifecycle parity columns. `settleOverride` is the tri-state pin consulted
+  // at the declared-settle tier; the snooze pair is a VISIBILITY OVERLAY whose
+  // expiry is derived by comparing `snoozedUntil` to now (no timers anywhere);
+  // the woke pair explains why a snoozed row came back.
+  | "settleOverride"
+  | "snoozedUntil"
+  | "snoozedAt"
+  | "wokeAt"
+  | "wokeReason"
 >;
 
 export type TuiChatSessionSummary = AgentChatSessionSummary & TuiSessionLifecycleFields;
@@ -179,6 +188,11 @@ function lifecycleFields(
     attentionRequestedAt: summary?.attentionRequestedAt ?? null,
     attentionMessage: summary?.attentionMessage ?? null,
     lastTurnFailedAt: summary?.lastTurnFailedAt ?? null,
+    settleOverride: summary?.settleOverride ?? null,
+    snoozedUntil: summary?.snoozedUntil ?? null,
+    snoozedAt: summary?.snoozedAt ?? null,
+    wokeAt: summary?.wokeAt ?? null,
+    wokeReason: summary?.wokeReason ?? null,
   };
 }
 
@@ -239,6 +253,51 @@ export async function unsettleSession(
   sessionId: string,
 ): Promise<void> {
   await connection.action("session", "unsettleSelfSession", { sessionId });
+}
+
+/**
+ * Park a session out of the attention surfaces until `untilIso`. Purely a
+ * visibility overlay — the canonical phase is untouched, and expiry is derived
+ * by every surface comparing the deadline to now rather than by a scheduler.
+ */
+export async function snoozeSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  untilIso: string,
+): Promise<void> {
+  await connection.action("session", "snoozeSession", { sessionId, untilIso });
+}
+
+export async function wakeSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  reason?: string,
+): Promise<void> {
+  await connection.action("session", "wakeSession", {
+    sessionId,
+    ...(reason ? { reason } : {}),
+  });
+}
+
+/**
+ * Set the tri-state settle override, consulted at the declared-settle tier
+ * BEFORE the derived exit-0 rule. "active" is the keep-active pin (the only way
+ * to hold a clean-exit row out of the quiet tier); null clears the pin.
+ */
+export async function setSessionSettleOverride(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  override: "settled" | "active" | null,
+): Promise<void> {
+  await connection.action("session", "setSettleOverride", { sessionId, override });
+}
+
+/** Drop the "woke" marker a row carries until it is opened. */
+export async function clearSessionWokeMarker(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("session", "clearWokeMarker", { sessionId });
 }
 
 export async function getScheduledWorkState(

@@ -1428,3 +1428,408 @@ describe("sessionService resume metadata", () => {
     expect(service.get("session-output")?.lastTurnFailedAt).toBe("2026-03-17T03:05:00.000Z");
   });
 });
+
+describe("sessionService snooze overlay", () => {
+  async function makeService(prefix: string) {
+    const projectRoot = makeProjectRoot(prefix);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-snooze",
+      laneId: "lane-1",
+      ptyId: "pty-snooze",
+      tracked: true,
+      title: "Snoozed session",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-snooze.log",
+      toolType: "claude-chat",
+    });
+    return { db, service };
+  }
+
+  it("persists snoozedUntil/snoozedAt and clears a stale woke marker", async () => {
+    const { service } = await makeService("ade-session-service-snooze-");
+
+    expect(service.snoozeSession("session-snooze", "2026-03-17T04:00:00.000Z", {
+      snoozedAt: "2026-03-17T01:00:00.000Z",
+    })).toBe(true);
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: "2026-03-17T04:00:00.000Z",
+      snoozedAt: "2026-03-17T01:00:00.000Z",
+      wokeAt: null,
+      wokeReason: null,
+    }));
+
+    // Snooze is an overlay: it must not touch a single lifecycle column.
+    expect(service.get("session-snooze")?.settledAt).toBeNull();
+    expect(service.get("session-snooze")?.status).toBe("running");
+
+    expect(service.wakeSession("session-snooze")).toBe(true);
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: null,
+      snoozedAt: null,
+      wokeReason: "manual",
+    }));
+    expect(service.get("session-snooze")?.wokeAt).toBeTruthy();
+
+    // A second wake is a no-op — there is nothing left asleep.
+    expect(service.wakeSession("session-snooze")).toBe(false);
+
+    // Re-snoozing clears the previous woke marker so the UI does not show a
+    // stale "woke because…" chip on a row that is asleep again.
+    service.snoozeSession("session-snooze", "2026-03-17T05:00:00.000Z");
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      wokeAt: null,
+      wokeReason: null,
+    }));
+
+    expect(service.clearWokeMarker("session-snooze")).toBe(true);
+    expect(service.snoozeSession("session-snooze", "not-a-date")).toBe(false);
+    expect(service.snoozeSession("missing-session", "2026-03-17T05:00:00.000Z")).toBe(false);
+  });
+
+  it("does NOT early-wake on the error the snooze was taken on top of", async () => {
+    const { service } = await makeService("ade-session-service-snooze-error-");
+
+    // The load-bearing case: snooze AFTER a failure, then let the same (or an
+    // older) failure timestamp be re-stamped. Without the newer-than
+    // comparison the row re-wakes instantly and snooze does nothing.
+    service.markLastTurnFailed("session-snooze", "2026-03-17T01:00:00.000Z");
+    service.snoozeSession("session-snooze", "2026-03-17T06:00:00.000Z", {
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+    });
+
+    service.markLastTurnFailed("session-snooze", "2026-03-17T01:30:00.000Z");
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: "2026-03-17T06:00:00.000Z",
+      wokeReason: null,
+    }));
+
+    // Exactly at snoozed_at is still the error being snoozed.
+    service.markLastTurnFailed("session-snooze", "2026-03-17T02:00:00.000Z");
+    expect(service.get("session-snooze")?.snoozedUntil).toBe("2026-03-17T06:00:00.000Z");
+
+    // Strictly newer wakes it, and records why.
+    service.markLastTurnFailed("session-snooze", "2026-03-17T02:00:00.001Z");
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: null,
+      snoozedAt: null,
+      wokeReason: "error",
+    }));
+  });
+
+  it("early-wakes on a pending input request and on turn completion", async () => {
+    const { service } = await makeService("ade-session-service-snooze-handraise-");
+
+    service.snoozeSession("session-snooze", "2026-03-17T06:00:00.000Z", {
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+    });
+    service.requestAttention("session-snooze", "Approve this?");
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: null,
+      wokeReason: "needs_you",
+    }));
+
+    service.snoozeSession("session-snooze", "2026-03-17T07:00:00.000Z", {
+      snoozedAt: "2026-03-17T03:00:00.000Z",
+    });
+    // `clearLastTurnFailed` is the "a running turn completed" write site.
+    service.clearLastTurnFailed("session-snooze");
+    expect(service.get("session-snooze")).toEqual(expect.objectContaining({
+      snoozedUntil: null,
+      wokeReason: "turn_complete",
+    }));
+
+    // An un-snoozed row never records a wake reason from a hand-raise.
+    service.clearWokeMarker("session-snooze");
+    service.clearLastTurnFailed("session-snooze");
+    expect(service.get("session-snooze")?.wokeReason).toBeNull();
+    expect(service.wakeSessionIfSnoozed("session-snooze", "turn_complete")).toBeNull();
+  });
+
+  it("supports the bulk snooze/wake variants", async () => {
+    const { service } = await makeService("ade-session-service-snooze-bulk-");
+    service.create({
+      sessionId: "session-snooze-2",
+      laneId: "lane-1",
+      ptyId: "pty-snooze-2",
+      tracked: true,
+      title: "Second session",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-snooze-2.log",
+      toolType: "codex",
+    });
+
+    expect(service.snoozeSessions(
+      ["session-snooze", " session-snooze-2 ", "session-snooze", "missing"],
+      "2026-03-17T08:00:00.000Z",
+    )).toEqual(["session-snooze", "session-snooze-2"]);
+    expect(service.get("session-snooze-2")?.snoozedUntil).toBe("2026-03-17T08:00:00.000Z");
+
+    expect(service.wakeSessions(["session-snooze", "session-snooze-2", "missing"]))
+      .toEqual(["session-snooze", "session-snooze-2"]);
+    expect(service.get("session-snooze")?.snoozedUntil).toBeNull();
+    expect(service.get("session-snooze-2")?.wokeReason).toBe("manual");
+
+    expect(service.snoozeSessions([], "2026-03-17T08:00:00.000Z")).toEqual([]);
+    expect(service.snoozeSessions(["session-snooze"], "nope")).toEqual([]);
+  });
+
+  // Regression: the hand-raise contract ("a snoozed session comes back when it
+  // errors") was wired ONLY through chat paths — `markLastTurnFailed`. A tracked
+  // CLI session that DIED stayed hidden, with no persisted woke marker, until
+  // its deadline, which "Until I'm asked" puts ~100 years out.
+  it("early-wakes a snoozed CLI session that ends with a non-zero exit code", async () => {
+    const { service } = await makeService("ade-session-service-snooze-exit-");
+    service.create({
+      sessionId: "session-cli",
+      laneId: "lane-1",
+      ptyId: "pty-cli",
+      tracked: true,
+      title: "Tracked CLI",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-cli.log",
+      toolType: "claude",
+    });
+
+    service.snoozeSession("session-cli", "2026-03-17T06:00:00.000Z", {
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+    });
+    service.end({
+      sessionId: "session-cli",
+      endedAt: "2026-03-17T03:00:00.000Z",
+      exitCode: 1,
+      status: "failed",
+    });
+
+    expect(service.get("session-cli")).toEqual(expect.objectContaining({
+      snoozedUntil: null,
+      snoozedAt: null,
+      wokeReason: "error",
+      exitCode: 1,
+    }));
+    expect(service.get("session-cli")?.wokeAt).toBeTruthy();
+  });
+
+  it("does NOT wake a snoozed session on a clean exit 0 (that is the settled path)", async () => {
+    const { service } = await makeService("ade-session-service-snooze-exit-zero-");
+    service.create({
+      sessionId: "session-cli-clean",
+      laneId: "lane-1",
+      ptyId: "pty-cli-clean",
+      tracked: true,
+      title: "Tracked CLI",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-cli-clean.log",
+      toolType: "claude",
+    });
+
+    service.snoozeSession("session-cli-clean", "2026-03-17T06:00:00.000Z", {
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+    });
+    service.end({
+      sessionId: "session-cli-clean",
+      endedAt: "2026-03-17T03:00:00.000Z",
+      exitCode: 0,
+      status: "completed",
+    });
+
+    expect(service.get("session-cli-clean")).toEqual(expect.objectContaining({
+      snoozedUntil: "2026-03-17T06:00:00.000Z",
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+      wokeAt: null,
+      wokeReason: null,
+    }));
+
+    // A user/system stop is not a hand-raise either.
+    service.end({
+      sessionId: "session-cli-clean",
+      endedAt: "2026-03-17T03:30:00.000Z",
+      exitCode: null,
+      status: "disposed",
+    });
+    expect(service.get("session-cli-clean")?.snoozedUntil).toBe("2026-03-17T06:00:00.000Z");
+  });
+
+  it("keeps a session snoozed when it dies on the failure it was snoozed on top of", async () => {
+    const { service } = await makeService("ade-session-service-snooze-exit-older-");
+    service.create({
+      sessionId: "session-cli-old",
+      laneId: "lane-1",
+      ptyId: "pty-cli-old",
+      tracked: true,
+      title: "Tracked CLI",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-cli-old.log",
+      toolType: "claude",
+    });
+
+    service.snoozeSession("session-cli-old", "2026-03-17T06:00:00.000Z", {
+      snoozedAt: "2026-03-17T02:00:00.000Z",
+    });
+    // An end stamped at/older than `snoozed_at` is the death being snoozed.
+    service.end({
+      sessionId: "session-cli-old",
+      endedAt: "2026-03-17T02:00:00.000Z",
+      exitCode: 137,
+      status: "failed",
+    });
+    expect(service.get("session-cli-old")).toEqual(expect.objectContaining({
+      snoozedUntil: "2026-03-17T06:00:00.000Z",
+      wokeReason: null,
+    }));
+  });
+});
+
+describe("sessionService settle override", () => {
+  async function makeService(prefix: string) {
+    const projectRoot = makeProjectRoot(prefix);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-override",
+      laneId: "lane-1",
+      ptyId: "pty-override",
+      tracked: true,
+      title: "Override session",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-override.log",
+      toolType: "codex",
+    });
+    return { db, service };
+  }
+
+  it("round-trips the tri-state and rejects junk values", async () => {
+    const { service } = await makeService("ade-session-service-override-");
+
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+    expect(service.setSettleOverride("session-override", "active")).toBe(true);
+    expect(service.get("session-override")?.settleOverride).toBe("active");
+    expect(service.setSettleOverride("session-override", "settled")).toBe(true);
+    expect(service.get("session-override")?.settleOverride).toBe("settled");
+    expect(service.setSettleOverride("session-override", null)).toBe(true);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+    expect(service.setSettleOverride("missing-session", "active")).toBe(false);
+
+    // Unknown persisted values normalize away rather than leaking to the UI.
+    service.setSettleOverride("session-override", "bogus" as never);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+  });
+
+  it("clears the override on real activity, exactly like settled_at", async () => {
+    const { service } = await makeService("ade-session-service-override-activity-");
+
+    service.setSettleOverride("session-override", "active");
+    service.setLastOutputPreview("session-override", "final answer");
+    // Preview writes that preserve settle must preserve the override too.
+    expect(service.get("session-override")?.settleOverride).toBe("active");
+
+    service.setLastOutputPreview("session-override", "working", { clearSettled: true });
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "settled");
+    service.touchSessionActivity("session-override", "2026-03-17T01:00:00.000Z", { clearSettled: false });
+    expect(service.get("session-override")?.settleOverride).toBe("settled");
+    service.touchSessionActivity("session-override", "2026-03-17T01:01:00.000Z");
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "active");
+    service.clearTurnStartMarkers("session-override");
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "settled");
+    service.markLastTurnFailed("session-override", "2026-03-17T02:00:00.000Z");
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "settled");
+    service.requestAttention("session-override", "Approve?");
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+  });
+
+  it("keeps settle and the keep-active pin from contradicting each other", async () => {
+    const { service } = await makeService("ade-session-service-override-settle-");
+
+    // An explicit settle drops a stale keep-active pin.
+    service.setSettleOverride("session-override", "active");
+    service.settleSession("session-override", { settledAt: "2026-03-17T03:00:00.000Z" });
+    expect(service.get("session-override")).toEqual(expect.objectContaining({
+      settledAt: "2026-03-17T03:00:00.000Z",
+      settleOverride: null,
+    }));
+
+    // Unsettle drops a 'settled' override…
+    service.setSettleOverride("session-override", "settled");
+    service.unsettleSession("session-override");
+    expect(service.get("session-override")).toEqual(expect.objectContaining({
+      settledAt: null,
+      settleOverride: null,
+    }));
+
+    // …but must not undo an explicit keep-active decision.
+    service.setSettleOverride("session-override", "active");
+    service.unsettleSession("session-override");
+    expect(service.get("session-override")?.settleOverride).toBe("active");
+  });
+
+  it("supports the bulk override variant", async () => {
+    const { service } = await makeService("ade-session-service-override-bulk-");
+    service.create({
+      sessionId: "session-override-2",
+      laneId: "lane-1",
+      ptyId: "pty-override-2",
+      tracked: true,
+      title: "Second override session",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/session-override-2.log",
+      toolType: "codex",
+    });
+
+    expect(service.setSettleOverrides(["session-override", "session-override-2", "missing"], "active"))
+      .toEqual(["session-override", "session-override-2"]);
+    expect(service.get("session-override-2")?.settleOverride).toBe("active");
+    service.setSettleOverrides(["session-override", "session-override-2"], null);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+    expect(service.setSettleOverrides([], "active")).toEqual([]);
+  });
+
+  it("bulk settle clears the pin and bulk unsettle preserves it", async () => {
+    const { service } = await makeService("ade-session-service-override-bulk-settle-");
+
+    service.setSettleOverride("session-override", "active");
+    expect(service.settleSessions(["session-override"])).toEqual(["session-override"]);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "settled");
+    service.unsettleSessions(["session-override"]);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+
+    service.setSettleOverride("session-override", "active");
+    service.unsettleSessions(["session-override"]);
+    expect(service.get("session-override")?.settleOverride).toBe("active");
+  });
+
+  it("bulk settle drops an active pin on an already-settled row without restamping it", async () => {
+    const { service } = await makeService("ade-session-service-settled-then-pinned-");
+
+    // Declared settle first, Keep-active pinned after: the row carries BOTH a
+    // non-null settled_at and settle_override = 'active', and reads as NOT
+    // settled because canonicalSessionState consults the override first.
+    service.settleSession("session-override", { settledAt: "2026-03-17T01:00:00.000Z" });
+    service.setSettleOverride("session-override", "active");
+    expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
+
+    // Bulk settle must behave like the single-row path: drop the stale pin,
+    // report the row as changed, and preserve the original settle timestamp.
+    expect(service.settleSessions(["session-override"])).toEqual(["session-override"]);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+    expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
+
+    // Fully settled with no pin is still a no-op, so the return value keeps
+    // meaning "rows this call actually changed".
+    expect(service.settleSessions(["session-override"])).toEqual([]);
+  });
+});

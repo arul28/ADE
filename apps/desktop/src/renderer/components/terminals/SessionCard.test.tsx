@@ -676,3 +676,57 @@ describe("SessionCard next wake chip", () => {
     },
   );
 });
+
+describe("SessionCard snooze and woke markers", () => {
+  it("shows a snoozed row's wake time and offers Wake now instead of a duration menu", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    render(
+      <SessionCard
+        session={makeSession({
+          snoozedUntil: "2026-07-09T15:00:00.000Z",
+          snoozedAt: "2026-07-09T11:00:00.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Snoozed, wakes in 3h")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Wake session now" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Snooze session" })).toBeNull();
+  });
+
+  it("carries a woke marker with the specific reason once the row is back", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          wokeAt: "2026-07-09T12:00:00.000Z",
+          wokeReason: "needs_you",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Woke, needs approval")).toBeTruthy();
+  });
+
+  it("labels the hover control for a row that is not snoozed", () => {
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Snooze session" })).toBeTruthy();
+  });
+});

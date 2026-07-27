@@ -131,6 +131,59 @@ func syncChatMessageDelivery(from response: Any) -> SyncChatMessageDelivery {
   return .sent
 }
 
+/// How a `session.*` lifecycle action reports whether it actually CHANGED the
+/// row, once `unwrapSyncCommandResponse` has peeled off the transport envelope.
+///
+/// A successful transport response only says the machine ran the action. The
+/// action answers separately, and several of them are legitimate no-ops for a
+/// row that was not in the expected state (waking a row that was never snoozed,
+/// settling a row that is already settled). Treating a no-op as applied leaves
+/// the phone painting a state the machine never entered.
+enum SessionLifecycleResultShape {
+  /// `{ ok, sessionId, … }` — the single-session actions (`snoozeSession`,
+  /// `wakeSession`, `setSettleOverride`, `clearWokeMarker`).
+  case envelope
+  /// `string[]` of the ids the action changed — the bulk actions
+  /// (`settleSessions`, `snoozeSessions`, `wakeSessions`).
+  case changedIdList
+}
+
+/// Did the machine actually apply a `session.*` lifecycle mutation?
+///
+/// The Swift mirror of the desktop pair in
+/// `apps/desktop/src/shared/sessionLifecycleResult.ts` (`sessionLifecycleApplied`)
+/// and `renderer/webclient/adapter/sessionsPty.ts` (`appliedToId`), applied to
+/// the same actions on the same shapes:
+///
+///   - `.envelope`: a bare `true` passes, an `{ ok }` envelope collapses to
+///     `ok == true`, anything else is not applied;
+///   - `.changedIdList`: only an actual id list can say no, and it says no when
+///     our id is absent from the ids it changed.
+///
+/// The phone adds one shape the desktop never sees: `sendCommand` answers with
+/// the `["queued": true]` sentinel when a command was durably enqueued instead
+/// of sent. That is not a verdict from the machine at all — the optimistic
+/// write is exactly what should stand until the queue drains — so it passes.
+func sessionLifecycleCommandApplied(
+  _ result: Any,
+  shape: SessionLifecycleResultShape,
+  sessionId: String
+) -> Bool {
+  if let record = result as? [String: Any], record["ok"] == nil, record["queued"] as? Bool == true {
+    return true
+  }
+  switch shape {
+  case .envelope:
+    if let flag = result as? Bool { return flag }
+    guard let record = result as? [String: Any], let ok = record["ok"] else { return false }
+    return (ok as? Bool) == true
+  case .changedIdList:
+    guard let ids = result as? [Any] else { return true }
+    let target = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return ids.contains { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == target }
+  }
+}
+
 func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   guard let response = raw as? [String: Any], let ok = response["ok"] as? Bool else {
     return raw
@@ -6923,6 +6976,229 @@ final class SyncService: ObservableObject {
         )
       }
     }
+  }
+
+  // MARK: - Session lifecycle (settle / settle override / snooze / woke marker)
+  //
+  // The phone is a controller and never runs agents, so every lifecycle change
+  // is a host command — `session.*` in the ADE action registry — not a local
+  // write we then hope replicates. We still write the columns locally first so
+  // the row doesn't flicker for a round trip, and roll that write back if the
+  // host rejects the command.
+
+  /// Whether this host advertises the ADE-125 lifecycle actions at all. Older
+  /// desktop builds simply do not have them; the UI hides the affordances
+  /// instead of offering a control that always fails.
+  var supportsSessionLifecycleActions: Bool {
+    supportsRemoteAction("session.settleSessions")
+  }
+
+  var supportsSessionSnoozeActions: Bool {
+    supportsRemoteAction("session.snoozeSession")
+  }
+
+  private func sessionLifecycleUnsupportedError(_ action: String) -> NSError {
+    NSError(domain: "ADE", code: 27, userInfo: [
+      NSLocalizedDescriptionKey:
+        "This machine's ADE is too old for \(action). Update the desktop app and try again.",
+    ])
+  }
+
+  private func sessionLifecycleNotAppliedError(_ action: String) -> NSError {
+    NSError(domain: "ADE", code: 28, userInfo: [
+      NSLocalizedDescriptionKey:
+        "This Mac didn’t apply that change — the session may have already changed there.",
+      "adeAction": action,
+    ])
+  }
+
+  /// Optimistic local write + host command, with rollback on failure.
+  private func sendSessionLifecycleCommand(
+    sessionId: String,
+    action: String,
+    args: [String: Any],
+    // How this action reports whether it actually changed the row; `nil` for
+    // the actions that report nothing usable, mirroring the desktop
+    // `lifecycleCall` call sites that pass no `applied` predicate.
+    resultShape: SessionLifecycleResultShape? = .envelope,
+    settledAt: String?? = nil,
+    settleOverride: String?? = nil,
+    snoozedUntil: String?? = nil,
+    snoozedAt: String?? = nil,
+    wokeAt: String?? = nil,
+    wokeReason: String?? = nil
+  ) async throws {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    guard supportsRemoteAction(action) else {
+      throw sessionLifecycleUnsupportedError(action)
+    }
+
+    let previous = database.fetchSession(id: trimmed)
+    try? database.updateSessionLifecycle(
+      sessionId: trimmed,
+      settledAt: settledAt,
+      settleOverride: settleOverride,
+      snoozedUntil: snoozedUntil,
+      snoozedAt: snoozedAt,
+      wokeAt: wokeAt,
+      wokeReason: wokeReason
+    )
+
+    // Undo the optimistic write. Restores ONLY the columns this call actually
+    // assigned: `terminal_sessions` is a CRR table whose local writes replicate
+    // upstream, so re-stamping a column we never touched would push our stale
+    // copy of a host-owned value back over whatever the machine has since
+    // written — the same hazard that keeps `snoozed_at` out of the forward
+    // write below. A half-applied lifecycle is still worse than none, so every
+    // column we DID write is restored together.
+    func rollback() {
+      guard let previous else { return }
+      func restored(_ requested: String??, _ value: String?) -> String?? {
+        requested == nil ? nil : .some(value)
+      }
+      try? database.updateSessionLifecycle(
+        sessionId: trimmed,
+        settledAt: restored(settledAt, previous.settledAt),
+        settleOverride: restored(settleOverride, previous.settleOverride),
+        snoozedUntil: restored(snoozedUntil, previous.snoozedUntil),
+        snoozedAt: restored(snoozedAt, previous.snoozedAt),
+        wokeAt: restored(wokeAt, previous.wokeAt),
+        wokeReason: restored(wokeReason, previous.wokeReason)
+      )
+    }
+
+    let scope = chatCommandScope(for: trimmed)
+    let result: Any
+    do {
+      result = try await sendCommand(
+        action: action,
+        args: args,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath
+      )
+    } catch {
+      rollback()
+      throw error
+    }
+
+    // A successful TRANSPORT response is not a successful MUTATION. The host
+    // answers `{ ok: false, … }` when the row was not in the state the action
+    // needed, and keeping the optimistic write there would show a state the
+    // machine never entered.
+    if let resultShape,
+       !sessionLifecycleCommandApplied(result, shape: resultShape, sessionId: trimmed) {
+      rollback()
+      throw sessionLifecycleNotAppliedError(action)
+    }
+  }
+
+  /// Declared settle. Stamps `settled_at` locally to match what the host writes.
+  func settleSession(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.settleSessions",
+      args: ["sessionIds": [sessionId]],
+      // The bulk action answers with the ids it CHANGED, so an absent id means
+      // the machine settled nothing. Mirrors the desktop `settleMany`.
+      resultShape: .changedIdList,
+      settledAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
+      settleOverride: .some(nil)
+    )
+  }
+
+  /// Clear a declared settle.
+  ///
+  /// The host clears a `"settled"` override ONLY — see `sessionService`'s
+  /// `settle_override = case when settle_override = 'settled' then null else
+  /// settle_override end`. An `"active"` keep-alive pin deliberately SURVIVES
+  /// unsettle. So this must NOT write `settle_override` at all: the phone
+  /// cannot know which of the two branches the machine will take, and
+  /// `terminal_sessions` is a CRR table whose local writes are captured by the
+  /// update trigger and pushed upstream in `changeset_batch`. Claiming a clear
+  /// here would replicate a null back over the pin the host just preserved.
+  /// Leave the column alone and let hydration deliver the machine's answer —
+  /// this mirrors the web overlay's `UNSETTLE_PATCH`, which is `settledAt` only.
+  func unsettleSession(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.unsettleSessions",
+      args: ["sessionIds": [sessionId]],
+      // The host answers `{ ok: true }` unconditionally here — it reports no
+      // per-row verdict to check — so there is nothing to reject, exactly like
+      // the desktop `unsettleMany`, which passes no `applied` predicate.
+      resultShape: nil,
+      settledAt: .some(nil),
+      settleOverride: nil
+    )
+  }
+
+  /// Set (or clear, with `nil`) the tri-state settle override. `"active"` is the
+  /// "keep active" pin that suppresses settle including the exit-0 auto-settle.
+  func setSessionSettleOverride(sessionId: String, override: SessionSettleOverride?) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.setSettleOverride",
+      // The host reads "clear" as null; sending a JSON null through the
+      // `[String: Any]` arg dictionary is not representable here.
+      args: ["sessionId": sessionId, "override": override?.rawValue ?? "clear"],
+      settleOverride: .some(override?.rawValue)
+    )
+  }
+
+  /// Snooze until `deadline` and clear any stale woke marker.
+  ///
+  /// `snoozed_at` is deliberately NOT written here, even though the host stamps
+  /// it as part of the same mutation. It is the early-wake baseline, and
+  /// `isWakingSessionError` compares it — strictly newer wins — against error
+  /// timestamps the MACHINE writes. A baseline stamped from this phone's clock
+  /// is only comparable to those by luck: a phone running even slightly ahead
+  /// of the paired Mac plants a baseline in the host's future, so real errors
+  /// that follow are never "newer" and the row never raises its hand again.
+  /// The failure is silent — the session simply never comes back.
+  ///
+  /// `terminal_sessions` is a CRR table whose local writes replicate upstream,
+  /// so the wrong value would not even stay local; it would overwrite the
+  /// machine's own baseline. Leaving the column alone lets the host's value
+  /// arrive by hydration, and until it does `isWakingSessionError` fails CLOSED
+  /// on an absent baseline, which is the safe direction for a round trip. The
+  /// UI needs none of it in the meantime: `isSessionSnoozed` /
+  /// `isSessionFiledAsSnoozed` read `snoozed_until` only. Same reasoning as
+  /// `unsettleSession` leaving `settle_override` to the machine.
+  func snoozeSession(sessionId: String, until deadline: Date) async throws {
+    let untilIso = iso8601WithFractionalSecondsFormatter.string(from: deadline)
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.snoozeSession",
+      args: ["sessionId": sessionId, "untilIso": untilIso],
+      snoozedUntil: .some(untilIso),
+      wokeAt: .some(nil),
+      wokeReason: .some(nil)
+    )
+  }
+
+  /// Wake a snoozed session now, recording why.
+  func wakeSession(sessionId: String, reason: SessionWakeReason = .manual) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.wakeSession",
+      args: ["sessionId": sessionId, "reason": reason.rawValue],
+      snoozedUntil: .some(nil),
+      snoozedAt: .some(nil),
+      wokeAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
+      wokeReason: .some(reason.rawValue)
+    )
+  }
+
+  /// Drop the "woke" marker once the user has visited the row.
+  func clearSessionWokeMarker(sessionId: String) async throws {
+    try await sendSessionLifecycleCommand(
+      sessionId: sessionId,
+      action: "session.clearWokeMarker",
+      args: ["sessionId": sessionId],
+      wokeAt: .some(nil),
+      wokeReason: .some(nil)
+    )
   }
 
   func fetchPullRequests() async throws -> [PrSummary] {

@@ -171,7 +171,11 @@ apps/ios/
 │   │                                # including legacy and dotted subagent
 │   │                                # lifecycle chat events
 │   ├── Resources/
-│   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
+│   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts; carries
+│   │   │                            # the replicated `terminal_sessions`
+│   │   │                            # lifecycle columns for fresh installs
+│   │   │                            # (Database.swift owns the matching
+│   │   │                            # ensureColumn migrations for upgrades)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── AccountService.swift     # Clerk-backed optional account identity,
@@ -224,7 +228,9 @@ apps/ios/
 │   │                                # background lane-deletion tasks + scoped
 │   │                                # completion refresh, worktree
 │   │                                # discovery, personal-chat cache/actions/
-│   │                                # subscription routing
+│   │                                # subscription routing, session.* lifecycle
+│   │                                # (settle / override / snooze / wake /
+│   │                                # clear-woke-marker) callers
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -400,7 +406,9 @@ apps/ios/
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
     ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
     │                                # reconciliation, partial-detail retention
-    └── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
+    ├── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
+    └── WorkSessionCanonicalStateTests.swift # settle-override / snooze / filing
+                                     # parity against the shared TS derivation
 ```
 
 Each tab is factored into a root screen, one `+Actions` extension for
@@ -1353,6 +1361,71 @@ capsule, while `Needs you` is the loud tier used by awaiting counts, the
 attention drawer, push, and attention-first roster behavior. A settled chat
 woken by unattended scheduled work shows Running during the turn and returns
 to Settled at idle because only user activity clears its declaration.
+
+#### Settle override and snooze
+
+The phone carries the full lifecycle, not a read-only view of it. Two
+mechanisms sit on top of the derivation and both are mirrored here.
+
+`settle_override` is a tri-state (`null | "settled" | "active"`) consulted at
+the **declared**-settle tier — before the derived "exit code 0 means done"
+rule. `"settled"` behaves like a declared settle; `"active"` is an explicit
+keep-active pin and is the only way to un-settle a clean-exit row, because such
+a row derives its settle and has no `settled_at` for unsettle to clear; `null`
+returns the row to the derived rules. The override is cleared on real activity
+at the same write sites that clear `settled_at`.
+
+Snooze is a synced **visibility overlay**, never a lifecycle phase — the Swift
+derivation, like the TypeScript one, does not read it. Only where a surface
+*files* the row changes. `snoozed_until` is the deadline and expiry is derived
+by comparing it to now; there is no scheduler or watchdog on the phone or the
+host. `snoozed_at` records when the snooze was taken and is load-bearing: an
+error counts as an early wake only when it is strictly newer than `snoozed_at`,
+otherwise the very failure the user snoozed on top of would instantly re-wake
+the row. Waking stamps `woke_at` / `woke_reason`
+(`timer | needs_you | error | turn_complete | manual`) so the row can explain
+its return until it is visited, at which point `clearWokeMarker` drops it. Early
+wake also fires for a session that ends in failure (non-zero exit, or a
+`"failed"` end with no exit code); a clean exit 0 is the settled path and never
+wakes. Filing yields to a raised hand: `isSessionFiledAsSnoozed(session, phase)`
+returns false for a `needs_you` phase, so a snoozed row blocked on the user
+stays in its normal section rather than disappearing into the snoozed tail.
+`isSessionSnoozed` stays the raw column read used for row chrome.
+
+The iOS pieces:
+
+- `apps/ios/ADE/Resources/DatabaseBootstrap.sql` declares the five new nullable
+  `terminal_sessions` columns (`settle_override`, `snoozed_until`,
+  `snoozed_at`, `woke_at`, `woke_reason`) for fresh installs.
+- `apps/ios/ADE/Services/Database.swift` carries the matching `ensureColumn`
+  migrations for existing installs, plus the columns threaded through the
+  session upsert bind indices, the row struct, and the session read queries.
+- `apps/ios/ADE/Models/RemoteModels.swift` and `RemoteRosterModels.swift` decode
+  `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, and `wokeReason` as
+  optional `String` fields through `decodeIfPresent`, and include them in
+  equality so a lifecycle-only change still redraws the row.
+- `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
+  callers. Mobile has no local write path for lifecycle, so these commands are
+  the mechanism, and the connect-time descriptor list gates the affordances.
+- `apps/ios/ADE/Views/Work/WorkSessionCanonicalState.swift` is the Swift mirror
+  of the shared derivation, now including the settle-override tier and
+  `isSessionFiledAsSnoozed`. `WorkSessionGrouping.swift`'s `workSessionGroups`
+  grows a snoozed tail, and `WorkRootScreen.swift`,
+  `WorkRootScreen+Actions.swift`, and `WorkRootComponents.swift` render the
+  chips and menus and dispatch snooze / wake / settle / keep-active.
+- `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation
+  parity.
+
+Two invariants govern changes here. The Swift derivation must stay
+behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts` —
+it is a mirror, not a variant, and the canonical-state tests exist to catch
+drift. And any new `terminal_sessions` column must be added to **both** iOS
+schema halves, `DatabaseBootstrap.sql` and `Database.swift`'s `ensureColumn`
+migrations: bootstrapping only the SQL leaves upgraded phones failing changeset
+apply, which surfaces as a phone-side error rather than anything visible on
+desktop. Like every replicated table, these columns are nullable with no unique
+index, because `terminal_sessions` goes through `crsql_as_crr`, which rejects
+any non-primary-key unique index.
 
 ### Shipped
 

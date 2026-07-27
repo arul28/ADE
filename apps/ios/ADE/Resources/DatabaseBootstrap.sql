@@ -205,6 +205,11 @@ create table if not exists terminal_sessions (
       resume_command text,
       resume_metadata_json text,
       archived_at text,
+      settle_override text,
+      snoozed_until text,
+      snoozed_at text,
+      woke_at text,
+      woke_reason text,
       chat_session_id text,
       owner_process_started_at text,
       foreign key(lane_id) references lanes(id)

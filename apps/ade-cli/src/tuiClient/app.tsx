@@ -75,6 +75,7 @@ import {
   getScheduledWorkState,
   getStoredApiKeyProviders,
   getSubagentTranscript,
+  clearSessionWokeMarker,
   interruptChat,
   killDroidWorker,
   latestGoal,
@@ -108,7 +109,10 @@ import {
   signalTerminal,
   setClaudeOutputStyle,
   setSessionStatusNote,
+  setSessionSettleOverride,
   settleSession,
+  snoozeSession,
+  wakeSession,
   startCliTerminalSession,
   type CliTerminalProvider,
   steerChatMessage,
@@ -123,6 +127,17 @@ import {
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
 import { deriveChatInfoSnapshot } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
+import {
+  SNOOZE_CHOICES,
+  resolveSessionTarget,
+  resolveSnoozeChoice,
+  resolveSnoozeFreeText,
+  clearWokeMarkerOnVisit as clearSessionWokeMarkerOnVisit,
+  sessionLifecycleCommandFor,
+  sessionLifecycleMarker,
+  type SessionLifecycleCommand,
+} from "./sessionLifecycle";
+import type { SnoozeDurationKey } from "../../../desktop/src/renderer/lib/sessionSnooze";
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "./connection";
@@ -841,7 +856,16 @@ export function shouldToggleLatestFailedLineOnBlankEnter(args: {
 }
 
 function openChatRightPaneRow(session: AgentChatSessionSummary, activeSessionId: string | null): string {
-  return `${session.sessionId === activeSessionId ? "●" : "○"} ${session.title ?? session.sessionId} · ${session.provider}`;
+  // Lifecycle rides as trailing TEXT ("z wakes in 3h", "* needs approval",
+  // "done"), never as color: the /chats list has to read the same in a
+  // monochrome terminal.
+  const lifecycle = session as TuiChatSessionSummary;
+  const marker = sessionLifecycleMarker(
+    { ...lifecycle, isActive: session.status === "active" },
+    { note: lifecycle.statusNote ?? null },
+  );
+  const suffix = marker ? ` · ${marker.text}` : "";
+  return `${session.sessionId === activeSessionId ? "●" : "○"} ${session.title ?? session.sessionId} · ${session.provider}${suffix}`;
 }
 
 export function chatSessionToOptimisticSummary(
@@ -3123,6 +3147,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const helpRecentsRef = useRef<string[]>([]);
   helpRecentsRef.current = helpRecents;
   const rightChatsQueryRef = useRef("");
+  // Session the open "Snooze session" duration palette will act on. Held in a
+  // ref rather than on the pane so the existing list-activation signature
+  // (selectedId + action kind) stays unchanged — the selected row is a duration
+  // key, not a session id.
+  const pendingSnoozeSessionIdRef = useRef<string | null>(null);
+  // Latest session rows, readable from callbacks defined above the memo that
+  // builds them. Only used for lifecycle lookups on selection.
+  const displaySessionsRef = useRef<AgentChatSessionSummary[]>([]);
   // Indexed (grouped, keybind-enriched) command reference. Rebuilt only when the
   // user's Claude keybinding registry changes, so keybind chips reflect config.
   const helpIndexGroups = useMemo(() => buildHelpIndex(BUILTIN_COMMANDS, keybindings), [keybindings]);
@@ -3559,6 +3591,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
   }, [persistAdeCodeState, setChatScrollOffset]);
 
+  /**
+   * Drop a row's "woke" marker once the user has actually looked at it.
+   *
+   * Fire-and-forget by design: a failed clear must never block or delay opening
+   * the session, and it must never print — stray stdout would corrupt the Ink
+   * frame, so unlike desktop's console.error this swallows (iOS does the same
+   * with `try?`). The next refresh simply leaves the marker up.
+   */
+  const clearWokeMarkerOnVisit = useCallback((sessionId: string | null): void => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    // The persisted-vs-derived guard and the fire-and-forget live in
+    // sessionLifecycle.ts so they are testable without rendering the app.
+    clearSessionWokeMarkerOnVisit({
+      sessionId,
+      sessions: displaySessionsRef.current as TuiChatSessionSummary[],
+      clear: (id) => clearSessionWokeMarker(conn, id),
+    });
+  }, []);
+
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
     if (activeSessionIdRef.current !== sessionId) {
       setChatScrollOffset(0);
@@ -3567,6 +3619,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       chatSelectionAnchorRef.current = null;
       chatMouseSelectionRef.current = null;
       setChatMouseSelection(null);
+      // Opening the row IS the acknowledgement — the "woke" marker only exists
+      // to explain an unexpected return, so it goes as soon as it is seen
+      // (desktop TerminalsPage.handleSelectSession / iOS openSession parity).
+      // Every path that puts a session on screen funnels through here, and the
+      // persisted-wokeAt guard keeps it to rows that have something to clear.
+      clearWokeMarkerOnVisit(sessionId);
     }
     if (!sessionId) {
       activeTerminalSessionRef.current = null;
@@ -3586,7 +3644,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
-  }, [clearTranscriptPreview, persistAdeCodeState, setChatScrollOffset]);
+  }, [clearTranscriptPreview, clearWokeMarkerOnVisit, persistAdeCodeState, setChatScrollOffset]);
 
   const setDraftChatMode = useCallback((active: boolean) => {
     setChatScrollOffset(0);
@@ -3932,6 +3990,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     ]),
     [sessions, terminalScheduledWorkById, terminalSessions],
   );
+  displaySessionsRef.current = displaySessions;
   const closedCliSessions = useMemo(
     () => deriveClosedCliSessions(terminalSessions, terminalScheduledWorkById),
     [terminalScheduledWorkById, terminalSessions],
@@ -9020,6 +9079,52 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
   }, [closedCliSessions, openDrawerSessions, rightChatsClosedExpanded]);
 
+  /**
+   * Send the snooze. The deadline is already resolved by the caller — this only
+   * writes it and refreshes. No timer is armed: expiry is derived everywhere by
+   * comparing `snoozedUntil` to now.
+   */
+  const applySessionSnooze = useCallback(async (
+    sessionId: string,
+    untilIso: string,
+    confirmation: string,
+  ): Promise<void> => {
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("ADE runtime is still connecting. Try again when the connection is ready.", "error");
+      return;
+    }
+    try {
+      await snoozeSession(conn, sessionId, untilIso);
+      addNotice(confirmation, "success");
+      await refreshState();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, refreshState]);
+
+  /**
+   * Duration entry for `/session snooze` with no duration given. Uses the same
+   * right-pane list + arrow/enter selection every other TUI chooser uses
+   * (`/switch`, `/secrets`, `/chats`), with the shared four options in the
+   * shared order; free text stays available by typing the duration on the
+   * command line instead.
+   */
+  const openSnoozeDurationPalette = useCallback((sessionId: string, sessionLabel: string): void => {
+    pendingSnoozeSessionIdRef.current = sessionId;
+    setRightSelectionIndex(0);
+    setRightPane({
+      kind: "list",
+      title: `Snooze · ${sessionLabel}`,
+      rows: [
+        ...SNOOZE_CHOICES.map((choice) => choice.label),
+        "",
+        "Free text: /session snooze [id] 45m · 1.5h · 2d",
+      ],
+      action: { kind: "snooze-duration", ids: [...SNOOZE_CHOICES.map((choice) => choice.key), "", ""] },
+    });
+  }, []);
+
   const toggleRightChatsClosedGroup = useCallback(() => {
     const next = !rightChatsClosedExpanded;
     setRightChatsClosedExpanded(next);
@@ -9029,6 +9134,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
       void copyProjectSecret(selectedId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+      return;
+    }
+    if (actionKind === "snooze-duration") {
+      // The trailing free-text hint row carries an empty id; ignore it.
+      if (!selectedId) return;
+      const sessionId = pendingSnoozeSessionIdRef.current;
+      if (!sessionId) return;
+      const resolved = resolveSnoozeChoice(selectedId as SnoozeDurationKey);
+      if (!resolved.ok) {
+        addNotice(resolved.message, "error");
+        return;
+      }
+      pendingSnoozeSessionIdRef.current = null;
+      setRightPane({ kind: "empty" });
+      void applySessionSnooze(sessionId, resolved.untilIso, resolved.confirmation);
       return;
     }
     if (actionKind === "switch-lane") {
@@ -9068,6 +9188,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [
     activateLaneWithLastChat,
     addNotice,
+    applySessionSnooze,
     copyProjectSecret,
     displaySessions,
     lanes,
@@ -10266,6 +10387,89 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       return;
     }
+    if (name === "/session") {
+      setRightPane({
+        kind: "details",
+        title: "Session lifecycle",
+        body: [
+          "Usage: /session <verb> [session-id] …  (omit the id to target the active session)",
+          "",
+          "  /session snooze [id] [30m|1h|4h|1d]  hide the row until a deadline",
+          "  /session wake [id]                   bring a snoozed row back now",
+          "  /session settle [id] [outcome]       file the row as done",
+          "  /session unsettle [id]               undo a settle",
+          "  /session keep-active [id]            pin the row active so it never settles on its own",
+          "",
+          "Run /session snooze with no duration to pick one from the list.",
+        ].join("\n"),
+      });
+      return;
+    }
+    // `/session <verb> [<session-id>] …` — the same lifecycle verbs as
+    // `ade session`, with per-session targeting. Omitting the id targets the
+    // active session, matching `/chat settle`.
+    const lifecycleVerb: SessionLifecycleCommand | null = sessionLifecycleCommandFor(name);
+    if (lifecycleVerb) {
+      const target = resolveSessionTarget({
+        input: args,
+        activeSessionId: activeSessionIdRef.current,
+        knownSessionIds: displaySessions.map((session) => session.sessionId),
+        // wake/unsettle/keep-active take no other argument, so a leading token
+        // that names no session is a typo rather than a passthrough.
+        strictLeadingToken: lifecycleVerb !== "snooze" && lifecycleVerb !== "settle",
+      });
+      if (!target.ok) {
+        setRightPane({ kind: "details", title: "Session lifecycle", body: target.message });
+        return;
+      }
+      const targetSession = displaySessions.find((session) => session.sessionId === target.sessionId);
+      const targetLabel = targetSession?.title?.trim() || target.sessionId;
+      const scope = target.explicit ? ` · ${targetLabel}` : "";
+      try {
+        if (lifecycleVerb === "snooze") {
+          if (!target.rest) {
+            openSnoozeDurationPalette(target.sessionId, targetLabel);
+            return;
+          }
+          const resolved = resolveSnoozeFreeText(target.rest);
+          if (!resolved.ok) {
+            setRightPane({ kind: "details", title: "Session snooze", body: resolved.message });
+            return;
+          }
+          await applySessionSnooze(target.sessionId, resolved.untilIso, `${resolved.confirmation}${scope}`);
+          return;
+        }
+        if (lifecycleVerb === "wake") {
+          await wakeSession(conn, target.sessionId, "manual");
+          addNotice(`Woke the session.${scope}`, "success");
+        } else if (lifecycleVerb === "settle") {
+          const dismissPendingInput = Boolean(
+            targetSession?.awaitingInput
+              || (targetSession as TuiChatSessionSummary | undefined)?.attentionRequestedAt,
+          );
+          await settleSession(conn, target.sessionId, target.rest || undefined, { dismissPendingInput });
+          addNotice(
+            `${dismissPendingInput
+              ? "Dismissed the pending input and settled the session."
+              : "Marked the session settled."}${scope}`,
+            "success",
+          );
+        } else if (lifecycleVerb === "unsettle") {
+          await unsettleSession(conn, target.sessionId);
+          addNotice(`Removed the session's settled state.${scope}`, "success");
+        } else {
+          // keep-active: the tri-state override's "active" pin. It is the only
+          // way to hold a clean-exit row out of the quiet tier, because those
+          // rows derive their settle and have no settledAt to clear.
+          await setSessionSettleOverride(conn, target.sessionId, "active");
+          addNotice(`Pinned the session active.${scope}`, "success");
+        }
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
     if (name === "/system") {
       setRightPane({
         kind: "details",
@@ -10311,7 +10515,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, archiveChat, archiveLane, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSecretsPane, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -10587,7 +10791,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,

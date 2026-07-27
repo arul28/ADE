@@ -25,6 +25,7 @@ import { ScreenShell } from "./ScreenShell";
 import { ProjectPicker } from "./ProjectPicker";
 import { WebShell } from "./WebShell";
 import { MachinePicker } from "./MachinePicker";
+import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 
 type AdeWebAdapter = {
@@ -506,6 +507,12 @@ export function WebClientRoot({
 
   useEffect(() => {
     return client.onProjectCatalog((payload) => setCatalog(payload.projects));
+  }, [client]);
+
+  // The Work list is the desktop component; give its lifecycle controls a touch
+  // presentation and hide them on hosts that can't run `session.*` at all.
+  useEffect(() => {
+    return installSessionLifecycleChrome(client);
   }, [client]);
 
   useEffect(() => {

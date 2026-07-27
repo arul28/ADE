@@ -1420,6 +1420,8 @@ export type SyncRemoteCommandAction =
   | "lanes.createFromUnstaged"
   | "lanes.importBranch"
   | "lanes.previewBranchSwitch"
+  | "lanes.getBranchDrift"
+  | "lanes.resolveBranchDrift"
   | "lanes.attach"
   | "lanes.listUnregisteredWorktrees"
   | "lanes.adoptAttached"
@@ -1450,6 +1452,19 @@ export type SyncRemoteCommandAction =
   | "work.getSessionDelta"
   | "work.listSessions"
   | "work.updateSessionMeta"
+  // Session-lifecycle mutations live under their own `session.*` namespace —
+  // the same domain name the ADE action registry uses — because mobile and the
+  // web client feature-detect them independently of the `work.*` read surface.
+  | "session.settleSession"
+  | "session.unsettleSession"
+  | "session.settleSessions"
+  | "session.unsettleSessions"
+  | "session.snoozeSession"
+  | "session.snoozeSessions"
+  | "session.wakeSession"
+  | "session.wakeSessions"
+  | "session.setSettleOverride"
+  | "session.clearWokeMarker"
   | "work.runQuickCommand"
   | "work.startCliSession"
   | "work.resumeCliSession"

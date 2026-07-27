@@ -83,6 +83,8 @@ const MEANINGFUL_ACTIONS = new Set([
   "work.stopRuntime",
   "work.settleSession",
   "work.unsettleSession",
+  "work.snoozeSession",
+  "work.wakeSession",
   "lanes.create",
   "lanes.createChild",
   "lanes.createFromUnstaged",
@@ -152,6 +154,8 @@ export function usageActionFromIpcChannel(channel: string): string {
   // Settle lifecycle: single + bulk collapse to one coarse action each.
   if (action === "sessions.settle" || action === "sessions.settleMany") return "work.settleSession";
   if (action === "sessions.unsettle" || action === "sessions.unsettleMany") return "work.unsettleSession";
+  if (action === "sessions.snooze" || action === "sessions.snoozeMany") return "work.snoozeSession";
+  if (action === "sessions.wake" || action === "sessions.wakeMany") return "work.wakeSession";
   return action;
 }
 
@@ -210,6 +214,10 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
   if (domain === "session") {
     if (action === "settleSelfSession" || action === "settleSessions") return "work.settleSession";
     if (action === "unsettleSelfSession" || action === "unsettleSessions") return "work.unsettleSession";
+    // Bulk and single snooze/wake collapse to one usage action each: the count
+    // that matters is "how often was work filed away", not the batch shape.
+    if (action === "snoozeSession" || action === "snoozeSessions") return "work.snoozeSession";
+    if (action === "wakeSession" || action === "wakeSessions") return "work.wakeSession";
   }
   return `${domain}.${action}`;
 }

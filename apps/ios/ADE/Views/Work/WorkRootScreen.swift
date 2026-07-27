@@ -74,6 +74,11 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let activeProjectId: String?
   let loadedProjectionProjectId: String?
   let pendingLaneDeletionIds: Set<String>
+  /// Bumped when the soonest snooze deadline lapses so the cached groups
+  /// re-derive. Snooze expiry has no event to key on — it is pure clock math —
+  /// so without this the row stays parked in the Snoozed tail until some
+  /// unrelated change happens to rebuild the presentation.
+  let snoozeEpoch: Int
 }
 
 struct WorkRootScreen: View {
@@ -96,6 +101,10 @@ struct WorkRootScreen: View {
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
+  /// Exactly one pending wait, armed only while something is actually snoozed
+  /// and only at the nearest deadline. Not a poll.
+  @State var snoozeRegroupTask: Task<Void, Never>?
+  @State var snoozeEpoch = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
   @AppStorage("ade.work.searchText") var searchText = ""
@@ -109,7 +118,11 @@ struct WorkRootScreen: View {
   @State var selectedSessionTransitionId: String?
   @State var isSelecting: Bool = false
   @State var selectedSessionIds: Set<String> = []
-  @State var bulkActionErrorMessage: String?
+  /// Failures from an explicit user action (bulk selection commands and
+  /// single-row lifecycle commands alike). Deliberately separate from
+  /// `errorMessage`, which every successful projection load clears — an action
+  /// the host rejected has to outlive the reload that reconciles the rollback.
+  @State var actionErrorMessage: String?
   @State var bulkExportShare: WorkArtifactShareItem?
   @State var bulkBusy: Bool = false
   @State var bulkDeleteConfirmPresented: Bool = false
@@ -292,7 +305,8 @@ struct WorkRootScreen: View {
       activeRosterRevision: syncService.rosterRevision(for: syncService.activeProject),
       activeProjectId: syncService.activeProjectId,
       loadedProjectionProjectId: loadedProjectionProjectId,
-      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds
+      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds,
+      snoozeEpoch: snoozeEpoch
     )
   }
 
@@ -507,13 +521,13 @@ struct WorkRootScreen: View {
       } message: {
         Text("This permanently removes the saved chat history from ADE.")
       }
-      .alert("Selection action failed",
+      .alert("Action failed",
              isPresented: Binding(
-               get: { bulkActionErrorMessage != nil },
-               set: { if !$0 { bulkActionErrorMessage = nil } }
+               get: { actionErrorMessage != nil },
+               set: { if !$0 { actionErrorMessage = nil } }
              ),
-             presenting: bulkActionErrorMessage) { _ in
-        Button("OK", role: .cancel) { bulkActionErrorMessage = nil }
+             presenting: actionErrorMessage) { _ in
+        Button("OK", role: .cancel) { actionErrorMessage = nil }
       } message: { message in
         Text(message)
       }
@@ -545,6 +559,8 @@ struct WorkRootScreen: View {
         guard sessionPresentationTaskKey != nil else {
           sessionPresentationRebuildTask?.cancel()
           sessionPresentationRebuildTask = nil
+          // Nothing is rendering the groups, so nothing needs waking.
+          cancelSnoozeRegroupRefresh()
           return
         }
         scheduleSessionPresentationRebuild()
@@ -748,7 +764,14 @@ struct WorkRootScreen: View {
       onCopyId: copySessionId,
       onCopyDeepLink: copySessionDeepLink,
       onGoToLane: goToLane,
-      onOpenPullRequest: openPullRequest
+      onOpenPullRequest: openPullRequest,
+      lifecycleAvailable: syncService.supportsSessionLifecycleActions,
+      snoozeAvailable: syncService.supportsSessionSnoozeActions,
+      onSettle: settleSession,
+      onUnsettle: unsettleSession,
+      onKeepActive: keepSessionActive,
+      onSnooze: snoozeSession,
+      onWake: wakeSession
     )
     .id(session.id)
     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -789,7 +812,14 @@ struct WorkRootScreen: View {
             onCopyId: copySessionId,
             onCopyDeepLink: copySessionDeepLink,
             onGoToLane: goToLane,
-            onOpenPullRequest: openPullRequest
+            onOpenPullRequest: openPullRequest,
+            lifecycleAvailable: syncService.supportsSessionLifecycleActions,
+            snoozeAvailable: syncService.supportsSessionSnoozeActions,
+            onSettle: settleSession,
+            onUnsettle: unsettleSession,
+            onKeepActive: keepSessionActive,
+            onSnooze: snoozeSession,
+            onWake: wakeSession
           )
           .id(child.id)
         }

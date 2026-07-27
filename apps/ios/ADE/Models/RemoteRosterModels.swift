@@ -47,6 +47,13 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
   var exitCode: Int? = nil
+  // Settle override + snooze visibility overlay (ADE-125 lifecycle). Same
+  // additive contract: hosts that predate the fields simply omit them.
+  var settleOverride: String? = nil
+  var snoozedUntil: String? = nil
+  var snoozedAt: String? = nil
+  var wokeAt: String? = nil
+  var wokeReason: String? = nil
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {
@@ -460,6 +467,11 @@ extension RemoteRosterChat {
       attentionRequestedAt: attentionRequestedAt,
       attentionMessage: attentionMessage,
       lastTurnFailedAt: lastTurnFailedAt,
+      settleOverride: settleOverride,
+      snoozedUntil: snoozedUntil,
+      snoozedAt: snoozedAt,
+      wokeAt: wokeAt,
+      wokeReason: wokeReason,
       exitCode: exitCode,
       transcriptPath: "",
       headShaStart: nil,

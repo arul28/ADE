@@ -1342,6 +1342,422 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       "monotonic-input"
     )
   }
+
+  // MARK: - Session lifecycle host compatibility (ADE-125)
+  //
+  // The six `session.*` actions are OPTIONAL in the mobile compatibility
+  // contract, so a new phone must keep working against a brain that predates
+  // them. These tests pin the two directions that can regress: a legacy host
+  // that omits `features.mobileCompatibility` entirely must still complete the
+  // handshake, and an unadvertised lifecycle action must be refused locally
+  // BEFORE it can be optimistically written or queued for send.
+
+  private func lifecycleActionDescriptors() -> [[String: Any]] {
+    [
+      "session.settleSessions",
+      "session.unsettleSessions",
+      "session.setSettleOverride",
+      "session.snoozeSession",
+      "session.wakeSession",
+      "session.clearWokeMarker",
+    ].map { action in
+      ["action": action, "policy": ["viewerAllowed": true]] as [String: Any]
+    }
+  }
+
+  @MainActor
+  func testLegacyHostWithoutMobileCompatibilityStillConnectsInLimitedMode() throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    // An older brain: it routes commands, but has never heard of the mobile
+    // compatibility block or of any `session.*` lifecycle action.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "legacy-host", "deviceName": "Mac Studio"],
+      "features": [
+        "commandRouting": [
+          "actions": [
+            ["action": "work.listSessions", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    // The handshake must SUCCEED (applyHelloPayload did not throw) and simply
+    // degrade — a missing compatibility block is not an authentication failure.
+    XCTAssertEqual(
+      service.hostCompatibilityMode,
+      .limited,
+      "A host that omits mobileCompatibility must degrade to limited, not fail the handshake."
+    )
+    XCTAssertEqual(
+      service.hostCompatibilityMissingActions,
+      ["mobileCompatibility"],
+      "The phone should attribute the degrade to the absent block, not invent missing actions."
+    )
+    XCTAssertTrue(
+      service.supportsRemoteAction("work.listSessions"),
+      "Command routing from a legacy host must still be honored."
+    )
+    XCTAssertFalse(
+      service.supportsSessionLifecycleActions,
+      "A legacy host advertises no session.* actions, so settle/unsettle must stay hidden."
+    )
+    XCTAssertFalse(
+      service.supportsSessionSnoozeActions,
+      "Snooze must stay hidden on a host that never advertised session.snoozeSession."
+    )
+  }
+
+  @MainActor
+  func testNewHostAdvertisingLifecycleActionsUnlocksTheAffordances() throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": ["actions": lifecycleActionDescriptors()],
+      ],
+    ])
+
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertTrue(service.supportsSessionLifecycleActions)
+    XCTAssertTrue(service.supportsSessionSnoozeActions)
+  }
+
+  @MainActor
+  func testUnsupportedLifecycleActionIsRefusedBeforeAnyLocalWriteOrSend() async throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    // A host that advertises settle but NOT snooze — the partial-rollout case.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "partial-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": [
+          "actions": [
+            ["action": "session.settleSessions", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+    XCTAssertFalse(service.supportsSessionSnoozeActions)
+
+    service.resetOutboundEnvelopeCaptureForTesting()
+    // `terminal_sessions` is a CRR table: any optimistic write here would be
+    // captured by the update trigger and pushed upstream. Pinning the local
+    // db_version proves the guard runs BEFORE the write, not after it.
+    let dbVersionBefore = database.currentDbVersion()
+
+    do {
+      try await service.snoozeSession(
+        sessionId: "session-1",
+        until: Date().addingTimeInterval(3_600)
+      )
+      XCTFail("Snoozing against a host that never advertised the action must throw.")
+    } catch {
+      XCTAssertTrue(
+        error.localizedDescription.contains("session.snoozeSession"),
+        "The refusal should name the unsupported action so the user can act on it."
+      )
+    }
+
+    XCTAssertEqual(
+      database.currentDbVersion(),
+      dbVersionBefore,
+      "An unsupported lifecycle action must not leave an optimistic local write behind."
+    )
+    XCTAssertEqual(
+      service.capturedOutboundEnvelopeCountForTesting(type: "command"),
+      0,
+      "An unsupported lifecycle action must never reach the wire or the durable queue."
+    )
+  }
+
+  // MARK: - Lifecycle round-trip fixtures
+
+  private func lifecycleIso(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
+  }
+
+  /// One project + lane + session row, seeded with the snooze columns a MACHINE
+  /// would have written. Raw SQL because the hydration writers replace whole
+  /// scopes; the point here is a single row whose lifecycle columns are known.
+  private func seedLifecycleSession(
+    database: DatabaseService,
+    sessionId: String,
+    snoozedUntil: String?,
+    snoozedAt: String?
+  ) throws {
+    func sqlText(_ value: String?) -> String {
+      guard let value else { return "null" }
+      return "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
+    }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+        values ('project-a', '/tmp/a', 'A', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+      insert into lanes (id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at)
+        values ('lane-a', 'project-a', 'A', 'worktree', 'main', 'ade/a', '/tmp/a/lane-a', 'ready', '2026-07-22T00:00:00.000Z');
+      insert into terminal_sessions (
+        id, lane_id, title, started_at, transcript_path, status, snoozed_until, snoozed_at, woke_at, woke_reason
+      ) values (
+        '\(sessionId)', 'lane-a', 'Session', '2026-07-22T00:00:00.000Z', '/tmp/a/t.log', 'running',
+        \(sqlText(snoozedUntil)), \(sqlText(snoozedAt)), null, null
+      );
+    """)
+  }
+
+  /// Run `task` and answer its lifecycle command with `response` — the RAW
+  /// transport frame, so a test can tell a transport failure apart from a
+  /// transport success carrying an action-level refusal.
+  ///
+  /// A connected service also raises its own reads, and the capture exposes
+  /// only request ids, so the reply is offered to every request the phone
+  /// raises from here on rather than guessing which one is the lifecycle call.
+  @MainActor
+  private func answerLifecycleCommand<T>(
+    service: SyncService,
+    task: Task<T, Error>,
+    response: Any
+  ) async throws -> T {
+    var answered = Set(service.capturedOutboundRequestIdsForTesting(type: "command"))
+    let ignored = answered.count
+    for _ in 0..<200 {
+      await Task.yield()
+      for id in service.capturedOutboundRequestIdsForTesting(type: "command") where !answered.contains(id) {
+        answered.insert(id)
+        service.completeCapturedRequestForTesting(requestId: id, result: response)
+      }
+    }
+    XCTAssertGreaterThan(
+      answered.count,
+      ignored,
+      "The lifecycle command never reached the wire."
+    )
+    return try await task.value
+  }
+
+  // MARK: - The early-wake baseline belongs to the HOST clock
+  //
+  // `isWakingSessionError` wakes a snoozed row only on an error STRICTLY NEWER
+  // than `snoozed_at`, and every error timestamp it compares against is written
+  // by the MACHINE. A baseline stamped from the phone's clock is comparable to
+  // those only by luck: a phone running ahead of its paired Mac plants a
+  // baseline in the host's future, no later error ever clears it, and the row
+  // silently never raises its hand again. `terminal_sessions` is a CRR table,
+  // so the bad value would also replicate upstream over the host's own.
+
+  @MainActor
+  func testSnoozeLeavesTheEarlyWakeBaselineToTheHostClock() async throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": ["actions": lifecycleActionDescriptors()],
+      ],
+    ])
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+
+    // This iPhone's clock runs two minutes AHEAD of the Mac it is paired to.
+    let phoneNow = Date(timeIntervalSince1970: 1_780_000_000)
+    let hostNow = phoneNow.addingTimeInterval(-120)
+    // The machine's own baseline from an earlier snooze of the same row.
+    let hostBaseline = lifecycleIso(hostNow.addingTimeInterval(-600))
+    try seedLifecycleSession(
+      database: database,
+      sessionId: "session-1",
+      snoozedUntil: lifecycleIso(hostNow.addingTimeInterval(600)),
+      snoozedAt: hostBaseline
+    )
+
+    // Capture only from here so a post-hello hydration read cannot be mistaken
+    // for the lifecycle command.
+    service.beginOutboundEnvelopeCaptureForTesting()
+    let deadline = phoneNow.addingTimeInterval(3_600)
+    try await answerLifecycleCommand(
+      service: service,
+      task: Task { try await service.snoozeSession(sessionId: "session-1", until: deadline) },
+      response: [
+        "ok": true,
+        "result": ["ok": true, "sessionId": "session-1", "snoozedUntil": lifecycleIso(deadline)],
+      ]
+    )
+
+    let row = try XCTUnwrap(database.fetchSession(id: "session-1"))
+    XCTAssertEqual(
+      row.snoozedAt,
+      hostBaseline,
+      "The phone must not stamp its own clock into snoozed_at — the baseline is host-authoritative."
+    )
+    let state = SessionSnoozeState(snoozedUntil: row.snoozedUntil, snoozedAt: row.snoozedAt)
+    XCTAssertEqual(
+      row.snoozedUntil,
+      lifecycleIso(deadline),
+      "The deadline IS the phone's to paint optimistically — it is what the UI reads."
+    )
+    XCTAssertTrue(
+      isSessionSnoozed(state, now: phoneNow),
+      "Filing the row as snoozed needs snoozed_until alone, so nothing depends on the baseline."
+    )
+    XCTAssertTrue(
+      isWakingSessionError(state, errorAt: lifecycleIso(hostNow)),
+      "An error the MACHINE stamps must still wake the row when the phone runs ahead of it."
+    )
+  }
+
+  // MARK: - A transport success is not a mutation success
+
+  @MainActor
+  func testLifecycleResultReportingNoOpRollsBackTheOptimisticWrite() async throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": ["actions": lifecycleActionDescriptors()],
+      ],
+    ])
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+
+    let hostUntil = "2026-07-27T12:00:00.000Z"
+    let hostBaseline = "2026-07-27T11:00:00.000Z"
+    try seedLifecycleSession(
+      database: database,
+      sessionId: "session-1",
+      snoozedUntil: hostUntil,
+      snoozedAt: hostBaseline
+    )
+
+    // Capture only from here so a post-hello hydration read cannot be mistaken
+    // for the lifecycle command.
+    service.beginOutboundEnvelopeCaptureForTesting()
+    do {
+      // A successful TRANSPORT frame whose ACTION payload says it changed
+      // nothing — `session.wakeSession` answers this for a row the machine did
+      // not have snoozed.
+      try await answerLifecycleCommand(
+        service: service,
+        task: Task { try await service.wakeSession(sessionId: "session-1", reason: .manual) },
+        response: [
+          "ok": true,
+          "result": ["ok": false, "sessionId": "session-1", "reason": "manual"],
+        ]
+      )
+      XCTFail("A lifecycle result reporting a no-op must surface as a failure, not a silent success.")
+    } catch {
+      XCTAssertFalse(
+        error.localizedDescription.isEmpty,
+        "The refusal needs user-facing copy — the row visibly snapping back must be explained."
+      )
+    }
+
+    let row = try XCTUnwrap(database.fetchSession(id: "session-1"))
+    XCTAssertEqual(row.snoozedUntil, hostUntil, "A no-op wake must not clear the machine's deadline.")
+    XCTAssertEqual(row.snoozedAt, hostBaseline, "A no-op wake must not clear the early-wake baseline.")
+    XCTAssertNil(row.wokeAt, "A no-op wake must not leave a woke marker the machine never wrote.")
+    XCTAssertNil(row.wokeReason, "A no-op wake must not leave a wake reason the machine never wrote.")
+  }
+
+  // MARK: - Result-shape normalization (desktop `sessionLifecycleApplied` parity)
+
+  func testSessionLifecycleCommandAppliedMirrorsTheDesktopShapes() {
+    // `{ ok }` envelopes collapse to `ok`.
+    XCTAssertTrue(sessionLifecycleCommandApplied(
+      ["ok": true, "sessionId": "session-1"], shape: .envelope, sessionId: "session-1"
+    ))
+    XCTAssertFalse(sessionLifecycleCommandApplied(
+      ["ok": false, "sessionId": "session-1"], shape: .envelope, sessionId: "session-1"
+    ))
+    // A bare boolean passes through; anything unrecognized is not applied.
+    XCTAssertTrue(sessionLifecycleCommandApplied(true, shape: .envelope, sessionId: "session-1"))
+    XCTAssertFalse(sessionLifecycleCommandApplied(false, shape: .envelope, sessionId: "session-1"))
+    XCTAssertFalse(sessionLifecycleCommandApplied(NSNull(), shape: .envelope, sessionId: "session-1"))
+    // Bulk actions answer with the ids they CHANGED.
+    XCTAssertTrue(sessionLifecycleCommandApplied(
+      ["session-1", "session-2"], shape: .changedIdList, sessionId: "session-1"
+    ))
+    XCTAssertFalse(sessionLifecycleCommandApplied(
+      [String](), shape: .changedIdList, sessionId: "session-1"
+    ))
+    XCTAssertFalse(sessionLifecycleCommandApplied(
+      ["session-2"], shape: .changedIdList, sessionId: "session-1"
+    ))
+    // The offline sentinel is not a verdict from the machine at all: the
+    // command is durably queued, so the optimistic write must stand.
+    XCTAssertTrue(sessionLifecycleCommandApplied(
+      ["queued": true], shape: .envelope, sessionId: "session-1"
+    ))
+    XCTAssertTrue(sessionLifecycleCommandApplied(
+      ["queued": true], shape: .changedIdList, sessionId: "session-1"
+    ))
+  }
 }
 
 @MainActor

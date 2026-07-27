@@ -18,7 +18,9 @@ import {
   type WorkSessionListOrganization,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { canonicalInputFromSummary, sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
+import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
+import { canonicalStatusBucket, type CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
+import { isSessionFiledAsSnoozed, nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
@@ -63,6 +65,8 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
 };
 
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
+/** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
+const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
@@ -73,6 +77,38 @@ type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdA
 
 function compareSessionsByStartedAtDesc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
   return new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime();
+}
+
+/**
+ * Settled rows are ranked by when they settled, not when they started. The list they are
+ * partitioned out of is ordered by startedAt, so without this a session you started
+ * yesterday and settle right now buries itself under sessions settled long before it.
+ * Falls back to last activity, then start, so rows missing settledAt still sort stably.
+ */
+function settledRank(session: TerminalSessionSummary): number {
+  for (const value of [session.settledAt, session.lastActivityAt, session.startedAt]) {
+    if (!value) continue;
+    const ms = new Date(value).getTime();
+    if (Number.isFinite(ms)) return ms;
+  }
+  return 0;
+}
+
+function compareSessionsBySettledAtDesc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
+  return settledRank(right) - settledRank(left);
+}
+
+/**
+ * Snoozed rows rank by when they come BACK — the whole point of the group is
+ * "what returns first". Rows without a parseable deadline sink to the bottom.
+ */
+function snoozeWakeRank(session: TerminalSessionSummary): number {
+  const ms = session.snoozedUntil ? new Date(session.snoozedUntil).getTime() : Number.NaN;
+  return Number.isFinite(ms) ? ms : Number.MAX_SAFE_INTEGER;
+}
+
+function compareSessionsByWakeAtAsc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
+  return snoozeWakeRank(left) - snoozeWakeRank(right);
 }
 
 function upsertSessionByStartedAt(
@@ -136,9 +172,17 @@ function bucketByTime(session: TerminalSessionSummary): "today" | "yesterday" | 
   return "older";
 }
 
-function getStatusBucketLabel(bucket: ReturnType<typeof sessionStatusBucket>): string {
+/**
+ * Snoozed is a partition of the status grouping, not a canonical bucket — it is
+ * derived from the snooze columns and pulls the row OUT of whichever status
+ * bucket it would otherwise land in, unless the row is asking for you.
+ */
+type WorkStatusGroupBucket = CanonicalStatusBucket | "snoozed";
+
+function getStatusBucketLabel(bucket: WorkStatusGroupBucket): string {
   if (bucket === "running") return "Running";
   if (bucket === "awaiting-input") return "Your move";
+  if (bucket === "snoozed") return "Snoozed";
   if (bucket === "settled") return "Settled";
   return "Ended";
 }
@@ -150,6 +194,8 @@ export function buildWorkTabGroupModel(args: {
   collapsedGroupIds: string[];
   laneSessionOrder?: Record<string, string[]>;
   pinnedSessionIds?: string[];
+  /** Injectable clock so snooze expiry stays testable (expiry is derived, never scheduled). */
+  nowMs?: number;
 }): WorkTabGroupModel {
   const orderedSessions = [...args.sessions].sort(compareSessionsByStartedAtDesc);
   const collapseSet = new Set(args.collapsedGroupIds);
@@ -260,15 +306,29 @@ export function buildWorkTabGroupModel(args: {
     return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
   }
 
-  const statusBuckets = new Map<"running" | "awaiting-input" | "ended" | "settled", TerminalSessionSummary[]>();
+  const nowMs = args.nowMs ?? Date.now();
+  const statusBuckets = new Map<WorkStatusGroupBucket, TerminalSessionSummary[]>();
   for (const session of orderedSessions) {
-    const bucket = sessionStatusBucket(canonicalInputFromSummary(session));
+    // Snooze is a visibility overlay: it pulls the row out of its normal bucket
+    // entirely — the same partitioning the flat sidebar list uses — EXCEPT when
+    // the row's canonical phase is needs_you. The overlay yields to a raised
+    // hand (`isSessionFiledAsSnoozed`), which is the only thing that makes
+    // "Until I'm asked" true for tracked CLI rows: their needs-input state is
+    // derived, so no early-wake event ever fires for them.
+    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+    const bucket: WorkStatusGroupBucket = isSessionFiledAsSnoozed(session, phase, nowMs)
+      ? "snoozed"
+      : canonicalStatusBucket(phase);
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
     statusBuckets.set(bucket, list);
   }
+  // Same rule as the flat list: the settled group ranks by settle time, not start
+  // time, and the snoozed group ranks by when each row wakes.
+  statusBuckets.get("settled")?.sort(compareSessionsBySettledAtDesc);
+  statusBuckets.get("snoozed")?.sort(compareSessionsByWakeAtAsc);
 
-  const statusOrder: Array<"running" | "awaiting-input" | "ended" | "settled"> = ["running", "awaiting-input", "ended", "settled"];
+  const statusOrder: WorkStatusGroupBucket[] = ["running", "awaiting-input", "ended", "snoozed", "settled"];
   const visibleSessions: TerminalSessionSummary[] = [];
   const groups = statusOrder
     .filter((bucket) => (statusBuckets.get(bucket)?.length ?? 0) > 0)
@@ -392,6 +452,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
+  const [snoozeEpoch, setSnoozeEpoch] = useState(0);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const sessionsRef = useRef<TerminalSessionSummary[]>([]);
   const refreshInFlightRef = useRef(false);
@@ -503,7 +565,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       laneSessionOrder,
       pinnedSessionIds,
     }),
-    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds, laneSessionOrder, pinnedSessionIds],
+    // `snoozeEpoch` re-derives the by-status snoozed group when a deadline lapses.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds, laneSessionOrder, pinnedSessionIds, snoozeEpoch],
   );
 
   const visibleSessions = openSessions;
@@ -1301,20 +1365,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     });
   }, [sessions, filterLaneId, q]);
 
-  const { runningFiltered, awaitingInputFiltered, endedFiltered, settledFiltered } = useMemo(() => {
+  const {
+    runningFiltered,
+    awaitingInputFiltered,
+    endedFiltered,
+    settledFiltered,
+    snoozedFiltered,
+  } = useMemo(() => {
+    const nowMs = Date.now();
     const running: TerminalSessionSummary[] = [];
     const loud: TerminalSessionSummary[] = [];
     const quiet: TerminalSessionSummary[] = [];
     const ended: TerminalSessionSummary[] = [];
     const settled: TerminalSessionSummary[] = [];
+    const snoozed: TerminalSessionSummary[] = [];
     for (const session of filtered) {
-      const attentionInput = canonicalInputFromSummary(session);
-      const bucket = sessionStatusBucket(attentionInput);
+      // Snooze is a visibility overlay: it pulls the row OUT of whatever bucket
+      // it would otherwise sit in, including Running — but it YIELDS to a raised
+      // hand. A needs_you row is filed normally even while snoozed, which is
+      // what keeps "Until I'm asked" honest for tracked CLI rows (their
+      // needs-input state is derived, so no early-wake event can fire).
+      const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+      if (isSessionFiledAsSnoozed(session, phase, nowMs)) {
+        snoozed.push(session);
+        continue;
+      }
+      const bucket = canonicalStatusBucket(phase);
       if (bucket === "running") running.push(session);
       else if (bucket === "awaiting-input") {
         // Loud (Needs you) rows float to the top of the Your-move section; the
         // two partitions each keep startedAt order, so rows never jitter.
-        if (sessionNeedsYou(attentionInput)) loud.push(session);
+        if (phase === "needs_you") loud.push(session);
         else quiet.push(session);
       } else if (bucket === "settled") settled.push(session);
       else ended.push(session);
@@ -1323,9 +1404,25 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       runningFiltered: running,
       awaitingInputFiltered: [...loud, ...quiet],
       endedFiltered: ended,
-      settledFiltered: settled,
+      settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
+      snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
     };
-  }, [filtered]);
+    // `snoozeEpoch` re-partitions when the soonest snooze deadline lapses; there
+    // is no snooze scheduler anywhere, expiry is always derived from now.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, snoozeEpoch]);
+
+  // Exactly one timer, armed only while something is actually snoozed, firing at
+  // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
+  // overflow setTimeout). No polling and no document-level listener.
+  useEffect(() => {
+    if (!isWorkRoute) return undefined;
+    const deadlineMs = nextSnoozeDeadlineMs(filtered);
+    if (deadlineMs == null) return undefined;
+    const delay = Math.min(Math.max(deadlineMs - Date.now(), 250), SNOOZE_TICK_MAX_DELAY_MS);
+    const timer = window.setTimeout(() => setSnoozeEpoch((value) => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [filtered, isWorkRoute, snoozeEpoch]);
 
   const sessionsGroupedByLane = useMemo(() => {
     if (sessionListOrganization !== "by-lane") return null;
@@ -1695,6 +1792,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     awaitingInputFiltered,
     endedFiltered,
     settledFiltered,
+    snoozedFiltered,
     runningSessions,
     visibleSessions,
     gridLayoutId,

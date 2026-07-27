@@ -2479,6 +2479,114 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.computerUseReadArtifactPreview, { uri: ".ade/artifacts/proof.png" });
   });
 
+  // The action registry answers lifecycle mutations with an `{ ok, sessionId,
+  // … }` envelope while the local IPC handlers answer with a bare boolean.
+  // Callers get the boolean either way, so a runtime-bound window can't report
+  // an applied snooze/wake as a no-op.
+  it("normalizes runtime lifecycle envelopes to the local path's boolean", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const envelopes: Record<string, unknown> = {
+      snoozeSession: { ok: true, sessionId: "session-1", snoozedUntil: "2026-03-17T04:00:00.000Z" },
+      wakeSession: { ok: false, sessionId: "session-1", reason: "manual" },
+      setSettleOverride: { ok: true, sessionId: "session-1", settleOverride: "active" },
+      clearWokeMarker: { ok: true, sessionId: "session-1" },
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain === "session" && request.action && request.action in envelopes) {
+          return {
+            ok: true,
+            domain: "session",
+            action: request.action,
+            result: envelopes[request.action],
+            statusHints: {},
+          };
+        }
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.sessions.snoozeSession("session-1", "2026-03-17T04:00:00.000Z")).resolves.toBe(true);
+    await expect(bridge.sessions.wakeSession("session-1")).resolves.toBe(false);
+    await expect(bridge.sessions.setSettleOverride("session-1", "active")).resolves.toBe(true);
+    await expect(bridge.sessions.clearWokeMarker("session-1")).resolves.toBe(true);
+
+    expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsSnooze, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsWake, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsSetSettleOverride, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsClearWokeMarker, expect.anything());
+  });
+
+  it("passes local lifecycle booleans through unchanged", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.sessionsWake) return false;
+      if (
+        channel === IPC.sessionsSnooze
+        || channel === IPC.sessionsSetSettleOverride
+        || channel === IPC.sessionsClearWokeMarker
+      ) {
+        return true;
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.sessions.snoozeSession("session-1", "2026-03-17T04:00:00.000Z")).resolves.toBe(true);
+    await expect(bridge.sessions.wakeSession("session-1")).resolves.toBe(false);
+    await expect(bridge.sessions.setSettleOverride("session-1", "active")).resolves.toBe(true);
+    await expect(bridge.sessions.clearWokeMarker("session-1")).resolves.toBe(true);
+  });
+
   it("routes Linear CTO read-model calls through a remote project runtime when bound", async () => {
     const binding = {
       kind: "remote",

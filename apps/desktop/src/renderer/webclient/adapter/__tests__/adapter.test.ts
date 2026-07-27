@@ -10,7 +10,12 @@ import type {
   SyncTerminalDataPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../../shared/types/sync";
+import { isSessionSnoozed } from "../../../../shared/sessionCanonicalState";
 import { createAdeWebAdapter } from "../index";
+import {
+  SESSION_LIFECYCLE_DISCONNECTED_MESSAGE,
+  SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE,
+} from "../sessionLifecycleSupport";
 import type { AdeSyncClient, ChatHandlers, TerminalHandlers } from "../../sync";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
 import { stableCacheKey } from "../infra/cacheKey";
@@ -1587,6 +1592,24 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("rejects branch-drift resolution the host cannot run", async () => {
+    // The drift strip disarms its warning as soon as this resolves, so an
+    // unreachable host must reject instead of handing back a status object.
+    fake.descriptors = descriptors(["lanes.getBranchDrift"]);
+    fake.commandResults.set("lanes.getBranchDrift", null);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.lanes.resolveBranchDrift({
+      laneId: "lane-1",
+      resolution: "switch-back",
+    })).rejects.toThrow(/unavailable/i);
+    // Reads still degrade to their typed fallback.
+    await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" })).resolves.toBeNull();
+
+    adapter.dispose();
+  });
+
   it("makes onOpencodeOAuthStatus live by draining OAuth status from the runtime buffer", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["ai.opencodeOAuthStart", "personalChats.streamEvents"]);
@@ -1636,7 +1659,183 @@ describe("createAdeWebAdapter", () => {
     unsubscribe();
     adapter.dispose();
   });
+
+  // --- Session lifecycle ----------------------------------------------------
+  // ADE Web keeps no local database, so every settle/snooze is a sync
+  // round-trip. These cover the three things that behaviour has to get right:
+  // paint at once, reconcile against the machine, roll back when it says no.
+
+  it("paints a snooze at once and files the row as snoozed before the host catches up", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    fake.commandResults.set("session.snoozeSession", true);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    const before = await adapter.ade.sessions.list();
+    expect(isSessionSnoozed(before[0]!)).toBe(false);
+
+    const untilIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso)).resolves.toBe(true);
+
+    // The host row is deliberately still un-snoozed here: the optimistic patch
+    // is the only reason the row reads as snoozed, which is what puts it in the
+    // shared "Snoozed" group without waiting for the changeset pump.
+    const optimistic = await adapter.ade.sessions.list();
+    expect(optimistic[0]!.snoozedUntil).toBe(untilIso);
+    expect(optimistic[0]!.snoozedAt).toEqual(expect.any(String));
+    expect(isSessionSnoozed(optimistic[0]!)).toBe(true);
+
+    adapter.dispose();
+  });
+
+  it("retires the optimistic patch once the machine's own row agrees", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    fake.commandResults.set("session.snoozeSession", true);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+
+    const hostUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await adapter.ade.sessions.snoozeSession("session-1", hostUntil);
+
+    // The machine echoes back the deadline we sent but stamps its OWN
+    // `snoozed_at`. That instant is reconciled by presence, so the host's row
+    // must win outright as soon as it lands.
+    fake.commandResults.set("work.listSessions", [
+      { id: "session-1", ptyId: "pty-1", snoozedUntil: hostUntil, snoozedAt: "2026-07-20T00:00:00.000Z" },
+    ]);
+
+    await adapter.ade.sessions.list();
+    await flushMicrotasks();
+    const reconciled = await adapter.ade.sessions.list();
+
+    expect(reconciled[0]!.snoozedUntil).toBe(hostUntil);
+    expect(reconciled[0]!.snoozedAt).toBe("2026-07-20T00:00:00.000Z");
+
+    adapter.dispose();
+  });
+
+  it("rolls the row back and rethrows when the host rejects a lifecycle write", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    fake.commandErrors.set("session.snoozeSession", new Error("session is gone"));
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+
+    const changes: unknown[] = [];
+    adapter.ade.sessions.onChanged((event) => changes.push(event));
+
+    await expect(
+      adapter.ade.sessions.snoozeSession("session-1", new Date(Date.now() + 60 * 60 * 1000).toISOString()),
+    ).rejects.toThrow("session is gone");
+
+    // Painted, then rolled back — both need a notification or the row would sit
+    // showing a snooze the machine never took.
+    expect(changes).toHaveLength(2);
+    const after = await adapter.ade.sessions.list();
+    expect(after[0]!.snoozedUntil ?? null).toBeNull();
+    expect(isSessionSnoozed(after[0]!)).toBe(false);
+
+    adapter.dispose();
+  });
+
+  it("drops the patch when the host reports the row was not snoozed", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    // wakeSession returns false for a row that was never snoozed.
+    fake.commandResults.set("session.wakeSession", false);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+
+    await expect(adapter.ade.sessions.wakeSession("session-1", "manual")).resolves.toBe(false);
+
+    const after = await adapter.ade.sessions.list();
+    expect(after[0]!.wokeAt ?? null).toBeNull();
+    expect(after[0]!.wokeReason ?? null).toBeNull();
+
+    adapter.dispose();
+  });
+
+  // The machine actually answers these commands with an `{ ok, sessionId, … }`
+  // envelope, not the bare boolean the desktop's local IPC path returns.
+  // Reading the envelope as "not applied" would return false to the caller AND
+  // roll the optimistic patch back on a write the machine did take.
+  it("reads the host's `{ ok, … }` lifecycle envelope as the local path's boolean", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const untilIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    fake.commandResults.set("session.snoozeSession", { ok: true, sessionId: "session-1", snoozedUntil: untilIso });
+    fake.commandResults.set("session.wakeSession", { ok: false, sessionId: "session-1", reason: "manual" });
+    fake.commandResults.set("session.setSettleOverride", { ok: true, sessionId: "session-1", settleOverride: "active" });
+    fake.commandResults.set("session.clearWokeMarker", { ok: true, sessionId: "session-1" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+
+    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso)).resolves.toBe(true);
+    // Applied, so the optimistic patch has to survive until the host row lands.
+    const optimistic = await adapter.ade.sessions.list();
+    expect(optimistic[0]!.snoozedUntil).toBe(untilIso);
+    expect(isSessionSnoozed(optimistic[0]!)).toBe(true);
+
+    await expect(adapter.ade.sessions.setSettleOverride("session-1", "active")).resolves.toBe(true);
+    await expect(adapter.ade.sessions.clearWokeMarker("session-1")).resolves.toBe(true);
+    // `ok: false` still means no-op, exactly like a bare `false`.
+    await expect(adapter.ade.sessions.wakeSession("session-1", "manual")).resolves.toBe(false);
+
+    adapter.dispose();
+  });
+
+  it("refuses lifecycle writes while the socket is down rather than silently no-op'ing", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    fake.connectionState = "reconnecting";
+
+    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString()))
+      .rejects.toThrow(SESSION_LIFECYCLE_DISCONNECTED_MESSAGE);
+    await expect(adapter.ade.sessions.settle("session-1")).rejects.toThrow(SESSION_LIFECYCLE_DISCONNECTED_MESSAGE);
+    expect(fake.commandCalls.filter((call) => call.action.startsWith("session."))).toEqual([]);
+
+    adapter.dispose();
+  });
+
+  it("refuses lifecycle writes a host does not advertise", async () => {
+    // An older ADE registers no `session.*` commands at all. Without the gate
+    // `commands.call` would resolve to its fallback and the tap would do
+    // nothing at all.
+    fake.descriptors = descriptors(["work.listSessions"]);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString()))
+      .rejects.toThrow(SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE);
+    expect(fake.commandCalls.filter((call) => call.action.startsWith("session."))).toEqual([]);
+
+    adapter.dispose();
+  });
 });
+
+const LIFECYCLE_DESCRIPTORS = [
+  "work.listSessions",
+  "session.settleSession",
+  "session.unsettleSession",
+  "session.snoozeSession",
+  "session.wakeSession",
+  "session.setSettleOverride",
+  "session.clearWokeMarker",
+];
+
+/** Let a fire-and-forget background reconcile settle before asserting. */
+async function flushMicrotasks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 function descriptors(actions: string[]): SyncRemoteCommandDescriptor[] {
   return actions.map((action) => ({
@@ -1707,6 +1906,8 @@ class FakeAdeSyncClient {
   ];
   activeProjectId: string | null = "project-1";
   projectSwitchResult: unknown = null;
+  /** Transport state, so tests can exercise "the socket is down" paths. */
+  connectionState: "connected" | "reconnecting" | "disconnected" = "connected";
 
   private readonly tableListeners = new Set<(tables: Set<string>) => void>();
   private readonly chatListeners = new Set<(payload: SyncChatEventPayload) => void>();
@@ -1722,7 +1923,7 @@ class FakeAdeSyncClient {
 
   getStatus() {
     return {
-      state: "connected" as const,
+      state: this.connectionState,
       endpoint: "ws://localhost:8787",
       envId: "env-1",
       hostDeviceId: "host-1",

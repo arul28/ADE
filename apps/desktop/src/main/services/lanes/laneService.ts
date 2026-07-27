@@ -35,6 +35,7 @@ import type {
   LaneDeleteStepName,
   LaneIcon,
   LaneBranchActiveWorkItem,
+  LaneBranchDrift,
   LaneBranchProfile,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
@@ -50,6 +51,8 @@ import type {
   ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
+  ResolveLaneBranchDriftArgs,
+  ResolveLaneBranchDriftResult,
   RebaseAbortArgs,
   RebaseRun,
   RebaseRunEventPayload,
@@ -67,6 +70,11 @@ import type {
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
+import {
+  detectLaneBranchDrift,
+  laneNameAdvertisesBranch,
+  parseWorktreeStatusPorcelainV2,
+} from "./laneBranchDrift";
 
 type LaneRow = {
   id: string;
@@ -210,7 +218,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     ahead: status.ahead,
     behind: status.behind,
     remoteBehind: status.remoteBehind,
-    rebaseInProgress: status.rebaseInProgress
+    rebaseInProgress: status.rebaseInProgress,
+    headBranchRef: status.headBranchRef ?? null
   };
 }
 
@@ -519,6 +528,10 @@ function toLaneSummary(args: {
     parentStatus,
     isEditProtected: row.is_edit_protected === 1,
     status,
+    branchDrift: detectLaneBranchDrift({
+      expectedBranchRef: row.branch_ref,
+      headBranchRef: status.headBranchRef,
+    }),
     color: row.color,
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
@@ -546,8 +559,14 @@ async function computeLaneStatus(worktreePath: string, baseRef: string, branchRe
     return cloneLaneStatus(DEFAULT_LANE_STATUS);
   }
 
-  const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
-  const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
+  // `--porcelain=v2 --branch` carries the live HEAD branch in its header, so
+  // branch-drift detection rides along on the dirty check with no extra spawn.
+  const dirtyRes = await runGit(["status", "--porcelain=v2", "--branch"], { cwd: worktreePath, timeoutMs: 8_000 });
+  const parsedStatus = dirtyRes.exitCode === 0
+    ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
+    : { dirty: false, headBranchRef: null };
+  const dirty = parsedStatus.dirty;
+  const headBranchRef = parsedStatus.headBranchRef;
 
   const countsRes = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
     cwd: worktreePath,
@@ -593,7 +612,7 @@ async function computeLaneStatus(worktreePath: string, baseRef: string, branchRe
     // ignore
   }
 
-  return { dirty, ahead, behind, remoteBehind, rebaseInProgress };
+  return { dirty, ahead, behind, remoteBehind, rebaseInProgress, headBranchRef };
 }
 
 async function resolveParentRebaseTarget(args: {
@@ -2949,7 +2968,9 @@ export function createLaneService({
     throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
   }
 
-  return {
+  // Named so a few methods (branch-drift resolution) can delegate to sibling
+  // methods instead of duplicating their transaction/rollback handling.
+  const laneServiceApi = {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
     },
@@ -4118,6 +4139,190 @@ export function createLaneService({
         lane: refreshed,
         previousBranchRef,
         activeWork: preview.activeWork,
+      };
+    },
+
+    /**
+     * On-demand branch-drift read for a single lane.
+     *
+     * The lane list already carries `branchDrift` (computed from the status
+     * refresh); this exists for callers that need a fresh answer right before
+     * acting — e.g. immediately ahead of a PR operation or a new chat turn.
+     */
+    async getBranchDrift(args: { laneId: string }): Promise<LaneBranchDrift | null> {
+      const laneId = args.laneId.trim();
+      if (!laneId) return null;
+      const row = getLaneRow(laneId);
+      if (!row || row.status === "archived") return null;
+      if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) return null;
+      const headRes = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+        cwd: row.worktree_path,
+        timeoutMs: 5_000,
+      }).catch(() => null);
+      const headBranchRef = headRes?.exitCode === 0 ? headRes.stdout.trim() : null;
+      return detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
+    },
+
+    /**
+     * Resolve branch drift. This is the single entry point the ADE action
+     * registry / IPC layer should call for both affordances.
+     *
+     * - `switch-back` restores the worktree to the recorded `branch_ref`. It
+     *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
+     *   when the worktree is dirty, and rolls the checkout back if the DB write
+     *   fails.
+     * - `keep-head` re-points `branch_ref` at the live HEAD and, when the lane
+     *   name was merely advertising the old branch, renames the lane to match —
+     *   both inside one transaction, so the lane can never end up pointing at
+     *   one branch while its name advertises another.
+     */
+    async resolveBranchDrift(args: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required.");
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.status === "archived") throw new Error("Lane is archived.");
+      if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
+        throw new Error("This lane's worktree is unavailable.");
+      }
+
+      const headRes = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+        cwd: row.worktree_path,
+        timeoutMs: 5_000,
+      });
+      const liveHeadBranchRef = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+      const drift = detectLaneBranchDrift({
+        expectedBranchRef: row.branch_ref,
+        headBranchRef: liveHeadBranchRef,
+      });
+      if (!drift) {
+        throw new Error("This lane is already on its recorded branch.");
+      }
+      const expectedHeadBranchRef = args.expectedHeadBranchRef?.trim();
+      if (expectedHeadBranchRef && normalizeBranchKey(expectedHeadBranchRef) !== drift.headBranchRef) {
+        throw new Error(
+          `This lane is now on '${drift.headBranchRef}', not '${expectedHeadBranchRef}'. Refresh and try again.`,
+        );
+      }
+
+      if (args.resolution === "switch-back") {
+        const result = await laneServiceApi.switchBranch({
+          laneId: row.id,
+          branchName: drift.expectedBranchRef,
+          mode: "existing",
+          // Never default this on: switchBranch's active-work guard is the only
+          // thing stopping a force checkout of a worktree that agents are still
+          // running against. A caller that really wants to proceed must say so.
+          acknowledgeActiveWork: args.acknowledgeActiveWork === true,
+        });
+        return {
+          lane: result.lane,
+          resolution: "switch-back",
+          previousBranchRef: drift.headBranchRef,
+          branchRef: result.lane.branchRef,
+          previousLaneName: null,
+          laneName: result.lane.name,
+        };
+      }
+
+      const targetBranchRef = drift.headBranchRef;
+      const duplicate = findActiveBranchOwner(targetBranchRef, row.id);
+      if (duplicate) {
+        throw new Error(`Branch '${targetBranchRef}' is already active in lane '${duplicate.name}'.`);
+      }
+
+      // Only re-point the name when it is literally advertising the branch the
+      // lane no longer tracks. A hand-written lane name ("Auth work") advertises
+      // nothing and must survive.
+      const previousLaneName = row.name;
+      const nameAdvertisesOldBranch = laneNameAdvertisesBranch(row.name, drift.expectedBranchRef);
+      const nameTaken = db.get<{ id: string }>(
+        `
+          select id from lanes
+          where project_id = ?
+            and id != ?
+            and archived_at is null
+            and lower(name) = lower(?)
+          limit 1
+        `,
+        [projectId, row.id, targetBranchRef],
+      );
+      const nextLaneName = row.lane_type !== "primary" && nameAdvertisesOldBranch && !nameTaken
+        ? targetBranchRef
+        : row.name;
+
+      db.run("begin");
+      try {
+        const existingProfile = getBranchProfileRow(row.id, targetBranchRef);
+        upsertBranchProfileForRow(row, {
+          branchRef: targetBranchRef,
+          baseRef: existingProfile?.base_ref || row.base_ref || defaultBaseRef,
+          parentLaneId: existingProfile?.parent_lane_id ?? row.parent_lane_id,
+          sourceBranchRef: existingProfile?.source_branch_ref ?? drift.expectedBranchRef,
+          lastCheckedOutAt: new Date().toISOString(),
+        });
+        const profile = getBranchProfileRow(row.id, targetBranchRef);
+        db.run(
+          `
+            update lanes
+            set branch_ref = ?,
+                base_ref = ?,
+                parent_lane_id = ?,
+                name = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [
+            targetBranchRef,
+            profile?.base_ref ?? row.base_ref ?? defaultBaseRef,
+            profile?.parent_lane_id ?? row.parent_lane_id,
+            nextLaneName,
+            row.id,
+            projectId,
+          ],
+        );
+        // Same rationale as switchBranch: PR rows whose head branch no longer
+        // matches the lane are stale references and must not bleed into PR
+        // lookups now that the lane tracks a different branch.
+        const stalePrRows = db.all<{ id: string }>(
+          `
+            select id from pull_requests
+            where lane_id = ?
+              and project_id = ?
+              and head_branch <> ?
+          `,
+          [row.id, projectId, targetBranchRef],
+        );
+        if (stalePrRows.length > 0) {
+          deletePullRequestRowsByIds(db, projectId, stalePrRows.map((entry) => entry.id));
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        throw err;
+      }
+      invalidateLaneListCache();
+
+      if (nextLaneName !== previousLaneName) {
+        broadcastLifecycleEvent({
+          type: "lane-renamed",
+          laneId: row.id,
+          laneName: nextLaneName,
+          previousLaneName,
+          color: row.color,
+        });
+      }
+
+      const refreshed = (await listLanes({ includeArchived: false, includeStatus: true }))
+        .find((lane) => lane.id === row.id);
+      if (!refreshed) throw new Error(`Lane not found after drift resolution: ${row.id}`);
+      return {
+        lane: refreshed,
+        resolution: "keep-head",
+        previousBranchRef: drift.expectedBranchRef,
+        branchRef: targetBranchRef,
+        previousLaneName: nextLaneName !== previousLaneName ? previousLaneName : null,
+        laneName: nextLaneName,
       };
     },
 
@@ -5664,4 +5869,6 @@ export function createLaneService({
     },
 
   };
+
+  return laneServiceApi;
 }

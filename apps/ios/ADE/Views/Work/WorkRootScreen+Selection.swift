@@ -104,7 +104,7 @@ extension WorkRootScreen {
     }
     await reload(refreshRemote: true)
     if failed > 0 {
-      bulkActionErrorMessage = "Stop failed for \(failed) selected runtime\(failed == 1 ? "" : "s")."
+      actionErrorMessage = "Stop failed for \(failed) selected runtime\(failed == 1 ? "" : "s")."
     }
     exitSelectionMode()
   }
@@ -141,7 +141,7 @@ extension WorkRootScreen {
     }
     await reload(refreshRemote: true)
     if failed > 0 {
-      bulkActionErrorMessage = "Archive failed for \(failed) chat\(failed == 1 ? "" : "s")."
+      actionErrorMessage = "Archive failed for \(failed) chat\(failed == 1 ? "" : "s")."
     }
     exitSelectionMode()
   }
@@ -180,7 +180,7 @@ extension WorkRootScreen {
     }
     await reload(refreshRemote: true)
     if failed > 0 {
-      bulkActionErrorMessage = "Restore failed for \(failed) chat\(failed == 1 ? "" : "s")."
+      actionErrorMessage = "Restore failed for \(failed) chat\(failed == 1 ? "" : "s")."
     }
     exitSelectionMode()
   }
@@ -219,7 +219,7 @@ extension WorkRootScreen {
     }
     await reload(refreshRemote: true)
     if failed > 0 {
-      bulkActionErrorMessage = "Delete failed for \(failed) chat\(failed == 1 ? "" : "s")."
+      actionErrorMessage = "Delete failed for \(failed) chat\(failed == 1 ? "" : "s")."
     }
     exitSelectionMode()
   }
@@ -239,7 +239,7 @@ extension WorkRootScreen {
       try markdown.write(to: fileURL, atomically: true, encoding: .utf8)
       bulkExportShare = WorkArtifactShareItem(items: [fileURL])
     } catch {
-      bulkActionErrorMessage = "Export failed: \(error.localizedDescription)"
+      actionErrorMessage = "Export failed: \(error.localizedDescription)"
     }
   }
 }

@@ -328,12 +328,14 @@ The Claude SDK runtime tracks individual tool invocations via the SDK's
    invocation and marked complete, emitting `tool_use_complete` with
    the summary text.
 3. `AskUserQuestion` is special: when the SDK invokes it, the service
-   builds a `PendingInputRequest`, attaches the `toolUseID`, pauses the
-   idle watchdog (so the turn doesn't time out during human
-   deliberation), and emits the request inline. When the user
-   responds, the watchdog resumes, a `tool_result` goes back to the
-   SDK with the answer text, and `pending_input_resolved` clears the
-   UI.
+   builds a `PendingInputRequest`, attaches the `toolUseID`, and emits
+   the request inline. When the user responds, a `tool_result` goes
+   back to the SDK with the answer text, and `pending_input_resolved`
+   clears the UI. There is no idle timer to suspend for human
+   deliberation: Claude's time-based idle watchdog was removed because
+   long tool calls emit no stream events, and
+   `pauseIdleWatchdog` / `resumeIdleWatchdog` survive only as no-op
+   stubs so approval and elicitation callers did not have to change.
 4. `resolvedToolUseIds` tracks already-resolved tool uses so double
    resolutions (UI double-click, interrupted turn, stale state) are
    swallowed rather than throwing.
@@ -458,4 +460,14 @@ regain duplicate visible failures after restart.
   rely on it for non-lane surfaces.
 - **Claude parent terminal events are an ordered pair.** Restart and idle-Stop
   repair must leave the parent `status` + `done` pair after any orphan cleanup.
+- **Claude idle turns close on an SDK event, never on a timer.** An idle turn is
+  opened by background/subagent output that has no result envelope of its own,
+  so its only authoritative end is the `system` / `session_state_changed`
+  message with `state: "idle"`, which the SDK sends after `heldBackResult`
+  flushes and the background-agent loop exits. `finishClaudeIdleTurn` no-ops
+  when no idle turn is open, so handling every idle transition is safe. Do not
+  reintroduce a time-based idle watchdog to cover this — the previous one fired
+  false positives during long tool calls. New Claude `system` subtypes are
+  caught by a compile-time exhaustiveness guard rather than by review; see
+  [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
   Emitting later lifecycle rows can resurrect a stopped renderer state.

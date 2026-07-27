@@ -77,6 +77,19 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("session", "unsettleSelfSession")).toBe(true);
   });
 
+  it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
+    expect(isAllowedAdeAction("session", "snoozeSession")).toBe(true);
+    expect(isAllowedAdeAction("session", "snoozeSessions")).toBe(true);
+    expect(isAllowedAdeAction("session", "wakeSession")).toBe(true);
+    expect(isAllowedAdeAction("session", "wakeSessions")).toBe(true);
+    expect(isAllowedAdeAction("session", "setSettleOverride")).toBe(true);
+    expect(isAllowedAdeAction("session", "clearWokeMarker")).toBe(true);
+    expect(isAllowedAdeAction("lane", "getBranchDrift")).toBe(true);
+    expect(isAllowedAdeAction("lane", "resolveBranchDrift")).toBe(true);
+    expect(isCtoOnlyAdeAction("session", "snoozeSession")).toBe(false);
+    expect(isCtoOnlyAdeAction("lane", "resolveBranchDrift")).toBe(false);
+  });
+
   it("exposes iOS Preview Lab matching and workspace readiness to generic actions", () => {
     expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
@@ -1306,6 +1319,144 @@ describe("runtime session actions", () => {
     expect(sessionActions.unsettleSelfSession({ sessionId: "session-1" }))
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(unsettleSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("validates snooze/wake/settle-override args before touching the session service", () => {
+    const snoozeSession = vi.fn(() => true);
+    const snoozeSessions = vi.fn(() => ["session-1"]);
+    const wakeSession = vi.fn(() => true);
+    const wakeSessions = vi.fn(() => ["session-1"]);
+    const setSettleOverride = vi.fn(() => true);
+    const clearWokeMarker = vi.fn(() => true);
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        snoozeSession,
+        snoozeSessions,
+        wakeSession,
+        wakeSessions,
+        setSettleOverride,
+        clearWokeMarker,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as Record<
+      string,
+      (args?: unknown) => unknown
+    >;
+
+    expect(listAllowedAdeActionNames("session", sessionActions)).toEqual(
+      expect.arrayContaining([
+        "snoozeSession",
+        "snoozeSessions",
+        "wakeSession",
+        "wakeSessions",
+        "setSettleOverride",
+        "clearWokeMarker",
+      ]),
+    );
+
+    // Deadlines are normalized to ISO so every surface stores the same shape.
+    expect(sessionActions.snoozeSession({
+      sessionId: "session-1",
+      untilIso: "2099-07-26T18:00:00Z",
+    })).toEqual({
+      ok: true,
+      sessionId: "session-1",
+      snoozedUntil: "2099-07-26T18:00:00.000Z",
+    });
+    expect(snoozeSession).toHaveBeenCalledWith("session-1", "2099-07-26T18:00:00.000Z");
+
+    expect(() => sessionActions.snoozeSession({ sessionId: "session-1" }))
+      .toThrow(/untilIso/);
+    expect(() => sessionActions.snoozeSession({ sessionId: "session-1", untilIso: "later" }))
+      .toThrow(/ISO-8601/);
+    // A past deadline parses fine but hides nothing (snoozed = until > now), so
+    // it must fail loudly instead of reporting a successful no-op.
+    expect(() => sessionActions.snoozeSession({
+      sessionId: "session-1",
+      untilIso: "2020-01-01T00:00:00Z",
+    })).toThrow(/future/);
+    expect(() => sessionActions.snoozeSession({ untilIso: "2099-07-26T18:00:00Z" }))
+      .toThrow(/sessionId/);
+    expect(snoozeSession).toHaveBeenCalledTimes(1);
+
+    expect(() => sessionActions.snoozeSessions({
+      sessionIds: [],
+      untilIso: "2099-07-26T18:00:00Z",
+    })).toThrow(/at least one session id/);
+    expect(sessionActions.snoozeSessions({
+      sessionIds: ["session-1", 7],
+      untilIso: "2099-07-26T18:00:00Z",
+    })).toEqual(["session-1"]);
+    expect(snoozeSessions).toHaveBeenCalledWith(["session-1"], "2099-07-26T18:00:00.000Z");
+
+    // Wake defaults to "manual" and rejects anything outside the reason union.
+    expect(sessionActions.wakeSession({ sessionId: "session-1" }))
+      .toEqual({ ok: true, sessionId: "session-1", reason: "manual" });
+    expect(wakeSession).toHaveBeenCalledWith("session-1", "manual");
+    expect(sessionActions.wakeSession({ sessionId: "session-1", reason: "needs_you" }))
+      .toEqual({ ok: true, sessionId: "session-1", reason: "needs_you" });
+    expect(() => sessionActions.wakeSession({ sessionId: "session-1", reason: "because" }))
+      .toThrow(/reason/);
+    expect(sessionActions.wakeSessions({ sessionIds: ["session-1"], reason: "error" }))
+      .toEqual(["session-1"]);
+    expect(wakeSessions).toHaveBeenCalledWith(["session-1"], "error");
+
+    expect(sessionActions.setSettleOverride({ sessionId: "session-1", override: "active" }))
+      .toEqual({ ok: true, sessionId: "session-1", settleOverride: "active" });
+    expect(setSettleOverride).toHaveBeenCalledWith("session-1", "active");
+    expect(sessionActions.setSettleOverride({ sessionId: "session-1", override: null }))
+      .toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
+    expect(setSettleOverride).toHaveBeenLastCalledWith("session-1", null);
+    expect(() => sessionActions.setSettleOverride({ sessionId: "session-1", override: "snoozed" }))
+      .toThrow(/'settled', 'active', or null/);
+
+    expect(sessionActions.clearWokeMarker({ sessionId: "session-1" }))
+      .toEqual({ ok: true, sessionId: "session-1" });
+    expect(clearWokeMarker).toHaveBeenCalledWith("session-1");
+  });
+
+  it("validates lane branch-drift args and forwards the resolution", async () => {
+    const getBranchDrift = vi.fn(async () => ({
+      expectedBranchRef: "ade/feature",
+      headBranchRef: "hotfix-auth",
+    }));
+    const resolveBranchDrift = vi.fn(async () => ({ resolution: "switch-back" }));
+    const runtime = {
+      laneService: { getBranchDrift, resolveBranchDrift },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const laneActions = getAdeActionDomainServices(runtime).lane as Record<
+      string,
+      (args?: unknown) => Promise<unknown>
+    >;
+
+    // `ade lane actions --text` reads this list, so drift must appear in it.
+    expect(listAllowedAdeActionNames("lane", laneActions)).toEqual(
+      expect.arrayContaining(["getBranchDrift", "resolveBranchDrift"]),
+    );
+
+    await expect(laneActions.getBranchDrift({ laneId: "lane-1" })).resolves.toEqual({
+      expectedBranchRef: "ade/feature",
+      headBranchRef: "hotfix-auth",
+    });
+    expect(getBranchDrift).toHaveBeenCalledWith({ laneId: "lane-1" });
+    await expect(laneActions.getBranchDrift({})).rejects.toThrow(/laneId/);
+
+    await expect(laneActions.resolveBranchDrift({
+      laneId: "lane-1",
+      resolution: "keep-head",
+      expectedHeadBranchRef: " hotfix-auth ",
+    })).resolves.toEqual({ resolution: "switch-back" });
+    expect(resolveBranchDrift).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      resolution: "keep-head",
+      expectedHeadBranchRef: "hotfix-auth",
+    });
+
+    await expect(laneActions.resolveBranchDrift({ laneId: "lane-1", resolution: "rebase" }))
+      .rejects.toThrow(/'switch-back' or 'keep-head'/);
+    expect(resolveBranchDrift).toHaveBeenCalledTimes(1);
   });
 
   it("dismisses pending chat input before settling through the session action", async () => {

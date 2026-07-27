@@ -3,6 +3,21 @@ import type { TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState } from "../../lib/terminalAttention";
+import {
+  isSessionSnoozed,
+  snoozeWakeLabel,
+  SNOOZE_DURATION_OPTIONS,
+  type SnoozeDurationKey,
+} from "../../lib/sessionSnooze";
+import {
+  setSessionSettleOverride,
+  snoozeSessionForDuration,
+  unsettleSession,
+  wakeSessionNow,
+} from "./sessionLifecycleActions";
+
+const MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40";
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
@@ -26,7 +41,6 @@ type SessionContextMenuProps = {
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
   onSettle?: (session: TerminalSessionSummary) => void;
-  onUnsettle?: (session: TerminalSessionSummary) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -49,13 +63,13 @@ export function SessionContextMenu({
   onOpenSessionInWeb,
   onTogglePinned,
   onSettle,
-  onUnsettle,
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
 }: SessionContextMenuProps) {
   const [renaming, setRenaming] = useState(false);
   const [tagging, setTagging] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
@@ -68,6 +82,7 @@ export function SessionContextMenu({
   useEffect(() => {
     setRenaming(false);
     setTagging(false);
+    setSnoozing(false);
     setDraft("");
     finalizedRef.current = false;
   }, [menu]);
@@ -94,6 +109,22 @@ export function SessionContextMenu({
     canonicalPhase !== "needs_you"
     || isChat
     || Boolean(session.attentionRequestedAt);
+  // Snooze is a visibility overlay, so it is read from the shared snooze
+  // derivation and never inferred from the canonical phase.
+  const isSnoozed = isSessionSnoozed(session);
+  const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
+  const isSettled = canonicalPhase === "settled";
+  /**
+   * A DERIVED settle — a clean exit-0 (or a `settleOverride: "settled"`) with no
+   * `settledAt` — used to fall out of every branch here and end up with no
+   * lifecycle action at all. The keep-active override is the unsettle for those
+   * rows: it outranks the derived rule so the row leaves the quiet tier.
+   */
+  const isDeclaredSettled = Boolean(session.settledAt);
+  const chooseSnooze = (key: SnoozeDurationKey) => {
+    void snoozeSessionForDuration(session, key);
+    onClose();
+  };
 
   const commitRename = () => {
     if (finalizedRef.current) return;
@@ -207,16 +238,73 @@ export function SessionContextMenu({
           </button>
         ) : null}
 
-        {session.settledAt && onUnsettle ? (
+        {/* Lifecycle block — every action that changes where the sidebar files
+            this row lives here: snooze/wake (visibility) and settle/keep-active
+            (state). Keep it exhaustive: a row that reaches the end of this block
+            with nothing rendered is a row the user cannot un-hide. */}
+        {isSnoozed ? (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onUnsettle(session); onClose(); }}
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { void wakeSessionNow(session); onClose(); }}
           >
-            Unsettle
+            Wake now
+            {snoozeWake ? (
+              <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">{snoozeWake}</span>
+            ) : null}
           </button>
-        ) : canonicalPhase !== "settled" && !isActivelyRunning && onSettle && canDismissNeedsYou ? (
+        ) : snoozing ? (
+          SNOOZE_DURATION_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              className={`${MENU_ITEM_CLASS} pl-6`}
+              onClick={() => chooseSnooze(option.key)}
+            >
+              {option.label}
+            </button>
+          ))
+        ) : (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            type="button"
+            className={MENU_ITEM_CLASS}
+            aria-expanded={false}
+            onClick={() => setSnoozing(true)}
+          >
+            Snooze…
+          </button>
+        )}
+
+        {isSettled ? (
+          <>
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => {
+                // Declared settles clear the column; derived settles have no
+                // column to clear, so the keep-active pin is the only unsettle.
+                // Both branches live in the shared lifecycle action.
+                void unsettleSession(session);
+                onClose();
+              }}
+            >
+              Unsettle
+            </button>
+            {isDeclaredSettled ? (
+              <button
+                type="button"
+                className={MENU_ITEM_CLASS}
+                title="Pin this session active so a clean exit cannot re-settle it"
+                onClick={() => { void setSessionSettleOverride(session, "active"); onClose(); }}
+              >
+                Keep active
+              </button>
+            ) : null}
+          </>
+        ) : !isActivelyRunning && onSettle && canDismissNeedsYou ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
             onClick={() => { onSettle(session); onClose(); }}
           >
             {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}

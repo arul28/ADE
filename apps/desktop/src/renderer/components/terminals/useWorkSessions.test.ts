@@ -1424,6 +1424,96 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.settledFiltered.map((s) => s.id)).toEqual(["session-ended"]);
   });
 
+  it("partitions snoozed rows out of the flat sidebar buckets and back once the snooze lapses", async () => {
+    const nowMs = Date.now();
+    const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
+    // Snoozed while it is still running: snooze is a visibility overlay, so it
+    // outranks the Running bucket rather than deferring to it.
+    const snoozedRunning = makeSession("session-snoozed-running", "lane-1", {
+      snoozedUntil: iso(2 * 3600_000),
+      snoozedAt: iso(-60_000),
+    });
+    const snoozedRunningSoon = makeSession("session-snoozed-soon", "lane-1", {
+      snoozedUntil: iso(30 * 60_000),
+      snoozedAt: iso(-60_000),
+    });
+    // Expiry is DERIVED from `snoozedUntil` — a lapsed snooze is not snoozed.
+    const lapsedSnooze = makeSession("session-lapsed", "lane-1", {
+      snoozedUntil: iso(-60_000),
+      snoozedAt: iso(-3600_000),
+    });
+    const plainRunning = makeSession("session-running", "lane-1");
+    listSessionsCachedMock.mockResolvedValue([
+      snoozedRunning,
+      snoozedRunningSoon,
+      lapsedSnooze,
+      plainRunning,
+    ]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.filtered).toHaveLength(4);
+    });
+
+    // Soonest wake first.
+    expect(result.current.snoozedFiltered.map((s) => s.id)).toEqual([
+      "session-snoozed-soon",
+      "session-snoozed-running",
+    ]);
+    expect(result.current.runningFiltered.map((s) => s.id)).toEqual([
+      "session-lapsed",
+      "session-running",
+    ]);
+    expect(result.current.awaitingInputFiltered.map((s) => s.id)).toEqual([]);
+    expect(result.current.endedFiltered.map((s) => s.id)).toEqual([]);
+    expect(result.current.settledFiltered.map((s) => s.id)).toEqual([]);
+  });
+
+  // Regression: "Until I'm asked" snooze hid a needs-you row forever. All three
+  // early-wake triggers were chat-only, and a tracked CLI row's needs-input
+  // state is DERIVED (no event exists to hook), so a snoozed CLI session that
+  // hit a permission prompt could never come back. Snooze must yield to a
+  // raised hand at filing time.
+  it("does NOT file a snoozed needs-you row as snoozed in the flat sidebar buckets", async () => {
+    const nowMs = Date.now();
+    const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
+    // A tracked CLI row blocked at a prompt, snoozed "until I'm asked" (~100y).
+    const snoozedCliNeedsYou = makeSession("session-cli-needs-you", "lane-1", {
+      toolType: "claude" as const,
+      runtimeState: "waiting-input" as const,
+      snoozedUntil: iso(100 * 365 * 24 * 3600_000),
+      snoozedAt: iso(-60_000),
+    });
+    // A chat row escalated via `ade chat ask` while snoozed.
+    const snoozedChatAsk = makeSession("session-chat-ask", "lane-1", {
+      toolType: "claude-chat" as const,
+      attentionRequestedAt: iso(-1_000),
+      snoozedUntil: iso(2 * 3600_000),
+      snoozedAt: iso(-60_000),
+    });
+    const snoozedQuiet = makeSession("session-snoozed-quiet", "lane-1", {
+      snoozedUntil: iso(3600_000),
+      snoozedAt: iso(-60_000),
+    });
+    listSessionsCachedMock.mockResolvedValue([snoozedCliNeedsYou, snoozedChatAsk, snoozedQuiet]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.filtered).toHaveLength(3);
+    });
+
+    // Only the calm row is hidden; both hand-raises stay in "Your move", loud
+    // rows first, so the user can actually see and unblock them.
+    expect(result.current.snoozedFiltered.map((s) => s.id)).toEqual(["session-snoozed-quiet"]);
+    expect(result.current.awaitingInputFiltered.map((s) => s.id)).toEqual([
+      "session-cli-needs-you",
+      "session-chat-ask",
+    ]);
+    expect(result.current.runningFiltered.map((s) => s.id)).toEqual([]);
+  });
+
   it("includes Claude session tags in the Work sidebar search", async () => {
     const taggedSession = makeSession("session-tagged", "lane-1", {
       title: "Unrelated title",
@@ -2116,6 +2206,87 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     });
     expect(byTime.groups.map((group) => group.id)).toEqual(["time:today", "time:yesterday", "time:older"]);
     expect(byTime.sessionIds).toEqual(["session-a1", "session-a2", "session-b1", "session-c1"]);
+  });
+
+  it("pulls snoozed rows out of their status bucket into a Snoozed group above Settled", () => {
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
+
+    const sessions = [
+      makeSession("session-running", "lane-a"),
+      // Snoozed but still RUNNING: snooze is a visibility overlay, so it must
+      // leave the Running group even though its phase never changed.
+      makeSession("session-snoozed-late", "lane-a", { snoozedUntil: iso(4 * 3600_000) }),
+      makeSession("session-snoozed-soon", "lane-a", { snoozedUntil: iso(3600_000) }),
+      // Snooze already lapsed — expiry is DERIVED, so this rejoins Running.
+      makeSession("session-woken", "lane-a", { snoozedUntil: iso(-3600_000) }),
+      makeSession("session-settled", "lane-a", {
+        status: "completed" as const,
+        runtimeState: "exited" as const,
+        exitCode: 0,
+        endedAt: iso(-60_000),
+      }),
+    ];
+    const lanes = [
+      { id: "lane-a", name: "Lane A", laneType: "worktree" as const, createdAt: iso(-86400000), color: null as string | null },
+    ];
+
+    const model = buildWorkTabGroupModel({
+      sessions,
+      lanes,
+      organization: "all-lanes-by-status",
+      collapsedGroupIds: [],
+      nowMs,
+    });
+
+    expect(model.groups.map((group) => group.id)).toEqual([
+      "status:running",
+      "status:snoozed",
+      "status:settled",
+    ]);
+    expect(model.groups[0]!.sessionIds).toEqual(["session-running", "session-woken"]);
+    // Snoozed rows rank by when they come back, soonest first.
+    expect(model.groups[1]!.sessionIds).toEqual(["session-snoozed-soon", "session-snoozed-late"]);
+    expect(model.groups[1]!.label).toBe("Snoozed");
+    expect(model.groups[2]!.sessionIds).toEqual(["session-settled"]);
+  });
+
+  // Regression: "Until I'm asked" snooze hid a needs-you row forever — the
+  // grouped status path lifted snoozed rows out of Your-move with no filing
+  // exception, and no early-wake event exists for a tracked CLI row (its
+  // needs-input state is derived).
+  it("does NOT file a snoozed needs-you row into the Snoozed group", () => {
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
+
+    const sessions = [
+      // Tracked CLI row blocked at a prompt, snoozed "until I'm asked" (~100y).
+      makeSession("session-cli-needs-you", "lane-a", {
+        toolType: "claude" as const,
+        runtimeState: "waiting-input" as const,
+        snoozedUntil: iso(100 * 365 * 24 * 3600_000),
+        snoozedAt: iso(-60_000),
+      }),
+      makeSession("session-snoozed-quiet", "lane-a", { snoozedUntil: iso(3600_000) }),
+    ];
+    const lanes = [
+      { id: "lane-a", name: "Lane A", laneType: "worktree" as const, createdAt: iso(-86400000), color: null as string | null },
+    ];
+
+    const model = buildWorkTabGroupModel({
+      sessions,
+      lanes,
+      organization: "all-lanes-by-status",
+      collapsedGroupIds: [],
+      nowMs,
+    });
+
+    expect(model.groups.map((group) => group.id)).toEqual([
+      "status:awaiting-input",
+      "status:snoozed",
+    ]);
+    expect(model.groups[0]!.sessionIds).toEqual(["session-cli-needs-you"]);
+    expect(model.groups[1]!.sessionIds).toEqual(["session-snoozed-quiet"]);
   });
 
   it("reorders from the displayed pinned tab order", () => {

@@ -114,6 +114,12 @@ import {
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
+import {
+  isIndefiniteSnooze,
+  parseSnoozeDuration,
+  resolveSnoozeUntil,
+} from "./sessionSnoozeDuration";
+import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -217,6 +223,8 @@ type FormatterId =
   | "pr-comments"
   | "chat-list"
   | "chat-read"
+  | "session-lifecycle"
+  | "lane-drift"
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
@@ -608,6 +616,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade chat list | create | send | ask | note
                settle | unsettle | interrupt
                                                     Work with ADE agent chats
+    $ ade session snooze | wake | settle | unsettle File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1451,6 +1460,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade lanes list --text                         Show lane stack graph and branch names
     $ ade lanes show <lane> --text                  Inspect one lane status
+    $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
+    $ ade lane drift resolve --lane <lane> --switch-back
+                                                    Restore the worktree to the lane's recorded branch (refuses if dirty)
+    $ ade lane drift resolve --lane <lane> --keep-head
+                                                    Re-point the lane (and its name) at the live HEAD branch
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
@@ -1633,6 +1647,31 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
     $ ade files quick-open --workspace <lane> -q app
+`,
+  session: `${ADE_BANNER}
+  Session lifecycle
+
+  These commands file a session rather than talk to it. Every subcommand takes
+  the session id as a positional, accepts --session <id>, and falls back to
+  $ADE_CHAT_SESSION_ID so an agent can file its own session with no id.
+
+    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
+    $ ade session snooze <id> --until 2026-07-26T18:00:00Z
+                                                    Snooze until an explicit ISO-8601 deadline
+    $ ade session snooze <id> --until-asked          Snooze open-ended (the desktop/iOS "Until I'm asked" preset):
+                                                    no clock deadline, so only a hand-raise brings the row back
+    $ ade session wake <id>                         Clear the snooze now (--reason timer|needs_you|error|turn_complete|manual)
+    $ ade session settle <id> --outcome "CI green"  Mark the session complete
+    $ ade session settle <id> --keep-active         Pin the session active instead (beats the derived clean-exit settle)
+    $ ade session unsettle <id>                     Return the session to the active lifecycle
+    $ ade session clear-woke <id>                   Drop the "woke early" marker after visiting the row
+    $ ade session actions --text                    List raw session service actions
+
+  Snooze is a visibility overlay, not a lifecycle phase: the session keeps
+  running while snoozed, and a hand-raise wakes it early — an approval request
+  ('needs_you'), a failed turn ('error'), or a completed turn ('turn_complete').
+  'ade session show' reports which one brought it back.
 `,
   chat: `${ADE_BANNER}
   Work chats
@@ -2442,6 +2481,33 @@ function parseScheduledWorkDelaySeconds(value: string): number {
     throw new CliUsageError("--in must resolve to a positive, safely representable number of seconds.");
   }
   return seconds;
+}
+
+/**
+ * Parse `ade session snooze --for <duration>`. The grammar and the 30-day cap
+ * live in `sessionSnoozeDuration.ts` so `ade code`'s `/session snooze` resolves
+ * a duration identically; this wrapper only turns the shared result union into
+ * the `CliUsageError` the argv layer already knows how to report.
+ */
+function parseSnoozeDurationMs(value: string): number {
+  const parsed = parseSnoozeDuration(value);
+  if (!parsed.ok) throw new CliUsageError(parsed.message);
+  return parsed.ms;
+}
+
+/**
+ * Resolve the snooze deadline from `--for <duration>`, `--until <iso>`, or
+ * `--until-asked`. Exactly one is required; `--until` must parse and must be in
+ * the future, because a past deadline would make the row instantly visible
+ * again and read as a silently ignored command.
+ */
+function resolveSnoozeUntilIso(
+  args: { forValue: string | null; untilValue: string | null; untilAsked?: boolean },
+  now: number = Date.now(),
+): string {
+  const resolved = resolveSnoozeUntil(args, now);
+  if (!resolved.ok) throw new CliUsageError(resolved.message);
+  return resolved.untilIso;
 }
 
 function readCommandTextValue(args: string[], names: string[]): string | null {
@@ -3693,6 +3759,57 @@ function buildLanePlan(args: string[]): CliPlan {
       kind: "execute",
       label: "lane status",
       steps: [actionCallStep("result", "get_lane_status", { laneId })],
+    };
+  }
+  // Branch drift = someone ran `git checkout` inside the lane worktree, so the
+  // live HEAD no longer matches the branch ADE still advertises for the lane.
+  if (sub === "drift") {
+    // firstStandalonePositional (not firstPositional) so `--lane <id>` is not
+    // mistaken for the mode token or the lane positional.
+    const modeToken = firstStandalonePositional(args);
+    const isResolve = modeToken === "resolve" || modeToken === "fix";
+    const laneId = requireValue(
+      readLaneId(args) ?? (isResolve ? firstStandalonePositional(args) : modeToken),
+      "laneId",
+    );
+    if (!isResolve) {
+      return {
+        kind: "execute",
+        label: "lane drift",
+        formatter: "lane-drift",
+        steps: [actionStep("result", "lane", "getBranchDrift", { laneId })],
+      };
+    }
+    const switchBack = readFlag(args, ["--switch-back", "--restore"]);
+    const keepHead = readFlag(args, ["--keep-head", "--adopt-head"]);
+    if (switchBack === keepHead) {
+      throw new CliUsageError(
+        "lane drift resolve requires exactly one of --switch-back or --keep-head.",
+      );
+    }
+    const expectedHeadBranchRef = readValue(args, [
+      "--expected-head",
+      "--expected-head-branch",
+    ]);
+    return {
+      kind: "execute",
+      label: "lane drift resolve",
+      formatter: "lane-drift",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "resolveBranchDrift",
+          collectGenericObjectArgs(args, {
+            laneId,
+            resolution: switchBack ? "switch-back" : "keep-head",
+            ...(expectedHeadBranchRef ? { expectedHeadBranchRef } : {}),
+            ...(readFlag(args, ["--force", "--acknowledge-active-work"])
+              ? { acknowledgeActiveWork: true }
+              : {}),
+          }),
+        ),
+      ],
     };
   }
   if (sub === "merge") {
@@ -6589,6 +6706,187 @@ function buildTerminalPlan(args: string[]): CliPlan {
       actionStep("result", "terminal", sub, collectGenericObjectArgs(args)),
     ],
   };
+}
+
+/**
+ * `ade session …` — the session-lifecycle surface. Unlike `ade chat`, these
+ * commands are about *filing* a session rather than talking to it: settle it,
+ * pin it active, or snooze it out of the attention surfaces until a deadline.
+ *
+ * Every subcommand takes the session id as a positional, accepts `--session`
+ * as an alias, and falls back to $ADE_CHAT_SESSION_ID so an agent can file its
+ * own session with no id at all — the same defaulting `ade chat settle` uses.
+ */
+function buildSessionPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "show";
+  if (sub === "actions") {
+    return {
+      kind: "execute",
+      label: "session actions",
+      steps: [listActionsStep("actions", "session")],
+    };
+  }
+  if (sub === "action") {
+    return {
+      kind: "execute",
+      label: "session action",
+      steps: [buildActionRunStep(["session", ...args])],
+    };
+  }
+  // The positional is the documented form and wins, but readSessionId() still
+  // runs so it consumes --session/--session-id (and supplies the
+  // $ADE_CHAT_SESSION_ID fallback when neither form is given).
+  const positionalSessionId = firstStandalonePositional(args);
+  const fallbackSessionId = readSessionId(args);
+  const sessionId = requireValue(
+    positionalSessionId ?? fallbackSessionId,
+    "sessionId",
+  );
+
+  if (sub === "show" || sub === "status" || sub === "get") {
+    return {
+      kind: "execute",
+      label: "session show",
+      formatter: "session-lifecycle",
+      steps: [actionStep("result", "session", "get", { sessionId })],
+    };
+  }
+
+  if (sub === "snooze") {
+    // `--until-asked` mirrors the desktop/iOS "Until I'm asked" preset: no clock
+    // deadline, so only a hand-raise (needs-you / error / turn complete) brings
+    // the row back. Read before --for/--until so the conflict is reported.
+    const untilAsked = readFlag(args, ["--until-asked", "--indefinite"]);
+    const untilIso = resolveSnoozeUntilIso({
+      forValue: readValue(args, ["--for", "--duration"]),
+      untilValue: readValue(args, ["--until", "--until-iso"]),
+      untilAsked,
+    });
+    return {
+      kind: "execute",
+      label: "session snooze",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "snoozeSession",
+          collectGenericObjectArgs(args, { sessionId, untilIso }),
+        ),
+      ],
+    };
+  }
+
+  if (sub === "wake" || sub === "unsnooze") {
+    const reason = readValue(args, ["--reason"]);
+    return {
+      kind: "execute",
+      label: "session wake",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "wakeSession",
+          collectGenericObjectArgs(args, {
+            sessionId,
+            ...(reason ? { reason } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+
+  // `--keep-active` is the explicit keep-active pin (settle_override =
+  // 'active'). It is the only way to hold a clean-exit row in the active tier,
+  // because those rows derive their settle and have no settled_at to clear.
+  const keepActive = readFlag(args, ["--keep-active", "--pin-active"]);
+
+  if (sub === "settle") {
+    if (keepActive) {
+      return {
+        kind: "execute",
+        label: "session settle --keep-active",
+        formatter: "session-lifecycle",
+        steps: [
+          actionStep(
+            "result",
+            "session",
+            "setSettleOverride",
+            collectGenericObjectArgs(args, { sessionId, override: "active" }),
+          ),
+        ],
+      };
+    }
+    const outcome = readValue(args, ["--outcome"]);
+    return {
+      kind: "execute",
+      label: "session settle",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "settleSelfSession",
+          collectGenericObjectArgs(args, {
+            sessionId,
+            ...(outcome !== null ? { outcome } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+
+  if (sub === "unsettle") {
+    if (keepActive) {
+      return {
+        kind: "execute",
+        label: "session unsettle --keep-active",
+        formatter: "session-lifecycle",
+        steps: [
+          actionStep(
+            "result",
+            "session",
+            "setSettleOverride",
+            collectGenericObjectArgs(args, { sessionId, override: "active" }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "session unsettle",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "unsettleSelfSession",
+          collectGenericObjectArgs(args, { sessionId }),
+        ),
+      ],
+    };
+  }
+
+  if (sub === "clear-woke" || sub === "clear-wake") {
+    return {
+      kind: "execute",
+      label: "session clear-woke",
+      formatter: "session-lifecycle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "clearWokeMarker",
+          collectGenericObjectArgs(args, { sessionId }),
+        ),
+      ],
+    };
+  }
+
+  throw new CliUsageError(
+    `Unknown session subcommand '${sub}'. Try: show, snooze, wake, settle, unsettle, clear-woke.`,
+  );
 }
 
 function buildChatPlan(args: string[]): CliPlan {
@@ -11441,6 +11739,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--event",
   "--end-x",
   "--end-y",
+  "--expected-head",
+  "--expected-head-branch",
   "--delivery",
   "--file",
   "--for",
@@ -11488,6 +11788,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--owner",
   "--owner-id",
   "--owner-kind",
+  "--outcome",
   "--output",
   "--oid",
   "--params-json",
@@ -11576,6 +11877,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--udid",
   "--url",
   "--until",
+  "--until-iso",
   "--value",
   "--window-title",
   "--workspace",
@@ -11654,6 +11956,7 @@ function buildCliPlan(
     "auto-update": "update",
     updates: "update",
     operation: "operations",
+    sessions: "session",
     project: "projects",
     machine: "machines",
     quota: "usage",
@@ -11892,6 +12195,8 @@ function buildCliPlan(
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
+  if (primary === "session" || primary === "sessions")
+    return buildSessionPlan(args);
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
@@ -17079,6 +17384,77 @@ function formatChatList(value: unknown): string {
   );
 }
 
+/**
+ * One renderer for every `ade session …` command. They all return either a
+ * session row (`show`) or a small mutation ack, so the formatter prints
+ * whichever lifecycle fields are present rather than switching per command.
+ *
+ * The "wakes" line comes from the shared `snoozeWakeLabel`, so an open-ended
+ * "until asked" deadline reads as `wakes  when asked` here exactly as it does on
+ * desktop, iOS, and in `ade code` — and the raw timestamp (~100 years out, which
+ * would read as corruption) is suppressed for that case.
+ */
+function formatSessionLifecycle(value: unknown): string {
+  const record =
+    firstRecord(value, ["session", "result", "detail"]) ??
+    (isRecord(value) ? value : {});
+  const now = Date.now();
+  const snoozedUntil = asString(record.snoozedUntil);
+  const snoozedUntilMs = snoozedUntil ? Date.parse(snoozedUntil) : NaN;
+  const snoozed = Number.isFinite(snoozedUntilMs) && snoozedUntilMs > now;
+  const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
+  const indefinite = isIndefiniteSnooze(snoozedUntil, now);
+  return renderKeyValues("ADE session lifecycle", [
+    ["session", record.sessionId ?? record.id],
+    ["title", record.title],
+    ["lane", record.laneId],
+    ["runtime state", record.runtimeState],
+    ["settled at", record.settledAt],
+    ["settle override", record.settleOverride],
+    ["status note", record.statusNote],
+    ["attention", record.attentionRequestedAt],
+    ["last turn failed", record.lastTurnFailedAt],
+    ["snoozed", snoozedUntil ? (snoozed ? "yes" : "expired") : undefined],
+    ["wakes", wakeLabel ? wakeLabel.replace(/^wakes\s+/, "") : undefined],
+    ["snoozed until", snoozedUntil && !indefinite ? snoozedUntil : undefined],
+    ["snoozed at", record.snoozedAt],
+    ["woke at", record.wokeAt],
+    ["woke reason", record.wokeReason ?? record.reason],
+    ["ok", record.ok],
+  ]);
+}
+
+/**
+ * `ade lane drift` renders a null result as the clean state — no drift is the
+ * expected answer, and an empty table would read like a failure.
+ */
+function formatLaneDrift(value: unknown): string {
+  if (value == null) return "No branch drift: this lane is on its recorded branch.";
+  const record = firstRecord(value, ["drift", "result"]) ?? (isRecord(value) ? value : {});
+  const lane = firstRecord(record, ["lane"]);
+  const resolution = asString(record.resolution);
+  if (resolution) {
+    return renderKeyValues("ADE lane branch drift resolved", [
+      ["lane", lane?.id ?? record.laneId],
+      ["resolution", resolution],
+      ["previous branch", record.previousBranchRef],
+      ["branch", record.branchRef],
+      ["previous lane name", record.previousLaneName],
+      ["lane name", record.laneName],
+    ]);
+  }
+  const headBranchRef = asString(record.headBranchRef);
+  if (!headBranchRef) return "No branch drift: this lane is on its recorded branch.";
+  return renderKeyValues("ADE lane branch drift", [
+    ["expected branch", record.expectedBranchRef],
+    ["head branch", headBranchRef],
+    [
+      "resolve with",
+      "ade lane drift resolve --lane <id> --switch-back | --keep-head",
+    ],
+  ]);
+}
+
 function formatChatRead(value: unknown): string {
   const entries = Array.isArray(value)
     ? value.filter(isRecord)
@@ -18155,6 +18531,10 @@ function formatTextOutput(
       return formatChatList(value);
     case "chat-read":
       return formatChatRead(value);
+    case "session-lifecycle":
+      return formatSessionLifecycle(value);
+    case "lane-drift":
+      return formatLaneDrift(value);
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};
@@ -19679,6 +20059,8 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 export {
   buildCliPlan,
   buildAdeCodeArgs,
+  parseSnoozeDurationMs,
+  resolveSnoozeUntilIso,
   checkLinearReadiness,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,

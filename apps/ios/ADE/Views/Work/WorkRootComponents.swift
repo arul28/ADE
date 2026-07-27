@@ -521,6 +521,17 @@ struct WorkSessionListRow: View {
   /// Opens the row's linked PR (mapped or GitHub-by-branch) in the PRs tab.
   /// Defaults to a no-op so preview harnesses don't have to wire it.
   var onOpenPullRequest: (TerminalSessionSummary, LanePrTag) -> Void = { _, _ in }
+  // ADE-125 session lifecycle. Defaults are no-ops (and the affordances are
+  // hidden) so preview harnesses and older hosts don't have to wire them.
+  /// The host advertises settle / unsettle / settle-override.
+  var lifecycleAvailable: Bool = false
+  /// The host advertises snooze / wake.
+  var snoozeAvailable: Bool = false
+  var onSettle: (TerminalSessionSummary) -> Void = { _ in }
+  var onUnsettle: (TerminalSessionSummary) -> Void = { _ in }
+  var onKeepActive: (TerminalSessionSummary) -> Void = { _ in }
+  var onSnooze: (TerminalSessionSummary, WorkSnoozeDuration) -> Void = { _, _ in }
+  var onWake: (TerminalSessionSummary) -> Void = { _ in }
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -530,6 +541,39 @@ struct WorkSessionListRow: View {
   private var isMuted: Bool {
     isChatSession(session)
       && pushNotificationService.prefs.mutedSessionIds.contains(session.id)
+  }
+
+  private var canonicalPhase: CanonicalSessionPhase {
+    workCanonicalSessionState(session: session, summary: chatSummary).phase
+  }
+
+  private var isSnoozed: Bool {
+    session.isSnoozed()
+  }
+
+  /// An escalated ask outranks settle: a row blocked on the user is not "done",
+  /// and settling it would bury the very thing asking for attention. Resolve
+  /// the ask first. Already-settled rows offer Unsettle instead.
+  private var canSettle: Bool {
+    lifecycleAvailable && canonicalPhase != .needsYou && canonicalPhase != .settled
+  }
+
+  private var canUnsettle: Bool {
+    lifecycleAvailable && canonicalPhase == .settled
+  }
+
+  /// "Keep active" only means something once a row would otherwise read settled
+  /// — either declared or auto-settled by a clean exit.
+  private var canKeepActive: Bool {
+    lifecycleAvailable
+      && session.resolvedSettleOverride != .active
+      && canonicalPhase == .settled
+  }
+
+  private var snoozeOptions: [(duration: WorkSnoozeDuration, deadline: Date)] {
+    WorkSnoozeDuration.allCases.compactMap { duration in
+      duration.deadline().map { (duration, $0) }
+    }
   }
 
   var body: some View {
@@ -583,6 +627,43 @@ struct WorkSessionListRow: View {
         }
         .tint(ADEColor.danger)
       }
+      // The two lifecycle moves people make constantly get a swipe; everything
+      // else lives in the long-press menu. iOS has no hover, so there is no
+      // desktop-style always-visible moon button.
+      if canSettle {
+        Button {
+          onSettle(session)
+        } label: {
+          Label("Settle", systemImage: "checkmark.circle")
+        }
+        .tint(ADEColor.accent)
+      } else if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+        .tint(ADEColor.accent)
+      }
+      if snoozeAvailable {
+        if isSnoozed {
+          Button {
+            onWake(session)
+          } label: {
+            Label("Wake", systemImage: "sun.max")
+          }
+          .tint(ADEColor.warning)
+        } else {
+          // The swipe is the fast path — one hour. Every other window is a
+          // long-press away, so the swipe never opens a picker mid-gesture.
+          Button {
+            onSnooze(session, .oneHour)
+          } label: {
+            Label("Snooze 1h", systemImage: "moon.zzz")
+          }
+          .tint(ADEColor.info)
+        }
+      }
     }
     .contextMenu {
       Button {
@@ -609,6 +690,7 @@ struct WorkSessionListRow: View {
           Label("Delete chat", systemImage: "trash")
         }
       }
+      lifecycleMenuSection
       Divider()
       Button {
         onGoToLane(session)
@@ -666,6 +748,58 @@ struct WorkSessionListRow: View {
 
   private var shouldShowDeleteAction: Bool {
     isChatSession(session)
+  }
+
+  /// Full lifecycle set: settle / unsettle, a snooze submenu of durations,
+  /// wake now, and the keep-active pin. Durations use a native nested `Menu`,
+  /// never a popover — this is a long-press context menu on a phone.
+  @ViewBuilder
+  private var lifecycleMenuSection: some View {
+    if lifecycleAvailable || snoozeAvailable {
+      Divider()
+      if canSettle {
+        Button {
+          onSettle(session)
+        } label: {
+          Label("Settle", systemImage: "checkmark.circle")
+        }
+      }
+      if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+      }
+      if canKeepActive {
+        Button {
+          onKeepActive(session)
+        } label: {
+          Label("Keep active", systemImage: "pin.circle")
+        }
+      }
+      if snoozeAvailable {
+        if isSnoozed {
+          Button {
+            onWake(session)
+          } label: {
+            Label("Wake now", systemImage: "sun.max")
+          }
+        } else {
+          Menu {
+            ForEach(snoozeOptions, id: \.duration.id) { option in
+              Button {
+                onSnooze(session, option.duration)
+              } label: {
+                Label(option.duration.label, systemImage: option.duration.symbol)
+              }
+            }
+          } label: {
+            Label("Snooze", systemImage: "moon.zzz")
+          }
+        }
+      }
+    }
   }
 }
 
@@ -895,6 +1029,14 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let attentionRequestedAt: String?
   let attentionMessage: String?
   let lastTurnFailedAt: String?
+  let settleOverride: String?
+  let snoozedUntil: String?
+  // `snoozedAt` is the early-wake comparison baseline behind
+  // `session.wokeMarker()`, which the row body renders. Without it a change
+  // confined to that column leaves the stale woke marker on screen.
+  let snoozedAt: String?
+  let wokeAt: String?
+  let wokeReason: String?
   // Deterministic inputs to the attention capsule, so a badge transition
   // (needs_you / failed) re-renders even when the display status is unchanged.
   let runtimeState: String
@@ -942,6 +1084,11 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.attentionRequestedAt = session.attentionRequestedAt
     self.attentionMessage = session.attentionMessage
     self.lastTurnFailedAt = session.lastTurnFailedAt
+    self.settleOverride = session.settleOverride
+    self.snoozedUntil = session.snoozedUntil
+    self.snoozedAt = session.snoozedAt
+    self.wokeAt = session.wokeAt
+    self.wokeReason = session.wokeReason
     self.runtimeState = session.runtimeState
     self.pendingInputItemId = session.pendingInputItemId
     self.exitCode = session.exitCode
@@ -1170,6 +1317,12 @@ struct WorkSessionRow: View, Equatable {
 
           Spacer(minLength: 0)
 
+          if let wakeLabel = snoozeWakeLabel {
+            WorkSessionLifecycleTag(symbol: "moon.zzz", text: wakeLabel, tint: ADEColor.info)
+          } else if let woke = session.wokeMarker() {
+            WorkSessionLifecycleTag(symbol: "sun.max", text: woke.wokeLabel, tint: ADEColor.warning)
+          }
+
           if isPendingSyncCreation {
             HStack(spacing: 4) {
               Image(systemName: "clock.arrow.circlepath")
@@ -1227,6 +1380,13 @@ struct WorkSessionRow: View, Equatable {
     canonicalState.phase == .settled
   }
 
+  /// Non-nil only while the snooze window is still open. Snooze is a visibility
+  /// overlay, so it changes what the row says, never its canonical phase.
+  var snoozeWakeLabel: String? {
+    guard session.isSnoozed() else { return nil }
+    return workSnoozeWakeLabel(session.snoozedUntil)
+  }
+
   var rowPreviewSource: String? {
     workSessionRowPreviewSource(
       session: session,
@@ -1255,6 +1415,11 @@ struct WorkSessionRow: View, Equatable {
     }
     if isSettled {
       parts.append("settled")
+    }
+    if let wakeLabel = snoozeWakeLabel {
+      parts.append("snoozed \(wakeLabel.lowercased())")
+    } else if let woke = session.wokeMarker() {
+      parts.append("woke, \(woke.wokeLabel.lowercased())")
     }
     return parts.joined(separator: ", ")
   }

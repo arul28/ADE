@@ -198,7 +198,57 @@ Browser `window.ade` adapter:
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`. Live subscribe
   requests up to the same 2 MB used by `TerminalView` hydration. Recovery
   snapshots re-enter the renderer as `PtyDataEvent`: deltas append, while a
-  full snapshot carries `replace: true` so xterm resets atomically.
+  full snapshot carries `replace: true` so xterm resets atomically. It also
+  owns the session-lifecycle surface: a bounded `sessionMirror` keeps the last
+  authoritative rows per `work.listSessions` argument shape (all sessions,
+  per-lane, limited) - the only thing an optimistic patch can be painted onto
+  without a full round-trip. The mirror is LRU-bounded so a long-lived tab
+  cannot accumulate one entry per lane visited, and is cleared on project
+  change because both the rows and any pending patches belong to the project
+  being left. In-flight reads are coalesced per key. A `lifecycleCall` helper
+  wraps every mutation - paint locally, send the non-idempotent sync command,
+  reconcile - and **refuses honestly** instead of no-op'ing when the action is
+  unadvertised or the socket is down, so the shared Work-tab helpers surface a
+  real failure and the optimistic patch rolls back. Several lifecycle commands
+  are legitimate no-ops for a row that is not in the expected state (waking a
+  row that was never snoozed), and reporting a no-op as applied would strand a
+  stale overlay, so the helper checks whether the host actually changed that
+  row.
+- `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts` -
+  optimistic overlay for lifecycle writes. Desktop and iOS both own a local
+  database, so a settle or snooze lands in local state instantly and the UI
+  repaints from that row; ADE Web has no local database, so every lifecycle
+  mutation is a sync round-trip and the row only changes when a later
+  `work.listSessions` read returns. Each mutation therefore records a
+  `SessionLifecyclePatch` carrying only the lifecycle columns (`settledAt`,
+  `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, `wokeReason` - never
+  a derived phase), the UI is nudged to re-read at once with the read decorated
+  by the patch, and the entry retires in exactly one of three ways:
+  **reconciled** (an authoritative row arrives that already satisfies the
+  intent, so the overlay is redundant and is dropped), **rejected** (the host
+  refused or the transport failed - dropped immediately, the row visibly snaps
+  back, and the caller surfaces the failure), or **expired** (a hard TTL, so a
+  lost acknowledgement can never wedge a row into a state the machine does not
+  agree with). Because the instant columns are host-owned and the browser's
+  clock will never equal the machine's, reconciliation compares **presence**
+  (set vs cleared) rather than exact timestamps - presence is the only part of
+  a timestamp the write actually intended.
+- `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleSupport.ts` -
+  feature detection for that surface. ADE Web talks to whatever ADE version the
+  user happens to run on their Mac, so support is detected exactly the way the
+  phone does it: from the `hello_ok.features.commandRouting.actions` list the
+  host advertises, surfaced through `AdeSyncClient.getCommandDescriptors()`. An
+  older host simply never registers the `session.*` namespace, and a command
+  sent to an unknown action resolves to the caller's fallback - a silent
+  no-op - so gating on the advertised list is what turns that into an honest,
+  explainable refusal. `SESSION_LIFECYCLE_ACTIONS` lists all ten commands; the
+  required subset is `session.settleSession` / `session.snoozeSession` /
+  `session.wakeSession`, because a host that can do those can drive every row
+  affordance while the bulk and marker commands degrade individually. Two copy
+  constants carry the refusals: `SESSION_LIFECYCLE_DISCONNECTED_MESSAGE`
+  ("Can't reach this Mac right now, so nothing was changed.") and
+  `SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE` ("This Mac is running an older ADE
+  that can't settle or snooze sessions.").
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
   `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
@@ -224,6 +274,8 @@ Browser `window.ade` adapter:
   runtime-scoped `personalChats.*` actions with `requireProject: false`, adds
   explicit `chatScope: "personal"` transcript subscriptions, dedupes their
   events, and provides the cursor stream consumed by the shared Chats page.
+  `lanes.ts` carries `getBranchDrift` / `resolveBranchDrift` passthroughs onto
+  the matching `lanes.*` remote commands.
 
 Browser shell and routes:
 
@@ -259,6 +311,18 @@ Browser shell and routes:
 - `apps/desktop/src/renderer/webclient/shell/AccountIdentity.tsx` - shared
   signed-in identity label and trusted profile-image/initials fallback for the
   machine picker and connected shell; opaque account IDs are not shown.
+- `apps/desktop/src/renderer/webclient/shell/sessionLifecycleChrome.ts` -
+  web-only presentation for the session-lifecycle controls, installed from
+  `WebClientRoot` through `installSessionLifecycleChrome(client)`. The Work list
+  is the desktop component mounted verbatim, and it reveals a row's snooze
+  control on pointer hover; a phone or tablet never produces hover, so on the
+  web that control would be unreachable. Both that and the unsupported-host case
+  are web-shell concerns rather than component concerns, so they are handled with
+  one injected stylesheet keyed off a single attribute on `<html>`:
+  `data-ade-session-lifecycle="ready" | "unsupported"`. Under
+  `@media (pointer: coarse)` the snooze button becomes a 2rem touch target with
+  `opacity: 1`, the row's `pointer-events-none` action wrapper is re-enabled, and
+  the four snooze duration menu rows get a 44px minimum height.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 
@@ -445,6 +509,14 @@ Tests:
   method name, but it only executes when the host advertises the action in
   `hello_ok.features.commandRouting.actions`; otherwise it falls back or
   reports unsupported behavior.
+- **Optimistic lifecycle state must always be able to expire.** A
+  `SessionLifecyclePatch` is a temporary decoration over a host-owned row, not a
+  local source of truth. It carries only lifecycle columns, never a derived
+  phase, and it must retire through reconcile, reject, or TTL - an overlay with
+  no expiry path would leave the browser showing a state the machine never
+  agreed to. For the same reason, a lifecycle command that the host treats as a
+  legitimate no-op (waking a row that was never snoozed) must not be reported as
+  applied.
 - **Native-only surfaces must stay unavailable in the web adapter.** OS
   notifications, external editor open, reveal in Finder, local directory
   picking, native shells, app control, computer use, built-in browser, iOS
@@ -656,6 +728,33 @@ coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
 `prsInvalidated` event triggers exactly one aggregate refresh rather than an
 empty-list marker. These caches are freshness hints over the authoritative
 relay reads, not a persisted store.
+
+The same absence shapes session lifecycle. Settle, unsettle, keep-active,
+snooze, and wake are all available in ADE Web, but where desktop and iOS write
+to a local database and repaint from the resulting row, the browser has nothing
+to write to: every lifecycle mutation is a `session.*` round-trip and the row
+only changes when a later `work.listSessions` read comes back. The adapter
+closes that gap with an **optimistic overlay**. `sessionsPty.ts` keeps a
+bounded, project-scoped mirror of the last authoritative rows per
+`work.listSessions` argument shape; a mutation records a lifecycle-column-only
+patch in `sessionLifecycleOverlay.ts`, nudges an immediate re-read decorated by
+that patch, and retires the entry when an authoritative row already satisfies
+the intent (reconciled), when the host refuses or the transport fails
+(rejected - the row snaps back and the failure is surfaced), or when a hard TTL
+elapses (expired). Reconciliation compares presence rather than exact instants,
+because the host owns those timestamps and the browser's clock will never match
+them. The overlay never records a derived phase: `canonicalSessionState()` still
+computes the phase from the columns, and snooze remains a visibility overlay on
+top of it rather than a phase of its own.
+
+Because the browser cannot know which ADE version the paired Mac runs, the
+lifecycle controls are feature-detected from
+`hello_ok.features.commandRouting.actions` before they are offered, and a
+mutation issued against an unadvertised action or a dead socket fails with
+explicit copy instead of resolving silently. `sessionLifecycleChrome.ts`
+reflects that decision onto `<html>` as
+`data-ade-session-lifecycle="ready" | "unsupported"`, which also restores the
+hover-only snooze affordance for coarse pointers.
 
 A transport transition is not a blanket domain refresh. In particular, the
 adapter emits sync status without directly calling `github.getStatus`, because

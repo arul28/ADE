@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
+import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
+import { SessionLifecycleChips } from "./SessionLifecycleChips";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
@@ -181,6 +183,12 @@ export type WorkSurfaceHeaderProps = {
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
+  /**
+   * Session id whose lifecycle (settled / snoozed) should surface as ambient
+   * header chips. Chips render only when the session is actually in one of those
+   * states; the composer slot below is owned by lane branch drift.
+   */
+  lifecycleSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
   showGitToolbar?: boolean;
   /**
@@ -229,6 +237,7 @@ export function WorkSurfaceHeader({
   onLaneChipClick,
   showCacheBadge = false,
   cacheIdleSinceAt,
+  lifecycleSessionId = null,
   showGitToolbar = false,
   onTogglePrPane,
   prPaneOpen,
@@ -271,6 +280,8 @@ export function WorkSurfaceHeader({
               aria-label={onLaneChipClick ? `Open ${laneChipName} in Lanes tab` : undefined}
             />
           ) : null}
+          {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
+          {lifecycleSessionId ? <SessionLifecycleChips sessionId={lifecycleSessionId} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}

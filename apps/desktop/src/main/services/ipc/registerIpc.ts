@@ -34,6 +34,11 @@ import {
   invalidateProjectPathInspectionCache,
 } from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import {
+  parseSettleOverrideArg,
+  parseSnoozeDeadline,
+  parseWakeReason,
+} from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionWithChatProjection,
@@ -54,6 +59,7 @@ import {
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
+import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
@@ -139,9 +145,12 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
+  LaneBranchDrift,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  ResolveLaneBranchDriftArgs,
+  ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DockLayout,
   GraphPersistedState,
@@ -5545,6 +5554,16 @@ export function registerIpc({
     return await ctx.laneService.switchBranch(arg);
   });
 
+  ipcMain.handle(IPC.lanesGetBranchDrift, async (_event, arg: { laneId: string }): Promise<LaneBranchDrift | null> => {
+    const ctx = ensureLaneContext();
+    return await ctx.laneService.getBranchDrift(arg);
+  });
+
+  ipcMain.handle(IPC.lanesResolveBranchDrift, async (_event, arg: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> => {
+    const ctx = ensureLaneContext();
+    return await ctx.laneService.resolveBranchDrift(arg);
+  });
+
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.attach(arg);
@@ -6491,6 +6510,75 @@ export function registerIpc({
       ctx.sessionService.unsettleSessions(
         arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsSnooze,
+    async (_event, arg: { sessionId?: unknown; untilIso?: unknown }): Promise<boolean> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      const untilIso = parseSnoozeDeadline(arg?.untilIso);
+      return ctx.sessionService.snoozeSession(sessionId, untilIso);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsWake,
+    async (_event, arg: { sessionId?: unknown; reason?: unknown }): Promise<boolean> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      const reason = parseWakeReason(arg?.reason, "sessions:wake");
+      return ctx.sessionService.wakeSession(sessionId, reason);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsSnoozeMany,
+    async (_event, arg: { sessionIds?: unknown; untilIso?: unknown }): Promise<string[]> => {
+      const ctx = ensureSessionContext();
+      if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
+      const untilIso = parseSnoozeDeadline(arg?.untilIso);
+      return ctx.sessionService.snoozeSessions(
+        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+        untilIso,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsWakeMany,
+    async (_event, arg: { sessionIds?: unknown; reason?: unknown }): Promise<string[]> => {
+      const ctx = ensureSessionContext();
+      if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
+      const reason = parseWakeReason(arg?.reason, "sessions:wakeMany");
+      return ctx.sessionService.wakeSessions(
+        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+        reason,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsSetSettleOverride,
+    async (_event, arg: { sessionId?: unknown; override?: unknown }): Promise<boolean> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      const override = parseSettleOverrideArg(arg?.override, "sessions:setSettleOverride");
+      return ctx.sessionService.setSettleOverride(sessionId, override);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsClearWokeMarker,
+    async (_event, arg: { sessionId?: unknown }): Promise<boolean> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      return ctx.sessionService.clearWokeMarker(sessionId);
     },
   );
 
@@ -8453,42 +8541,7 @@ export function registerIpc({
     const branch = requestedBranch || laneBranch;
     if (!branch) return fallback;
 
-    try {
-      const stdout = await new Promise<string>((resolve) => {
-        let settled = false;
-        let out = "";
-        const child = spawn("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url,number,title,headRefName", "--limit", "1"], {
-          cwd: worktreePath,
-          env: process.env,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        const finish = (value: string) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          try { child.kill("SIGKILL"); } catch { /* noop */ }
-          resolve(value);
-        };
-        const timer = setTimeout(() => finish(""), 8_000);
-        child.stdout.on("data", (d: Buffer | string) => {
-          out += Buffer.isBuffer(d) ? d.toString("utf8") : String(d);
-        });
-        child.stderr.on("data", () => { /* swallow — may contain auth state */ });
-        child.on("error", () => finish(""));
-        child.on("close", (code) => finish(code === 0 ? out : ""));
-      });
-      if (!stdout.trim()) return fallback;
-      const parsed: unknown = JSON.parse(stdout);
-      if (!Array.isArray(parsed) || parsed.length === 0) return fallback;
-      const entry = parsed[0] as Record<string, unknown>;
-      const prUrl = typeof entry.url === "string" && entry.url ? entry.url : null;
-      const prNumber = typeof entry.number === "number" ? entry.number : null;
-      const title = typeof entry.title === "string" && entry.title ? entry.title : null;
-      const headRefName = typeof entry.headRefName === "string" && entry.headRefName ? entry.headRefName : null;
-      return { prUrl, prNumber, title, headRefName };
-    } catch {
-      return fallback;
-    }
+    return await lookupOpenPrForBranch({ worktreePath, branch });
   });
 
   ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {

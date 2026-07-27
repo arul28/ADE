@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import type { NormalizedLinearIssue } from "../../../shared/types";
+import type { IosElementContextItem, NormalizedLinearIssue } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 function installMatchMediaMock(): void {
@@ -179,6 +179,19 @@ const CAPTION_FREE_PERMISSION_CASES: Array<{
     },
   },
 ];
+
+function makeIosContextItem(id: string): IosElementContextItem {
+  return {
+    kind: "ios_element",
+    id,
+    componentId: `Component-${id}`,
+    sourceFile: "Sources/App/ContentView.swift",
+    sourceLine: 12,
+    frame: null,
+    metadata: {},
+    selectedAt: "2026-07-26T00:00:00.000Z",
+  };
+}
 
 function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): NormalizedLinearIssue {
   return {
@@ -2010,6 +2023,97 @@ describe("AgentChatComposer", () => {
     expect((screen.getAllByRole("button", { name: "Configure" })[0] as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getAllByRole("button", { name: "Remove" })[0] as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("Creating child lanes…")).toBeTruthy();
+  });
+
+  it("marks the chips a selection intersects and clears the stale ones", async () => {
+    const props = buildComposerProps({
+      draft: "",
+      turnActive: false,
+      shouldAutofocus: false,
+      iosElementContextItems: [makeIosContextItem("ios-1"), makeIosContextItem("ios-2")],
+    });
+    render(<AgentChatComposer {...props} />);
+
+    const editor = screen.getByRole("textbox");
+    const chips = () => Array.from(editor.querySelectorAll<HTMLElement>("[data-composer-chip]"));
+    const selectedChipIds = () =>
+      Array.from(editor.querySelectorAll<HTMLElement>("[data-composer-chip-selected]")).map((chip) => chip.dataset.iosContextId);
+    await waitFor(() => expect(chips()).toHaveLength(2));
+
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection) throw new Error("jsdom selection unavailable");
+    const selectAll = document.createRange();
+    selectAll.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(selectAll);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    await waitFor(() => expect(selectedChipIds()).toEqual(["ios-1", "ios-2"]));
+
+    // Shrinking the selection onto the first chip must release the second one.
+    const firstChipOnly = document.createRange();
+    firstChipOnly.setStartBefore(chips()[0]);
+    firstChipOnly.setEndAfter(chips()[0]);
+    selection.removeAllRanges();
+    selection.addRange(firstChipOnly);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    await waitFor(() => expect(selectedChipIds()).toEqual(["ios-1"]));
+
+    // Collapsing to a plain caret drops every mark.
+    const caret = document.createRange();
+    caret.setStart(editor, 0);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    await waitFor(() => expect(selectedChipIds()).toEqual([]));
+  });
+
+  it("listens for selectionchange only while the rich composer is focused and holds a chip", async () => {
+    const url = "https://github.com/arul28/ADE/pull/835";
+    (window as any).ade = {
+      agentChat: {
+        resolveSmartLinkPreview: vi.fn().mockResolvedValue({
+          url,
+          provider: "github",
+          kind: "github_pr",
+          label: "arul28/ADE#835",
+        }),
+      },
+    };
+    const addSpy = vi.spyOn(document, "addEventListener");
+    const removeSpy = vi.spyOn(document, "removeEventListener");
+    const attachCount = () => addSpy.mock.calls.filter(([type]) => type === "selectionchange").length;
+    const detachCount = () => removeSpy.mock.calls.filter(([type]) => type === "selectionchange").length;
+
+    try {
+      const props = buildComposerProps({ draft: url, turnActive: false, shouldAutofocus: false });
+      const view = render(<AgentChatComposer {...props} />);
+      const editor = screen.getByRole("textbox");
+      await waitFor(() => expect(editor.querySelectorAll("[data-composer-chip]")).toHaveLength(1));
+
+      // Chipped but unfocused: nothing global is attached.
+      expect(attachCount()).toBe(0);
+
+      editor.focus();
+      expect(attachCount()).toBe(1);
+
+      // Chip count drops to zero while still focused: the listener goes away.
+      view.rerender(<AgentChatComposer {...props} draft="" />);
+      await waitFor(() => {
+        expect(editor.querySelectorAll("[data-composer-chip]")).toHaveLength(0);
+        expect(detachCount()).toBe(1);
+      });
+
+      view.unmount();
+      expect(detachCount()).toBe(attachCount());
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
   });
 
 });

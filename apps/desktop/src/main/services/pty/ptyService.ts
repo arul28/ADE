@@ -4089,6 +4089,7 @@ export function createPtyService({
     const session = sessionService.get(sessionId);
     if (
       session?.settledAt
+      || session?.settleOverride
       || session?.attentionRequestedAt
       || session?.lastTurnFailedAt
     ) {

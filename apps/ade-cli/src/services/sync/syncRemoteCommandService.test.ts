@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
+import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
 function makePayload(
@@ -22,6 +23,7 @@ function createService(options?: {
   externalSessionsService?: Record<string, unknown>;
   gitService?: Record<string, unknown>;
   githubService?: Record<string, unknown>;
+  laneService?: Record<string, unknown>;
   operationService?: Record<string, unknown>;
   prService?: Record<string, unknown>;
   prSummaryService?: Record<string, unknown>;
@@ -69,7 +71,7 @@ function createService(options?: {
   const service = createSyncRemoteCommandService({
     ...(options?.db ? { db: options.db } : {}),
     ...(options?.projectRoot ? { projectRoot: options.projectRoot } : {}),
-    laneService: {},
+    laneService: options?.laneService ?? {},
     prService: options?.prService ?? {},
     ...(options?.prSummaryService ? { prSummaryService: options.prSummaryService } : {}),
     ...(options?.queueLandingService ? { queueLandingService: options.queueLandingService } : {}),
@@ -2037,6 +2039,193 @@ describe("createSyncRemoteCommandService", () => {
       description: "Local-first agent desk",
       isPrivate: true,
     });
+  });
+});
+
+describe("session lifecycle remote commands", () => {
+  function createLifecycleService() {
+    const sessionService = {
+      settleSession: vi.fn(() => true),
+      unsettleSession: vi.fn(() => true),
+      settleSessions: vi.fn(() => ["session-1"]),
+      unsettleSessions: vi.fn(),
+      snoozeSession: vi.fn(() => true),
+      snoozeSessions: vi.fn(() => ["session-1"]),
+      wakeSession: vi.fn(() => true),
+      wakeSessions: vi.fn(() => ["session-1"]),
+      setSettleOverride: vi.fn(() => true),
+      clearWokeMarker: vi.fn(() => true),
+      get: vi.fn(() => ({ id: "session-1", toolType: "codex-chat" })),
+    };
+    const { service } = createService({ sessionService });
+    return { service, sessionService };
+  }
+
+  it("settles and unsettles a session for clients with no local DB", async () => {
+    const { service, sessionService } = createLifecycleService();
+    await expect(service.execute(makePayload("session.settleSession", {
+      sessionId: "session-1",
+      outcome: "PR #841 merged",
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
+    expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", { outcome: "PR #841 merged" });
+
+    await expect(service.execute(makePayload("session.unsettleSession", { sessionId: "session-1" })))
+      .resolves.toEqual({ ok: true, sessionId: "session-1" });
+    expect(sessionService.unsettleSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("normalizes the snooze deadline and rejects unparseable ones", async () => {
+    const { service, sessionService } = createLifecycleService();
+    const futureIso = new Date(Date.now() + 60 * 60_000).toISOString();
+    await expect(service.execute(makePayload("session.snoozeSession", {
+      sessionId: "session-1",
+      untilIso: futureIso,
+    }))).resolves.toEqual({
+      ok: true,
+      sessionId: "session-1",
+      snoozedUntil: futureIso,
+    });
+    expect(sessionService.snoozeSession).toHaveBeenCalledWith("session-1", futureIso);
+
+    await expect(service.execute(makePayload("session.snoozeSession", { sessionId: "session-1" })))
+      .rejects.toThrow(/untilIso/);
+    await expect(service.execute(makePayload("session.snoozeSession", {
+      sessionId: "session-1",
+      untilIso: "tomorrow",
+    }))).rejects.toThrow(/ISO-8601/);
+    await expect(service.execute(makePayload("session.snoozeSessions", {
+      sessionIds: [],
+      untilIso: futureIso,
+    }))).rejects.toThrow(/at least one session id/);
+  });
+
+  it("rejects snooze deadlines that are already in the past", async () => {
+    // Snoozed-ness is derived (`snoozedUntil > now`), so accepting a past
+    // deadline would write the row and change nothing — the client would report
+    // "Snoozed" over a row that never left the list. Both the single and the
+    // bulk action must refuse, and neither may reach sessionService.
+    const { service, sessionService } = createLifecycleService();
+    const pastIso = new Date(Date.now() - 60_000).toISOString();
+    await expect(service.execute(makePayload("session.snoozeSession", {
+      sessionId: "session-1",
+      untilIso: pastIso,
+    }))).rejects.toThrow(/untilIso to be in the future/);
+    await expect(service.execute(makePayload("session.snoozeSessions", {
+      sessionIds: ["session-1"],
+      snoozedUntil: pastIso,
+    }))).rejects.toThrow(/untilIso to be in the future/);
+    expect(sessionService.snoozeSession).not.toHaveBeenCalled();
+    expect(sessionService.snoozeSessions).not.toHaveBeenCalled();
+  });
+
+  it("defaults the wake reason to manual and validates the union", async () => {
+    const { service, sessionService } = createLifecycleService();
+    await expect(service.execute(makePayload("session.wakeSession", { sessionId: "session-1" })))
+      .resolves.toEqual({ ok: true, sessionId: "session-1", reason: "manual" });
+    expect(sessionService.wakeSession).toHaveBeenCalledWith("session-1", "manual");
+
+    await expect(service.execute(makePayload("session.wakeSessions", {
+      sessionIds: ["session-1"],
+      reason: "turn_complete",
+    }))).resolves.toEqual(["session-1"]);
+    expect(sessionService.wakeSessions).toHaveBeenCalledWith(["session-1"], "turn_complete");
+
+    await expect(service.execute(makePayload("session.wakeSession", {
+      sessionId: "session-1",
+      reason: "vibes",
+    }))).rejects.toThrow(/reason must be one of/);
+  });
+
+  it("guards the settle override union and clears the woke marker", async () => {
+    const { service, sessionService } = createLifecycleService();
+    await expect(service.execute(makePayload("session.setSettleOverride", {
+      sessionId: "session-1",
+      override: "active",
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: "active" });
+    expect(sessionService.setSettleOverride).toHaveBeenCalledWith("session-1", "active");
+
+    await expect(service.execute(makePayload("session.setSettleOverride", {
+      sessionId: "session-1",
+      override: null,
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
+
+    await expect(service.execute(makePayload("session.setSettleOverride", {
+      sessionId: "session-1",
+      override: "snoozed",
+    }))).rejects.toThrow(/'settled', 'active', or null/);
+
+    await expect(service.execute(makePayload("session.clearWokeMarker", { sessionId: "session-1" })))
+      .resolves.toEqual({ ok: true, sessionId: "session-1" });
+    expect(sessionService.clearWokeMarker).toHaveBeenCalledWith("session-1");
+  });
+});
+
+describe("lanes branch drift remote commands", () => {
+  it("reads and resolves branch drift over sync", async () => {
+    const getBranchDrift = vi.fn(async () => ({
+      expectedBranchRef: "ade/feature",
+      headBranchRef: "hotfix-auth",
+    }));
+    const resolveBranchDrift = vi.fn(async () => ({ resolution: "keep-head" }));
+    const { service: driftService } = createService({
+      laneService: { getBranchDrift, resolveBranchDrift },
+    });
+
+    await expect(driftService.execute(makePayload("lanes.getBranchDrift", { laneId: "lane-1" })))
+      .resolves.toEqual({ expectedBranchRef: "ade/feature", headBranchRef: "hotfix-auth" });
+    await expect(driftService.execute(makePayload("lanes.getBranchDrift", {})))
+      .rejects.toThrow(/laneId/);
+
+    await expect(driftService.execute(makePayload("lanes.resolveBranchDrift", {
+      laneId: "lane-1",
+      resolution: "keep-head",
+      expectedHeadBranchRef: "hotfix-auth",
+    }))).resolves.toEqual({ resolution: "keep-head" });
+    expect(resolveBranchDrift).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      resolution: "keep-head",
+      expectedHeadBranchRef: "hotfix-auth",
+    });
+
+    await expect(driftService.execute(makePayload("lanes.resolveBranchDrift", {
+      laneId: "lane-1",
+      resolution: "rebase",
+    }))).rejects.toThrow(/'switch-back' or 'keep-head'/);
+  });
+});
+
+describe("mobile lifecycle command contract", () => {
+  it("advertises the phone's lifecycle actions and accepts its null-free clear sentinel", async () => {
+    const setSettleOverride = vi.fn(() => true);
+    const { service } = createService({
+      sessionService: {
+        settleSessions: vi.fn(() => ["session-1"]),
+        unsettleSessions: vi.fn(),
+        setSettleOverride,
+        snoozeSession: vi.fn(() => true),
+        wakeSession: vi.fn(() => true),
+        clearWokeMarker: vi.fn(() => true),
+      },
+    });
+
+    // iOS gates its lifecycle UI on these appearing in hello_ok's descriptor
+    // list, so a missing registration silently hides the whole feature.
+    for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+      if (!action.startsWith("session.")) continue;
+      expect(service.getDescriptor(action)).toEqual({
+        action,
+        scope: "project",
+        policy: { viewerAllowed: true, queueable: true },
+      });
+    }
+
+    // The phone cannot put a JSON null in its [String: Any] arg dict, so it
+    // sends the "clear" sentinel instead.
+    await expect(service.execute(makePayload("session.setSettleOverride", {
+      sessionId: "session-1",
+      override: "clear",
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
+    expect(setSettleOverride).toHaveBeenCalledWith("session-1", null);
   });
 });
 

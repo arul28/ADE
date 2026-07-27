@@ -3,6 +3,7 @@ import { IPC } from "../shared/ipc";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
+import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
@@ -160,8 +161,11 @@ import type {
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
   LaneBranchSwitchArgs,
+  LaneBranchDrift,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  ResolveLaneBranchDriftArgs,
+  ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -555,6 +559,8 @@ import type {
   DecodeOAuthStateResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  SessionSettleOverride,
+  SessionWakeReason,
   TerminalSessionChangedEvent,
   StackChainItem,
   StopTestRunArgs,
@@ -4644,6 +4650,23 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as LaneBranchSwitchResult;
     },
+    getBranchDrift: async (args: { laneId: string }): Promise<LaneBranchDrift | null> =>
+      callProjectRuntimeActionOr("lane", "getBranchDrift", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesGetBranchDrift, args),
+      ),
+    resolveBranchDrift: async (
+      args: ResolveLaneBranchDriftArgs,
+    ): Promise<ResolveLaneBranchDriftResult> => {
+      clearGitReadCaches();
+      const result = await callProjectRuntimeActionOr<ResolveLaneBranchDriftResult>(
+        "lane",
+        "resolveBranchDrift",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesResolveBranchDrift, args),
+      );
+      clearGitReadCaches();
+      return result as ResolveLaneBranchDriftResult;
+    },
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => {
       clearGitReadCaches();
       const lane = await callProjectRuntimeActionOr<LaneSummary>(
@@ -5289,6 +5312,78 @@ contextBridge.exposeInMainWorld("ade", {
         { args: { sessionIds } },
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
+    },
+    snoozeSession: async (sessionId: string, untilIso: string): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "snoozeSession",
+        { args: { sessionId, untilIso } },
+      );
+      return runtime.handled
+        ? sessionLifecycleApplied(runtime.result)
+        : ipcRenderer.invoke(IPC.sessionsSnooze, { sessionId, untilIso });
+    },
+    wakeSession: async (
+      sessionId: string,
+      reason?: SessionWakeReason,
+    ): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "wakeSession",
+        { args: { sessionId, ...(reason ? { reason } : {}) } },
+      );
+      return runtime.handled
+        ? sessionLifecycleApplied(runtime.result)
+        : ipcRenderer.invoke(IPC.sessionsWake, { sessionId, ...(reason ? { reason } : {}) });
+    },
+    snoozeSessions: async (
+      sessionIds: string[],
+      untilIso: string,
+    ): Promise<string[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+        "session",
+        "snoozeSessions",
+        { args: { sessionIds, untilIso } },
+      );
+      return runtime.handled
+        ? runtime.result ?? []
+        : ipcRenderer.invoke(IPC.sessionsSnoozeMany, { sessionIds, untilIso });
+    },
+    wakeSessions: async (
+      sessionIds: string[],
+      reason?: SessionWakeReason,
+    ): Promise<string[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+        "session",
+        "wakeSessions",
+        { args: { sessionIds, ...(reason ? { reason } : {}) } },
+      );
+      return runtime.handled
+        ? runtime.result ?? []
+        : ipcRenderer.invoke(IPC.sessionsWakeMany, { sessionIds, ...(reason ? { reason } : {}) });
+    },
+    setSettleOverride: async (
+      sessionId: string,
+      override: SessionSettleOverride | null,
+    ): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "setSettleOverride",
+        { args: { sessionId, override } },
+      );
+      return runtime.handled
+        ? sessionLifecycleApplied(runtime.result)
+        : ipcRenderer.invoke(IPC.sessionsSetSettleOverride, { sessionId, override });
+    },
+    clearWokeMarker: async (sessionId: string): Promise<boolean> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "clearWokeMarker",
+        { args: { sessionId } },
+      );
+      return runtime.handled
+        ? sessionLifecycleApplied(runtime.result)
+        : ipcRenderer.invoke(IPC.sessionsClearWokeMarker, { sessionId });
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,

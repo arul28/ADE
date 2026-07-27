@@ -4,18 +4,35 @@ import type {
   PtyCreateResult,
   PtyDisposeResult,
   PtySendToSessionResult,
+  SessionWakeReason,
+  TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import type {
   SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
+import { sessionLifecycleApplied } from "../../../shared/sessionLifecycleResult";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
+import { stableCacheKey } from "./infra/cacheKey";
+import {
+  SessionLifecycleOverlay,
+  type SessionLifecyclePatch,
+} from "./sessionLifecycleOverlay";
+import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
 const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 2_000_000;
+
+/**
+ * How many distinct `work.listSessions` argument shapes keep a mirrored copy of
+ * their last authoritative rows. The Work tab reads a handful (all sessions,
+ * per-lane, limited); this only has to cover those, and it is bounded so a
+ * long-lived tab can't accumulate one entry per lane it ever visited.
+ */
+const SESSION_MIRROR_MAX_KEYS = 8;
 
 export type SessionsPtyNamespaces = {
   sessions: AdeNamespace<"sessions">;
@@ -26,6 +43,14 @@ export type SessionsPtyNamespaces = {
 export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNamespaces {
   const { client, commands, events, terminalRegistry } = infra;
   const terminalSubscriptions = new Map<string, () => void>();
+  const lifecycle = new SessionLifecycleOverlay();
+  /**
+   * Last authoritative rows per `work.listSessions` argument shape. ADE Web has
+   * no local database, so this is the only thing an optimistic lifecycle patch
+   * can be painted onto without first paying a full sync round-trip.
+   */
+  const sessionMirror = new Map<string, TerminalSessionSummary[]>();
+  const sessionRefreshInFlight = new Map<string, Promise<TerminalSessionSummary[]>>();
 
   function subscribeSession(sessionId: string, ptyId?: string | null): void {
     if (!sessionId || terminalSubscriptions.has(sessionId)) return;
@@ -83,6 +108,10 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   infra.addDispose(events.on("projectBoundary", () => {
     for (const unsubscribe of terminalSubscriptions.values()) unsubscribe();
     terminalSubscriptions.clear();
+    // Rows and pending patches belong to the project that was left behind.
+    sessionMirror.clear();
+    sessionRefreshInFlight.clear();
+    lifecycle.clear();
   }));
 
   infra.addDispose(
@@ -94,13 +123,65 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     })
   );
 
+  function rememberSessionRows(key: string, rows: TerminalSessionSummary[]): void {
+    sessionMirror.delete(key);
+    sessionMirror.set(key, rows);
+    while (sessionMirror.size > SESSION_MIRROR_MAX_KEYS) {
+      const oldest = sessionMirror.keys().next().value as string | undefined;
+      if (!oldest) break;
+      sessionMirror.delete(oldest);
+    }
+  }
+
+  async function fetchSessions(key: string, args: Record<string, unknown>): Promise<TerminalSessionSummary[]> {
+    const existing = sessionRefreshInFlight.get(key);
+    if (existing) return await existing;
+    const request = (async () => {
+      const sessions = await commands.call<TerminalSessionSummary[]>("work.listSessions", args, {
+        fallback: [],
+        idempotent: true,
+      });
+      terminalRegistry.registerSummaries(sessions);
+      rememberSessionRows(key, sessions);
+      return sessions;
+    })();
+    sessionRefreshInFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (sessionRefreshInFlight.get(key) === request) sessionRefreshInFlight.delete(key);
+    }
+  }
+
   async function listSessions(args?: unknown): Promise<TerminalSessionSummary[]> {
-    const sessions = await commands.call<TerminalSessionSummary[]>("work.listSessions", asRecord(args), {
-      fallback: [],
-      idempotent: true,
-    });
-    terminalRegistry.registerSummaries(sessions);
-    return sessions;
+    const record = asRecord(args);
+    const key = stableCacheKey(record);
+    const mirrored = sessionMirror.get(key);
+    if (lifecycle.size > 0 && mirrored) {
+      // A lifecycle write is in flight. Answer from the mirror so the change is
+      // on screen at once, and reconcile against the authoritative read in the
+      // background — the row only moves again if the machine disagrees.
+      void fetchSessions(key, record)
+        .then((fresh) => {
+          const report = lifecycle.reconcile(fresh);
+          // Agreement needs no repaint — the row already shows what the machine
+          // says. A patch dropped WITHOUT agreement is a rollback the user has
+          // to see, so nudge the UI to re-read the authoritative row.
+          if (report.rolledBack.length > 0) {
+            for (const sessionId of report.rolledBack) {
+              events.emit("sessionsChanged", { sessionId, reason: "meta-updated" });
+            }
+          }
+        })
+        .catch(() => {
+          // A failed refresh leaves the patch pending until its TTL lapses;
+          // the transport error is already surfaced by the connection status.
+        });
+      return lifecycle.decorateAll(mirrored);
+    }
+    const sessions = await fetchSessions(key, record);
+    lifecycle.reconcile(sessions);
+    return lifecycle.decorateAll(sessions);
   }
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
@@ -114,13 +195,91 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     return historyToSnapshot(history);
   }
 
+  function notifySessionsChanged(sessionIds: readonly string[]): void {
+    for (const sessionId of sessionIds) {
+      events.emit("sessionsChanged", { sessionId, reason: "meta-updated" });
+    }
+  }
+
+  /**
+   * Refuse honestly instead of no-op'ing.
+   *
+   * `commands.call` resolves an unadvertised action to its fallback, and a
+   * command sent while the socket is down never reaches the machine — either
+   * way the row would silently stay put. Throwing means the shared Work-tab
+   * helpers show a real failure and any optimistic patch rolls back.
+   */
+  function assertLifecycleAvailable(command: string): void {
+    if (client.getStatus().state !== "connected") throw SessionLifecycleUnavailableError.disconnected();
+    if (!commands.hasAction(command)) throw SessionLifecycleUnavailableError.unsupported();
+  }
+
+  /**
+   * Session-lifecycle mutations all follow one shape: paint the change locally,
+   * send the non-idempotent sync command, then reconcile.
+   *
+   * Desktop and iOS write to a local database and repaint from it. ADE Web has
+   * no database, so the patch is held in `lifecycle` and the row is re-read
+   * from the mirror while the round-trip is in flight. A rejection drops the
+   * patch and re-notifies, so the row visibly returns to what the machine says.
+   */
+  async function lifecycleCall<T>(
+    command: string,
+    payload: Record<string, unknown>,
+    changed: string | string[],
+    patch: SessionLifecyclePatch,
+    /**
+     * Did the host actually change THIS row? Several lifecycle commands are
+     * no-ops for rows that were not in the expected state (waking a row that
+     * was never snoozed), and reporting a no-op as applied would leave the
+     * patch painting a state the machine never entered.
+     */
+    applied?: (result: T | null, sessionId: string) => boolean,
+  ): Promise<T | null> {
+    const sessionIds = (Array.isArray(changed) ? changed : [changed]).filter(
+      (sessionId): sessionId is string => Boolean(sessionId),
+    );
+    assertLifecycleAvailable(command);
+    const tokens = sessionIds.map((sessionId) => ({ sessionId, token: lifecycle.begin(sessionId, patch) }));
+    notifySessionsChanged(sessionIds);
+    try {
+      const result = await commands.call<T | null>(command, payload, {
+        fallback: null,
+        idempotent: false,
+      });
+      for (const entry of tokens) {
+        if (applied && !applied(result, entry.sessionId)) lifecycle.reject(entry.sessionId, entry.token);
+        else lifecycle.confirm(entry.sessionId, entry.token);
+      }
+      // Re-read against the machine now that it has acked; the patch keeps the
+      // row steady until the authoritative row catches up.
+      notifySessionsChanged(sessionIds);
+      return result;
+    } catch (error) {
+      for (const entry of tokens) lifecycle.reject(entry.sessionId, entry.token);
+      notifySessionsChanged(sessionIds);
+      throw error;
+    }
+  }
+
+  // The machine answers these with an `{ ok, sessionId, … }` envelope while the
+  // desktop's local IPC path answers with a bare boolean; normalize so callers
+  // (and the optimistic patch) see one shape regardless of transport.
+  const appliedToAll = (result: unknown): boolean => sessionLifecycleApplied(result);
+  const appliedToId = (result: unknown, sessionId: string): boolean =>
+    Array.isArray(result) ? result.includes(sessionId) : true;
+
   const sessions: Record<string, unknown> = {
     list: listSessions,
-    get: (sessionId: string) =>
-      commands.call("work.getSession", { sessionId }, {
+    get: async (sessionId: string) => {
+      const detail = await commands.call<TerminalSessionDetail | null>("work.getSession", { sessionId }, {
         fallback: null,
         idempotent: true,
-      }),
+      });
+      // Same overlay as the list read, so opening a row you just snoozed does
+      // not show it un-snoozed while the machine catches up.
+      return detail ? lifecycle.decorate(detail) : null;
+    },
     delete: async (args: unknown) => {
       await commands.call("work.deleteSession", asRecord(args), {
         fallback: undefined,
@@ -143,6 +302,75 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       });
       return result;
     },
+    settle: async (sessionId: string, opts?: { outcome?: string; dismissPendingInput?: boolean }) => {
+      await lifecycleCall("session.settleSession", {
+        sessionId,
+        ...(opts?.outcome ? { outcome: opts.outcome } : {}),
+        ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
+      }, sessionId, settlePatch());
+    },
+    unsettle: async (sessionId: string) => {
+      await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
+    },
+    settleMany: async (sessionIds: string[]) =>
+      (await lifecycleCall<string[]>(
+        "session.settleSessions",
+        { sessionIds },
+        sessionIds,
+        settlePatch(),
+        appliedToId,
+      )) ?? [],
+    unsettleMany: async (sessionIds: string[]) => {
+      await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
+    },
+    snoozeSession: async (sessionId: string, untilIso: string) =>
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
+        "session.snoozeSession",
+        { sessionId, untilIso },
+        sessionId,
+        snoozePatch(untilIso),
+        appliedToAll,
+      )),
+    wakeSession: async (sessionId: string, reason?: string) =>
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
+        "session.wakeSession",
+        { sessionId, ...(reason ? { reason } : {}) },
+        sessionId,
+        wakePatch(reason),
+        appliedToAll,
+      )),
+    snoozeSessions: async (sessionIds: string[], untilIso: string) =>
+      (await lifecycleCall<string[]>(
+        "session.snoozeSessions",
+        { sessionIds, untilIso },
+        sessionIds,
+        snoozePatch(untilIso),
+        appliedToId,
+      )) ?? [],
+    wakeSessions: async (sessionIds: string[], reason?: string) =>
+      (await lifecycleCall<string[]>(
+        "session.wakeSessions",
+        { sessionIds, ...(reason ? { reason } : {}) },
+        sessionIds,
+        wakePatch(reason),
+        appliedToId,
+      )) ?? [],
+    setSettleOverride: async (sessionId: string, override: "settled" | "active" | null) =>
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
+        "session.setSettleOverride",
+        { sessionId, override },
+        sessionId,
+        { settleOverride: override },
+        appliedToAll,
+      )),
+    clearWokeMarker: async (sessionId: string) =>
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
+        "session.clearWokeMarker",
+        { sessionId },
+        sessionId,
+        CLEAR_WOKE_PATCH,
+        appliedToAll,
+      )),
     readTranscriptTail: async (args: unknown) => {
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId");
@@ -328,6 +556,54 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     pty: pty as AdeNamespace<"pty">,
     terminal: terminal as AdeNamespace<"terminal">,
   };
+}
+
+/**
+ * The optimistic column writes, mirroring exactly what the host's
+ * `sessionService` does for each command. Instants the HOST stamps are filled in
+ * with the browser clock and reconciled by PRESENCE, never by value — the
+ * machine's instant is the real one. The snooze deadline is the exception: the
+ * client computes it and the host echoes it back, so it reconciles by value.
+ */
+
+/** Host: `settled_at = coalesce(settled_at, now)`, `settle_override = null`. */
+function settlePatch(): SessionLifecyclePatch {
+  return { settledAt: new Date().toISOString(), settleOverride: null };
+}
+
+/**
+ * Host: `settled_at = null`, and it clears a `"settled"` override only. An
+ * `"active"` pin survives, so this patch deliberately leaves the column alone
+ * rather than claiming a clear the machine may not make.
+ */
+const UNSETTLE_PATCH: SessionLifecyclePatch = { settledAt: null };
+
+/** Host: sets both snooze columns and drops any previous woke marker. */
+function snoozePatch(untilIso: string): SessionLifecyclePatch {
+  return {
+    snoozedUntil: untilIso,
+    snoozedAt: new Date().toISOString(),
+    wokeAt: null,
+    wokeReason: null,
+  };
+}
+
+/** Host: clears both snooze columns and records why the row came back. */
+function wakePatch(reason?: string): SessionLifecyclePatch {
+  return {
+    snoozedUntil: null,
+    snoozedAt: null,
+    wokeAt: new Date().toISOString(),
+    wokeReason: normalizeWakeReason(reason),
+  };
+}
+
+const CLEAR_WOKE_PATCH: SessionLifecyclePatch = { wokeAt: null, wokeReason: null };
+
+const WAKE_REASONS = new Set<SessionWakeReason>(["timer", "needs_you", "error", "turn_complete", "manual"]);
+
+function normalizeWakeReason(reason?: string): SessionWakeReason {
+  return WAKE_REASONS.has(reason as SessionWakeReason) ? (reason as SessionWakeReason) : "manual";
 }
 
 function asRecord(args: unknown): Record<string, unknown> {

@@ -62,6 +62,17 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/chat note", description: "Update the active session status line", placement: "right", argumentHint: "[note]", category: "Chats" },
   { name: "/chat settle", description: "Mark the active session settled", placement: "right", argumentHint: "[outcome]", category: "Chats" },
   { name: "/chat unsettle", description: "Remove the active session's settled state", placement: "right", category: "Chats" },
+  // Session lifecycle. Every verb takes an optional leading session id; omit it
+  // to target the active session, exactly like /chat settle. Snooze is a
+  // visibility overlay, not a phase — see tuiClient/sessionLifecycle.ts.
+  // The bare group name is registered so submitting it prints usage instead of
+  // leaking "/session" into the chat as a message.
+  { name: "/session", description: "Run a session lifecycle command", placement: "right", argumentHint: "<snooze|wake|settle|unsettle|keep-active>", category: "Chats" },
+  { name: "/session snooze", description: "Snooze a session out of the attention list until a deadline", placement: "right", argumentHint: "[session-id] [30m|1h|4h|1d]", category: "Chats" },
+  { name: "/session wake", description: "Wake a snoozed session back into the attention list", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  { name: "/session settle", description: "Mark a session settled", placement: "right", argumentHint: "[session-id] [outcome]", category: "Chats" },
+  { name: "/session unsettle", description: "Remove a session's settled state", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  { name: "/session keep-active", description: "Pin a session active so it never settles on its own", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"], category: "Model" },
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },

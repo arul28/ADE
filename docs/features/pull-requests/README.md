@@ -91,6 +91,13 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
 
+Branch-scoped `gh` lookup (`apps/desktop/src/main/services/git/`):
+
+| File | Responsibility |
+|------|---------------|
+| `ghOpenPrLookup.ts` | `lookupOpenPrForBranch({ worktreePath, branch })` — the single implementation of "does this lane's branch have an open PR in *our* repo". Resolves the `origin` owner, runs `gh pr list --head <branch> --state open --json <fields> --limit 10` with an 8 s timeout, filters by head repo, and never throws (every failure degrades to the empty summary). See [Open-PR lookup for a lane branch](#open-pr-lookup-for-a-lane-branch). |
+| `ghPrHeadRepo.ts` | Pure parsing/selection for that lookup: `GH_PR_LIST_JSON_FIELDS`, `GH_PR_LIST_LEGACY_JSON_FIELDS`, `parseGhPrListEntry` (lenient decode), `ghPrHeadRepoMatchesLane`, `selectOwnRepoOpenPr`, `EMPTY_GH_OPEN_PR_SUMMARY`, `GhOpenPrSummary`. |
+
 `prService.ts` also owns the coordinate-based `getMobileGithubDetail`
 aggregate for unmapped PRs and the opt-in repository state-count query used by
 mobile. Count requests are single-flight and epoch-guarded, and snapshot
@@ -373,6 +380,47 @@ so lane display never leaks a projection from a different repo).
 `getForLane` and `listPrsByLane` both go through this path; `listPrsByLane`
 only attaches live check counts for candidates backed by a mapped row (an
 unmapped projection has no snapshot to read).
+
+### Open-PR lookup for a lane branch
+
+The resolution above answers "which PR row do we already know about for this
+lane". A second, narrower path answers "does this branch have an open PR on
+GitHub right now" by asking the `gh` CLI directly inside the lane worktree:
+`gitOperationsService.getOpenPrForBranch` (behind `ade.git.getOpenPrForBranch`,
+used by the chat Git toolbar and History's "Open branch PR" / "Copy PR link")
+and the ADE action registry both delegate to `lookupOpenPrForBranch` in
+`apps/desktop/src/main/services/git/ghOpenPrLookup.ts`.
+
+**`gh pr list --head <branch>` alone is not a correct answer.** `--head`
+matches on branch **name only**, across every fork of the repository, so a PR
+opened from somebody else's fork that happens to use the same branch name is
+returned — and, unfiltered, attaches itself to the lane. `lookupOpenPrForBranch`
+therefore resolves the lane's own `origin` owner (`git remote get-url origin` +
+`parseGithubRemoteUrl`) and hands the rows to `selectOwnRepoOpenPr`, which
+picks the PR whose head-repo owner matches. Because `--head` matches across
+forks the wanted row is not necessarily first, so the query asks for
+`--limit 10` rather than `--limit 1`. The whole call is bounded by an 8 s
+timeout and never throws; any failure degrades to the empty summary.
+
+**Old `gh` degrades to the pre-filter behavior, not to nothing.** The head-repo
+fields (`headRepositoryOwner`, `headRepository`) are only emitted by
+`gh >= 2.47`, and `gh` rejects an unknown `--json` field with a non-zero exit
+rather than omitting it — so requesting them against an older CLI would fail the
+*entire* lookup and report "no PR" for every lane. Two rules prevent that:
+
+- `parseGhPrListEntry` decodes leniently. `gh` renders those fields as objects
+  (`{"login":"acme"}` / `{"name":"widgets"}`), though a bare string is accepted
+  too, and an **absent** field means "cannot verify — accept", never "reject".
+- On a non-zero exit the lookup retries once with
+  `GH_PR_LIST_LEGACY_JSON_FIELDS` (`url,number,title,headRefName`), the four
+  fields that have existed for as long as `pr list --json` has. Without an owner
+  the head repo cannot be verified, and the lenient decode accepts those rows,
+  so an old CLI lands on the old (unfiltered) behavior instead of on nothing.
+
+The runner distinguishes three outcomes precisely so the retry decision is
+sound: JSON on success, `""` when `gh` ran and exited non-zero (bad flag, not
+authenticated, not a repo), and `null` when `gh` could not be run at all or
+timed out — only the middle case can be helped by retrying with fewer fields.
 
 ### Projection sync on material refresh
 

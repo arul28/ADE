@@ -56,7 +56,8 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
-| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, startup repair routines, branch switching, lane + session Linear issue linkage, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, records retryable residual-cleanup debt when manual deletion fails, and cleans the pack directory + DB rows. It also emits one-shot `LaneLifecycleEvent` notifications after successful create/attach/rename/archive/unarchive/delete transitions so renderer surfaces can toast completed lifecycle changes and invalidate lane-list reads without polling; `attach` rejects already-linked paths/branches with coded `lane_already_linked` errors so callers can branch on the code instead of message text. Lane creation is wrapped so that any failure after the worktree is on disk routes through `cleanupCreatedWorktreeLaneAfterCreateFailure`, which removes the orphaned checkout rather than leaving a worktree no lane row references. Independent deletes can progress through teardown concurrently; only the `git_worktree_remove` step enters the shared worktree-mutation guard, so lane creation is not held behind unrelated stop/cleanup steps but still avoids concurrent edits to Git's worktree registry. Deletes run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `list()` also runs the residual-worktree cleanup retry sweep before duplicate/stale worktree repair so previous delete warnings can self-heal without blocking lane row cleanup. `getSummary(laneId, { includeStatus })` is the scoped summary path used by mobile detail commands so opening a lane does not rebuild the full lane list; `refreshSnapshots` honors `includeStatus` for light runtime-bucket refreshes. `upsertLaneStateSnapshot` guards its `lane_state_snapshots` write with a `where` clause that only touches the row when a field actually changed (`dirty`/`ahead`/`behind`/`remote_behind`/`rebase_in_progress`, and `agent_summary_json` only when the caller passed an `agentSummary`), so a status recompute that yields identical values no longer authors a redundant CRR row — which otherwise fans an empty update out to every synced device and triggers a full mobile lane-list reload for nothing. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. Branch switching rolls git checkout back to the previous branch when the database update fails. **Linear issue linkage:** `linkLinearIssues` / `unlinkLinearIssues` manage lane-scoped links in `lane_linear_issue_links` (never touching the primary `lane_linear_issues` row); `attachLinearIssueToSession` / `detachLinearIssueFromSession` / `listLinearIssuesForSession` / `listLinearIssuesForLaneSessions` manage session-scoped links in `session_linear_issues`. `attachLinearIssueToSession` resolves the session's lane from `claude_sessions` / `terminal_sessions` and mirrors each issue into the lane's `chat_attach` links when a lane exists, without ever promoting the lane's primary issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). |
+| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, startup repair routines, branch switching, lane + session Linear issue linkage, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, records retryable residual-cleanup debt when manual deletion fails, and cleans the pack directory + DB rows. It also emits one-shot `LaneLifecycleEvent` notifications after successful create/attach/rename/archive/unarchive/delete transitions so renderer surfaces can toast completed lifecycle changes and invalidate lane-list reads without polling; `attach` rejects already-linked paths/branches with coded `lane_already_linked` errors so callers can branch on the code instead of message text. Lane creation is wrapped so that any failure after the worktree is on disk routes through `cleanupCreatedWorktreeLaneAfterCreateFailure`, which removes the orphaned checkout rather than leaving a worktree no lane row references. Independent deletes can progress through teardown concurrently; only the `git_worktree_remove` step enters the shared worktree-mutation guard, so lane creation is not held behind unrelated stop/cleanup steps but still avoids concurrent edits to Git's worktree registry. Deletes run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `list()` also runs the residual-worktree cleanup retry sweep before duplicate/stale worktree repair so previous delete warnings can self-heal without blocking lane row cleanup. `getSummary(laneId, { includeStatus })` is the scoped summary path used by mobile detail commands so opening a lane does not rebuild the full lane list; `refreshSnapshots` honors `includeStatus` for light runtime-bucket refreshes. `upsertLaneStateSnapshot` guards its `lane_state_snapshots` write with a `where` clause that only touches the row when a field actually changed (`dirty`/`ahead`/`behind`/`remote_behind`/`rebase_in_progress`, and `agent_summary_json` only when the caller passed an `agentSummary`), so a status recompute that yields identical values no longer authors a redundant CRR row — which otherwise fans an empty update out to every synced device and triggers a full mobile lane-list reload for nothing. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. Branch switching rolls git checkout back to the previous branch when the database update fails. **Linear issue linkage:** `linkLinearIssues` / `unlinkLinearIssues` manage lane-scoped links in `lane_linear_issue_links` (never touching the primary `lane_linear_issues` row); `attachLinearIssueToSession` / `detachLinearIssueFromSession` / `listLinearIssuesForSession` / `listLinearIssuesForLaneSessions` manage session-scoped links in `session_linear_issues`. `attachLinearIssueToSession` resolves the session's lane from `claude_sessions` / `terminal_sessions` and mirrors each issue into the lane's `chat_attach` links when a lane exists, without ever promoting the lane's primary issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). **Branch drift:** `getBranchDrift({ laneId })` is the on-demand fresh read (`git symbolic-ref --quiet --short HEAD`) for callers that need an answer immediately before acting, and `resolveBranchDrift(args)` is the single entry point for both resolutions. The service object is built as a named `laneServiceApi` so drift resolution can delegate to sibling methods (`switchBranch`, rename) instead of duplicating their transaction and rollback handling. See [Branch drift](#branch-drift). |
+| `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, headBranchRef }` from the `git status --porcelain=v2 --branch` output that `computeLaneStatus` already collects — header lines start with `# `, entry lines never do, so the split is unambiguous, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift. `laneNameAdvertisesBranch(laneName, branchRef)` is true when the lane's display name merely restates the branch it tracks — the whole ref (`ade/fix-auth`) or its last segment (`fix-auth`) — and gates the rename that `keep-head` performs. |
 | `worktreeResidualCleanup.ts` | Machine-local retry worker for managed worktree directories that survive lane deletion. It stores cleanup debt in `local_worktree_residual_cleanups`, retries during `laneService.list()`, drops unsafe records, skips registered Git worktrees, active lane paths, and pending creations, removes old empty untracked directories under the managed worktrees directory, and leaves unknown non-empty directories alone unless they were explicitly recorded from the delete path. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
@@ -86,6 +87,7 @@ Renderer components:
 | `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |
 | `renderer/components/lanes/LaneColorPicker.tsx` | Reusable grouped swatch picker used inside `CreateLaneDialog` and `ManageLaneDialog`. Shows Rainbow above Classic, disables swatches already in use by other lanes (passed in as `usedColors`), and offers a clear button. |
 | `renderer/components/lanes/LaneContextMenu.tsx` | Right-click menu on the lane list. Hosts the inline grouped color swatches that call `lanes.updateAppearance` directly, path/link/web actions, start-chat, manage/adopt, split-tab actions, and batch manage. |
+| `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchDriftStrip` is the fuller warning strip, shown only once something is about to act on the branch; `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`. See [Branch drift](#branch-drift). |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Lane diff list + per-file stage/unstage/discard; file content uses shared `AdeDiffViewer` (commit comparisons read-only; working-tree file can be editable when unstaged) |
 | `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits. Stashing includes untracked files when the unstaged set contains untracked paths, and stash restore uses the ordinal `stash@{N}` ref returned by `git stash list`. After commit/stash operations it refreshes changes, lane git status, and git metadata while skipping snapshot decorations (`refreshLanes({ includeStatus: true, includeSnapshots: false })`). Seeds its `autoRebaseStatus` from the `autoRebaseStatusSnapshot` prop that `LanesPage` passes from the lane list (`laneSnapshot.autoRebaseStatus`), so opening a lane does not trigger a per-lane probe. A fallback `refreshAutoRebaseStatus` runs only when the snapshot is `undefined`, after a 3.5 s delay, and only while the document is visible. |
@@ -251,8 +253,16 @@ type LaneStatus = {
   behind: number;          // commits behind base ref
   remoteBehind: number;    // commits behind `origin/<branch>`, -1 if unknown
   rebaseInProgress: boolean;
+  headBranchRef?: string | null; // branch HEAD actually points at; null when detached
 };
 ```
+
+`computeLaneStatus` reads the worktree with `git status --porcelain=v2
+--branch`, whose `# branch.head` header carries the live HEAD branch, so
+`headBranchRef` (and the drift detection built on it) costs no extra process
+spawn. Ignored files are still not listed (no `--ignored`), so the `dirty`
+semantics are byte-identical to the porcelain v1 output this replaced.
+`headBranchRef` is absent when status was not computed at all.
 
 Status is cached for 10 s (`LANE_LIST_CACHE_TTL_MS`). The base ref used
 for ahead/behind is chosen by `shouldLaneTrackParent`: a child tracks its
@@ -263,6 +273,10 @@ a lane parented to primary would always show zero behind.
 `LaneSummary` adds:
 
 - `parentStatus: LaneStatus | null` — parent's status at this snapshot (used to decide whether a rebase is needed)
+- `branchDrift?: LaneBranchDrift | null` — non-null when the worktree's HEAD
+  has drifted off the recorded `branchRef`. Derived from the same status
+  refresh that produces `headBranchRef`, so every lane list already carries
+  it. See [Branch drift](#branch-drift).
 - `stackDepth: number`
 - `childCount: number`
 - `tags: string[]`, `color`, `icon`, `folder`
@@ -520,6 +534,89 @@ The ade-cli `git checkout <branch>` command also flows through the same
 service so headless workers see identical guards (uncommitted-changes
 refusal, duplicate-owner refusal, stale-PR cleanup).
 
+## Branch drift
+
+Branch switching through `switchBranch` keeps `lanes.branch_ref` in sync.
+A raw `git checkout` inside the worktree — run by the user in a terminal or
+by an agent mid-turn — does not. **Branch drift** is that state: the lane
+worktree's live HEAD no longer points at the branch ADE recorded in
+`lanes.branch_ref`. Left undetected, ADE keeps displaying, and PR-matching
+against, a branch the lane no longer tracks.
+
+**Data model** (`apps/desktop/src/shared/types/lanes.ts`):
+
+| Type | Shape |
+|------|-------|
+| `LaneStatus.headBranchRef?` | `string \| null` — the branch HEAD actually points at, read live during the status refresh. Absent when status was not computed; `null` on a detached HEAD. |
+| `LaneSummary.branchDrift?` | `LaneBranchDrift \| null` — non-null when HEAD drifted off `branchRef`. |
+| `LaneBranchDrift` | `{ expectedBranchRef, headBranchRef }`, both plain branch names with `refs/heads/` and `origin/` stripped. |
+| `LaneBranchDriftResolution` | `"switch-back" \| "keep-head"`. |
+| `ResolveLaneBranchDriftArgs` | `{ laneId, resolution, expectedHeadBranchRef?, acknowledgeActiveWork? }`. `expectedHeadBranchRef` is required for `keep-head` and guards against acting on a stale drift reading; `acknowledgeActiveWork` applies to `switch-back` only. |
+| `ResolveLaneBranchDriftResult` | `{ lane, resolution, previousBranchRef, branchRef, previousLaneName, laneName }`. |
+
+**Detection rides the status refresh.** `computeLaneStatus` reads the
+worktree with `git status --porcelain=v2 --branch`; the `# branch.head`
+header of that output is the live HEAD branch.
+`parseWorktreeStatusPorcelainV2` pulls both dirty state and
+`headBranchRef` out of the one call, and `detectLaneBranchDrift` compares
+that against the recorded `branchRef`. There is no extra process spawn and
+no timer — every lane list already carries `branchDrift`. Detection is
+deliberately conservative: when either side is unknown (an unavailable
+worktree, or a detached HEAD, which git reports as the literal
+`(detached)`) the result is `null`, because neither drift affordance can
+act on it and nagging about it would be noise.
+
+`laneService.getBranchDrift({ laneId })` is the on-demand counterpart —
+a fresh `git symbolic-ref --quiet --short HEAD` for callers that need an
+answer right before acting (a PR operation, a new chat turn). It returns
+`null` for archived lanes and for an unavailable worktree. The lane list
+already carries `branchDrift`, so this exists only for the act-now path.
+
+**Resolving.** `laneService.resolveBranchDrift(args)` is the single entry
+point for both affordances. It re-reads live HEAD first and throws when
+there is no drift, or when the caller's `expectedHeadBranchRef` no longer
+matches ("This lane is now on 'X', not 'Y'. Refresh and try again.").
+
+- **`switch-back`** restores the worktree to the recorded `branch_ref` by
+  delegating to `switchBranch`, inheriting its guarantees: it refuses
+  (throwing, changing nothing) when the worktree is dirty, and it rolls the
+  checkout back if the database write fails.
+- **`keep-head`** re-points `branch_ref` at the live HEAD and, when the
+  lane name was merely advertising the old branch
+  (`laneNameAdvertisesBranch`), renames the lane to match. Both writes
+  happen inside **one transaction**, so a lane can never end up pointing at
+  one branch while its name advertises another. A hand-written name like
+  "Auth work" advertises no branch and is left alone. The resolution
+  refuses when another active lane already owns the target branch.
+
+**UI is arm-on-act.** Drift is surfaced in two tiers, both from
+`renderer/components/lanes/LaneBranchDrift.tsx`:
+
+- `LaneBranchDriftChip` — compact, rendered in `WorkSurfaceHeader` next to
+  the lane chip, always visible while a lane is drifted.
+- `LaneBranchDriftStrip` — the fuller warning strip, deliberately quieter.
+  It appears only after `armLaneBranchDriftWarning(laneId)` is called,
+  i.e. only once something is about to act on the branch. The arm sites are
+  `AgentChatPane.submit` (a chat turn is about to run against the worktree)
+  and `ChatGitToolbar`'s PR button / `handlePr` (a PR operation is about to
+  run). The strip renders above the composer in `AgentChatPane`: the
+  composer slot belongs to drift, while the header chip slot is shared with
+  session-lifecycle chips.
+
+**Reach.** Desktop IPC channels `ade.lanes.getBranchDrift` and
+`ade.lanes.resolveBranchDrift` are registered in
+`apps/desktop/src/main/services/ipc/registerIpc.ts` and exposed on the
+preload bridge as `window.ade.lanes.getBranchDrift` /
+`.resolveBranchDrift`. Controllers reach the same methods through the sync
+remote commands `lanes.getBranchDrift` and `lanes.resolveBranchDrift` in
+`apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` (both
+`viewerAllowed`; resolve is `queueable`), with the matching
+`SyncRemoteCommandAction` union members in
+`apps/desktop/src/shared/types/sync.ts`. The `ade code` TUI calls them via
+`adeApi.ts`, where `lanes.resolveBranchDrift` degrades to
+`{ ok: false, error: "unsupported" }` against a host that does not expose
+it.
+
 ## IPC surface
 
 Registered as runtime actions on the `lane` domain (served by the local
@@ -552,6 +649,8 @@ Lane management (selected):
 | `ade.lanes.delete.event` (push) | `LaneDeleteEvent` carrying `LaneDeleteProgress` — `steps[]` with per-step status (`pending` / `running` / `completed` / `failed` / `skipped`) plus `overallStatus` (`running` / `completed` / `failed` / `cancelled`) and `cancellable`. |
 | `ade.lanes.lifecycle.event` (push) | `LaneLifecycleEvent` - one-shot `lane-created`, `lane-renamed`, `lane-archived`, `lane-unarchived`, or `lane-deleted` event. Local desktop paths emit this IPC channel directly; runtime-backed paths push `lane_lifecycle_event`, and preload merges both sources behind `window.ade.lanes.onLifecycleEvent`. |
 | `ade.lanes.delete.progress.list` | replay of the in-memory `LaneDeleteProgress` map for currently running deletes. Completed delete results are delivered through the live event stream; a remount after completion refreshes the lane list instead of replaying historical progress. |
+| `ade.lanes.getBranchDrift` | `(args: { laneId: string }) => LaneBranchDrift \| null` — fresh HEAD read for callers about to act on the branch; `null` for archived lanes, an unavailable worktree, a detached HEAD, or no drift. See [Branch drift](#branch-drift). |
+| `ade.lanes.resolveBranchDrift` | `(args: ResolveLaneBranchDriftArgs) => ResolveLaneBranchDriftResult` — `switch-back` checks the worktree back onto the recorded branch; `keep-head` adopts the live HEAD (and renames a branch-advertising lane name) in one transaction. |
 | `ade.lanes.getStackChain` | `(args: { laneId: string }) => StackChainItem[]` |
 | `ade.lanes.rebaseStart` / `.rebaseAbort` / `.rebaseRollback` / `.rebasePush` | rebase run lifecycle |
 | `ade.lanes.listRebaseSuggestions` / `.dismissRebaseSuggestion` / `.deferRebaseSuggestion` | rebase suggestion lifecycle |
