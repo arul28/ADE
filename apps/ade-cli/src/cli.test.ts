@@ -2968,6 +2968,10 @@ describe("ADE CLI", () => {
       ["1y", /positive duration/],
       ["0.001s", /at least one second/],
       ["31d", /30d or less/],
+      // Overflow is a LONG-side failure. Before the magnitude check was moved
+      // ahead of the floor check these fell through to "at least one second".
+      ["999999999999999w", /30d or less/],
+      [`${"9".repeat(400)}d`, /30d or less/],
     ])("rejects --for %s", (input, message) => {
       expect(() => parseSnoozeDurationMs(input)).toThrow(message);
     });

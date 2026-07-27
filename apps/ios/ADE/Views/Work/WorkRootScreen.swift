@@ -109,7 +109,11 @@ struct WorkRootScreen: View {
   @State var selectedSessionTransitionId: String?
   @State var isSelecting: Bool = false
   @State var selectedSessionIds: Set<String> = []
-  @State var bulkActionErrorMessage: String?
+  /// Failures from an explicit user action (bulk selection commands and
+  /// single-row lifecycle commands alike). Deliberately separate from
+  /// `errorMessage`, which every successful projection load clears — an action
+  /// the host rejected has to outlive the reload that reconciles the rollback.
+  @State var actionErrorMessage: String?
   @State var bulkExportShare: WorkArtifactShareItem?
   @State var bulkBusy: Bool = false
   @State var bulkDeleteConfirmPresented: Bool = false
@@ -507,13 +511,13 @@ struct WorkRootScreen: View {
       } message: {
         Text("This permanently removes the saved chat history from ADE.")
       }
-      .alert("Selection action failed",
+      .alert("Action failed",
              isPresented: Binding(
-               get: { bulkActionErrorMessage != nil },
-               set: { if !$0 { bulkActionErrorMessage = nil } }
+               get: { actionErrorMessage != nil },
+               set: { if !$0 { actionErrorMessage = nil } }
              ),
-             presenting: bulkActionErrorMessage) { _ in
-        Button("OK", role: .cancel) { bulkActionErrorMessage = nil }
+             presenting: actionErrorMessage) { _ in
+        Button("OK", role: .cancel) { actionErrorMessage = nil }
       } message: { message in
         Text(message)
       }

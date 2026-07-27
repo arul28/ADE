@@ -426,9 +426,9 @@ describe("createCtoOperatorTools", () => {
 
       await expect((tools.snoozeSession as any).execute({
         sessionId: "chat-1",
-        untilIso: "2026-07-26T18:00:00Z",
+        untilIso: "2099-07-26T18:00:00Z",
       })).resolves.toMatchObject({ success: true });
-      expect(sessionService.snoozeSession).toHaveBeenCalledWith("chat-1", "2026-07-26T18:00:00.000Z");
+      expect(sessionService.snoozeSession).toHaveBeenCalledWith("chat-1", "2099-07-26T18:00:00.000Z");
 
       await (tools.snoozeSession as any).execute({ sessionId: "chat-1", durationMinutes: 60 });
       const deadline = String(
@@ -442,6 +442,13 @@ describe("createCtoOperatorTools", () => {
         sessionId: "chat-1",
         untilIso: "tomorrow",
       })).resolves.toMatchObject({ success: false });
+      // A past deadline parses but would be a silent no-op: snoozed is
+      // `snoozedUntil > now`, so the row would stay visible while the tool
+      // reported success.
+      await expect((tools.snoozeSession as any).execute({
+        sessionId: "chat-1",
+        untilIso: "2020-01-01T00:00:00Z",
+      })).resolves.toMatchObject({ success: false, error: expect.stringMatching(/future/) });
       expect(sessionService.snoozeSession).toHaveBeenCalledTimes(2);
     });
 

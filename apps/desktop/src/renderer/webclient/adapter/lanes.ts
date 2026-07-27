@@ -1,4 +1,8 @@
-import type { LaneLifecycleEvent, LaneListSnapshot } from "../../../shared/types";
+import type {
+  LaneLifecycleEvent,
+  LaneListSnapshot,
+  ResolveLaneBranchDriftResult,
+} from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
@@ -57,8 +61,16 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     previewBranchSwitch: (args: unknown) => call("lanes.previewBranchSwitch", args, null),
     switchBranch: (args: unknown) => call("lanes.switchBranch", args, { ok: false, error: "unsupported" }, false),
     getBranchDrift: (args: unknown) => call("lanes.getBranchDrift", args, null),
+    // The drift strip treats a resolved promise as "drift handled": it disarms
+    // the warning and refreshes. A host that cannot run this must therefore
+    // reject, not hand back a status object nobody reads.
     resolveBranchDrift: (args: unknown) =>
-      call("lanes.resolveBranchDrift", args, { ok: false, error: "unsupported" }, false),
+      commands.call<ResolveLaneBranchDriftResult>("lanes.resolveBranchDrift", asRecord(args), {
+        fallback: () => {
+          throw new Error("Resolving branch drift is unavailable on the connected ADE host.");
+        },
+        idempotent: false,
+      }),
     attach: (args: unknown) => call("lanes.attach", args, null, false),
     listUnregisteredWorktrees: () => call("lanes.listUnregisteredWorktrees", {}, []),
     adoptAttached: (args: unknown) => call("lanes.adoptAttached", args, null, false),

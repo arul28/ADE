@@ -34,6 +34,11 @@ import {
   invalidateProjectPathInspectionCache,
 } from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import {
+  parseSettleOverrideArg,
+  parseSnoozeDeadline,
+  parseWakeReason,
+} from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionWithChatProjection,
@@ -460,8 +465,6 @@ import type {
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLinearIssueLink,
-  SessionSettleOverride,
-  SessionWakeReason,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -6516,8 +6519,7 @@ export function registerIpc({
       const ctx = ensureSessionContext();
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
-      const untilIso = typeof arg?.untilIso === "string" ? arg.untilIso.trim() : "";
-      if (!untilIso) throw new Error("A snooze deadline (untilIso) is required.");
+      const untilIso = parseSnoozeDeadline(arg?.untilIso);
       return ctx.sessionService.snoozeSession(sessionId, untilIso);
     },
   );
@@ -6528,7 +6530,7 @@ export function registerIpc({
       const ctx = ensureSessionContext();
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
-      const reason = typeof arg?.reason === "string" ? (arg.reason as SessionWakeReason) : "manual";
+      const reason = parseWakeReason(arg?.reason, "sessions:wake");
       return ctx.sessionService.wakeSession(sessionId, reason);
     },
   );
@@ -6538,8 +6540,7 @@ export function registerIpc({
     async (_event, arg: { sessionIds?: unknown; untilIso?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
       if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
-      const untilIso = typeof arg?.untilIso === "string" ? arg.untilIso.trim() : "";
-      if (!untilIso) throw new Error("A snooze deadline (untilIso) is required.");
+      const untilIso = parseSnoozeDeadline(arg?.untilIso);
       return ctx.sessionService.snoozeSessions(
         arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
         untilIso,
@@ -6552,7 +6553,7 @@ export function registerIpc({
     async (_event, arg: { sessionIds?: unknown; reason?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
       if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
-      const reason = typeof arg?.reason === "string" ? (arg.reason as SessionWakeReason) : "manual";
+      const reason = parseWakeReason(arg?.reason, "sessions:wakeMany");
       return ctx.sessionService.wakeSessions(
         arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
         reason,
@@ -6566,10 +6567,7 @@ export function registerIpc({
       const ctx = ensureSessionContext();
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
-      const override = arg?.override == null ? null : (arg.override as SessionSettleOverride);
-      if (override !== null && override !== "settled" && override !== "active") {
-        throw new Error("override must be 'settled', 'active', or null.");
-      }
+      const override = parseSettleOverrideArg(arg?.override, "sessions:setSettleOverride");
       return ctx.sessionService.setSettleOverride(sessionId, override);
     },
   );

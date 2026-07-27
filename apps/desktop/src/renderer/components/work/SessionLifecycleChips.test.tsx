@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { showToast } from "../app/toast/toastStore";
 import { SessionLifecycleChips } from "./SessionLifecycleChips";
+
+vi.mock("../app/toast/toastStore", () => ({
+  showToast: vi.fn(),
+}));
 
 const PROJECT_ROOT = "/tmp/project";
 
@@ -115,5 +120,27 @@ describe("SessionLifecycleChips", () => {
 
     await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("session-1"));
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed unsettle instead of swallowing it", async () => {
+    // Regression: the chip used to call `unsettle` with a bare `.catch(() => {})`,
+    // so a rejected write left the settled chip in place with no feedback.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    sessionsApi.unsettle.mockRejectedValue(new Error("host refused"));
+    seedSessions([makeSession({
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-07-09T11:00:00.000Z",
+      settledAt: "2026-07-09T11:01:00.000Z",
+    })]);
+    render(<SessionLifecycleChips sessionId="session-1" />);
+
+    fireEvent.click(screen.getByTestId("chat-session-settled-chip"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle" }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Unsettle failed", message: "host refused", tone: "error" }),
+    ));
+    consoleError.mockRestore();
   });
 });

@@ -80,6 +80,27 @@ export async function setSessionSettleOverride(
   }
 }
 
+/**
+ * Lift a settle, whichever kind it is. A DECLARED settle (`settledAt` set)
+ * clears the column; a DERIVED settle (clean exit 0, no `settledAt`) has no
+ * column to clear, so the keep-active pin is its only unsettle. Both the Work
+ * row menu and the chat header chip route through here, so the branch can never
+ * drift apart — and a failed write is reported instead of swallowed.
+ */
+export async function unsettleSession(
+  session: Pick<TerminalSessionSummary, "id" | "settledAt">,
+): Promise<void> {
+  if (!session.settledAt) {
+    await setSessionSettleOverride(session, "active");
+    return;
+  }
+  try {
+    await window.ade.sessions.unsettle(session.id);
+  } catch (error) {
+    reportFailure("Unsettle", session.id, error);
+  }
+}
+
 /** Drop a row's "woke" marker once the user has actually looked at it. */
 export function clearSessionWokeMarker(sessionId: string): void {
   void window.ade.sessions

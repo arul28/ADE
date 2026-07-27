@@ -2076,15 +2076,16 @@ describe("session lifecycle remote commands", () => {
 
   it("normalizes the snooze deadline and rejects unparseable ones", async () => {
     const { service, sessionService } = createLifecycleService();
+    const futureIso = new Date(Date.now() + 60 * 60_000).toISOString();
     await expect(service.execute(makePayload("session.snoozeSession", {
       sessionId: "session-1",
-      untilIso: "2026-07-26T18:00:00Z",
+      untilIso: futureIso,
     }))).resolves.toEqual({
       ok: true,
       sessionId: "session-1",
-      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedUntil: futureIso,
     });
-    expect(sessionService.snoozeSession).toHaveBeenCalledWith("session-1", "2026-07-26T18:00:00.000Z");
+    expect(sessionService.snoozeSession).toHaveBeenCalledWith("session-1", futureIso);
 
     await expect(service.execute(makePayload("session.snoozeSession", { sessionId: "session-1" })))
       .rejects.toThrow(/untilIso/);
@@ -2094,8 +2095,27 @@ describe("session lifecycle remote commands", () => {
     }))).rejects.toThrow(/ISO-8601/);
     await expect(service.execute(makePayload("session.snoozeSessions", {
       sessionIds: [],
-      untilIso: "2026-07-26T18:00:00Z",
+      untilIso: futureIso,
     }))).rejects.toThrow(/at least one session id/);
+  });
+
+  it("rejects snooze deadlines that are already in the past", async () => {
+    // Snoozed-ness is derived (`snoozedUntil > now`), so accepting a past
+    // deadline would write the row and change nothing — the client would report
+    // "Snoozed" over a row that never left the list. Both the single and the
+    // bulk action must refuse, and neither may reach sessionService.
+    const { service, sessionService } = createLifecycleService();
+    const pastIso = new Date(Date.now() - 60_000).toISOString();
+    await expect(service.execute(makePayload("session.snoozeSession", {
+      sessionId: "session-1",
+      untilIso: pastIso,
+    }))).rejects.toThrow(/untilIso to be in the future/);
+    await expect(service.execute(makePayload("session.snoozeSessions", {
+      sessionIds: ["session-1"],
+      snoozedUntil: pastIso,
+    }))).rejects.toThrow(/untilIso to be in the future/);
+    expect(sessionService.snoozeSession).not.toHaveBeenCalled();
+    expect(sessionService.snoozeSessions).not.toHaveBeenCalled();
   });
 
   it("defaults the wake reason to manual and validates the union", async () => {

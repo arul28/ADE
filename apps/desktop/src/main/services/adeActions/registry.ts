@@ -78,7 +78,6 @@ import type {
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
-import { parseSessionSettleOverride, SESSION_WAKE_REASONS } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import { mergeAiConfig } from "../config/projectConfigService";
@@ -91,6 +90,11 @@ import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../sha
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import {
+  parseSettleOverrideArg,
+  parseSnoozeDeadline,
+  parseWakeReason,
+} from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionWithChatProjection,
@@ -2579,19 +2583,12 @@ function readObjectActionArg(value: unknown, actionName: string): Record<string,
 
 /**
  * Snooze deadlines cross the agent boundary as free text, so they are validated
- * here rather than swallowed by `sessionService`, which returns a bare `false`
- * for both "no such row" and "unparseable date".
+ * before reaching `sessionService`, which returns a bare `false` for both
+ * "no such row" and "unparseable date". Shared with the IPC and agent-tool
+ * surfaces so all three reject the same inputs.
  */
 function requireSnoozeDeadline(value: unknown): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) {
-    throw new Error("Expected 'untilIso' to be an ISO-8601 timestamp (for example 2026-07-26T18:00:00.000Z).");
-  }
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`Expected 'untilIso' to be an ISO-8601 timestamp; received '${raw}'.`);
-  }
-  return parsed.toISOString();
+  return parseSnoozeDeadline(value);
 }
 
 function readSessionIdList(value: unknown, actionName: string): string[] {
@@ -2606,19 +2603,11 @@ function readSessionIdList(value: unknown, actionName: string): string[] {
 }
 
 function readWakeReason(value: unknown, actionName: string): SessionWakeReason {
-  if (value == null || value === "") return "manual";
-  if (typeof value === "string" && (SESSION_WAKE_REASONS as readonly string[]).includes(value)) {
-    return value as SessionWakeReason;
-  }
-  throw new Error(`${actionName} 'reason' must be one of: ${SESSION_WAKE_REASONS.join(", ")}.`);
+  return parseWakeReason(value, actionName);
 }
 
 function readSettleOverride(value: unknown, actionName: string): SessionSettleOverride | null {
-  const parsed = parseSessionSettleOverride(value);
-  if (parsed === undefined) {
-    throw new Error(`${actionName} 'override' must be 'settled', 'active', or null.`);
-  }
-  return parsed;
+  return parseSettleOverrideArg(value, actionName);
 }
 
 function readBranchDriftResolution(value: unknown, actionName: string): LaneBranchDriftResolution {

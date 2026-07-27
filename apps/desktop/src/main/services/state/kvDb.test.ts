@@ -26,6 +26,27 @@ function createLogger() {
   } as const;
 }
 
+/**
+ * Every unique index on `table` other than the primary key — i.e. exactly what
+ * `crsql_as_crr` refuses to turn into a CRR.
+ *
+ * Must NOT be written as `sqlite_master.sql like '%unique%'`: `sql` is NULL for
+ * implicitly created indexes, so a UNIQUE column/table constraint (which yields
+ * `sqlite_autoindex_<table>_N`) would never match and the guard would pass on
+ * the very schema it exists to catch. `pragma index_list` reports those, with
+ * `origin` distinguishing 'pk' (allowed) from 'u' (UNIQUE constraint) and
+ * 'c' (CREATE UNIQUE INDEX).
+ */
+function blockingUniqueIndexes(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  table: string,
+): { name: string; origin: string }[] {
+  return db
+    .all<{ name: string; unique: number; origin: string }>(`pragma index_list('${table}')`)
+    .filter((index) => Number(index.unique) === 1 && index.origin !== "pk")
+    .map((index) => ({ name: index.name, origin: index.origin }));
+}
+
 function makeProjectRoot(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
@@ -282,10 +303,7 @@ describe("terminal_sessions snooze + settle-override schema", () => {
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
-    const uniqueIndexes = db.all<{ name: string }>(
-      "select name from sqlite_master where type = 'index' and tbl_name = 'terminal_sessions' and sql like '%unique%'",
-    );
-    expect(uniqueIndexes).toHaveLength(0);
+    expect(blockingUniqueIndexes(db, "terminal_sessions")).toEqual([]);
   });
 });
 
@@ -322,10 +340,7 @@ describe("session_linear_issues schema", () => {
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
-    const uniqueIndexes = db.all<{ name: string }>(
-      "select name from sqlite_master where type = 'index' and tbl_name = 'session_linear_issues' and sql like '%unique%'",
-    );
-    expect(uniqueIndexes).toHaveLength(0);
+    expect(blockingUniqueIndexes(db, "session_linear_issues")).toEqual([]);
   });
 });
 

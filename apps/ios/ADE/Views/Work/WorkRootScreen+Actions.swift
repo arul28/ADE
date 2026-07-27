@@ -374,8 +374,17 @@ extension WorkRootScreen {
         await reload()
       } catch {
         ADEHaptics.error()
-        errorMessage = error.localizedDescription
+        let message = error.localizedDescription
+        // Reconcile against replicated truth first — `SyncService` has already
+        // rolled the optimistic column back — and only then surface the
+        // failure. This must NOT go through `errorMessage`: every successful
+        // projection load clears that (`reload()` here, and
+        // `reloadFromPersistedProjection()` on the very next CRDT tick, which
+        // the rollback write itself schedules), so a host rejection would
+        // leave nothing but a haptic. `actionErrorMessage` is the surface
+        // bulk actions already use for exactly this.
         await reload()
+        actionErrorMessage = message
       }
     }
   }

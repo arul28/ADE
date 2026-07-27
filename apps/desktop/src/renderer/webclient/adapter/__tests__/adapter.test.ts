@@ -1592,6 +1592,24 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("rejects branch-drift resolution the host cannot run", async () => {
+    // The drift strip disarms its warning as soon as this resolves, so an
+    // unreachable host must reject instead of handing back a status object.
+    fake.descriptors = descriptors(["lanes.getBranchDrift"]);
+    fake.commandResults.set("lanes.getBranchDrift", null);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.lanes.resolveBranchDrift({
+      laneId: "lane-1",
+      resolution: "switch-back",
+    })).rejects.toThrow(/unavailable/i);
+    // Reads still degrade to their typed fallback.
+    await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" })).resolves.toBeNull();
+
+    adapter.dispose();
+  });
+
   it("makes onOpencodeOAuthStatus live by draining OAuth status from the runtime buffer", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["ai.opencodeOAuthStart", "personalChats.streamEvents"]);

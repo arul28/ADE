@@ -234,6 +234,22 @@ describe("duration entry", () => {
       message: "Snooze for 30d or less, or pick \"Until I'm asked\" for an open-ended snooze.",
     });
   });
+
+  it("calls an overflowing duration too long, never too short", () => {
+    // Regression: the magnitude check used to run after the floor check, so a
+    // number big enough to leave the safe-integer range fell into the "too
+    // short" branch and the TUI answered "snooze for at least one second" —
+    // precisely backwards. Both an overflowing and an infinite amount are
+    // long-side failures.
+    const tooLong = "Snooze for 30d or less, or pick \"Until I'm asked\" for an open-ended snooze.";
+    expect(resolveSnoozeFreeText("999999999999999w", NOW)).toEqual({ ok: false, message: tooLong });
+    expect(resolveSnoozeFreeText(`${"9".repeat(400)}d`, NOW)).toEqual({ ok: false, message: tooLong });
+    // The genuine short case still reads as short.
+    expect(resolveSnoozeFreeText("0.001s", NOW)).toEqual({
+      ok: false,
+      message: "Snooze for at least one second.",
+    });
+  });
 });
 
 describe("lifecycle markers", () => {

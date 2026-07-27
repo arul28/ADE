@@ -6,7 +6,7 @@ import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { isSessionSnoozed, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import {
-  setSessionSettleOverride,
+  unsettleSession,
   wakeSessionNow,
 } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
@@ -154,15 +154,9 @@ export function SessionLifecycleChips({
                 {
                   key: "unsettle",
                   label: "Unsettle",
-                  onSelect: () => {
-                    // Declared settles clear the column; a derived settle (clean
-                    // exit 0, no settledAt) only lifts via the keep-active pin.
-                    if (session.settledAt) {
-                      void window.ade.sessions.unsettle(session.id).catch(() => {});
-                      return;
-                    }
-                    void setSessionSettleOverride(session, "active");
-                  },
+                  // The declared-vs-derived branch lives in the shared action so
+                  // the chip and the Work row menu can never disagree.
+                  onSelect: () => { void unsettleSession(session); },
                 },
               ]}
             />

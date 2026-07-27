@@ -412,15 +412,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     })();
   }, []);
 
-  const handleUnsettleSession = useCallback((session: TerminalSessionSummary) => {
-    setSessionActionError(null);
-    void window.ade.sessions.unsettle(session.id).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      setSessionActionError(`Unsettle failed: ${message}`);
-      window.setTimeout(() => setSessionActionError(null), 6000);
-    });
-  }, []);
-
   const handleStopAndDeleteSession = useCallback(
     (session: TerminalSessionSummary) => {
       void (async () => {
@@ -1216,7 +1207,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onSettle={handleSettleSession}
-        onUnsettle={handleUnsettleSession}
         onCopySessionDeepLink={(session) => {
           void (async () => {
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;

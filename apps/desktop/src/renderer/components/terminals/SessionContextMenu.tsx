@@ -12,6 +12,7 @@ import {
 import {
   setSessionSettleOverride,
   snoozeSessionForDuration,
+  unsettleSession,
   wakeSessionNow,
 } from "./sessionLifecycleActions";
 
@@ -40,7 +41,6 @@ type SessionContextMenuProps = {
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
   onSettle?: (session: TerminalSessionSummary) => void;
-  onUnsettle?: (session: TerminalSessionSummary) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -63,7 +63,6 @@ export function SessionContextMenu({
   onOpenSessionInWeb,
   onTogglePinned,
   onSettle,
-  onUnsettle,
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
@@ -284,8 +283,8 @@ export function SessionContextMenu({
               onClick={() => {
                 // Declared settles clear the column; derived settles have no
                 // column to clear, so the keep-active pin is the only unsettle.
-                if (isDeclaredSettled && onUnsettle) onUnsettle(session);
-                else void setSessionSettleOverride(session, "active");
+                // Both branches live in the shared lifecycle action.
+                void unsettleSession(session);
                 onClose();
               }}
             >

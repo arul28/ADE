@@ -4210,7 +4210,10 @@ export function createLaneService({
           laneId: row.id,
           branchName: drift.expectedBranchRef,
           mode: "existing",
-          acknowledgeActiveWork: args.acknowledgeActiveWork ?? true,
+          // Never default this on: switchBranch's active-work guard is the only
+          // thing stopping a force checkout of a worktree that agents are still
+          // running against. A caller that really wants to proceed must say so.
+          acknowledgeActiveWork: args.acknowledgeActiveWork === true,
         });
         return {
           lane: result.lane,

@@ -707,13 +707,27 @@ function parseRemoteSessionIds(value: Record<string, unknown>, action: string): 
  * Snooze deadlines arrive from clients that have no local clock authority, so
  * they must be a parseable ISO timestamp; `sessionService` would otherwise
  * silently return false and the client would show a no-op.
+ *
+ * A deadline at or before now is rejected for the same reason: snoozed-ness is
+ * DERIVED (`snoozedUntilMs > Date.now()`), so writing a past deadline "succeeds"
+ * and leaves the row exactly as visible as it was — a silent no-op the caller
+ * would report as done. The CLI's `--until` and the desktop CTO tool reject
+ * past deadlines identically; the sync path is the third door onto the same
+ * write and must not be the lenient one.
  */
-function parseRemoteSnoozeDeadline(value: Record<string, unknown>, action: string): string {
+function parseRemoteSnoozeDeadline(
+  value: Record<string, unknown>,
+  action: string,
+  nowMs: number = Date.now(),
+): string {
   const raw = asTrimmedString(value.untilIso) ?? asTrimmedString(value.snoozedUntil);
   if (!raw) throw new Error(`${action} requires an ISO-8601 untilIso.`);
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`${action} requires an ISO-8601 untilIso; received '${raw}'.`);
+  }
+  if (parsed.getTime() <= nowMs) {
+    throw new Error(`${action} requires untilIso to be in the future; received '${raw}'.`);
   }
   return parsed.toISOString();
 }

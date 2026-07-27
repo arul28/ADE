@@ -38,7 +38,6 @@ function renderMenu(
   session: TerminalSessionSummary,
   onSetChatTag = vi.fn(),
   onSettle = vi.fn(),
-  onUnsettle = vi.fn(),
 ) {
   const onClose = vi.fn();
   render(
@@ -55,10 +54,9 @@ function renderMenu(
       onRename={vi.fn()}
       onSetChatTag={onSetChatTag}
       onSettle={onSettle}
-      onUnsettle={onUnsettle}
     />,
   );
-  return { onClose, onSetChatTag, onSettle, onUnsettle };
+  return { onClose, onSetChatTag, onSettle };
 }
 
 describe("SessionContextMenu Claude tags", () => {
@@ -159,6 +157,7 @@ describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
       setSettleOverride: vi.fn().mockResolvedValue(true),
       snoozeSession: vi.fn().mockResolvedValue(true),
       wakeSession: vi.fn().mockResolvedValue(true),
+      unsettle: vi.fn().mockResolvedValue(undefined),
     };
     (window as unknown as { ade: unknown }).ade = { sessions: sessionsApi };
   });
@@ -183,7 +182,7 @@ describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
   it("gives a DERIVED settled row an Unsettle action backed by the keep-active override", async () => {
     // Regression: this row previously fell out of every branch of the settle
     // chain and rendered no lifecycle action at all.
-    const { onUnsettle } = renderMenu(derivedSettledSession());
+    renderMenu(derivedSettledSession());
 
     fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
 
@@ -191,7 +190,7 @@ describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
       expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
     });
     // There is no `settledAt` column to clear, so the declared path stays unused.
-    expect(onUnsettle).not.toHaveBeenCalled();
+    expect(sessionsApi.unsettle).not.toHaveBeenCalled();
     // "Keep active" would be the identical call here, so it is not duplicated.
     expect(screen.queryByRole("button", { name: "Keep active" })).toBeNull();
   });
@@ -205,10 +204,10 @@ describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
       exitCode: 0,
       settledAt: "2026-07-10T12:31:00.000Z",
     });
-    const { onUnsettle } = renderMenu(session);
+    renderMenu(session);
 
     fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
-    expect(onUnsettle).toHaveBeenCalledWith(session);
+    await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("chat-1"));
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Keep active" }));

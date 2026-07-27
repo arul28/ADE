@@ -84,14 +84,22 @@ export function parseSnoozeDuration(value: string): SnoozeDurationResult {
   const match = /^(\d+(?:\.\d+)?)\s*(s|m|h|d|w|sec|secs|min|mins|hour|hours|day|days|week|weeks)?$/.exec(raw);
   if (!match) return invalid;
   const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return invalid;
+  // `Infinity` (a digit run past 1e308) is not a grammar failure — it is a
+  // magnitude failure, so it falls through to the "too long" branch below
+  // rather than being reported as an unparseable duration.
+  if (Number.isNaN(amount) || amount <= 0) return invalid;
   const unit = (match[2] ?? "m").slice(0, 1);
   const ms = Math.round(amount * SNOOZE_UNIT_MS[unit]!);
-  if (!Number.isSafeInteger(ms) || ms < 1000) {
-    return { ok: false, code: "too-short", message: "--for must resolve to at least one second." };
-  }
-  if (ms > MAX_SNOOZE_MS) {
+  // Magnitude first, deliberately. An input big enough to overflow past the safe
+  // integer range (`999999999999999w`) is absurdly LONG, so testing "too short"
+  // first told the user to "snooze for at least one second" — the exact opposite
+  // of the problem. Overflow is folded into `too-long` so every surface that
+  // switches on `code` says "that's too far out" for both.
+  if (!Number.isFinite(ms) || ms > MAX_SNOOZE_MS) {
     return { ok: false, code: "too-long", message: "--for must be 30d or less." };
+  }
+  if (ms < 1000) {
+    return { ok: false, code: "too-short", message: "--for must resolve to at least one second." };
   }
   return { ok: true, ms };
 }

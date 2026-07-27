@@ -57,6 +57,14 @@ function subscribeArmed(listener: () => void): () => void {
   return () => { armedListeners.delete(listener); };
 }
 
+/**
+ * The host refuses a switch-back while the lane still has running sessions. Match
+ * on that refusal so the strip can offer a confirm instead of stranding the user.
+ */
+function isActiveWorkRefusal(message: string): boolean {
+  return /active sessions/i.test(message) && /confirm/i.test(message);
+}
+
 function useLaneBranchDriftArmed(laneId: string | null | undefined): boolean {
   const getSnapshot = useCallback(
     () => Boolean(laneId && armedLaneIds.has(laneId)),
@@ -113,6 +121,7 @@ export function LaneBranchDriftStrip({
   const armed = useLaneBranchDriftArmed(laneId);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
+  const [forceable, setForceable] = useState<LaneBranchDriftResolution | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const visible = Boolean(laneId && drift && armed);
@@ -120,24 +129,36 @@ export function LaneBranchDriftStrip({
   useEffect(() => {
     if (!drift) {
       setError(null);
+      setForceable(null);
       disarmLaneBranchDriftWarning(laneId);
     }
   }, [drift, laneId]);
 
-  const resolve = useCallback(async (resolution: LaneBranchDriftResolution) => {
+  const resolve = useCallback(async (
+    resolution: LaneBranchDriftResolution,
+    acknowledgeActiveWork = false,
+  ) => {
     if (!laneId || !drift) return;
     setPending(resolution);
     setError(null);
+    setForceable(null);
     try {
       await window.ade.lanes.resolveBranchDrift({
         laneId,
         resolution,
         expectedHeadBranchRef: drift.headBranchRef,
+        ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
       });
       disarmLaneBranchDriftWarning(laneId);
       await refreshLanes({ includeStatus: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      // Switching back refuses while the lane still has running sessions, which is
+      // the right default — but without a way through it is a dead end. Offer an
+      // explicit confirm that retries with the acknowledgement, the same shape the
+      // lane list uses for its own branch switch.
+      if (isActiveWorkRefusal(message)) setForceable(resolution);
     } finally {
       setPending(null);
     }
@@ -164,6 +185,16 @@ export function LaneBranchDriftStrip({
         {error ? error : message}
       </span>
       <span className="flex shrink-0 items-center gap-1">
+        {forceable ? (
+          <button
+            type="button"
+            disabled={pending != null}
+            className="rounded px-1.5 py-0.5 font-medium text-amber-100/90 underline-offset-2 hover:bg-amber-200/10 hover:underline disabled:opacity-40"
+            onClick={() => { void resolve(forceable, true); }}
+          >
+            Switch anyway
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={pending != null}

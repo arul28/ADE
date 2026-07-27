@@ -1359,31 +1359,37 @@ describe("runtime session actions", () => {
     // Deadlines are normalized to ISO so every surface stores the same shape.
     expect(sessionActions.snoozeSession({
       sessionId: "session-1",
-      untilIso: "2026-07-26T18:00:00Z",
+      untilIso: "2099-07-26T18:00:00Z",
     })).toEqual({
       ok: true,
       sessionId: "session-1",
-      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedUntil: "2099-07-26T18:00:00.000Z",
     });
-    expect(snoozeSession).toHaveBeenCalledWith("session-1", "2026-07-26T18:00:00.000Z");
+    expect(snoozeSession).toHaveBeenCalledWith("session-1", "2099-07-26T18:00:00.000Z");
 
     expect(() => sessionActions.snoozeSession({ sessionId: "session-1" }))
       .toThrow(/untilIso/);
     expect(() => sessionActions.snoozeSession({ sessionId: "session-1", untilIso: "later" }))
       .toThrow(/ISO-8601/);
-    expect(() => sessionActions.snoozeSession({ untilIso: "2026-07-26T18:00:00Z" }))
+    // A past deadline parses fine but hides nothing (snoozed = until > now), so
+    // it must fail loudly instead of reporting a successful no-op.
+    expect(() => sessionActions.snoozeSession({
+      sessionId: "session-1",
+      untilIso: "2020-01-01T00:00:00Z",
+    })).toThrow(/future/);
+    expect(() => sessionActions.snoozeSession({ untilIso: "2099-07-26T18:00:00Z" }))
       .toThrow(/sessionId/);
     expect(snoozeSession).toHaveBeenCalledTimes(1);
 
     expect(() => sessionActions.snoozeSessions({
       sessionIds: [],
-      untilIso: "2026-07-26T18:00:00Z",
+      untilIso: "2099-07-26T18:00:00Z",
     })).toThrow(/at least one session id/);
     expect(sessionActions.snoozeSessions({
       sessionIds: ["session-1", 7],
-      untilIso: "2026-07-26T18:00:00Z",
+      untilIso: "2099-07-26T18:00:00Z",
     })).toEqual(["session-1"]);
-    expect(snoozeSessions).toHaveBeenCalledWith(["session-1"], "2026-07-26T18:00:00.000Z");
+    expect(snoozeSessions).toHaveBeenCalledWith(["session-1"], "2099-07-26T18:00:00.000Z");
 
     // Wake defaults to "manual" and rejects anything outside the reason union.
     expect(sessionActions.wakeSession({ sessionId: "session-1" }))

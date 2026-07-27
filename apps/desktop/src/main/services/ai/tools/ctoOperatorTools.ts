@@ -23,6 +23,7 @@ import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { createSessionService } from "../../sessions/sessionService";
+import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
@@ -298,17 +299,22 @@ function readSessionLifecycle(
   };
 }
 
+/**
+ * Throws on anything that would make the snooze a silent no-op — an
+ * unparseable date, a deadline already in the past (`snoozed` is
+ * `snoozedUntil > now`, so the write "succeeds" while the row stays visible),
+ * or neither argument. Callers surface the message as `{ success: false }`.
+ */
 function resolveSnoozeDeadline(args: {
   untilIso?: string | null;
   durationMinutes?: number | null;
-}): string | null {
+}): string {
   const raw = args.untilIso?.trim();
-  if (raw) {
-    const parsed = new Date(raw);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-  }
+  if (raw) return parseSnoozeDeadline(raw);
   const minutes = args.durationMinutes ?? null;
-  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) return null;
+  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) {
+    throw new Error("Pass a valid future untilIso timestamp or a positive durationMinutes.");
+  }
   return new Date(Date.now() + Math.floor(minutes) * 60_000).toISOString();
 }
 
@@ -616,9 +622,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ sessionId, untilIso, durationMinutes }) => {
       try {
         const deadline = resolveSnoozeDeadline({ untilIso, durationMinutes });
-        if (!deadline) {
-          return { success: false, error: "Pass a valid untilIso timestamp or a positive durationMinutes." };
-        }
         const ok = deps.sessionService.snoozeSession(sessionId, deadline);
         if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };

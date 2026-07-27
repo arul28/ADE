@@ -1031,6 +1031,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let lastTurnFailedAt: String?
   let settleOverride: String?
   let snoozedUntil: String?
+  // `snoozedAt` is the early-wake comparison baseline behind
+  // `session.wokeMarker()`, which the row body renders. Without it a change
+  // confined to that column leaves the stale woke marker on screen.
+  let snoozedAt: String?
   let wokeAt: String?
   let wokeReason: String?
   // Deterministic inputs to the attention capsule, so a badge transition
@@ -1082,6 +1086,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.lastTurnFailedAt = session.lastTurnFailedAt
     self.settleOverride = session.settleOverride
     self.snoozedUntil = session.snoozedUntil
+    self.snoozedAt = session.snoozedAt
     self.wokeAt = session.wokeAt
     self.wokeReason = session.wokeReason
     self.runtimeState = session.runtimeState
