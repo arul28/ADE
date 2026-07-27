@@ -196,23 +196,32 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       && (result.removedTargetIds.length > 0
         || result.removedCredentialHostIds.length > 0)
     ) {
-      // Warn, not info: each removed credential costs the user a manual
-      // re-pair of that machine, so this is never routine.
-      const detail = {
+      const counts = {
         targetCount: result.removedTargetIds.length,
         credentialCount: result.removedCredentialHostIds.length,
+      };
+      // Warn, not info: each removed credential costs the user a manual
+      // re-pair of that machine, so this is never routine.
+      //
+      // Account and host identifiers go ONLY to the machine-local sink. The
+      // project logger is the reason this split exists — on a remote-bound
+      // project it ships records to the other machine, so putting owner ids in
+      // it would re-introduce exactly the cross-machine identifier exposure the
+      // split was added to prevent. It gets counts, nothing more.
+      getMachineLogger()?.warn("account.local_machines_removed", {
+        ...counts,
         currentOwnerUserId: result.currentOwnerUserId,
         removed: result.removedCredentials.map((credentials) => ({
           hostDeviceId: credentials.hostDeviceId,
           hostName: credentials.hostName,
           previousOwnerUserId: credentials.previousOwnerUserId,
-          // The whole point of the record: an account switch is intended, an
-          // identical owner that still pruned is the bug worth chasing.
-          ownerChanged: credentials.previousOwnerUserId !== result.currentOwnerUserId,
         })),
-      };
-      getMachineLogger()?.warn("account.local_machines_removed", detail);
-      options.logger?.info("account.local_machines_removed", detail);
+      });
+      // Dropping a paired secret is the forensic record for "why did my
+      // pairing vanish". The file logger batches on a 500 ms timer, so a quit
+      // that follows the prune closely would lose exactly that line.
+      getMachineLogger()?.flushSync?.();
+      options.logger?.info("account.local_machines_removed", counts);
     }
   };
 

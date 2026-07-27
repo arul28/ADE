@@ -1665,9 +1665,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
     attachHostListener(listener: TunnelHostListener | null): void {
       if (hostListener === listener) return;
+      const hadListener = hostListener != null;
       detachHostListener?.();
       detachHostListener = null;
       hostListener = listener;
+      // Swapping owners has to invalidate what the previous owner proved.
+      // Ready tunnels keep forwarding into the OLD listener's local socket, so
+      // leaving them up means "new owner wins" is only true for validation
+      // inputs while live traffic still reaches the machine that no longer
+      // owns the bridge. Drop the validation and the pipes together; the next
+      // tunnel re-opens against the new listener.
+      if (hadListener) {
+        clearBridgeValidation();
+        closeRelayConnections("host listener replaced");
+      }
       if (!listener) return;
       // Re-run validation whenever the listener re-validates loopback. This
       // subscription used to be registered in the construction closure, so

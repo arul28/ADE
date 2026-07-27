@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { runWithAbortSignal } from "./abortSignal";
@@ -3933,6 +3934,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
   };
 
+  // A stranded `tailscale serve` entry forwards to a port nothing listens on.
+  // A live one — this host or a sibling ADE — has a real listener behind it.
+  const isLocalPortServing = (port: number): Promise<boolean> => new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    const settle = (serving: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(serving);
+    };
+    socket.setTimeout(750, () => settle(false));
+    socket.once("connect", () => settle(true));
+    socket.once("error", () => settle(false));
+  });
+
   // `serve --bg` outlives the process that registered it, but the port ADE
   // tracks is in-memory only, so every restart — and every force-kill that
   // skips the teardown below — orphans the previous entry. Tailscale keeps it
@@ -3961,6 +3976,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // at all, while status still reports "published".
       if (disposed) return;
       if (tailnetServePort != null && port === tailnetServePort) continue;
+      // `tailscale serve` is machine-global while the sync-host singleton is
+      // uid- and channel-scoped, so a sibling ADE (another channel, another
+      // user) can legitimately own one of these ports. Its serve entry is
+      // byte-identical to a stale one — same port forwarding to 127.0.0.1 on
+      // the same port — so the status output cannot tell them apart. What does
+      // is whether anything is actually listening: a stranded entry forwards
+      // into nothing. Probe immediately before each teardown, so the window
+      // between the snapshot and this `off` is closed too.
+      if (await isLocalPortServing(port)) continue;
       try {
         await execFileAsync(cli, ["serve", `--tcp=${port}`, "off"], { timeout: 10_000 });
         reclaimed += 1;

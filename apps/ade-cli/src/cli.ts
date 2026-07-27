@@ -16848,7 +16848,12 @@ function formatStorageMaintenance(value: unknown): string {
 
 function formatEpochTimestamp(value: unknown): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  const iso = new Date(value).toISOString();
+  // Finite and positive still admits epochs past 8.64e15, where toISOString
+  // throws RangeError. Every other field here degrades to a missing row rather
+  // than taking down `ade update status --text`; this one must too.
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const iso = date.toISOString();
   return `${iso} (${relativeTime(iso)})`;
 }
 

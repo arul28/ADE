@@ -1361,7 +1361,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("ade update install");
   });
 
-  it("omits install-failure and progress rows from a clean update snapshot", () => {
+  it("renders progress and omits the install-failure row for a clean update snapshot", () => {
     const plan = expectExecutePlan(buildCliPlan(["update", "status"]));
     const output = formatOutput(
       {
