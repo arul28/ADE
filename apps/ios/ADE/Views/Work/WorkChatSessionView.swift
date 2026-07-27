@@ -2290,14 +2290,29 @@ final class WorkChatComposerDraftState: ObservableObject {
   @MainActor
   func bind(persistenceKey key: String) {
     guard persistenceKey != key else { return }
+    // A blank previous key means this is the first bind of a freshly mounted
+    // composer; anything else is the view being reused for a different chat.
+    let isFirstBind = persistenceKey.isEmpty
     flushDraft()
     persistenceKey = key
-    guard !key.isEmpty else { return }
-    let stored = WorkComposerDraftStore.load(key)
-    // Whatever is already in the field wins: a failed send restores its text
-    // here, and that is fresher than anything on disk.
-    guard trimmedText.isEmpty, !stored.isEmpty else { return }
-    text = stored
+    let stored = key.isEmpty ? "" : WorkComposerDraftStore.load(key)
+
+    guard !isFirstBind else {
+      // First mount: whatever is already in the field wins. A failed send
+      // restores its text here, and that is fresher than anything on disk.
+      guard trimmedText.isEmpty, !stored.isEmpty else { return }
+      text = stored
+      return
+    }
+
+    // Session switch: the visible text belongs to the chat we just left, and it
+    // has already been flushed under that chat's key. It must NOT survive into
+    // this one — leaving it would show one conversation's draft in another,
+    // autosave it over the destination's own stored draft on the next
+    // keystroke, and put the wrong message one tap from being sent.
+    if text != stored {
+      text = stored
+    }
   }
 
   /// Write the draft now, cancelling any pending debounce. Called when the chat

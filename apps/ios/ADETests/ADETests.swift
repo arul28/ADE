@@ -19975,6 +19975,38 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(cards.isEmpty)
   }
 
+  /// The chat composer view is reused across session switches. Before this was
+  /// guarded, switching chats with text still in the box left that text visible
+  /// in the destination chat and autosaved it over the destination's own stored
+  /// draft on the next keystroke — one tap from sending the wrong message into
+  /// the wrong conversation.
+  @MainActor
+  func testComposerDraftDoesNotLeakAcrossSessionSwitch() {
+    let keyA = WorkComposerDraftStore.chatKey(sessionId: "sess-A-\(UUID().uuidString)")
+    let keyB = WorkComposerDraftStore.chatKey(sessionId: "sess-B-\(UUID().uuidString)")
+    defer {
+      WorkComposerDraftStore.clear(keyA)
+      WorkComposerDraftStore.clear(keyB)
+    }
+
+    let state = WorkChatComposerDraftState()
+    state.bind(persistenceKey: keyA)
+    state.text = "half-written message for chat A"
+
+    // Switch to a chat that has no draft of its own.
+    state.bind(persistenceKey: keyB)
+    XCTAssertEqual(state.text, "", "Chat A's text must not survive into chat B")
+    XCTAssertEqual(
+      WorkComposerDraftStore.load(keyA),
+      "half-written message for chat A",
+      "Switching away must flush the outgoing draft under its own key, not lose it"
+    )
+
+    // And switching back restores A's draft rather than B's empty box.
+    state.bind(persistenceKey: keyA)
+    XCTAssertEqual(state.text, "half-written message for chat A")
+  }
+
   /// A question marked `isSecret` renders its freeform in a `SecureField`, and
   /// the resolved card refuses to echo the answer back. When such a question
   /// also carries options, the CHOSEN OPTION is the secret answer — persisting
