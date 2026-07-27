@@ -11401,6 +11401,11 @@ export function AgentChatPane({
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
+            // Drives the composer's machine chip. A chat inherits its machine
+            // from its lane, so the chip only becomes a picker while the lane is
+            // still "auto-create" — that is the one moment no machine is settled
+            // yet. Any other value keeps it read-only.
+            laneSelectionId={draftLaneSelectorValue}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
             isActive={isTileActive}

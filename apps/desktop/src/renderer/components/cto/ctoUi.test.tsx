@@ -131,6 +131,16 @@ describe("CtoPage settings", () => {
     expect(await screen.findByTestId("cto-agent-chat-pane")).toBeTruthy();
   });
 
+  it("states that the CTO always runs on This Mac without offering a switch", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    const indicator = screen.getByTestId("cto-machine-indicator");
+    expect(indicator.textContent).toBe("Always runs on This Mac");
+    // Pinned by design: the indicator is a statement, never a control.
+    expect(indicator.tagName).toBe("SPAN");
+  });
+
   it("keeps personality and model controls off the main chat header", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");

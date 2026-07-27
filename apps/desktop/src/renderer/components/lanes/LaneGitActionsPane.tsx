@@ -16,6 +16,13 @@ import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButt
 import { CommitTimeline } from "./CommitTimeline";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LinearIssueBadge } from "./LinearIssueBadge";
+import { PushDivergenceDialog } from "./PushDivergenceDialog";
+import {
+  detectPushDivergence,
+  EMPTY_MACHINE_BRANCH_STATES,
+  type DivergenceWarning,
+  type MachineBranchState,
+} from "../../../shared/laneDivergence";
 import type {
   DiffChanges,
   FileChange,
@@ -51,6 +58,11 @@ type CommitMessageAiState = {
 };
 
 type ResponsiveMode = "narrow" | "medium" | "wide";
+
+/** A push held back by the divergence guard, replayed verbatim on confirm. */
+type PendingGuardedPush =
+  | { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> }
+  | { kind: "rebase-push"; confirmPublish: boolean; warning: NonNullable<DivergenceWarning> };
 
 const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
@@ -209,6 +221,66 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
   );
 }
 
+// ---------------------------------------------------------------------------
+// Cross-machine branch state (push divergence guard)
+// ---------------------------------------------------------------------------
+//
+// Other surfaces that already hold union lane state (the chat git toolbar
+// today, the cross-machine lane list once it lands) publish per-lane branch
+// state here; the push actions below read it. This is a plain registry over
+// data the renderer already has — no polling, no subscription, no git call. It
+// stays empty until a caller publishes, which keeps the single-machine path at
+// zero cost.
+
+// Identity for the machine the renderer is running on, so the guard never
+// warns about this machine. Values match `laneMachines.ts` (THIS_MACHINE_ID /
+// THIS_MACHINE_NAME) so a caller sourcing `others` from that module lines up
+// without a translation step. Machines are named absolutely — never "remote".
+const THIS_MACHINE_GUARD_ID = "this-mac";
+const THIS_MACHINE_GUARD_NAME = "This Mac";
+
+const otherMachineBranchStatesByLane = new Map<string, readonly MachineBranchState[]>();
+const otherMachineBranchStateListeners = new Set<() => void>();
+
+function readOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
+  if (!laneId || otherMachineBranchStatesByLane.size === 0) return EMPTY_MACHINE_BRANCH_STATES;
+  return otherMachineBranchStatesByLane.get(laneId) ?? EMPTY_MACHINE_BRANCH_STATES;
+}
+
+/**
+ * Publishes (or clears, with `null`/empty) the other machines known to hold
+ * this lane's branch. Safe to call from any surface; the push guard picks it up
+ * on the next push without re-rendering anything else.
+ */
+export function publishLaneOtherMachineBranchStates(
+  laneId: string | null,
+  states: readonly MachineBranchState[] | null | undefined,
+): void {
+  if (!laneId) return;
+  const previous = otherMachineBranchStatesByLane.get(laneId);
+  if (!states || states.length === 0) {
+    if (!previous) return;
+    otherMachineBranchStatesByLane.delete(laneId);
+  } else {
+    if (previous === states) return;
+    otherMachineBranchStatesByLane.set(laneId, states);
+  }
+  for (const listener of otherMachineBranchStateListeners) listener();
+}
+
+function useOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
+  return React.useSyncExternalStore(
+    (listener) => {
+      otherMachineBranchStateListeners.add(listener);
+      return () => {
+        otherMachineBranchStateListeners.delete(listener);
+      };
+    },
+    () => readOtherMachineBranchStates(laneId),
+    () => EMPTY_MACHINE_BRANCH_STATES,
+  );
+}
+
 export {
   beginLaneGitActionRuntime,
   patchLaneGitActionRuntimeStateIfCurrent,
@@ -219,6 +291,7 @@ export {
 export function __resetLaneGitActionRuntimeForTests(): void {
   laneGitActionRuntimeByScope.clear();
   laneGitActionsStateByScope.clear();
+  otherMachineBranchStatesByLane.clear();
   emitLaneGitActionRuntimeChange();
 }
 
@@ -582,7 +655,11 @@ export function LaneGitActionsPane({
   selectedPath,
   selectedMode,
   selectedCommit = null,
-  selectedCommitSha
+  selectedCommitSha,
+  otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
+  currentMachineName = THIS_MACHINE_GUARD_NAME,
+  currentMachineId = THIS_MACHINE_GUARD_ID,
+  currentMachineHeadSha = null
 }: {
   laneId: string | null;
   active?: boolean;
@@ -602,6 +679,18 @@ export function LaneGitActionsPane({
   /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
+  /**
+   * Other machines known to hold this lane's branch, from union lane state the
+   * renderer already has (`LaneListSnapshot` / `lane_state_snapshots`). Empty
+   * until a caller supplies it — the push guard is inert (and free) until then.
+   * Callers may also publish via `publishLaneOtherMachineBranchStates`.
+   */
+  otherMachineBranchStates?: readonly MachineBranchState[];
+  /** Absolute name for this machine in guard copy. Never "remote". */
+  currentMachineName?: string;
+  currentMachineId?: string;
+  /** This machine's head commit, when a caller knows it. Unknown is fine. */
+  currentMachineHeadSha?: string | null;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -646,6 +735,8 @@ export function LaneGitActionsPane({
   const autoRebaseStatusSnapshotRef = useRef<AutoRebaseLaneStatus | null | undefined>(autoRebaseStatusSnapshot);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
+  const [pendingPush, setPendingPush] = useState<PendingGuardedPush | null>(null);
+  const publishedOtherMachineBranchStates = useOtherMachineBranchStates(laneId);
   const laneGitActionScopeKey = laneGitActionsStateKey(projectStateKey, laneId);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneGitActionScopeKey);
   const busyAction = laneGitActionRuntime.busyAction;
@@ -1289,11 +1380,52 @@ export function LaneGitActionsPane({
     });
   };
 
-  const runPush = (forceWithLease: boolean) => {
+  // Two lanes on one branch across two machines are just two lanes — ADE does
+  // not arbitrate them. Pushing is the one moment where that can cost work, so
+  // it is the one moment that interrupts. Resolved at click time (not in a
+  // memo) so a single-machine project pays nothing.
+  const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
+    const others = otherMachineBranchStates.length > 0
+      ? otherMachineBranchStates
+      : publishedOtherMachineBranchStates;
+    if (others.length === 0) return null;
+    if (!lane) return null;
+    return detectPushDivergence({
+      current: {
+        machineId: currentMachineId,
+        machineName: currentMachineName,
+        branchRef: lane.branchRef,
+        headSha: currentMachineHeadSha,
+        ahead: syncStatus?.ahead ?? lane.status.ahead,
+        behind: syncStatus?.behind ?? lane.status.behind,
+      },
+      others,
+    });
+  }, [
+    currentMachineHeadSha,
+    currentMachineId,
+    currentMachineName,
+    lane,
+    otherMachineBranchStates,
+    publishedOtherMachineBranchStates,
+    syncStatus,
+  ]);
+
+  const executePush = (forceWithLease: boolean) => {
     if (!laneId) return;
     void runAction(forceWithLease ? "force push" : "push", async () => {
       await window.ade.git.push({ laneId, forceWithLease });
     });
+  };
+
+  const runPush = (forceWithLease: boolean) => {
+    if (!laneId) return;
+    const warning = resolvePushDivergence();
+    if (warning) {
+      setPendingPush({ kind: "push", forceWithLease, warning });
+      return;
+    }
+    executePush(forceWithLease);
   };
 
   const runPull = (mode: GitSyncMode) => {
@@ -1322,7 +1454,7 @@ export function LaneGitActionsPane({
     });
   };
 
-  const runRebaseAndPushFlow = (confirmPublish = true) => {
+  const executeRebaseAndPushFlow = (confirmPublish: boolean) => {
     if (!laneId) return;
     void runAction("rebase and push", async () => {
       if (onRebaseAndPush) {
@@ -1380,6 +1512,36 @@ export function LaneGitActionsPane({
       }
     });
   };
+
+  const runRebaseAndPushFlow = (confirmPublish = true) => {
+    if (!laneId) return;
+    const warning = resolvePushDivergence();
+    if (warning) {
+      setPendingPush({ kind: "rebase-push", confirmPublish, warning });
+      return;
+    }
+    executeRebaseAndPushFlow(confirmPublish);
+  };
+
+  // Plain function (not memoized) so the replayed push always closes over the
+  // current lane state rather than the state at the moment the dialog opened.
+  const confirmPendingPush = () => {
+    const pending = pendingPush;
+    setPendingPush(null);
+    if (!pending) return;
+    if (pending.kind === "push") {
+      executePush(pending.forceWithLease);
+      return;
+    }
+    executeRebaseAndPushFlow(pending.confirmPublish);
+  };
+
+  const cancelPendingPush = useCallback(() => setPendingPush(null), []);
+
+  // A lane switch must never leave another lane's guard on screen.
+  useEffect(() => {
+    setPendingPush(null);
+  }, [laneId]);
 
   const upstreamMissing = syncStatus?.upstreamState === "missing";
 
@@ -2940,6 +3102,12 @@ export function LaneGitActionsPane({
           </span>
         </div>
       ) : null}
+
+      <PushDivergenceDialog
+        warning={pendingPush?.warning ?? null}
+        onCancel={cancelPendingPush}
+        onConfirm={confirmPendingPush}
+      />
 
       {textPrompt ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>

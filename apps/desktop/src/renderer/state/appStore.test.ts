@@ -413,6 +413,45 @@ describe("appStore", () => {
       expect(useAppStore.getState().laneCacheByProject[project.rootPath]?.lanes).toEqual([persistedLane]);
     });
 
+    it("setProject restores a remote project's lane cache using its binding key", () => {
+      // Regression: the warm cache is *written* under the binding key
+      // (`remote:<targetId>:<projectId>`) by refreshLanes, but setProject used to
+      // read it back by rootPath. Every remote project missed its own cache, so a
+      // cold start with a saved remote binding rendered an empty, spinning lane
+      // list even though the cached lanes were sitting in localStorage.
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "MacBook Pro (97)",
+        projectId: "project-1",
+        rootPath: "/remote/one",
+        displayName: "Remote One",
+      };
+      const persistedLane = { id: "lane-remote-cached", name: "Remote cached lane" } as any;
+      mockStorage.set(laneCacheKey(remoteBinding.key), JSON.stringify({
+        savedAt: Date.now(),
+        lanes: [persistedLane],
+      }));
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+      useAppStore.getState().setProject({
+        id: "p-remote",
+        name: "Remote One",
+        rootPath: remoteBinding.rootPath,
+        gitRemoteUrl: null,
+        gitDefaultBranch: "main",
+        createdAt: "",
+      } as any);
+
+      expect(useAppStore.getState().lanes).toEqual([persistedLane]);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
+      expect(useAppStore.getState().laneCacheByProject[remoteBinding.key]?.lanes).toEqual([persistedLane]);
+      // The rootPath must never become a cache key for a remote project — that is
+      // what let a local checkout and a remote checkout collide.
+      expect(useAppStore.getState().laneCacheByProject[remoteBinding.rootPath]).toBeUndefined();
+    });
+
     it("setProjectHydrated tracks whether startup project hydration finished", () => {
       useAppStore.getState().setProjectHydrated(true);
       expect(useAppStore.getState().projectHydrated).toBe(true);
@@ -605,6 +644,30 @@ describe("appStore", () => {
       });
       expect(useAppStore.getState().laneSnapshots).toEqual(snapshots);
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
+    });
+
+    it("refreshLanes keeps the previous lanes visible when the runtime call fails", async () => {
+      // Offline contract: when a machine drops, its lanes must stay on screen as
+      // stale data rather than vanishing. Today that only holds because the await
+      // happens before any set() — nothing asserts it, so a future `catch` that
+      // sets `lanes: []` would silently make a dropped connection wipe the
+      // sidebar. This pins the behaviour.
+      const existingLane = { id: "lane-live", name: "Live lane" } as any;
+      useAppStore.setState({
+        project: { rootPath: "/p/offline", displayName: "Offline", baseRef: "main" } as any,
+        lanes: [existingLane],
+        laneSnapshots: [],
+        selectedLaneId: existingLane.id,
+      } as any);
+      (window.ade.lanes.listSnapshots as any).mockRejectedValueOnce(
+        new Error("Remote ADE service is not connected"),
+      );
+
+      await expect(useAppStore.getState().refreshLanes()).rejects.toThrow(/not connected/);
+
+      expect(useAppStore.getState().lanes).toEqual([existingLane]);
+      expect(useAppStore.getState().selectedLaneId).toBe(existingLane.id);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
     });
 
     it("refreshLanes can request the cheaper lane-list path while preserving prior git status", async () => {

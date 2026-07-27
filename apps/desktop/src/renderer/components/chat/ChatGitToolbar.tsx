@@ -15,7 +15,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
 import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
 import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
-import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
+import { publishLaneOtherMachineBranchStates, useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
+import { EMPTY_MACHINE_BRANCH_STATES, type MachineBranchState } from "../../../shared/laneDivergence";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
@@ -33,6 +34,17 @@ type ChatGitToolbarProps = {
    */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  /**
+   * Other machines known to hold this lane's branch, from union lane state the
+   * chat surface already has (`LaneListSnapshot` / `lane_state_snapshots`).
+   *
+   * The chat toolbar dispatches no push of its own, so it forwards this to the
+   * lane git actions pane — the surface that owns push — instead of acting on
+   * it. Empty by default: the push divergence guard stays inert (and free)
+   * until a caller supplies real cross-machine state, and lights up with no
+   * further changes when one does.
+   */
+  otherMachineBranchStates?: readonly MachineBranchState[];
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +125,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
   onTogglePrPane,
   prPaneOpen,
+  otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
@@ -130,6 +143,18 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const laneIdRef = React.useRef(laneId);
   const refreshPrRequestRef = React.useRef(0);
   laneIdRef.current = laneId;
+
+  // Forward cross-machine branch state to the push divergence guard owned by
+  // the lane git actions pane. No polling, no subscription, no git call — this
+  // only republishes data the caller already handed us, and does nothing at all
+  // while the list is empty (the single-machine path).
+  useEffect(() => {
+    if (otherMachineBranchStates.length === 0) return;
+    publishLaneOtherMachineBranchStates(laneId, otherMachineBranchStates);
+    return () => {
+      publishLaneOtherMachineBranchStates(laneId, null);
+    };
+  }, [laneId, otherMachineBranchStates]);
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link

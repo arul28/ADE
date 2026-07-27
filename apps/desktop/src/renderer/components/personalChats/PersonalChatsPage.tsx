@@ -8,6 +8,7 @@ import type {
   AgentChatModelCatalog,
   AgentChatPermissionMode,
   AgentChatSessionSummary,
+  OpenProjectBinding,
   PersonalChatAction,
   PersonalChatCallArgs,
   PersonalChatCallResponse,
@@ -52,6 +53,15 @@ type PersonalChatsBridge = {
 
 const EMPTY_EVENTS: AgentChatEventEnvelope[] = [];
 const DEFAULT_MODEL_ID = "";
+const LOCAL_MACHINE_ID = "local";
+const LOCAL_MACHINE_NAME = "This Mac";
+
+export type PersonalChatsMachineOption = { id: string; name: string };
+
+// Stable empty fallbacks: hosts that seed only part of the app store (tests,
+// the projectless standalone shell) must not crash the machine picker.
+const EMPTY_REMOTE_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
+const EMPTY_TAB_ROOTS: string[] = [];
 
 function bridge(): PersonalChatsBridge {
   const candidate = (window.ade as typeof window.ade & { personalChats?: PersonalChatsBridge }).personalChats;
@@ -186,6 +196,11 @@ function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEvent
 export function PersonalChatsPage({ standalone = false }: { standalone?: boolean }) {
   const navigate = useNavigate();
   const projectBinding = useAppStore((state) => state.projectBinding);
+  const openRemoteProjectTabs = useAppStore((state) => state.openRemoteProjectTabs) ?? EMPTY_REMOTE_TABS;
+  const openProjectTabRoots = useAppStore((state) => state.openProjectTabRoots) ?? EMPTY_TAB_ROOTS;
+  const localProjectRootPath = useAppStore((state) => state.project?.rootPath ?? null);
+  const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
+  const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
   const chatFontSizePx = useAppStore((state) => state.chatFontSizePx);
   const chatTranscriptDensity = useAppStore((state) => state.chatTranscriptDensity);
   const chatChromeTint = useAppStore((state) => state.chatChromeTint);
@@ -482,7 +497,53 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const selectedDescriptor = models.find((model) => model.id === modelId) ?? getModelById(modelId);
   const accentColor = selectedDescriptor?.color ?? "#A78BFA";
   const isRemote = projectBinding?.kind === "remote";
-  const machineLabel = isRemote ? projectBinding.runtimeName : "This machine";
+  // Machines are named absolutely — the Chats tab runs on whichever machine this
+  // window is bound to, so the name is the fact and the picker is the control.
+  const machineLabel = isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
+  const machineId = isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
+  const machineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
+    const options: PersonalChatsMachineOption[] = [
+      { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
+    ];
+    for (const tab of openRemoteProjectTabs) {
+      if (options.some((option) => option.id === tab.targetId)) continue;
+      options.push({ id: tab.targetId, name: tab.runtimeName });
+    }
+    return options;
+  }, [openRemoteProjectTabs]);
+  const selectMachine = useCallback(
+    (nextMachineId: string) => {
+      if (nextMachineId === machineId) return;
+      setError(null);
+      if (nextMachineId === LOCAL_MACHINE_ID) {
+        const rootPath = projectBinding?.kind === "local"
+          ? projectBinding.rootPath
+          : (openProjectTabRoots[0] ?? localProjectRootPath);
+        if (!rootPath) {
+          setError("Open a project on this Mac first, then switch back here.");
+          return;
+        }
+        void switchProjectToPath(rootPath).catch((reason) => {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        });
+        return;
+      }
+      const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);
+      if (!tab) return;
+      void switchRemoteProject(tab.targetId, tab.projectId).catch((reason) => {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    },
+    [
+      localProjectRootPath,
+      machineId,
+      openProjectTabRoots,
+      openRemoteProjectTabs,
+      projectBinding,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
+  );
   // Only declare the provider unavailable once the catalog has actually
   // loaded — an in-flight fetch is not "no provider".
   const providerUnavailable = catalog !== null && availableModelIds.length === 0;
@@ -542,6 +603,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       <ProjectlessSidebar
         standalone={standalone}
         machineLabel={machineLabel}
+        machineId={machineId}
+        machineOptions={machineOptions}
+        onSelectMachine={selectMachine}
         grouped={grouped}
         loading={loading}
         query={query}
