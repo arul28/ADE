@@ -564,9 +564,9 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
     WorkStructuredQuestionCard(
       question: workPreviewOversizedQuestion(),
       busy: false,
-      onSelectOption: { _, _ in },
-      onSubmitAll: { _, _ in },
-      onDecline: {},
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
       fallbackProvider: "claude",
       maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
     )
@@ -585,9 +585,9 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
     WorkStructuredQuestionCard(
       question: workPreviewOversizedQuestion(),
       busy: false,
-      onSelectOption: { _, _ in },
-      onSubmitAll: { _, _ in },
-      onDecline: {},
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
       fallbackProvider: "claude",
       maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 340)
     )
@@ -620,9 +620,9 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
         source: "claude"
       ),
       busy: false,
-      onSelectOption: { _, _ in },
-      onSubmitAll: { _, _ in },
-      onDecline: {},
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
       fallbackProvider: "claude",
       maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
     )

@@ -131,23 +131,26 @@ extension WorkChatSessionView {
         question: question,
         busy: actionInFlight || !isLive,
         onSelectOption: { option, freeform in
-          await runSessionAction {
+          await runSessionAction { () async -> Bool in
             await onRespondToQuestion(
               question.id,
               question.questionId,
               .string(option.value),
               freeform
             )
+            return errorMessage == nil
           }
         },
         onSubmitAll: { answers, freeform in
-          await runSessionAction {
+          await runSessionAction { () async -> Bool in
             await onSubmitQuestionAnswers(question.id, answers, freeform)
+            return errorMessage == nil
           }
         },
         onDecline: {
-          await runSessionAction {
+          await runSessionAction { () async -> Bool in
             await onDeclineQuestion(question.id)
+            return errorMessage == nil
           }
         },
         onFreeformFocusChange: { focused in

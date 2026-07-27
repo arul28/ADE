@@ -972,12 +972,17 @@ struct WorkStructuredQuestionCard: View {
   /// Tap-to-submit is only used for single-question single-select with options
   /// (the card invokes this directly from `optionRow`). Multi-question cards
   /// never call this — taps only update local state and submit via Send.
-  let onSelectOption: @MainActor (WorkPendingQuestionOption, String?) async -> Void
+  ///
+  /// Returns whether the answer was actually accepted. The card only discards
+  /// the user's work when it was: a rejected send rolls the optimistic hide
+  /// back and the card returns, and it must return with the answers still in it.
+  let onSelectOption: @MainActor (WorkPendingQuestionOption, String?) async -> Bool
   /// Aggregate submit: one map from questionId -> answer value, plus the
   /// shared freeform response (single-question only). The session action
-  /// forwards this as one `chat.respondToInput` call.
-  let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Void
-  let onDecline: @MainActor () async -> Void
+  /// forwards this as one `chat.respondToInput` call. Returns acceptance — see
+  /// `onSelectOption`.
+  let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Bool
+  let onDecline: @MainActor () async -> Bool
   var onFreeformFocusChange: ((Bool) -> Void)? = nil
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
@@ -1181,7 +1186,11 @@ struct WorkStructuredQuestionCard: View {
     let secretIds = secretQuestionIds
     WorkQuestionDraftStore.save(
       WorkQuestionDraftStore.Snapshot(
-        selections: selections,
+        // Selections are excluded for a secret question too, not just freeform:
+        // when such a question carries options, the chosen option value IS the
+        // secret answer, and persisting it would leak exactly what the
+        // SecureField exists to protect.
+        selections: selections.filter { !secretIds.contains($0.key) },
         freeform: freeformByQuestion.filter { !secretIds.contains($0.key) },
         // The shared freeform belongs to the single-question card's only
         // question, so it inherits that question's secrecy.
@@ -1525,14 +1534,18 @@ struct WorkStructuredQuestionCard: View {
       let shared = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
       return shared.isEmpty ? nil : shared
     }()
-    await onSubmitAll(answers, sharedFreeform)
-    clearQuestionDrafts()
+    // Only discard the answers once the host has accepted them. A failed send
+    // restores the card; it must come back with the user's work intact.
+    if await onSubmitAll(answers, sharedFreeform) {
+      clearQuestionDrafts()
+    }
   }
 
   @MainActor
   private func declineQuestion() async {
-    await onDecline()
-    clearQuestionDrafts()
+    if await onDecline() {
+      clearQuestionDrafts()
+    }
   }
 
   @MainActor
@@ -1713,8 +1726,9 @@ struct WorkStructuredQuestionCard: View {
     if singleQuestionSingleSelect {
       let freeform = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
       Task { @MainActor in
-        await onSelectOption(option, freeform.isEmpty ? nil : freeform)
-        clearQuestionDrafts()
+        if await onSelectOption(option, freeform.isEmpty ? nil : freeform) {
+          clearQuestionDrafts()
+        }
       }
     }
   }

@@ -19969,6 +19969,38 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(cards.isEmpty)
   }
 
+  /// A question marked `isSecret` renders its freeform in a `SecureField`, and
+  /// the resolved card refuses to echo the answer back. When such a question
+  /// also carries options, the CHOSEN OPTION is the secret answer — persisting
+  /// it to the App Group defaults (readable by the widget extension) leaks
+  /// exactly what the SecureField exists to protect.
+  func testSecretQuestionAnswersAreNeverPersisted() {
+    let requestId = "secret-req-\(UUID().uuidString)"
+    defer { WorkQuestionDraftStore.clear(requestId) }
+
+    WorkQuestionDraftStore.save(
+      WorkQuestionDraftStore.Snapshot(
+        selections: ["public-q": ["keep-me"]],
+        freeform: ["public-q": "visible answer"],
+        sharedFreeform: "",
+        page: 0
+      ),
+      for: requestId
+    )
+
+    let stored = WorkQuestionDraftStore.load(requestId)
+    XCTAssertEqual(stored?.selections["public-q"], ["keep-me"], "Non-secret answers must round-trip")
+    XCTAssertEqual(stored?.freeform["public-q"], "visible answer")
+
+    // An all-empty snapshot removes the entry outright, so a card whose only
+    // answers were secret leaves nothing behind at all.
+    WorkQuestionDraftStore.save(WorkQuestionDraftStore.Snapshot(), for: requestId)
+    XCTAssertNil(
+      WorkQuestionDraftStore.load(requestId),
+      "A snapshot with every secret answer filtered out must remove the entry, not store an empty husk"
+    )
+  }
+
   /// The host emits BOTH a `tool_call` for Claude's `AskUserQuestion` tool-use
   /// block AND a separate `approval_request` for the gate, under different item
   /// ids (the SDK tool-use id vs a fresh randomUUID). `derivePendingWorkInputs`
