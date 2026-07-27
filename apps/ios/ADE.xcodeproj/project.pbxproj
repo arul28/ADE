@@ -92,6 +92,7 @@
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
 		E10000000000000000000031 /* WorkModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000031 /* WorkModels.swift */; };
+		E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000601 /* WorkDraftPersistence.swift */; };
 		E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000032 /* WorkTranscriptParser.swift */; };
 		E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */; };
 		E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000034 /* WorkMarkdownParsing.swift */; };
@@ -362,6 +363,7 @@
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000031 /* WorkModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModels.swift; path = ADE/Views/Work/WorkModels.swift; sourceTree = "<group>"; };
+		D10000000000000000000601 /* WorkDraftPersistence.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftPersistence.swift; path = ADE/Views/Work/WorkDraftPersistence.swift; sourceTree = "<group>"; };
 		D10000000000000000000032 /* WorkTranscriptParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTranscriptParser.swift; path = ADE/Views/Work/WorkTranscriptParser.swift; sourceTree = "<group>"; };
 		D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNavigationAndTranscriptHelpers.swift; path = ADE/Views/Work/WorkNavigationAndTranscriptHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000034 /* WorkMarkdownParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownParsing.swift; path = ADE/Views/Work/WorkMarkdownParsing.swift; sourceTree = "<group>"; };
@@ -829,6 +831,7 @@
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D10000000000000000000030 /* WorkMarkdownViews.swift */,
 				D10000000000000000000031 /* WorkModels.swift */,
+				D10000000000000000000601 /* WorkDraftPersistence.swift */,
 				D10000000000000000000032 /* WorkTranscriptParser.swift */,
 				D10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift */,
 				D10000000000000000000034 /* WorkMarkdownParsing.swift */,
@@ -1508,6 +1511,7 @@
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,
 				E10000000000000000000031 /* WorkModels.swift in Sources */,
+				E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */,
 				E10000000000000000000032 /* WorkTranscriptParser.swift in Sources */,
 				E10000000000000000000033 /* WorkNavigationAndTranscriptHelpers.swift in Sources */,
 				E10000000000000000000034 /* WorkMarkdownParsing.swift in Sources */,

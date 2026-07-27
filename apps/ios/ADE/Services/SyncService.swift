@@ -10387,6 +10387,15 @@ final class SyncService: ObservableObject {
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      // Deliberately does NOT clear the composer/question draft stores. Reaching
+      // here does not mean the user asked to forget anything: the only
+      // production trigger is `forgetHost()`, which has no UI caller and fires
+      // automatically from `handleReconnectFailure` on an attributed auth
+      // failure — a desktop reinstall or token rotation is enough. And the
+      // stores are keyed by session id, not by host, so wiping them would
+      // destroy unsent text for every OTHER machine still paired, plus the
+      // machine-independent Hub and New Chat drafts. Losing a user's typed words
+      // on a background reconnect is far worse than a stale draft lingering.
       activeHostProfile = nil
       hostName = nil
       hiddenProjectKeys = loadHiddenProjectKeys()
@@ -15618,6 +15627,24 @@ final class SyncService: ObservableObject {
         processed.map { $0 ? "1" : "0" } ?? "",
         text.trimmingCharacters(in: .whitespacesAndNewlines)
       ].joined(separator: "|")
+    // Blocking gates carry a host-assigned `itemId` that is unique for the life
+    // of the session, so key them on that rather than falling through to the
+    // sequence-derived envelope id. A dropped gate is not a cosmetic loss — it
+    // is a question card the user never sees and can never answer — so it must
+    // not depend on sequence numbers being unique, which they are not across a
+    // host restart.
+    case .approvalRequest(let itemId, _, _, _, _, _):
+      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedItemId.isEmpty else { return nil }
+      return [envelope.sessionId, "approval_request", normalizedItemId].joined(separator: "|")
+    case .structuredQuestion(_, _, let itemId, _):
+      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedItemId.isEmpty else { return nil }
+      return [envelope.sessionId, "structured_question", normalizedItemId].joined(separator: "|")
+    case .pendingInputResolved(let itemId, let resolution, _):
+      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedItemId.isEmpty else { return nil }
+      return [envelope.sessionId, "pending_input_resolved", normalizedItemId, resolution].joined(separator: "|")
     default:
       return nil
     }

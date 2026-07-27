@@ -1223,6 +1223,51 @@ enum WorkPendingInputItem: Identifiable, Equatable {
   }
 }
 
+/// Asking provider for a pending gate, when the payload carries one. Only the
+/// question and plan-approval kinds do; approval/permission/model-selection fall
+/// back to the session provider at the call site.
+func workPendingInputProvider(_ item: WorkPendingInputItem) -> String? {
+  switch item {
+  case .question(let model):
+    let source = model.source?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return source?.isEmpty == false ? source : nil
+  case .planApproval(let model):
+    let source = model.source.trimmingCharacters(in: .whitespacesAndNewlines)
+    return source.isEmpty ? nil : source
+  case .approval, .permission, .modelSelection:
+    return nil
+  }
+}
+
+/// One-line label for the minimized pending-input pill. Must say what is being
+/// asked, not just that something is — a generic "1 request" pill is exactly the
+/// kind of thing users learn to ignore.
+func workPendingInputCollapsedSummary(_ item: WorkPendingInputItem) -> String {
+  func firstNonEmpty(_ candidates: [String?]) -> String? {
+    for candidate in candidates {
+      let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let trimmed, !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
+  switch item {
+  case .question(let model):
+    return firstNonEmpty([model.primary.header, model.question, model.title, model.body])
+      ?? "Waiting on your answer"
+  case .planApproval(let model):
+    return firstNonEmpty([model.title]) ?? "Plan ready for review"
+  case .approval(let model):
+    return firstNonEmpty([model.description, model.detail]) ?? "Approval requested"
+  case .permission(let model):
+    let tool = model.tool.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !tool.isEmpty { return "Permission: \(tool)" }
+    return firstNonEmpty([model.description, model.detail]) ?? "Permission requested"
+  case .modelSelection(let model):
+    return model.title
+  }
+}
+
 struct WorkPendingSteerModel: Identifiable, Equatable {
   let id: String
   var text: String
@@ -1599,6 +1644,16 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   return results
 }
 
+/// Deliberately does NOT match Claude's own `AskUserQuestion` (which normalizes
+/// to `askuserquestion`). The host emits a `tool_call` for the tool-use block
+/// AND a separate `approval_request` for the gate, and those carry different
+/// item ids — the tool-use id versus a fresh `randomUUID()`. Since
+/// `derivePendingWorkInputs` dedupes by item id, matching the tool name here
+/// yields two cards for one question, the tool_call-derived one being
+/// unanswerable (the host has no approval registered under that id, so it
+/// discards the response silently). The `tool_call` branch is only a fallback
+/// for hosts that emit a bare ask-user call with no wrapping approval; adding a
+/// name the real host always wraps turns that fallback into a duplicate.
 func isAskUserToolName(_ tool: String) -> Bool {
   let normalized = normalizedWorkToolIdentity(tool)
   return normalized == "ask_user" || normalized == "askuser" || normalized == "mcp_ade_ask_user"

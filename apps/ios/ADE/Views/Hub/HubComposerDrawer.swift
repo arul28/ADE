@@ -274,6 +274,7 @@ struct HubInlineComposer: View {
         }
     )
     .onAppear { onAppearSetup() }
+    .workPersistedDraft($draft, key: WorkComposerDraftStore.hubNewChatKey)
     .onChange(of: composerFocused) { _, focused in
       if focused { withAnimation(hubComposerSpring) { expanded = true } }
     }
@@ -770,6 +771,9 @@ struct HubInlineComposer: View {
     collapse()
     draft = ""
     attachments.removeAll()
+    // Drop the persisted draft synchronously — the collapse must not race the
+    // 400ms autosave debounce and leave the just-sent text behind.
+    WorkComposerDraftStore.clear(WorkComposerDraftStore.hubNewChatKey)
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
       if !started {

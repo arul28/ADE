@@ -1444,6 +1444,9 @@ private struct WorkNewChatComposerBar: View {
     composerFocused = false
     draft = ""
     attachments.removeAll()
+    // Drop the persisted draft synchronously — navigating into the new chat must
+    // not race the 400ms autosave debounce and leave the just-sent text behind.
+    WorkComposerDraftStore.clear(WorkComposerDraftStore.workNewChatKey)
     Task {
       let started = await onSubmit(restoredDraft, outgoingAttachments)
       if !started {
@@ -1557,6 +1560,7 @@ private struct WorkNewChatComposerBar: View {
       attachments: $attachments,
       onDismiss: { composerFocused = true }
     )
+    .workPersistedDraft($draft, key: WorkComposerDraftStore.workNewChatKey)
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph

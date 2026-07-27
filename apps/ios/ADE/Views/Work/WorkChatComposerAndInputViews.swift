@@ -875,11 +875,94 @@ func workPreviewIsWireframe(_ text: String) -> Bool {
 }
 
 /// Natural height of the question card's scrollable body, used to fit the
-/// internal ScrollView to its content up to the viewport-derived cap.
+/// internal ScrollView to its content up to the height-budget-derived cap.
 private struct WorkQuestionBodyHeightKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     value = max(value, nextValue())
+  }
+}
+
+/// Measured height of the card's non-scrolling chrome (provider row + tab strip
+/// above, freeform field + action footer below). Subtracted from the card's
+/// height budget so the scroll region — not the Send button — absorbs the
+/// overflow. Without this the footer got pushed off-screen behind the keyboard
+/// on long option lists and the card could not be submitted at all.
+private struct WorkQuestionTopChromeHeightKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
+private struct WorkQuestionBottomChromeHeightKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
+private struct WorkPendingCardContentHeightKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
+/// Caps a pending-input card at the chat surface's height budget, scrolling the
+/// overflow rather than growing. A gate that outgrows its budget used to push
+/// the composer off the bottom of the screen, which made it unanswerable — the
+/// card must never be able to claim more than its share of the page.
+///
+/// Short cards are unaffected: the content is measured and the frame follows it
+/// exactly, so there is no dead space and no scroll indicator until the cap is
+/// actually hit. `WorkStructuredQuestionCard` does its own budgeting (it needs
+/// to keep its footer pinned outside the scroll region) and is not wrapped.
+struct WorkPendingInputHeightBoundedCard<Content: View>: View {
+  /// Placeholder height for the frames before the content reports its own.
+  ///
+  /// Sits below the cards it wraps rather than above them: the plan and approval
+  /// strips render around 34pt, a permission card 126-360pt, a model-selection
+  /// card 185pt+. So this usually under-guesses and the card grows into place —
+  /// which is the better direction to be wrong in, because `composerInset` is
+  /// fixed-size, and a card that starts at the full budget (~434pt on a typical
+  /// iPhone) visibly shoves the transcript up and then drags it back down.
+  private static var unmeasuredHeightGuess: CGFloat { 120 }
+
+  let maxHeight: CGFloat
+  @ViewBuilder var content: Content
+
+  @State private var measuredHeight: CGFloat?
+
+  var body: some View {
+    if maxHeight <= 0 {
+      content
+    } else {
+      ScrollView {
+        content
+          .background(
+            GeometryReader { geo in
+              Color.clear.preference(
+                key: WorkPendingCardContentHeightKey.self,
+                value: geo.size.height
+              )
+            }
+          )
+      }
+      .frame(height: max(1, min(measuredHeight ?? Self.unmeasuredHeightGuess, maxHeight)))
+      .scrollBounceBehavior(.basedOnSize)
+      .scrollDismissesKeyboard(.interactively)
+      .onPreferenceChange(WorkPendingCardContentHeightKey.self) { height in
+        guard height > 0 else { return }
+        guard let measured = measuredHeight else {
+          measuredHeight = height
+          return
+        }
+        if abs(measured - height) > 0.5 {
+          measuredHeight = height
+        }
+      }
+    }
   }
 }
 
@@ -889,19 +972,33 @@ struct WorkStructuredQuestionCard: View {
   /// Tap-to-submit is only used for single-question single-select with options
   /// (the card invokes this directly from `optionRow`). Multi-question cards
   /// never call this — taps only update local state and submit via Send.
-  let onSelectOption: @MainActor (WorkPendingQuestionOption, String?) async -> Void
+  ///
+  /// Returns whether the answer was actually accepted. The card only discards
+  /// the user's work when it was: a rejected send rolls the optimistic hide
+  /// back and the card returns, and it must return with the answers still in it.
+  let onSelectOption: @MainActor (WorkPendingQuestionOption, String?) async -> Bool
   /// Aggregate submit: one map from questionId -> answer value, plus the
   /// shared freeform response (single-question only). The session action
-  /// forwards this as one `chat.respondToInput` call.
-  let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Void
-  let onDecline: @MainActor () async -> Void
+  /// forwards this as one `chat.respondToInput` call. Returns acceptance — see
+  /// `onSelectOption`.
+  let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Bool
+  let onDecline: @MainActor () async -> Bool
   var onFreeformFocusChange: ((Bool) -> Void)? = nil
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
   var fallbackProvider: String? = nil
-  /// Transcript viewport height, used to cap the card so long option lists
-  /// scroll internally instead of overflowing the screen. 0 until measured.
-  var viewportHeight: CGFloat = 0
+  /// Hard ceiling for the card's total laid-out height, computed from the space
+  /// actually available (keyboard included). The card never exceeds it — the
+  /// option list scrolls internally instead. 0 until measured.
+  ///
+  /// For the composer-anchored strip — the live path — this comes from
+  /// `workPendingInputMaxHeight`, which budgets the whole chat surface and NOT
+  /// the transcript viewport: the transcript shrinks as this card grows, so
+  /// feeding its height back in created a runaway loop where the card ate the
+  /// screen. The inline-in-transcript variant is the deliberate exception; it
+  /// sits *inside* the transcript, so `workInlinePendingInputMaxHeight` budgets
+  /// it from the viewport with no such feedback path.
+  var maxCardHeight: CGFloat = 0
 
   /// Resolved asking provider: the parsed question source, else the session
   /// fallback. Drives the header verb, logo, and per-provider accent.
@@ -920,6 +1017,13 @@ struct WorkStructuredQuestionCard: View {
   @State private var freeformByQuestion: [String: String] = [:]
   @State private var expandedPreviews: Set<String> = []
   @State private var measuredBodyHeight: CGFloat? = nil
+  /// Seeded with plausible defaults so the very first frame doesn't overshoot
+  /// the budget before the preference measurements land.
+  @State private var topChromeHeight: CGFloat = 26
+  @State private var bottomChromeHeight: CGFloat = 40
+  /// Gates autosave until the restore pass has run, so an empty first frame
+  /// can't overwrite a stored draft with nothing.
+  @State private var didRestoreDrafts = false
   @FocusState private var freeformFocused: Bool
 
   private var isPaged: Bool { question.questions.count > 1 }
@@ -929,7 +1033,33 @@ struct WorkStructuredQuestionCard: View {
     return question.questions[index]
   }
 
-  private var bodyMaxHeight: CGFloat { max(240, viewportHeight * 0.62) }
+  /// Layout constants the height budget depends on. They are named rather than
+  /// literal because the budget arithmetic below has to agree with the actual
+  /// `adeGlassCard` padding and `VStack` spacing used in `body` — a silent
+  /// disagreement re-opens the exact overflow this card exists to prevent, with
+  /// no compile error and no symptom until a long option list appears.
+  private static let cardPadding: CGFloat = 14
+  private static let cardStackSpacing: CGFloat = 12
+
+  /// Vertical space the card spends outside the scroll region: the glass card's
+  /// padding top and bottom, plus the two stack gaps that flank the scroll view.
+  private static var cardFixedInsets: CGFloat {
+    cardPadding * 2 + cardStackSpacing * 2
+  }
+
+  /// Height the scroll region may occupy. When no budget has been measured yet
+  /// we fall back to a conservative constant rather than "unbounded" so a slow
+  /// first layout can't flash a full-screen card.
+  private var bodyMaxHeight: CGFloat {
+    let budget = maxCardHeight > 0 ? maxCardHeight : 320
+    let chrome = topChromeHeight + bottomChromeHeight + Self.cardFixedInsets
+    // Floor at 64pt — roughly one option row. On a small phone with the keyboard
+    // up the fixed chrome alone can exceed the budget; collapsing the option
+    // list to nothing would be worse than overflowing slightly, and the overflow
+    // is absorbed by the transcript rather than by the footer (see
+    // `pendingInputMaxHeight`).
+    return max(64, budget - chrome)
+  }
 
   /// Fit the scroll area to its content up to the cap: short lists render at
   /// their natural height (no scroll, exactly as before); longer lists cap and
@@ -937,19 +1067,16 @@ struct WorkStructuredQuestionCard: View {
   private var resolvedBodyHeight: CGFloat {
     let cap = bodyMaxHeight
     guard let measured = measuredBodyHeight else { return cap }
-    return min(measured, cap)
+    return max(1, min(measured, cap))
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      headerRow
-
-      if isPaged {
-        questionTabStrip
-      }
+    VStack(alignment: .leading, spacing: Self.cardStackSpacing) {
+      topChrome
+        .background(chromeHeightReader(WorkQuestionTopChromeHeightKey.self))
 
       ScrollView {
-        questionPage(activeQuestion)
+        scrollableBody
           .background(
             GeometryReader { geo in
               Color.clear.preference(
@@ -961,6 +1088,9 @@ struct WorkStructuredQuestionCard: View {
       }
       .frame(height: resolvedBodyHeight)
       .scrollBounceBehavior(.basedOnSize)
+      // Dragging the option list down dismisses the keyboard, so a long typed
+      // freeform answer never traps the user with no way back to the footer.
+      .scrollDismissesKeyboard(.interactively)
       .onPreferenceChange(WorkQuestionBodyHeightKey.self) { height in
         guard let measured = measuredBodyHeight else {
           measuredBodyHeight = height
@@ -971,43 +1101,171 @@ struct WorkStructuredQuestionCard: View {
         }
       }
 
-      if activeQuestion.allowsFreeform {
-        freeformRow(for: activeQuestion)
-      }
-
-      footerRow
+      bottomChrome
+        .background(chromeHeightReader(WorkQuestionBottomChromeHeightKey.self))
     }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
+    .adeGlassCard(cornerRadius: 18, padding: Self.cardPadding)
     .overlay(
       RoundedRectangle(cornerRadius: 18, style: .continuous)
         .stroke(providerAccent.opacity(0.30), lineWidth: 1)
     )
+    .onPreferenceChange(WorkQuestionTopChromeHeightKey.self) { height in
+      guard height > 0, abs(topChromeHeight - height) > 0.5 else { return }
+      topChromeHeight = height
+    }
+    .onPreferenceChange(WorkQuestionBottomChromeHeightKey.self) { height in
+      guard height > 0, abs(bottomChromeHeight - height) > 0.5 else { return }
+      bottomChromeHeight = height
+    }
     .onChange(of: freeformFocused) { _, focused in
       onFreeformFocusChange?(focused)
+    }
+    .task(id: question.id) {
+      restoreDrafts()
+    }
+    .task(id: draftSignature) {
+      // Keystroke debounce: each edit cancels the pending sleep and restarts it,
+      // so a burst of typing costs one write instead of one per character.
+      guard didRestoreDrafts else { return }
+      try? await Task.sleep(for: workDraftAutosaveDebounce)
+      guard !Task.isCancelled else { return }
+      persistDrafts()
+    }
+    .onDisappear {
+      // Navigating away is exactly the case the debounce would miss.
+      guard didRestoreDrafts else { return }
+      persistDrafts()
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(workChatSurfaceProviderName(resolvedProvider)) asks. \(activeQuestion.question)")
   }
 
+  /// Change fingerprint for the autosave debounce. Hash-based rather than a
+  /// concatenated string so a long freeform answer doesn't rebuild a big value
+  /// on every keystroke.
+  private var draftSignature: Int {
+    var hasher = Hasher()
+    hasher.combine(question.id)
+    hasher.combine(currentPage)
+    hasher.combine(singleQuestionFreeformText)
+    for key in selections.keys.sorted() {
+      hasher.combine(key)
+      hasher.combine(selections[key]?.sorted() ?? [])
+    }
+    for key in freeformByQuestion.keys.sorted() {
+      hasher.combine(key)
+      hasher.combine(freeformByQuestion[key] ?? "")
+    }
+    return hasher.finalize()
+  }
+
+  @MainActor
+  private func restoreDrafts() {
+    defer { didRestoreDrafts = true }
+    guard let stored = WorkQuestionDraftStore.load(question.id) else { return }
+    // Only restore into an untouched card — a card already mid-edit (the same
+    // request re-rendering) must win over what's on disk.
+    guard selections.isEmpty, freeformByQuestion.isEmpty, singleQuestionFreeformText.isEmpty else { return }
+    selections = stored.selections
+    freeformByQuestion = stored.freeform
+    singleQuestionFreeformText = stored.sharedFreeform
+    if stored.page > 0, stored.page < question.questions.count {
+      currentPage = stored.page
+    }
+  }
+
+  /// Questions whose freeform answer is a secret (rendered in a `SecureField`).
+  /// Their text is never written to disk — the resolved card already refuses to
+  /// echo it back, and UserDefaults is an App Group store shared with the widget
+  /// extension, so persisting it would put a credential in plaintext.
+  private var secretQuestionIds: Set<String> {
+    Set(question.questions.filter(\.isSecret).map(\.questionId))
+  }
+
+  private func persistDrafts() {
+    let secretIds = secretQuestionIds
+    WorkQuestionDraftStore.save(
+      WorkQuestionDraftStore.Snapshot(
+        // Selections are excluded for a secret question too, not just freeform:
+        // when such a question carries options, the chosen option value IS the
+        // secret answer, and persisting it would leak exactly what the
+        // SecureField exists to protect.
+        selections: selections.filter { !secretIds.contains($0.key) },
+        freeform: freeformByQuestion.filter { !secretIds.contains($0.key) },
+        // The shared freeform belongs to the single-question card's only
+        // question, so it inherits that question's secrecy.
+        sharedFreeform: question.primary.isSecret ? "" : singleQuestionFreeformText,
+        page: currentPage
+      ),
+      for: question.id
+    )
+  }
+
+  private func chromeHeightReader<K: PreferenceKey>(_ key: K.Type) -> some View where K.Value == CGFloat {
+    GeometryReader { geo in
+      Color.clear.preference(key: key, value: geo.size.height)
+    }
+  }
+
+  /// Pinned above the scroll region. Deliberately minimal — provider verb and
+  /// (when paged) the question tabs — so its height stays bounded no matter how
+  /// verbose the request is.
+  @ViewBuilder
+  private var topChrome: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      providerRow
+      if isPaged {
+        questionTabStrip
+      }
+    }
+  }
+
+  /// Everything that can be arbitrarily long lives here and scrolls: the
+  /// question text itself, the request body, impact/default meta rows, and the
+  /// option list. Previously the question text sat in the fixed header, so a
+  /// long prompt pushed the footer off-screen even when the options fit.
+  @ViewBuilder
+  private var scrollableBody: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      headerRow
+      questionPage(activeQuestion)
+    }
+  }
+
+  /// Pinned below the scroll region so Send/Decline are always reachable.
+  @ViewBuilder
+  private var bottomChrome: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if activeQuestion.allowsFreeform {
+        freeformRow(for: activeQuestion)
+      }
+      footerRow
+    }
+  }
+
+  /// Provider-identified header: logo + "{Provider} asks" verb. Replaces the
+  /// old clock-icon "Input needed · Claude" treatment from the desktop redesign.
+  /// Kept out of the scroll region so the card always identifies itself.
+  @ViewBuilder
+  private var providerRow: some View {
+    HStack(spacing: 8) {
+      WorkProviderBareLogo(
+        provider: resolvedProvider,
+        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+        tint: providerAccent,
+        size: 18
+      )
+      Text(question.providerHeaderVerb(fallbackProvider: fallbackProvider))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(providerAccent)
+      Spacer(minLength: 0)
+    }
+    .accessibilityHidden(true)
+  }
+
   @ViewBuilder
   private var headerRow: some View {
     VStack(alignment: .leading, spacing: 8) {
-      // Provider-identified header: logo + "{Provider} asks" verb. Replaces the
-      // old clock-icon "Input needed · Claude" treatment from the desktop redesign.
-      HStack(spacing: 8) {
-        WorkProviderBareLogo(
-          provider: resolvedProvider,
-          fallbackSymbol: providerIcon(resolvedProvider ?? ""),
-          tint: providerAccent,
-          size: 18
-        )
-        Text(question.providerHeaderVerb(fallbackProvider: fallbackProvider))
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(providerAccent)
-        Spacer(minLength: 0)
-      }
-      .accessibilityHidden(true)
-
       // Optional kicker: the question's short `header` shown above the prompt.
       if let header = activeQuestion.header, !header.isEmpty {
         Text(header.uppercased())
@@ -1145,24 +1403,61 @@ struct WorkStructuredQuestionCard: View {
   @ViewBuilder
   private func freeformRow(for q: WorkPendingQuestion) -> some View {
     let binding = freeformBinding(for: q)
-    if q.isSecret {
-      SecureField(q.options.isEmpty ? "Response" : "Optional response", text: binding)
-        .focused($freeformFocused)
-        .adeInsetField(cornerRadius: 14, padding: 12)
-        .disabled(busy)
-    } else {
-      TextField(q.options.isEmpty ? "Response" : "Optional response", text: binding, axis: .vertical)
-        .focused($freeformFocused)
-        .lineLimit(1...4)
-        .adePromptInputTraits()
-        .adeInsetField(cornerRadius: 14, padding: 12)
-        .disabled(busy)
+    Group {
+      if q.isSecret {
+        SecureField(q.options.isEmpty ? "Response" : "Optional response", text: binding)
+          .focused($freeformFocused)
+          .adeInsetField(cornerRadius: 14, padding: 12)
+          .disabled(busy)
+      } else {
+        TextField(q.options.isEmpty ? "Response" : "Optional response", text: binding, axis: .vertical)
+          .focused($freeformFocused)
+          .lineLimit(1...4)
+          .adePromptInputTraits()
+          .adeInsetField(cornerRadius: 14, padding: 12)
+          .disabled(busy)
+      }
+    }
+    // Standard iOS escape hatch from a multi-line field: the vertical-axis
+    // TextField swallows Return as a newline, so without an explicit Done there
+    // is no way to lower the keyboard.
+    //
+    // Gated on `freeformFocused` rather than declared unconditionally: keyboard
+    // toolbars are scoped to the enclosing view, and this card is mounted a few
+    // points above the main chat composer — a UITextView this Done button cannot
+    // dismiss. If the toolbar ever surfaced over that keyboard, the button would
+    // silently do nothing, which is worse than having no button at all.
+    .toolbar {
+      if freeformFocused {
+        ToolbarItemGroup(placement: .keyboard) {
+          Spacer()
+          Button("Done") { freeformFocused = false }
+            .accessibilityLabel("Dismiss keyboard")
+        }
+      }
     }
   }
 
   @ViewBuilder
   private var footerRow: some View {
     HStack(spacing: 10) {
+      // Second, always-visible way down from the keyboard — the footer is now
+      // pinned, so this stays reachable even with a long answer typed.
+      if freeformFocused {
+        Button {
+          freeformFocused = false
+        } label: {
+          Image(systemName: "keyboard.chevron.compact.down")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 32, height: 32)
+            .background(ADEColor.surfaceBackground.opacity(0.6), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Dismiss keyboard")
+        .transition(.opacity)
+      }
+
       Button("Decline") {
         Task { await declineQuestion() }
       }
@@ -1179,6 +1474,7 @@ struct WorkStructuredQuestionCard: View {
       .tint(providerAccent)
       .disabled(busy || !canSubmit)
     }
+    .animation(.smooth(duration: 0.18), value: freeformFocused)
   }
 
   private var submitLabel: String {
@@ -1238,18 +1534,25 @@ struct WorkStructuredQuestionCard: View {
       let shared = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
       return shared.isEmpty ? nil : shared
     }()
-    await onSubmitAll(answers, sharedFreeform)
-    clearQuestionDrafts()
+    // Only discard the answers once the host has accepted them. A failed send
+    // restores the card; it must come back with the user's work intact.
+    if await onSubmitAll(answers, sharedFreeform) {
+      clearQuestionDrafts()
+    }
   }
 
   @MainActor
   private func declineQuestion() async {
-    await onDecline()
-    clearQuestionDrafts()
+    if await onDecline() {
+      clearQuestionDrafts()
+    }
   }
 
   @MainActor
   private func clearQuestionDrafts() {
+    // Drop the persisted copy first: the request is answered, so a later
+    // debounce tick must not be able to write it back.
+    WorkQuestionDraftStore.clear(question.id)
     if !singleQuestionFreeformText.isEmpty {
       singleQuestionFreeformText = ""
     }
@@ -1423,8 +1726,9 @@ struct WorkStructuredQuestionCard: View {
     if singleQuestionSingleSelect {
       let freeform = singleQuestionFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
       Task { @MainActor in
-        await onSelectOption(option, freeform.isEmpty ? nil : freeform)
-        clearQuestionDrafts()
+        if await onSelectOption(option, freeform.isEmpty ? nil : freeform) {
+          clearQuestionDrafts()
+        }
       }
     }
   }

@@ -246,6 +246,14 @@ struct WorkChatSessionView: View {
   /// item leaves the derived queue (or rolled back if the command errored). See
   /// `dispatchPendingInputAnswer` / `reconcileOptimisticallyAnsweredInputs`.
   @State var optimisticallyAnsweredInputIds: Set<String> = []
+  /// Id of the pending input the user minimized, if any.
+  ///
+  /// Derived, not synchronized: a minimize applies to the gate the user chose to
+  /// defer, so it has to expire on its own the moment a different gate becomes
+  /// primary. Storing the id and computing the Bool from it makes that
+  /// impossible to get wrong; a Bool reset from an observer would be one more
+  /// thing that can fall out of step and leave a fresh question hidden.
+  @State var collapsedPendingInputId: String?
 
   var sessionStatus: String {
     resolvedSessionStatus ?? session.normalizedStatus
@@ -345,6 +353,36 @@ struct WorkChatSessionView: View {
 
   var primaryPendingInput: WorkPendingInputItem? {
     pendingInputs.first
+  }
+
+  /// The strip is minimized only while the deferred gate is still the primary
+  /// one. The gate stays open and the composer stays locked either way — only
+  /// the card is swapped for a one-line pill.
+  var pendingInputCollapsed: Bool {
+    get {
+      guard let collapsedPendingInputId, let primaryPendingInput else { return false }
+      return collapsedPendingInputId == primaryPendingInput.id
+    }
+    nonmutating set {
+      collapsedPendingInputId = newValue ? primaryPendingInput?.id : nil
+    }
+  }
+
+  /// Total height available to the chat surface, keyboard already subtracted.
+  ///
+  /// The transcript and the composer inset split the surface between them, so
+  /// their measured heights always sum back to it — and unlike either half on
+  /// its own, the sum does NOT move when the pending-input card grows. That
+  /// matters: sizing the card off `scrollViewportHeight` alone (what this used
+  /// to do) was self-referential, because a taller card shrank the transcript,
+  /// which shrank the budget, which... The floor is the 240 the transcript
+  /// reports before its first real measurement.
+  var chatSurfaceHeight: CGFloat {
+    max(240, scrollViewportHeight + composerLayoutHeight)
+  }
+
+  var pendingInputMaxHeight: CGFloat {
+    workPendingInputMaxHeight(chatSurfaceHeight: chatSurfaceHeight)
   }
 
   /// Open approval / permission gates that "Accept all" can sweep. Question,
@@ -758,6 +796,7 @@ struct WorkChatSessionView: View {
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
         composerDraftRestore: composerDraftRestore,
+        draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
         compact: compactComposer,
         // Show Stop while a live turn has current transcript activity. The
         // broader live hint can lag after `done`; this stricter gate keeps the
@@ -1010,6 +1049,7 @@ struct WorkChatSessionView: View {
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
           optimisticallyAnsweredInputIds.removeAll()
+          collapsedPendingInputId = nil
           assistantLineBudgets.removeAll()
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
@@ -1266,6 +1306,40 @@ func workLaneListRenderSignature(_ lanes: [LaneSummary]) -> Int {
   return hasher.finalize()
 }
 
+/// Hard ceiling for a pending-input card, given the height available to the
+/// whole chat surface. Always leaves room for the composer plus a slice of
+/// transcript — a gate that covers the entire screen reads as a modal takeover
+/// and hides the Send button. Long content scrolls inside the card instead of
+/// growing it.
+///
+/// If a card's irreducible chrome still exceeds this on a small phone with the
+/// keyboard up, the overflow is absorbed by the transcript, not the composer:
+/// the composer inset is `fixedSize(vertical:)` and the transcript scroll view
+/// is the flexible sibling, so Send/Decline stay on screen either way. That
+/// ordering is the actual guarantee — this number just keeps the common case
+/// from getting there.
+///
+/// A free function rather than a view property so previews exercise the same
+/// arithmetic the app uses; the numbers had drifted into three hand-copied
+/// literals otherwise.
+func workPendingInputMaxHeight(chatSurfaceHeight: CGFloat) -> CGFloat {
+  // Roughly the composer card's own height in its resting single-line state.
+  // Measuring it for real is not an option: `composerLayoutHeight` includes the
+  // strip we are sizing, so reading it here would be circular.
+  let composerReserve: CGFloat = 110
+  let available = max(0, chatSurfaceHeight - composerReserve)
+  return max(160, min(available * 0.82, chatSurfaceHeight * 0.62))
+}
+
+/// Budget for the inline-in-transcript question card, which is bounded by the
+/// transcript viewport rather than the whole surface (the composer sits below
+/// that viewport either way, so there is nothing to reserve for it). Kept beside
+/// `workPendingInputMaxHeight` so the two rules' divergence is deliberate and
+/// visible instead of an inline literal drifting on its own.
+func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFloat {
+  max(240, transcriptViewportHeight * 0.62)
+}
+
 private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
 
@@ -1274,6 +1348,7 @@ private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
     if next > 0 { value = next }
   }
 }
+
 
 private struct WorkChatViewportWidthPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
@@ -1679,6 +1754,7 @@ private struct WorkChatComposerCard: View {
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
   let composerDraftRestore: WorkChatComposerDraftRestore?
+  let draftPersistenceKey: String
   let compact: Bool
   /// True while the assistant is streaming a response. Swaps the Send button
   /// Desktop parity: red bordered stop control in the composer while a turn is
@@ -1708,6 +1784,7 @@ private struct WorkChatComposerCard: View {
       settingsMutationInFlight: settingsMutationInFlight,
       codexFastModeOverride: codexFastModeOverride,
       composerDraftRestore: composerDraftRestore,
+      draftPersistenceKey: draftPersistenceKey,
       compact: compact,
       showInterrupt: showInterrupt,
       interruptInFlight: interruptInFlight,
@@ -1747,6 +1824,9 @@ private struct WorkChatComposerDraftInput: View {
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
   let composerDraftRestore: WorkChatComposerDraftRestore?
+  /// Key this chat's unsent text is persisted under, so leaving and coming back
+  /// restores it (matching desktop). Empty disables persistence.
+  let draftPersistenceKey: String
   let compact: Bool
   let showInterrupt: Bool
   let interruptInFlight: Bool
@@ -1900,9 +1980,18 @@ private struct WorkChatComposerDraftInput: View {
       }
     }
     .onAppear { configureSuggestionController() }
+    // Bind before applying a restore: `bind` only seeds an empty field, so a
+    // failed-send restore that runs first would be preserved either way, but
+    // binding first keeps the persisted key correct for the very first autosave.
+    .task(id: draftPersistenceKey) {
+      draftState.bind(persistenceKey: draftPersistenceKey)
+    }
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
     }
+    // The 400ms autosave debounce can't survive a navigation pop; flush here so
+    // backing out of a chat mid-sentence keeps the sentence.
+    .onDisappear { draftState.flushDraft() }
     .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
     .workChatAttachmentPicker(
@@ -2177,12 +2266,77 @@ struct WorkChatComposerDraftRestore: Equatable, Identifiable {
 }
 
 final class WorkChatComposerDraftState: ObservableObject {
-  @Published var text = ""
+  @Published var text = "" {
+    didSet {
+      guard text != oldValue else { return }
+      scheduleAutosave()
+    }
+  }
   @Published var isFocused = false
   private var appliedRestoreId: UUID?
+  /// Surface this composer's draft is persisted under. Empty means "don't
+  /// persist" (the key is unresolved), which is the safe default.
+  private var persistenceKey = ""
+  private var autosaveTask: Task<Void, Never>?
 
   var trimmedText: String {
     text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// Point this composer at a chat's stored draft. The composer view is reused
+  /// across session switches, so the outgoing chat's text is flushed under its
+  /// own key before the new one is loaded — otherwise switching chats would
+  /// either lose a draft or write it into the wrong conversation.
+  @MainActor
+  func bind(persistenceKey key: String) {
+    guard persistenceKey != key else { return }
+    // A blank previous key means this is the first bind of a freshly mounted
+    // composer; anything else is the view being reused for a different chat.
+    let isFirstBind = persistenceKey.isEmpty
+    flushDraft()
+    persistenceKey = key
+    let stored = key.isEmpty ? "" : WorkComposerDraftStore.load(key)
+
+    guard !isFirstBind else {
+      // First mount: whatever is already in the field wins. A failed send
+      // restores its text here, and that is fresher than anything on disk.
+      guard trimmedText.isEmpty, !stored.isEmpty else { return }
+      text = stored
+      return
+    }
+
+    // Session switch: the visible text belongs to the chat we just left, and it
+    // has already been flushed under that chat's key. It must NOT survive into
+    // this one — leaving it would show one conversation's draft in another,
+    // autosave it over the destination's own stored draft on the next
+    // keystroke, and put the wrong message one tap from being sent.
+    if text != stored {
+      text = stored
+    }
+  }
+
+  /// Write the draft now, cancelling any pending debounce. Called when the chat
+  /// is torn down — the case the debounce would otherwise miss.
+  @MainActor
+  func flushDraft() {
+    autosaveTask?.cancel()
+    autosaveTask = nil
+    guard !persistenceKey.isEmpty else { return }
+    WorkComposerDraftStore.save(text, for: persistenceKey)
+  }
+
+  /// Keystroke debounce: each edit restarts the timer, so a burst of typing
+  /// costs one write instead of one per character.
+  private func scheduleAutosave() {
+    guard !persistenceKey.isEmpty else { return }
+    autosaveTask?.cancel()
+    let key = persistenceKey
+    let value = text
+    autosaveTask = Task { @MainActor in
+      try? await Task.sleep(for: workDraftAutosaveDebounce)
+      guard !Task.isCancelled else { return }
+      WorkComposerDraftStore.save(value, for: key)
+    }
   }
 
   var hasSendableText: Bool {
@@ -2193,7 +2347,23 @@ final class WorkChatComposerDraftState: ObservableObject {
     let value = trimmedText
     isFocused = false
     text = ""
+    // Drop the stored copy synchronously rather than letting the 400ms debounce
+    // get to it. A jetsam or force-quit inside that window would otherwise
+    // restore an already-sent message into the composer, where it reads as
+    // unsent and invites sending it twice. The Hub and New Chat composers clear
+    // on send for the same reason.
+    clearStoredDraft()
     return value
+  }
+
+  /// Cancels any pending autosave and removes the persisted draft. Not
+  /// actor-annotated so `consumeSendableText()` — which runs from the send
+  /// button's synchronous action — can call it directly.
+  func clearStoredDraft() {
+    autosaveTask?.cancel()
+    autosaveTask = nil
+    guard !persistenceKey.isEmpty else { return }
+    WorkComposerDraftStore.clear(persistenceKey)
   }
 
   func restoreUnsentText(_ value: String) {

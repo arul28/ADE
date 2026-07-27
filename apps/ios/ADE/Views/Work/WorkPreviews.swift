@@ -497,6 +497,142 @@ private enum WorkPreviewData {
   .environmentObject(WorkPreviewData.dictationController)
 }
 
+/// A deliberately oversized AskUserQuestion payload: four paged questions, long
+/// prompts, and eight options each. This is the shape that used to push the
+/// composer off the bottom of the screen — the card must stay inside
+/// `maxCardHeight` with Send/Decline visible, scrolling the options internally.
+private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
+  func options(_ prefix: String) -> [WorkPendingQuestionOption] {
+    (1...8).map { index in
+      WorkPendingQuestionOption(
+        label: "\(prefix) option \(index)",
+        value: "\(prefix.lowercased())-\(index)",
+        description: "A per-option description long enough to wrap onto a second line on a phone-width card.",
+        recommended: index == 2,
+        preview: index == 3 ? "┌────────────┐\n│  wireframe │\n└────────────┘" : nil,
+        previewFormat: index == 3 ? "html" : nil
+      )
+    }
+  }
+  return WorkPendingQuestionModel(
+    id: "preview-question-oversized",
+    questions: [
+      WorkPendingQuestion(
+        questionId: "approach",
+        question: "Which approach should the refactor take, given that the existing service already owns retry and backoff and we do not want to duplicate that logic in the new call path?",
+        options: options("Approach"),
+        allowsFreeform: true,
+        header: "Approach",
+        defaultAssumption: "Extend the existing service rather than adding a parallel one.",
+        impact: "Changes the public surface of the sync layer.",
+        multiSelect: false
+      ),
+      WorkPendingQuestion(
+        questionId: "scope",
+        question: "Which surfaces should ship in the first pass?",
+        options: options("Scope"),
+        allowsFreeform: true,
+        header: "Scope",
+        multiSelect: true
+      ),
+      WorkPendingQuestion(
+        questionId: "rollout",
+        question: "How should this roll out?",
+        options: options("Rollout"),
+        allowsFreeform: false,
+        header: "Rollout"
+      ),
+      WorkPendingQuestion(
+        questionId: "notes",
+        question: "Anything else worth capturing before I start?",
+        options: [],
+        allowsFreeform: true,
+        header: "Notes"
+      )
+    ],
+    title: "Plan round 1",
+    body: "Four questions before I start on the plan.",
+    source: "claude"
+  )
+}
+
+#Preview("Question card - oversized, phone budget") {
+  // 720pt ≈ an iPhone chat surface with no keyboard; the card is capped at the
+  // same fraction `pendingInputMaxHeight` uses so the preview matches the app.
+  VStack {
+    Spacer()
+    WorkStructuredQuestionCard(
+      question: workPreviewOversizedQuestion(),
+      busy: false,
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
+      fallbackProvider: "claude",
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
+    )
+    .padding(16)
+  }
+  .frame(maxWidth: .infinity, maxHeight: .infinity)
+  .background(ADEColor.pageBackground)
+  .preferredColorScheme(.dark)
+}
+
+#Preview("Question card - oversized, keyboard up") {
+  // ~340pt of surface left once the keyboard is showing. Send must still be
+  // on screen; the option list absorbs the loss.
+  VStack {
+    Spacer()
+    WorkStructuredQuestionCard(
+      question: workPreviewOversizedQuestion(),
+      busy: false,
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
+      fallbackProvider: "claude",
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 340)
+    )
+    .padding(16)
+  }
+  .frame(maxWidth: .infinity, maxHeight: .infinity)
+  .background(ADEColor.pageBackground)
+  .preferredColorScheme(.dark)
+}
+
+#Preview("Question card - short, natural height") {
+  // Regression guard for the other direction: a two-option question must not
+  // grow to fill the budget or gain a scroll indicator.
+  VStack {
+    Spacer()
+    WorkStructuredQuestionCard(
+      question: WorkPendingQuestionModel(
+        id: "preview-question-short",
+        questions: [
+          WorkPendingQuestion(
+            questionId: "confirm",
+            question: "Rebase onto main before opening the PR?",
+            options: [
+              WorkPendingQuestionOption(label: "Rebase", value: "rebase", description: nil, recommended: true),
+              WorkPendingQuestionOption(label: "Leave it", value: "skip", description: nil)
+            ],
+            allowsFreeform: false
+          )
+        ],
+        source: "claude"
+      ),
+      busy: false,
+      onSelectOption: { _, _ in true },
+      onSubmitAll: { _, _ in true },
+      onDecline: { true },
+      fallbackProvider: "claude",
+      maxCardHeight: workPendingInputMaxHeight(chatSurfaceHeight: 720)
+    )
+    .padding(16)
+  }
+  .frame(maxWidth: .infinity, maxHeight: .infinity)
+  .background(ADEColor.pageBackground)
+  .preferredColorScheme(.dark)
+}
+
 #Preview("New chat") {
   NavigationStack {
     WorkNewChatScreen(

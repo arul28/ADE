@@ -4715,6 +4715,156 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [original, tail])
   }
 
+  /// A host's `eventSequence` restarts at 1 whenever a session is rehydrated,
+  /// but it keeps appending to the SAME transcript, so one transcript can hold
+  /// two events numbered 67 hours apart. Identity used to be `sessionId:sequence`
+  /// and dedupe is first-key-wins over file order, so the newer event was
+  /// discarded as a duplicate of the older one. On a real 425-event transcript
+  /// that destroyed 103 events — including the `approval_request` envelopes
+  /// carrying AskUserQuestion cards, which is why the phone showed no question.
+  @MainActor
+  func testReusedTranscriptSequenceKeepsBothEventsFromDifferentEpochs() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let firstEpoch = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:01:52.764Z",
+      event: .command(
+        command: "ls",
+        cwd: "/tmp",
+        output: "",
+        itemId: "cmd-1",
+        logicalItemId: nil,
+        turnId: "turn-1",
+        exitCode: 0,
+        durationMs: 3,
+        status: "completed"
+      ),
+      sequence: 67,
+      provenance: nil
+    )
+    // Same sequence number, four hours later: the host restarted and its
+    // counter began again at 1.
+    let secondEpoch = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T04:16:22.165Z",
+      event: .approvalRequest(
+        itemId: "gate-1",
+        logicalItemId: nil,
+        kind: .toolCall,
+        description: "Which approach?",
+        turnId: "turn-2",
+        detail: nil
+      ),
+      sequence: 67,
+      provenance: nil
+    )
+
+    service.replaceChatEventHistory(sessionId: "session-1", events: [firstEpoch, secondEpoch])
+
+    let history = service.chatEventHistory(sessionId: "session-1")
+    XCTAssertEqual(history.count, 2, "A reused sequence number must not drop the newer event")
+    XCTAssertEqual(history, [firstEpoch, secondEpoch])
+    XCTAssertNotEqual(firstEpoch.id, secondEpoch.id, "Envelope identity must not collide across sequence epochs")
+  }
+
+  /// Short text has no content dedupe key (the text key requires >= 24 chars),
+  /// so it fell back to the sequence-derived id and was dropped by the same
+  /// collision. The user-visible symptom was a reply rendering as
+  /// "king Round 1 now" — the preceding 18-character chunk had vanished.
+  @MainActor
+  func testShortTextChunkSurvivesReusedTranscriptSequence() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let older = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .activity(activity: .thinking, detail: nil, turnId: "turn-1"),
+      sequence: 94,
+      provenance: nil
+    )
+    let shortChunk = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T05:00:00.000Z",
+      event: .text(text: "No problem — re-as", messageId: "msg-9", turnId: "turn-2", itemId: "item-9"),
+      sequence: 94,
+      provenance: nil
+    )
+
+    service.replaceChatEventHistory(sessionId: "session-1", events: [older, shortChunk])
+
+    let history = service.chatEventHistory(sessionId: "session-1")
+    XCTAssertEqual(history.count, 2, "A sub-24-char text chunk must not be swallowed by a reused sequence")
+    XCTAssertTrue(
+      history.contains(where: { envelope in
+        if case .text(let text, _, _, _) = envelope.event { return text == "No problem — re-as" }
+        return false
+      }),
+      "The short text chunk must survive"
+    )
+  }
+
+  /// A genuine redelivery — identical timestamp AND sequence — must still
+  /// collapse, otherwise widening identity would trade dropped events for
+  /// duplicated ones.
+  @MainActor
+  func testIdenticalRedeliveryStillDedupes() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let event = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .approvalRequest(
+        itemId: "gate-1",
+        logicalItemId: nil,
+        kind: .toolCall,
+        description: "Which approach?",
+        turnId: "turn-1",
+        detail: nil
+      ),
+      sequence: 12,
+      provenance: nil
+    )
+
+    service.recordChatEventEnvelope(event)
+    service.mergeChatEventHistory(sessionId: "session-1", events: [event, event])
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [event])
+  }
+
+  /// Gates carry a session-unique `itemId`, so they now dedupe on that rather
+  /// than on the sequence-derived id. Re-delivering the same gate under a
+  /// different sequence must not produce a second card.
+  @MainActor
+  func testGateDedupesByItemIdAcrossDifferentSequences() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    func gate(sequence: Int, timestamp: String) -> AgentChatEventEnvelope {
+      AgentChatEventEnvelope(
+        sessionId: "session-1",
+        timestamp: timestamp,
+        event: .approvalRequest(
+          itemId: "gate-shared",
+          logicalItemId: nil,
+          kind: .toolCall,
+          description: "Which approach?",
+          turnId: "turn-1",
+          detail: nil
+        ),
+        sequence: sequence,
+        provenance: nil
+      )
+    }
+
+    service.replaceChatEventHistory(
+      sessionId: "session-1",
+      events: [gate(sequence: 5, timestamp: "2026-03-17T00:00:00.000Z"),
+               gate(sequence: 9, timestamp: "2026-03-17T00:00:01.000Z")]
+    )
+
+    XCTAssertEqual(
+      service.chatEventHistory(sessionId: "session-1").count,
+      1,
+      "One gate itemId must yield one pending-input event regardless of sequence"
+    )
+  }
+
   @MainActor
   func testDuplicateChatSubscribeSnapshotDoesNotAdvanceRevision() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -10251,7 +10401,11 @@ final class ADETests: XCTestCase {
     await recorder.waitForStartedCount(2)
     let firstStartedIds = await recorder.startedIds()
     let firstMaxActiveCount = await recorder.maxActiveCount()
-    XCTAssertEqual(firstStartedIds, ["lane-a", "lane-b"])
+    // Which of the two concurrent deletes wins the race to record itself first
+    // is not part of the contract — only that both are in flight and the runner
+    // holds the concurrency limit at 2. Asserting the array order made this test
+    // fail intermittently in CI.
+    XCTAssertEqual(Set(firstStartedIds), ["lane-a", "lane-b"])
     XCTAssertEqual(firstMaxActiveCount, 2)
 
     await recorder.release()
@@ -16915,7 +17069,13 @@ final class ADETests: XCTestCase {
       searchText: ""
     )
 
-    XCTAssertEqual(filtered.map(\.id), ["chat-parent", "shell-child", "legacy-cli"])
+    // Retention is the contract this test names, not order. The fixtures take
+    // their `startedAt` from wall-clock at construction, so whether the three
+    // share a timestamp — and therefore whether the sort falls through to the
+    // title tiebreak — depends on which second they were built in. Asserting the
+    // sorted array made this fail intermittently.
+    XCTAssertEqual(Set(filtered.map(\.id)), ["chat-parent", "shell-child", "legacy-cli"])
+    XCTAssertEqual(filtered.first?.id, "chat-parent", "The parent chat always leads its owned rows")
   }
 
   func testWorkFilteredSessionsPrioritizesWaitingBeforeActiveAndEnded() {
@@ -19809,6 +19969,128 @@ final class ADETests: XCTestCase {
     // The generic tool card should be suppressed while the question is pending.
     let cards = buildWorkToolCards(from: transcript)
     XCTAssertTrue(cards.isEmpty)
+  }
+
+  /// The chat composer view is reused across session switches. Before this was
+  /// guarded, switching chats with text still in the box left that text visible
+  /// in the destination chat and autosaved it over the destination's own stored
+  /// draft on the next keystroke — one tap from sending the wrong message into
+  /// the wrong conversation.
+  @MainActor
+  func testComposerDraftDoesNotLeakAcrossSessionSwitch() {
+    let keyA = WorkComposerDraftStore.chatKey(sessionId: "sess-A-\(UUID().uuidString)")
+    let keyB = WorkComposerDraftStore.chatKey(sessionId: "sess-B-\(UUID().uuidString)")
+    defer {
+      WorkComposerDraftStore.clear(keyA)
+      WorkComposerDraftStore.clear(keyB)
+    }
+
+    let state = WorkChatComposerDraftState()
+    state.bind(persistenceKey: keyA)
+    state.text = "half-written message for chat A"
+
+    // Switch to a chat that has no draft of its own.
+    state.bind(persistenceKey: keyB)
+    XCTAssertEqual(state.text, "", "Chat A's text must not survive into chat B")
+    XCTAssertEqual(
+      WorkComposerDraftStore.load(keyA),
+      "half-written message for chat A",
+      "Switching away must flush the outgoing draft under its own key, not lose it"
+    )
+
+    // And switching back restores A's draft rather than B's empty box.
+    state.bind(persistenceKey: keyA)
+    XCTAssertEqual(state.text, "half-written message for chat A")
+  }
+
+  /// A question marked `isSecret` renders its freeform in a `SecureField`, and
+  /// the resolved card refuses to echo the answer back. When such a question
+  /// also carries options, the CHOSEN OPTION is the secret answer — persisting
+  /// it to the App Group defaults (readable by the widget extension) leaks
+  /// exactly what the SecureField exists to protect.
+  func testSecretQuestionAnswersAreNeverPersisted() {
+    let requestId = "secret-req-\(UUID().uuidString)"
+    defer { WorkQuestionDraftStore.clear(requestId) }
+
+    WorkQuestionDraftStore.save(
+      WorkQuestionDraftStore.Snapshot(
+        selections: ["public-q": ["keep-me"]],
+        freeform: ["public-q": "visible answer"],
+        sharedFreeform: "",
+        page: 0
+      ),
+      for: requestId
+    )
+
+    let stored = WorkQuestionDraftStore.load(requestId)
+    XCTAssertEqual(stored?.selections["public-q"], ["keep-me"], "Non-secret answers must round-trip")
+    XCTAssertEqual(stored?.freeform["public-q"], "visible answer")
+
+    // A pasted wall of text is clamped, so one paste can't inflate the shared
+    // defaults store or stall every later keystroke's autosave rewrite.
+    let huge = String(repeating: "x", count: 60_000)
+    WorkQuestionDraftStore.save(
+      WorkQuestionDraftStore.Snapshot(freeform: ["public-q": huge], sharedFreeform: huge),
+      for: requestId
+    )
+    let clamped = WorkQuestionDraftStore.load(requestId)
+    XCTAssertEqual(clamped?.freeform["public-q"]?.count, 20_000, "Freeform answers must be clamped")
+    XCTAssertEqual(clamped?.sharedFreeform.count, 20_000, "Shared freeform must be clamped")
+
+    // An all-empty snapshot removes the entry outright, so a card whose only
+    // answers were secret leaves nothing behind at all.
+    WorkQuestionDraftStore.save(WorkQuestionDraftStore.Snapshot(), for: requestId)
+    XCTAssertNil(
+      WorkQuestionDraftStore.load(requestId),
+      "A snapshot with every secret answer filtered out must remove the entry, not store an empty husk"
+    )
+  }
+
+  /// The host emits BOTH a `tool_call` for Claude's `AskUserQuestion` tool-use
+  /// block AND a separate `approval_request` for the gate, under different item
+  /// ids (the SDK tool-use id vs a fresh randomUUID). `derivePendingWorkInputs`
+  /// dedupes by item id, so if `isAskUserToolName` matched the tool name the
+  /// user would get two cards for one question — and the tool_call-derived one
+  /// is unanswerable, because the host has no approval registered under that id
+  /// and discards the response silently.
+  func testClaudeAskUserQuestionYieldsExactlyOnePendingInput() {
+    let argsText = """
+    {"questions":[{"id":"approach","question":"Which approach?","options":[{"label":"A","value":"a"}]}]}
+    """
+    let detailText = """
+    {"tool":"AskUserQuestion","source":"claude","request":{"kind":"structured_question","questions":[{"id":"approach","question":"Which approach?","options":[{"label":"A","value":"a"}]}]}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .toolCall(tool: "AskUserQuestion", argsText: argsText, itemId: "toolu_abc", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .approvalRequest(
+          description: "Which approach?",
+          detail: detailText,
+          itemId: "11111111-2222-3333-4444-555555555555",
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let inputs = derivePendingWorkInputs(from: transcript)
+    XCTAssertEqual(inputs.count, 1, "One AskUserQuestion must not produce two pending-input cards")
+    guard case .question(let model) = inputs.first else {
+      return XCTFail("Expected the approval_request to surface as the pending question.")
+    }
+    XCTAssertEqual(
+      model.id,
+      "11111111-2222-3333-4444-555555555555",
+      "The card must come from the approval_request, whose itemId the host can actually resolve"
+    )
+    XCTAssertEqual(model.questionId, "approach")
   }
 
   func testBuildWorkTimelineShowsNormalToolCallsOnMobile() {
