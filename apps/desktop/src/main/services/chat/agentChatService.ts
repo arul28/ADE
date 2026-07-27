@@ -29331,7 +29331,12 @@ export function createAgentChatService(args: {
         else if (remoteBranchHeadSha !== expectedHead) blockingErrors.push("The destination sees a different remote branch commit than the source machine.");
         else {
           const fetch = await runGit(
-            ["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`],
+            // Forced refspec: the remote-tracking ref is only a local mirror of origin,
+      // and if the destination still records a newer or rewound commit the
+      // unforced update is rejected as non-fast-forward — blocking a
+      // fast-forward that is otherwise safe. The equality check below is what
+      // actually gates the merge.
+      ["fetch", "origin", `+refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`],
             {
               cwd: projectRoot,
               timeoutMs: 60_000,

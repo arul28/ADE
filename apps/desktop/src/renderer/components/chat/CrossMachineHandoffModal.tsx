@@ -84,6 +84,7 @@ import {
   repoReadinessLabel,
   routeLabel,
   SEND_STEPS,
+  toPermissionPickerOption,
   type ForkHandoffSupport,
   type HandoffMode,
   type ModalStage,
@@ -239,23 +240,38 @@ export function CrossMachineHandoffModal({
     });
     if (options.length === 0) return null;
     const summarized = summarizeNativeControls(providerGroup, nativeControls).permissionMode;
-    const current = options.some((option) => option.value === summarized)
-      ? summarized!
-      : options[0]!.value;
+    const representable = options.some((option) => option.value === summarized);
+    // A native combination the presets cannot express (e.g. Codex approval
+    // "never" with sandbox "workspace-write") must not borrow the first option's
+    // label. The raw controls are what actually travel in the capsule, so
+    // showing "Default" there would claim the destination asks for approval when
+    // it does not. Surface it as Custom instead, and leave it unselectable —
+    // picking a real preset is what overwrites the underlying controls.
+    const customValue = "__custom__";
+    const pickerOptions = representable
+      ? options.map(toPermissionPickerOption)
+      : [
+        ...options.map(toPermissionPickerOption),
+        {
+          value: customValue,
+          label: "Custom",
+          detail: "This chat's provider settings don't match a preset. They travel as-is.",
+          tone: "slate" as PermissionModeTone,
+          icon: "config" as PermissionModeIconKind,
+        },
+      ];
+    const current = representable ? summarized! : customValue;
     return (
       <PermissionModePicker
         ariaLabel="Permission mode for the new chat"
         menuLayerClassName="z-[200]"
         selectedValue={current}
-        options={options.map((option) => ({
-          value: option.value,
-          label: option.label,
-          detail: option.shortDesc,
-          tone: PERMISSION_SAFETY_TONES[option.safety],
-          icon: PERMISSION_MODE_ICONS[option.value],
-        }))}
+        options={pickerOptions}
         onSelect={(value) => {
-          onNativeControlsChange(applyUnifiedPermissionToNativeControls(modelId, value, nativeControls));
+          if (value === customValue) return;
+          onNativeControlsChange(
+            applyUnifiedPermissionToNativeControls(modelId, value as AgentChatPermissionMode, nativeControls),
+          );
         }}
       />
     );

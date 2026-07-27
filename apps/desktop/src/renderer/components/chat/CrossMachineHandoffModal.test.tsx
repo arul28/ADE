@@ -12,6 +12,7 @@ import {
   PERMISSION_MODE_ICONS,
   PERMISSION_SAFETY_TONES,
   repoReadinessLabel,
+  toPermissionPickerOption,
   type SourceCheck,
 } from "./crossMachineHandoffPresentation";
 
@@ -967,6 +968,31 @@ describe("repoReadinessLabel", () => {
   it("distinguishes a present repository from one that must be cloned", () => {
     expect(repoReadinessLabel("present")).toBe("repo ready");
     expect(repoReadinessLabel("absent")).toBe("will clone the repo");
+  });
+});
+
+describe("permission option mapping", () => {
+  /**
+   * Regression: an unmappable native combination fell back to `options[0]` and
+   * rendered as "Default". The raw controls are what actually travel in the
+   * capsule, so that claimed the destination would ask for approval when it
+   * would not.
+   */
+  it("labels a preset-representable mode with its own option", () => {
+    const options = getPermissionOptions({ family: "openai", isCliWrapped: true });
+    const mapped = options.map(toPermissionPickerOption);
+    expect(mapped.length).toBe(options.length);
+    for (const option of mapped) {
+      expect(option.label).toBeTruthy();
+      expect(option.tone).toBeTruthy();
+      expect(option.icon).toBeTruthy();
+    }
+  });
+
+  it("never maps two different modes onto the same label", () => {
+    const mapped = getPermissionOptions({ family: "openai", isCliWrapped: true })
+      .map(toPermissionPickerOption);
+    expect(new Set(mapped.map((option) => option.label)).size).toBe(mapped.length);
   });
 });
 

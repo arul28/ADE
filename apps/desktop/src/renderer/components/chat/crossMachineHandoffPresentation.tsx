@@ -7,7 +7,7 @@ import type {
   RemoteRuntimeConnectionStatus,
 } from "../../../shared/types";
 import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
-import type { SafetyLevel } from "../shared/permissionOptions";
+import type { PermissionOption, SafetyLevel } from "../shared/permissionOptions";
 import type {
   PermissionModeIconKind,
   PermissionModeTone,
@@ -170,6 +170,23 @@ export function repoReadinessLabel(state: "checking" | "present" | "absent" | "u
 
 export function repoReadinessClass(state: "checking" | "present" | "absent" | "unknown" | undefined): string {
   return state === "present" ? "text-emerald-300/60" : "text-amber-200/60";
+}
+
+/** Maps a shared PermissionOption onto the picker's display shape. */
+export function toPermissionPickerOption(option: PermissionOption): {
+  value: string;
+  label: string;
+  detail: string;
+  tone: PermissionModeTone;
+  icon: PermissionModeIconKind;
+} {
+  return {
+    value: option.value,
+    label: option.label,
+    detail: option.shortDesc,
+    tone: PERMISSION_SAFETY_TONES[option.safety],
+    icon: PERMISSION_MODE_ICONS[option.value],
+  };
 }
 
 export function CheckRow({
