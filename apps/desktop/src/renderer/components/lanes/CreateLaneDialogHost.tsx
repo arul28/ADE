@@ -11,6 +11,13 @@ import {
 import { resolveCreateLaneRequest } from "./lanePageModel";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import {
+  canCreateLaneOnMachine,
+  deriveLaneMachineOptions,
+  THIS_MACHINE_ID,
+  type LaneMachineProjectRef,
+} from "./laneMachines";
 import type { LaneBranchOption } from "./laneUtils";
 import type {
   BranchPullRequest,
@@ -20,6 +27,7 @@ import type {
   LaneSummary,
   LaneTemplate,
   NewLaneBaseSource,
+  RemoteRuntimeConnectionSnapshot,
 } from "../../../shared/types";
 
 type CreateSetupPhase =
@@ -148,6 +156,11 @@ export function CreateLaneDialogHost({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const project = useAppStore((s) => s.project);
+  const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
 
   const [createLaneName, setCreateLaneName] = useState("");
   const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
@@ -180,6 +193,93 @@ export function CreateLaneDialogHost({
   const createLinearIssueAutoNameRef = useRef<string | null>(null);
 
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+
+  /* -------------------------------------------------------------------------
+   * Machine selection.
+   *
+   * A lane owns its machine (`worktree_path` is absolute on exactly one), so
+   * this dialog is the only place a machine gets picked. The list is a pure
+   * derivation over the remote-runtime connection snapshot: one read + one
+   * subscription to an existing broadcast, both scoped to while the dialog is
+   * open. No polling, no per-machine probing.
+   * ---------------------------------------------------------------------- */
+  const [remoteSnapshot, setRemoteSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [selectedMachineId, setSelectedMachineId] = useState<string>(THIS_MACHINE_ID);
+  const pendingMachinePrepareRef = useRef(false);
+  /** Lane name / Linear issue carried across a machine switch's re-prepare. */
+  const machinePrefillRef = useRef<CreateLanePrefill | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    const apply = (snapshot: RemoteRuntimeConnectionSnapshot) => {
+      if (cancelled) return;
+      setRemoteSnapshot((current) =>
+        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
+      );
+    };
+    void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {});
+    const unsubscribe = remoteRuntime.onConnectionSnapshotChanged?.(apply) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [open]);
+
+  const boundProject = useMemo<LaneMachineProjectRef | null>(() => {
+    if (projectBinding) {
+      return {
+        projectId: projectBinding.kind === "remote" ? projectBinding.projectId : null,
+        rootPath: projectBinding.rootPath,
+        displayName: projectBinding.displayName,
+      };
+    }
+    if (!project) return null;
+    return { projectId: null, rootPath: project.rootPath, displayName: project.displayName };
+  }, [project, projectBinding]);
+
+  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+
+  /** `origin` of the bound checkout, taken straight from the snapshot record. */
+  const repoOriginUrl = useMemo(() => {
+    if (!boundTargetId || !projectBinding || projectBinding.kind !== "remote") return null;
+    const connection = remoteSnapshot?.connections.find(
+      (candidate) => candidate.target.id === boundTargetId,
+    );
+    const record = connection?.projects.find(
+      (candidate) => candidate.projectId === projectBinding.projectId,
+    );
+    return record?.gitOriginUrl ?? null;
+  }, [boundTargetId, projectBinding, remoteSnapshot]);
+
+  const machines = useMemo(
+    () =>
+      deriveLaneMachineOptions({
+        connections: remoteSnapshot?.connections ?? [],
+        boundTargetId,
+        boundProject,
+        repoOriginUrl,
+        repoDisplayName: boundProject?.displayName ?? null,
+        localProjectRoots: openProjectTabRoots,
+      }),
+    [boundProject, boundTargetId, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
+  );
+
+  // Derived from the binding, not the snapshot, so the default is correct on the
+  // very first render — before the first snapshot lands.
+  const boundMachineId = boundTargetId ?? THIS_MACHINE_ID;
+
+  // A machine that drops off the list (disconnected, repo closed) can't stay
+  // selected; fall back to the machine the project is actually bound to. The
+  // bound machine is always legal — it may simply not be in the first snapshot.
+  useEffect(() => {
+    if (!open || selectedMachineId === boundMachineId) return;
+    const selected = machines.find((machine) => machine.id === selectedMachineId);
+    if (selected && canCreateLaneOnMachine(selected)) return;
+    setSelectedMachineId(boundMachineId);
+  }, [boundMachineId, machines, open, selectedMachineId]);
 
   // Mirror busy so callers can block a forced close mid-create (parity with the
   // old `handleCreateDialogOpenChange` guard).
@@ -264,6 +364,7 @@ export function CreateLaneDialogHost({
     setLaneCreated(false);
     createEnvInitLaneIdRef.current = null;
     createBaseBranchUserPickedRef.current = false;
+    setSelectedMachineId(boundMachineId);
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
       const loadSeq = ++createBaseBranchesLoadSeqRef.current;
@@ -329,7 +430,7 @@ export function CreateLaneDialogHost({
     // Apply caller prefill after resetting to defaults.
     if (prefillInput?.name) setCreateLaneName(prefillInput.name.trim());
     if (prefillInput?.linearIssue) handleSetCreateLinearIssue(prefillInput.linearIssue);
-  }, [lanes, handleSetCreateLinearIssue]);
+  }, [boundMachineId, lanes, handleSetCreateLinearIssue]);
 
   // Prepare on open; reset on close. `open` is the single source of truth, so
   // any external trigger (deeplink, button, dialog bus, Work-tab pane) that sets
@@ -343,6 +444,79 @@ export function CreateLaneDialogHost({
     if (open) prepareCreateDialog(prefillRef.current);
     else resetCreateDialogState();
   }, [open, prepareCreateDialog, resetCreateDialogState]);
+
+  /**
+   * Picking a different machine re-binds this repo to that machine, because
+   * every create-lane call (branch listing included) is routed by the active
+   * binding. The rebind is async and lands lanes for the new machine, so the
+   * dialog re-prepares once that machine's primary lane is in the store —
+   * keeping the lane name and any connected Linear issue.
+   */
+  const handleSelectMachine = useCallback((machineId: string) => {
+    if (createBusy || laneCreated || machineId === selectedMachineId) return;
+    const machine = machines.find((candidate) => candidate.id === machineId);
+    if (!machine || !canCreateLaneOnMachine(machine)) return;
+
+    const previousMachineId = selectedMachineId;
+    setSelectedMachineId(machineId);
+    setCreateError(null);
+
+    const failSwitch = (message: string) => {
+      setSelectedMachineId(previousMachineId);
+      setCreateError(message);
+    };
+
+    machinePrefillRef.current = {
+      name: createLaneName.trim(),
+      linearIssue: createSelectedLinearIssue,
+    };
+    pendingMachinePrepareRef.current = true;
+
+    const switching = machine.targetId
+      ? machine.project?.projectId
+        ? switchRemoteProject(machine.targetId, machine.project.projectId).then(() => {})
+        : null
+      : machine.project?.rootPath
+        ? switchProjectToPath(machine.project.rootPath)
+        : null;
+
+    if (!switching) {
+      pendingMachinePrepareRef.current = false;
+      failSwitch(`Open this repository on ${machine.name} first, then create the lane there.`);
+      return;
+    }
+
+    void switching.catch((err: unknown) => {
+      pendingMachinePrepareRef.current = false;
+      failSwitch(err instanceof Error ? err.message : String(err));
+    });
+  }, [
+    createBusy,
+    createLaneName,
+    createSelectedLinearIssue,
+    laneCreated,
+    machines,
+    selectedMachineId,
+    switchProjectToPath,
+    switchRemoteProject,
+  ]);
+
+  // The rebind above only settles when the new machine's lanes land. Re-prepare
+  // exactly once at that point; the ref makes every later lane change a no-op.
+  const primaryLaneId = primaryLane?.id ?? null;
+  useEffect(() => {
+    if (!open || !pendingMachinePrepareRef.current || !primaryLaneId) return;
+    pendingMachinePrepareRef.current = false;
+    const carried = machinePrefillRef.current;
+    machinePrefillRef.current = null;
+    prepareCreateDialog(carried);
+  }, [open, primaryLaneId, prepareCreateDialog]);
+
+  const handleConnectMachine = useCallback(() => {
+    if (createBusy || laneCreated) return;
+    onOpenChange(false);
+    openConnectionsPanel("machines");
+  }, [createBusy, laneCreated, onOpenChange]);
 
   const createSetupStatus = useMemo(() => {
     switch (createSetupPhase) {
@@ -691,6 +865,10 @@ export function CreateLaneDialogHost({
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       importBranchWarning={importBranchWarning}
+      machines={machines}
+      selectedMachineId={selectedMachineId}
+      onSelectMachine={handleSelectMachine}
+      onConnectMachine={handleConnectMachine}
     />
   );
 }

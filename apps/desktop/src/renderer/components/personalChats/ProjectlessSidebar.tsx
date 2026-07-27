@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Archive, DotsThree, House, MagnifyingGlass, Plus, SpinnerGap, Trash } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
+import { Archive, CaretUpDown, Check, Desktop, DotsThree, House, MagnifyingGlass, Plus, SpinnerGap, Trash } from "@phosphor-icons/react";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -9,6 +9,9 @@ import { providerToolType, relativeTime, sessionPreview, sessionTitle } from "./
 export function ProjectlessSidebar({
   standalone,
   machineLabel,
+  machineId,
+  machineOptions,
+  onSelectMachine,
   grouped,
   loading,
   query,
@@ -24,6 +27,9 @@ export function ProjectlessSidebar({
 }: {
   standalone: boolean;
   machineLabel: string;
+  machineId: string;
+  machineOptions: Array<{ id: string; name: string }>;
+  onSelectMachine: (machineId: string) => void;
   grouped: Array<[string, AgentChatSessionSummary[]]>;
   loading: boolean;
   query: string;
@@ -37,6 +43,22 @@ export function ProjectlessSidebar({
   onToggleMenu: (id: string | null) => void;
   onRemove: (id: string, action: "archive" | "delete") => void;
 }) {
+  const [machineMenuOpen, setMachineMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!machineMenuOpen) return;
+    const close = () => setMachineMenuOpen(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMachineMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [machineMenuOpen]);
+
   useEffect(() => {
     if (!menuId) return;
     const close = () => onToggleMenu(null);
@@ -121,9 +143,48 @@ export function ProjectlessSidebar({
             </div>
           ))}
         </div>
-        <div className="flex items-center gap-2 border-t border-white/[0.05] px-4 py-2.5">
-          <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70" />
-          <span className="truncate font-sans text-[10px] text-muted-fg/45">{machineLabel}</span>
+        {/* The machine is an explicit choice, not a footnote: chats live on the
+            machine named here, so it gets a real control instead of a label. */}
+        <div className="relative border-t border-white/[0.05] px-2 py-2">
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={machineMenuOpen}
+            aria-label={`Chats run on ${machineLabel}. Choose a machine.`}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => setMachineMenuOpen((current) => !current)}
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/[0.05]"
+          >
+            <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70" />
+            <Desktop size={12} aria-hidden className="shrink-0 text-muted-fg/45" />
+            <span className="min-w-0 flex-1 truncate font-sans text-[10px] text-muted-fg/60">{machineLabel}</span>
+            <CaretUpDown size={11} aria-hidden className="shrink-0 text-muted-fg/40" />
+          </button>
+          {machineMenuOpen ? (
+            <div
+              role="menu"
+              aria-label="Choose a machine"
+              onMouseDown={(event) => event.stopPropagation()}
+              className="absolute bottom-[calc(100%-0.25rem)] left-2 right-2 z-30 rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl"
+            >
+              {machineOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMachineMenuOpen(false); onSelectMachine(option.id); }}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[10px] transition-colors",
+                    option.id === machineId ? "text-fg" : "text-fg/65 hover:bg-white/[0.06]",
+                  )}
+                >
+                  <Desktop size={12} aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                  {option.id === machineId ? <Check size={11} weight="bold" aria-hidden /> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     </aside>

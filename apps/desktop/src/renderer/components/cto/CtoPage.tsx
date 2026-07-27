@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Gear, X } from "@phosphor-icons/react";
+import { Desktop, Gear, X } from "@phosphor-icons/react";
 import type {
   AgentChatSession,
   AgentChatSessionSummary,
@@ -323,6 +323,17 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          {/* The CTO thread is pinned to the local primary lane by design, so
+              the machine is stated as a fact — never offered as a choice. */}
+          <span
+            data-testid="cto-machine-indicator"
+            title="The CTO thread is pinned to This Mac and cannot be moved."
+            className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-dashed border-white/[0.12] px-2 font-sans text-[10px] font-medium text-muted-fg/55"
+            style={{ whiteSpace: "nowrap" }}
+          >
+            <Desktop size={11} aria-hidden />
+            Always runs on This Mac
+          </span>
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}

@@ -119,9 +119,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   …) read as "none", and every other state is a failure that only alarms once it
   has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
   stays quiet.
-- `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
-  confirmation dialog before opening a remote project, surfaces local matches
-  with uncommitted changes.
+- `apps/desktop/src/renderer/components/app/projectTabGrouping.ts` — collapses
+  the open local and remote tabs into one group per repository, joined on the
+  normalized git origin. A project with no resolvable origin is never merged,
+  and at most one checkout per machine joins a group (a lane worktree shares its
+  parent's origin, so merging them would produce a tab that cannot represent
+  both). `apps/desktop/src/shared/projectIdentity.ts` owns the binding-key
+  format the join and every per-project cache are keyed by.
 - `apps/desktop/src/renderer/state/appStore.ts`,
   `apps/desktop/src/renderer/components/app/App.tsx`,
   `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
@@ -240,7 +244,7 @@ users pair or adopt machines again. It does not sign the user out, change the
 machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
 launches do not perform the reset.
 
-When opening a remote project, ADE checks local projects with the same git origin. If a matching local copy has uncommitted changes, ADE shows a confirmation dialog (`RemoteProjectOpenDialog`) before switching so the user can push, stash, or keep the divergent local work intentionally.
+Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch at a different commit (`apps/desktop/src/shared/laneDivergence.ts`). `remoteRuntimeCheckLocalWork` remains available for callers that want the comparison.
 
 Local project opens use typed recovery rather than raw error text. If the
 machine brain could not open project data, it records a bounded failure report;

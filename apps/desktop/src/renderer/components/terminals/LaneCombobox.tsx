@@ -7,8 +7,37 @@ import { LaneLogoMark, laneDisplayColor } from "./LaneChip";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { COLORS, laneSurfaceTint } from "../lanes/laneDesignTokens";
 
-/** Synthetic lane id for the draft-composer “auto-create lane” row. */
+/**
+ * Synthetic lane id for the draft-composer “auto-create lane” row.
+ *
+ * A lane owns its machine, so once lanes span machines there is one auto-create
+ * row per machine. This bare id stays the row for the default machine (the one
+ * ADE runs on) so every existing caller keeps working unchanged; other machines
+ * get `__ade_auto_create_lane__:<machineId>`.
+ */
 export const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
+
+const AUTO_CREATE_LANE_OPTION_PREFIX = `${AUTO_CREATE_LANE_OPTION_ID}:`;
+
+/** Label used for the per-machine auto-create rows inside grouped lists. */
+const AUTO_CREATE_LANE_GROUPED_LABEL = "Auto-create lane here";
+
+/** Auto-create row id for a machine. Omit / pass the default machine for the bare id. */
+export function autoCreateLaneOptionId(machineId?: string | null): string {
+  const trimmed = machineId?.trim();
+  return trimmed ? `${AUTO_CREATE_LANE_OPTION_PREFIX}${trimmed}` : AUTO_CREATE_LANE_OPTION_ID;
+}
+
+export function isAutoCreateLaneOptionId(laneId: string | null | undefined): boolean {
+  if (!laneId) return false;
+  return laneId === AUTO_CREATE_LANE_OPTION_ID || laneId.startsWith(AUTO_CREATE_LANE_OPTION_PREFIX);
+}
+
+/** The machine an auto-create row targets; `null` for the default machine. */
+export function machineIdFromAutoCreateLaneOptionId(laneId: string | null | undefined): string | null {
+  if (!laneId || !laneId.startsWith(AUTO_CREATE_LANE_OPTION_PREFIX)) return null;
+  return laneId.slice(AUTO_CREATE_LANE_OPTION_PREFIX.length) || null;
+}
 
 /** `LaneSummary` is assignable; callers may also pass a minimal `{ id, name, color? }` without `branchRef`. */
 export type LaneComboboxLane = {
@@ -16,6 +45,14 @@ export type LaneComboboxLane = {
   name: string;
   color?: string | null;
   branchRef?: string | null;
+  /** Machine the lane lives on. Unset means the default (first) machine. */
+  machineId?: string | null;
+};
+
+/** A machine group header. Names are absolute ("This Mac", "MacBook Pro (97)"). */
+export type LaneComboboxMachine = {
+  id: string;
+  name: string;
 };
 
 type LaneListItem = {
@@ -25,6 +62,11 @@ type LaneListItem = {
   /** Short display branch (e.g. from refs/heads/foo); `null` for the "all" row. */
   branchLabel: string | null;
 };
+
+type LaneListEntry =
+  | { kind: "header"; key: string; label: string }
+  /** `index` addresses the row for keyboard highlight; headers are unreachable. */
+  | { kind: "item"; key: string; index: number; item: LaneListItem };
 
 const POPOVER_GAP = 4;
 const VIEWPORT_PAD = 10;
@@ -45,8 +87,89 @@ function laneListIcon(item: LaneListItem) {
   );
 }
 
+function laneListItemFromLane(lane: LaneComboboxLane): LaneListItem {
+  return {
+    id: lane.id,
+    name: lane.name,
+    color: lane.color ?? null,
+    branchLabel: resolveBranchLabel(lane.branchRef),
+  };
+}
+
+function matchesLaneSearch(item: LaneListItem, query: string): boolean {
+  if (!query) return true;
+  return item.name.toLowerCase().includes(query)
+    || (item.branchLabel?.toLowerCase().includes(query) ?? false);
+}
+
+/**
+ * Flat list (today's shape) when there is at most one machine, grouped with a
+ * header + its own auto-create row per machine when lanes span machines.
+ */
+function buildLaneListEntries(input: {
+  lanes: LaneComboboxLane[];
+  machines: LaneComboboxMachine[];
+  showAllOption: boolean;
+  allLabel: string;
+  search: string;
+}): LaneListEntry[] {
+  const query = input.search.trim().toLowerCase();
+  const entries: LaneListEntry[] = [];
+  let nextItemIndex = 0;
+  const pushItem = (key: string, item: LaneListItem) => {
+    if (!matchesLaneSearch(item, query)) return false;
+    entries.push({ kind: "item", key, index: nextItemIndex++, item });
+    return true;
+  };
+
+  if (input.showAllOption) {
+    pushItem("all", { id: "all", name: input.allLabel, color: null, branchLabel: null });
+  }
+
+  if (input.machines.length < 2) {
+    for (const lane of input.lanes) pushItem(lane.id, laneListItemFromLane(lane));
+    return entries;
+  }
+
+  // Callers inject the auto-create row as a lane; in grouped mode it becomes one
+  // row per machine instead.
+  const autoCreateLane = input.lanes.find((lane) => isAutoCreateLaneOptionId(lane.id)) ?? null;
+  const defaultMachineId = input.machines[0]?.id ?? null;
+  for (const machine of input.machines) {
+    const machineLanes = input.lanes.filter((lane) => {
+      if (isAutoCreateLaneOptionId(lane.id)) return false;
+      const laneMachineId = lane.machineId?.trim() || defaultMachineId;
+      return laneMachineId === machine.id;
+    });
+    const headerIndex = entries.length;
+    entries.push({ kind: "header", key: `machine:${machine.id}`, label: machine.name });
+    for (const lane of machineLanes) {
+      pushItem(`${machine.id}:${lane.id}`, laneListItemFromLane(lane));
+    }
+    if (autoCreateLane) {
+      pushItem(`${machine.id}:auto-create`, {
+        id: machine.id === defaultMachineId
+          ? autoCreateLaneOptionId(null)
+          : autoCreateLaneOptionId(machine.id),
+        name: AUTO_CREATE_LANE_GROUPED_LABEL,
+        color: null,
+        branchLabel: null,
+      });
+    }
+    // A header with nothing under it (everything filtered out) is noise.
+    if (entries.length === headerIndex + 1) entries.pop();
+  }
+  return entries;
+}
+
 type LaneComboboxProps = {
   lanes: LaneComboboxLane[];
+  /**
+   * Machine groups, in display order. The first entry is the default machine —
+   * lanes without a `machineId` and the bare auto-create id belong to it.
+   * Fewer than two machines renders exactly as before: one flat list.
+   */
+  machines?: LaneComboboxMachine[];
   value: string;
   onChange: (laneId: string) => void;
   showAllOption?: boolean;
@@ -63,6 +186,7 @@ type LaneComboboxProps = {
 
 export function LaneCombobox({
   lanes,
+  machines,
   value,
   onChange,
   showAllOption = false,
@@ -91,26 +215,23 @@ export function LaneCombobox({
     return resolveBranchLabel(selectedLane.branchRef);
   }, [value, selectedLane]);
 
-  const items = useMemo(() => {
-    const base: LaneListItem[] = [];
-    if (showAllOption) {
-      base.push({ id: "all", name: allLabel, color: null, branchLabel: null });
-    }
-    for (const lane of lanes) {
-      base.push({
-        id: lane.id,
-        name: lane.name,
-        color: lane.color ?? null,
-        branchLabel: resolveBranchLabel(lane.branchRef),
-      });
-    }
-    const q = search.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((item) =>
-      item.name.toLowerCase().includes(q)
-      || (item.branchLabel?.toLowerCase().includes(q) ?? false),
-    );
-  }, [lanes, showAllOption, allLabel, search]);
+  const entries = useMemo(
+    () => buildLaneListEntries({
+      lanes,
+      machines: machines ?? [],
+      showAllOption,
+      allLabel,
+      search,
+    }),
+    [lanes, machines, showAllOption, allLabel, search],
+  );
+
+  // Keyboard navigation and the highlight index address selectable rows only —
+  // machine headers are skipped entirely.
+  const items = useMemo(
+    () => entries.flatMap((entry) => (entry.kind === "item" ? [entry.item] : [])),
+    [entries],
+  );
 
   useEffect(() => {
     setHighlightedIndex(0);
@@ -185,10 +306,13 @@ export function LaneCombobox({
     [close, items, highlightedIndex, selectItem],
   );
 
-  // Scroll highlighted item into view
+  // Scroll highlighted item into view. Addressed by data attribute, not child
+  // index — machine headers share the list container with selectable rows.
   useEffect(() => {
     if (!open || !listRef.current) return;
-    const el = listRef.current.children[highlightedIndex] as HTMLElement | undefined;
+    const el = listRef.current.querySelector<HTMLElement>(
+      `[data-item-index="${highlightedIndex}"]`,
+    );
     if (typeof el?.scrollIntoView === "function") {
       el.scrollIntoView({ block: "nearest" });
     }
@@ -239,7 +363,14 @@ export function LaneCombobox({
     };
   }, [open, updatePosition]);
 
-  const displayLabel = value === "all" ? allLabel : (selectedLane?.name ?? placeholder);
+  // A per-machine auto-create row isn't a real lane, so it never resolves
+  // through `lanes` — label it directly.
+  const autoCreateFallbackLabel = !selectedLane && isAutoCreateLaneOptionId(value)
+    ? "Auto-create lane"
+    : null;
+  const displayLabel = value === "all"
+    ? allLabel
+    : (selectedLane?.name ?? autoCreateFallbackLabel ?? placeholder);
   const customLaneColor = selectedLane?.color?.trim() ? selectedLane.color : null;
   const displayColor =
     value === "all" || !selectedLane
@@ -424,17 +555,39 @@ export function LaneCombobox({
                     No lanes found
                   </div>
                 ) : (
-                  items.map((item) => {
+                  entries.map((entry) => {
+                    if (entry.kind === "header") {
+                      return (
+                        <div
+                          key={entry.key}
+                          role="presentation"
+                          style={{
+                            padding: "7px 8px 3px",
+                            fontSize: 9.5,
+                            fontWeight: 600,
+                            letterSpacing: "0.12em",
+                            textTransform: "uppercase",
+                            color: "var(--color-muted-fg)",
+                            opacity: 0.55,
+                          }}
+                        >
+                          {entry.label}
+                        </div>
+                      );
+                    }
+                    const item = entry.item;
+                    const currentIndex = entry.index;
                     const isSelected = item.id === value;
-                    const isAutoCreate = item.id === AUTO_CREATE_LANE_OPTION_ID;
+                    const isAutoCreate = isAutoCreateLaneOptionId(item.id);
 
                     if (isAutoCreate) {
                       return (
                         <button
-                          key={item.id}
+                          key={entry.key}
                           type="button"
                           className="ade-lane-popover-item ade-lane-popover-item-featured"
                           data-selected={isSelected ? "true" : undefined}
+                          data-item-index={currentIndex}
                           onClick={() => selectItem(item.id)}
                         >
                           <span className="ade-orchestrator-rainbow-text">{item.name}</span>
@@ -480,10 +633,11 @@ export function LaneCombobox({
                     );
                     return (
                       <button
-                        key={item.id}
+                        key={entry.key}
                         type="button"
                         className="ade-lane-popover-item"
                         data-selected={isSelected ? "true" : undefined}
+                        data-item-index={currentIndex}
                         onClick={() => selectItem(item.id)}
                         style={
                           item.branchLabel

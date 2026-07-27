@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within, type RenderResult 
 import type { ComponentProps } from "react";
 import type { IosElementContextItem, NormalizedLinearIssue } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
+import { useAppStore } from "../../state/appStore";
 
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
@@ -2114,6 +2115,67 @@ describe("AgentChatComposer", () => {
       addSpy.mockRestore();
       removeSpy.mockRestore();
     }
+  });
+
+  describe("machine chip", () => {
+    const REMOTE_TAB = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-1",
+      rootPath: "/remote/ADE",
+      displayName: "ADE",
+    };
+
+    afterEach(() => {
+      useAppStore.setState({
+        projectBinding: null,
+        openRemoteProjectTabs: [],
+      } as any);
+    });
+
+    it("states the machine as read-only fact once a lane is selected", () => {
+      useAppStore.setState({
+        projectBinding: REMOTE_TAB,
+        openRemoteProjectTabs: [REMOTE_TAB],
+      } as any);
+
+      renderComposer({ turnActive: false, draft: "", laneSelectionId: "lane-7" });
+
+      const chip = document.querySelector('[data-chat-composer-machine-chip="readonly"]');
+      expect(chip).toBeTruthy();
+      expect(chip?.textContent).toContain("MacBook Pro (97)");
+      expect(document.querySelector('[data-chat-composer-machine-chip="picker"]')).toBeNull();
+    });
+
+    it("names This Mac absolutely when the tab is bound locally", () => {
+      renderComposer({ turnActive: false, draft: "", laneSelectionId: "lane-7" });
+
+      const chip = document.querySelector('[data-chat-composer-machine-chip="readonly"]');
+      expect(chip?.textContent).toContain("This Mac");
+      expect(chip?.textContent).not.toMatch(/remote/i);
+    });
+
+    it("becomes a picker while the lane is still auto-create", () => {
+      const onMachineChange = vi.fn();
+      useAppStore.setState({ openRemoteProjectTabs: [REMOTE_TAB] } as any);
+
+      renderComposer({
+        turnActive: false,
+        draft: "",
+        laneSelectionId: "__ade_auto_create_lane__",
+        onMachineChange,
+      });
+
+      const trigger = screen.getByRole("button", { name: "Run on This Mac" });
+      expect(trigger.textContent).toContain("Run on: This Mac");
+
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ }));
+
+      expect(onMachineChange).toHaveBeenCalledWith("target-1");
+    });
   });
 
 });

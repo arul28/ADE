@@ -25,6 +25,7 @@ import {
   type BuiltInBrowserContextItem,
   type IosElementContextItem,
   type LaneLinearIssue,
+  type OpenProjectBinding,
   type PendingInputRequest,
   type AgentChatModelCatalogRefreshProvider,
 } from "../../../shared/types";
@@ -72,6 +73,7 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
+import { AUTO_CREATE_LANE_OPTION_ID } from "../terminals/LaneCombobox";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import {
@@ -551,6 +553,143 @@ function ComposerFastModeButton({
     </button>
   );
 }
+
+/** One selectable machine in the composer's machine chip. */
+export type ComposerMachineOption = {
+  /** `"local"` for this Mac, otherwise the remote target id. */
+  id: string;
+  name: string;
+};
+
+export const COMPOSER_LOCAL_MACHINE_ID = "local";
+export const COMPOSER_LOCAL_MACHINE_NAME = "This Mac";
+
+const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
+const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
+
+/**
+ * States a fact when the chat already has a lane (the machine is settled and
+ * cannot change), and becomes a picker while the lane is still "Auto-create
+ * lane" (the machine is still a choice). Same slot and position either way —
+ * only the affordance changes.
+ */
+function ComposerMachineChip({
+  machineName,
+  selectable,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  machineName: string;
+  selectable: boolean;
+  options: ComposerMachineOption[];
+  onChange?: (machineId: string) => void;
+  disabled?: boolean;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  if (!machineName) return null;
+
+  if (!selectable) {
+    return (
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: `Runs on ${machineName}`,
+          description: "This chat's lane already lives on this machine, so it can't move.",
+        }}
+      >
+        <span
+          data-chat-composer-machine-chip="readonly"
+          className={cn(
+            "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-dashed border-white/[0.12] px-1.5",
+            "font-sans text-[9px] font-medium text-muted-fg/55",
+          )}
+          style={{ whiteSpace: "nowrap" }}
+        >
+          <Desktop size={10} weight="regular" aria-hidden />
+          {machineName}
+        </span>
+      </SmartTooltip>
+    );
+  }
+
+  return (
+    <span className="relative inline-flex shrink-0">
+      <button
+        type="button"
+        data-chat-composer-machine-chip="picker"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={`Run on ${machineName}`}
+        disabled={disabled}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={() => setMenuOpen((current) => !current)}
+        className={cn(
+          "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent/45 bg-accent/[0.08] px-1.5",
+          "font-sans text-[9px] font-medium text-accent transition-colors",
+          "hover:bg-accent/[0.14] disabled:cursor-not-allowed disabled:opacity-45",
+        )}
+        style={{ whiteSpace: "nowrap" }}
+      >
+        <Desktop size={10} weight="regular" aria-hidden />
+        Run on: {machineName}
+        <CaretDown size={8} weight="bold" aria-hidden />
+      </button>
+      {menuOpen ? (
+        <span
+          role="menu"
+          aria-label="Choose a machine"
+          onMouseDown={(event) => event.stopPropagation()}
+          className="absolute bottom-7 left-0 z-50 flex min-w-[10rem] flex-col rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl"
+        >
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false);
+                onChange?.(option.id);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[10px] transition-colors",
+                option.name === machineName ? "text-fg" : "text-fg/65 hover:bg-white/[0.06]",
+              )}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              <Desktop size={11} weight="regular" aria-hidden />
+              {option.name}
+              {option.name === machineName ? <Check size={10} weight="bold" className="ml-auto" aria-hidden /> : null}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
+  "ade-chat-composer-permission-trigger",
+  "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
+  "font-sans text-[length:calc(var(--chat-font-size)*9/14)] leading-none transition-colors duration-150",
+  "border-white/[0.06] bg-white/[0.03] text-fg/80",
+  "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+);
 
 const COMPOSER_COMPACT_MENU_WIDTH = 240;
 
@@ -1042,6 +1181,10 @@ export function AgentChatComposer({
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
+  laneSelectionId = null,
+  machineName: machineNameOverride,
+  machineOptions: machineOptionsOverride,
+  onMachineChange,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -1230,6 +1373,19 @@ export function AgentChatComposer({
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
+  /**
+   * The lane the composer will launch into. When it is the synthetic
+   * "Auto-create lane" option the machine is still a choice, so the machine
+   * chip becomes a picker; any real lane id settles the machine and the chip
+   * degrades to a read-only statement of fact.
+   */
+  laneSelectionId?: string | null;
+  /** Overrides the machine name derived from the active project binding. */
+  machineName?: string;
+  /** Overrides the machine list derived from the open project tabs. */
+  machineOptions?: ComposerMachineOption[];
+  /** Overrides the default rebind-this-tab behaviour of the machine picker. */
+  onMachineChange?: (machineId: string) => void;
 }) {
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
@@ -1325,6 +1481,64 @@ export function AgentChatComposer({
     && launchPromptClipboardNoticeEnabled
     && !composerInputLocked
     && draft.trim().length > 0;
+
+  // ── Machine chip ─────────────────────────────────────────────────────────
+  // Machines are named absolutely in the Work tab: the tab's machine is a
+  // switchable dimension, so "remote" has no fixed referent here. Everything
+  // below reads renderer state that is already loaded — no extra IPC.
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  // Stable empty fallbacks: surfaces that seed only part of the app store must
+  // not crash the machine chip.
+  const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs) ?? EMPTY_REMOTE_PROJECT_TABS;
+  const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots) ?? EMPTY_PROJECT_TAB_ROOTS;
+  const localProjectRootPath = useAppStore((s) => s.project?.rootPath ?? null);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+
+  const machineName = machineNameOverride
+    ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : COMPOSER_LOCAL_MACHINE_NAME);
+  const machineOptions = useMemo<ComposerMachineOption[]>(() => {
+    if (machineOptionsOverride) return machineOptionsOverride;
+    const options: ComposerMachineOption[] = [
+      { id: COMPOSER_LOCAL_MACHINE_ID, name: COMPOSER_LOCAL_MACHINE_NAME },
+    ];
+    for (const tab of openRemoteProjectTabs) {
+      if (options.some((option) => option.id === tab.targetId)) continue;
+      options.push({ id: tab.targetId, name: tab.runtimeName });
+    }
+    return options;
+  }, [machineOptionsOverride, openRemoteProjectTabs]);
+  // Opt-in: an unknown lane selection is treated as settled, so the chip only
+  // claims to be a control when the host says the lane is still auto-create.
+  const machineChipSelectable = laneSelectionId === AUTO_CREATE_LANE_OPTION_ID;
+  const handleMachineChange = useCallback(
+    (machineId: string) => {
+      if (onMachineChange) {
+        onMachineChange(machineId);
+        return;
+      }
+      // Default: the machine IS the tab binding, so choosing one rebinds this
+      // tab rather than opening a second one.
+      if (machineId === COMPOSER_LOCAL_MACHINE_ID) {
+        const rootPath = projectBinding?.kind === "local"
+          ? projectBinding.rootPath
+          : (openProjectTabRoots[0] ?? localProjectRootPath);
+        if (rootPath) void switchProjectToPath(rootPath).catch(() => {});
+        return;
+      }
+      const tab = openRemoteProjectTabs.find((entry) => entry.targetId === machineId);
+      if (tab) void switchRemoteProject(tab.targetId, tab.projectId).catch(() => {});
+    },
+    [
+      localProjectRootPath,
+      onMachineChange,
+      openProjectTabRoots,
+      openRemoteProjectTabs,
+      projectBinding,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
+  );
 
   // ── Voice dictation ──────────────────────────────────────────────────────
   const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
@@ -4215,6 +4429,15 @@ export function AgentChatComposer({
                   onToggle={onFastModeChange}
                 />
               </>
+            ) : null}
+            {!hideModelControls ? (
+              <ComposerMachineChip
+                machineName={machineName}
+                selectable={machineChipSelectable}
+                options={machineOptions}
+                onChange={handleMachineChange}
+                disabled={busy || parallelLaunchBusy}
+              />
             ) : null}
           </div>
 

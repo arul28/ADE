@@ -21,6 +21,8 @@ import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisp
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { listNewLaneBaseOptions } from "./newLaneBaseSource";
+import { LaneMachineSelector } from "./LaneMachineSelector";
+import type { LaneMachineOption } from "./laneMachines";
 import {
   SECTION_CLASS_NAME,
   LABEL_CLASS_NAME,
@@ -130,6 +132,10 @@ export function CreateLaneDialog({
   currentGitUserName,
   loadingBranches,
   loadingBranchPullRequests,
+  machines,
+  selectedMachineId,
+  onSelectMachine,
+  onConnectMachine,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -176,6 +182,15 @@ export function CreateLaneDialog({
   currentGitUserName?: string;
   loadingBranches?: boolean;
   loadingBranchPullRequests?: boolean;
+  /**
+   * Connected machines a lane can be created on. A lane owns its machine, so
+   * this is the only place one is picked. Rendered only when there is more than
+   * one machine to choose from — a single-machine setup looks exactly as before.
+   */
+  machines?: LaneMachineOption[];
+  selectedMachineId?: string;
+  onSelectMachine?: (machineId: string) => void;
+  onConnectMachine?: () => void;
 }) {
   const baseBranchOptions = React.useMemo(
     () => listNewLaneBaseOptions(createBranches, createBaseSource),
@@ -196,6 +211,10 @@ export function CreateLaneDialog({
     }
     return map;
   }, [lanes]);
+
+  // One machine behaves exactly as before: no selector, no extra chrome.
+  const machineOptions = machines ?? [];
+  const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
@@ -374,6 +393,17 @@ export function CreateLaneDialog({
             </div>
           </div>
         </section>
+
+        {/* Create on — the machine this lane (and its chats) will live on */}
+        {showMachineSelector && onSelectMachine ? (
+          <LaneMachineSelector
+            machines={machineOptions}
+            selectedMachineId={selectedMachineId ?? machineOptions[0]?.id ?? ""}
+            onSelectMachine={onSelectMachine}
+            onConnectMachine={onConnectMachine}
+            disabled={busy || laneCreated}
+          />
+        ) : null}
 
         {/* Start from — three-up source cards + contextual field */}
         <section className={SECTION_CLASS_NAME}>

@@ -399,7 +399,7 @@ describe("CommandPalette", () => {
     });
   });
 
-  it("warns before opening a remote project when matching local work is dirty", async () => {
+  it("opens a project on another machine directly, even when matching local work is dirty", async () => {
     const switchRemoteProject = vi.fn(async () => {});
     seedStore({
       projectBinding: null,
@@ -523,24 +523,19 @@ describe("CommandPalette", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: /Open ADE/i }));
 
-    await waitFor(() =>
-      expect(
-        screen.getByRole("dialog", {
-          name: "You already work on this repo locally",
-        }),
-      ).toBeTruthy(),
-    );
-    expect(screen.getAllByText("Changes").length).toBeGreaterThan(0);
-    expect(screen.getByTitle(/Primary.*3 files/)).toBeTruthy();
-    expect(screen.getAllByTitle("/Users/admin/Projects/ADE").length).toBeGreaterThan(0);
-    expect(switchRemoteProject).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open on Mac Studio" }));
+    // One tab per repo: switching the machine rebinds the existing tab, so the
+    // old "this creates a separate tab" confirmation no longer applies.
     await waitFor(() =>
       expect(switchRemoteProject).toHaveBeenCalledWith(
         "target-1",
         "project-remote-ade",
       ),
     );
+    expect(
+      screen.queryByRole("dialog", {
+        name: "You already work on this repo locally",
+      }),
+    ).toBeNull();
+    expect(remoteRuntime.checkLocalWork).not.toHaveBeenCalled();
   });
 });

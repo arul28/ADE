@@ -52,6 +52,11 @@ vi.mock("./PersonalTerminalPanel", () => ({
 
 const storeState = vi.hoisted(() => ({
   projectBinding: null as unknown,
+  openRemoteProjectTabs: [] as unknown[],
+  openProjectTabRoots: [] as string[],
+  project: null as unknown,
+  switchProjectToPath: () => Promise.resolve(),
+  switchRemoteProject: () => Promise.resolve(),
   chatFontSizePx: 13,
   chatTranscriptDensity: "comfortable",
   chatChromeTint: "colored",
@@ -128,6 +133,8 @@ describe("PersonalChatsPage", () => {
     state.catalogAvailable = true;
     state.historyEvents = [];
     storeState.chatChromeTint = "colored";
+    storeState.projectBinding = null;
+    storeState.openRemoteProjectTabs = [];
     installBridge();
   });
 
@@ -386,5 +393,47 @@ describe("PersonalChatsPage", () => {
     // even though the provider accent alone would demand a dark glyph.
     await waitFor(() => expect(sendButton.style.color).toBe("rgb(255, 255, 255)"));
     expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
+  });
+
+  it("names the chats machine absolutely and offers every open machine", async () => {
+    const remoteTab = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-1",
+      rootPath: "/remote/ADE",
+      displayName: "ADE",
+    };
+    storeState.openRemoteProjectTabs = [remoteTab];
+    await renderPage();
+
+    const trigger = await screen.findByRole("button", {
+      name: "Chats run on This Mac. Choose a machine.",
+    });
+    // "This machine" was ambiguous once a tab's machine became switchable.
+    expect(document.body.textContent).not.toMatch(/this machine/i);
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ })).toBeTruthy();
+  });
+
+  it("names the bound machine when the window runs on another Mac", async () => {
+    storeState.projectBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-1",
+      rootPath: "/remote/ADE",
+      displayName: "ADE",
+    };
+    await renderPage();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Chats run on MacBook Pro (97). Choose a machine.",
+      }),
+    ).toBeTruthy();
   });
 });
