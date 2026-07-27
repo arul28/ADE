@@ -246,10 +246,6 @@ describe("CreateLaneDialog", () => {
   });
 });
 
-afterEach(cleanup);
-
-type DialogProps = Parameters<typeof CreateLaneDialog>[0];
-
 function makeMachineProps(overrides: Partial<DialogProps> = {}): DialogProps {
   return {
     open: true,
