@@ -790,7 +790,11 @@ export function CrossMachineHandoffModal({
    */
   const continueBlockers: BlockedActionReason[] = [
     ...sourceBlockReasons,
-    ...(sourceCheck.needsPush
+    // Only when a plain push can actually resolve it. A diverged branch also
+    // reports needsPush (ahead > 0), but its upstream already exists and the
+    // push would be rejected as non-fast-forward — offering Publish there sits
+    // next to the divergence blocker suggesting a fix that cannot work.
+    ...(sourceCheck.needsPush && !hasSourceBlock
       ? [{
         id: "needs-push",
         title: `${sourceCheck.branch ?? "This branch"} hasn't been published`,

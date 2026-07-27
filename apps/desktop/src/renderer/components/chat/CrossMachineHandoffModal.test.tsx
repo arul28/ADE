@@ -595,6 +595,9 @@ describe("CrossMachineHandoffModal", () => {
     expect(screen.getByRole("button", { name: /^continue/i })).toHaveProperty("disabled", true);
     // Choosing merge-vs-rebase for the user is exactly what this flow must not do.
     expect(screen.queryByRole("button", { name: /update branch/i })).toBeNull();
+    // A diverged branch is also `ahead`, so it reports needsPush — but its
+    // upstream already exists and the push would be rejected as non-fast-forward.
+    expect(screen.queryByRole("button", { name: /publish branch/i })).toBeNull();
   });
 
   it("disables fork for a provider that can't fork history", async () => {
