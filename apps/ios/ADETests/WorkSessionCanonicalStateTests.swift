@@ -886,6 +886,99 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(groups.last?.sessions.map(\.id), ["s-calm"])
   }
 
+  // MARK: - Re-deriving the groups when a deadline lapses
+  //
+  // Expiry stays derived from the clock, but `WorkRootScreen` CACHES the
+  // grouped output, so it has to be told when to re-derive. These cover the
+  // scheduling input for that single wait.
+
+  func testGroupsRefileASnoozedRowOnceItsDeadlineLapses() {
+    var calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
+    calm.id = "s-calm"
+
+    func groupIds(now moment: Date) -> [String] {
+      workSessionGroups(
+        organization: .byStatus,
+        sessions: [calm],
+        chatSummaries: [:],
+        archivedSessionIds: [],
+        orderedLanes: [],
+        now: moment
+      ).map(\.id)
+    }
+
+    let deadline = now.addingTimeInterval(3_600)
+    XCTAssertEqual(groupIds(now: now), [workSnoozedSectionId])
+    // Same session list, only the clock moved: the row leaves the Snoozed tail
+    // on its own. This is exactly what the cached presentation misses without a
+    // refresh armed at the deadline. The bucket it lands in is the canonical
+    // phase's business — all that matters here is that it is no longer parked.
+    XCTAssertFalse(groupIds(now: deadline).contains(workSnoozedSectionId))
+    XCTAssertFalse(groupIds(now: deadline.addingTimeInterval(1)).contains(workSnoozedSectionId))
+    XCTAssertEqual(groupIds(now: deadline).count, 1)
+
+    // The screen targets that deadline; the wait itself is clamped to the tick
+    // ceiling and re-armed, and disarms entirely once the row is awake.
+    XCTAssertEqual(nextSessionSnoozeDeadline([calm], now: now), deadline)
+    XCTAssertEqual(
+      workSnoozeRegroupDelay(sessions: [calm], now: now) ?? -1,
+      workSnoozeTickMaxDelay,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      workSnoozeRegroupDelay(sessions: [calm], now: deadline.addingTimeInterval(-90)) ?? -1,
+      90,
+      accuracy: 0.001
+    )
+    XCTAssertNil(nextSessionSnoozeDeadline([calm], now: deadline))
+    XCTAssertNil(workSnoozeRegroupDelay(sessions: [calm], now: deadline))
+  }
+
+  func testNoSnoozedRowArmsNoRefreshAtAll() {
+    let awake = snoozedSession(untilOffset: nil, atOffset: nil)
+    let lapsed = snoozedSession(untilOffset: -1, atOffset: -3_600)
+    XCTAssertNil(nextSessionSnoozeDeadline([], now: now))
+    XCTAssertNil(nextSessionSnoozeDeadline([awake, lapsed], now: now))
+    XCTAssertNil(workSnoozeRegroupDelay(sessions: [], now: now))
+    XCTAssertNil(workSnoozeRegroupDelay(sessions: [awake, lapsed], now: now))
+  }
+
+  func testRefreshIsArmedAtTheSoonestDeadlineOnly() {
+    var far = snoozedSession(untilOffset: 900, atOffset: -60)
+    far.id = "s-far"
+    var near = snoozedSession(untilOffset: 120, atOffset: -60)
+    near.id = "s-near"
+    var lapsed = snoozedSession(untilOffset: -30, atOffset: -3_600)
+    lapsed.id = "s-lapsed"
+    var unparseable = snoozedSession(untilOffset: nil, atOffset: nil)
+    unparseable.id = "s-bad"
+    unparseable.snoozedUntil = "not-a-date"
+
+    let sessions = [far, near, lapsed, unparseable]
+    XCTAssertEqual(nextSessionSnoozeDeadline(sessions, now: now), now.addingTimeInterval(120))
+    XCTAssertEqual(workSnoozeRegroupDelay(sessions: sessions, now: now) ?? -1, 120, accuracy: 0.001)
+  }
+
+  func testIndefiniteSnoozeIsClampedInsteadOfScheduledLiterally() {
+    // "Until I'm asked" parks the deadline ~100 years out. Waiting that
+    // literally is not a wait — it must clamp to the tick ceiling and re-arm.
+    let indefinite = snoozedSession(
+      untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
+      atOffset: -60
+    )
+    let delay = workSnoozeRegroupDelay(sessions: [indefinite], now: now)
+    XCTAssertEqual(delay ?? -1, workSnoozeTickMaxDelay, accuracy: 0.001)
+    XCTAssertLessThanOrEqual(delay ?? .infinity, workSnoozeTickMaxDelay)
+
+    // A deadline already sitting on `now` still yields a positive wait rather
+    // than a zero-delay spin.
+    let boundary = snoozedSession(untilOffset: 0.05, atOffset: -60)
+    let boundaryDelay = workSnoozeRegroupDelay(sessions: [boundary], now: now)
+    XCTAssertNotNil(boundaryDelay)
+    XCTAssertGreaterThan(boundaryDelay ?? 0, 0)
+    XCTAssertLessThanOrEqual(boundaryDelay ?? .infinity, workSnoozeTickMaxDelay)
+  }
+
   // MARK: - Early wake: the newer-than-snoozed_at error comparison
 
   func testDoesNotWakeOnTheErrorTheSnoozeWasTakenOnTopOf() {

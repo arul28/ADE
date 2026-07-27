@@ -78,8 +78,41 @@ extension WorkRootScreen {
           sessionPresentation = nextPresentation
         }
         sessionPresentationRebuildTask = nil
+        // Re-arm unconditionally, even when the presentation was unchanged: the
+        // deadline this rebuild just crossed is gone, and the next one has to be
+        // scheduled off the rows that are actually on screen.
+        armSnoozeRegroupRefresh(sessions: nextPresentation.mergedSessions)
       }
     }
+  }
+
+  /// Snooze expiry is DERIVED from the clock (`isSessionSnoozed`) — there is no
+  /// scheduler and no persisted wake event, on any surface. But this screen
+  /// CACHES the grouped output in `sessionPresentation`, so a lapsed deadline
+  /// would otherwise leave the row parked in the Snoozed tail until some
+  /// unrelated change forced a rebuild. Mirrors the desktop `useWorkSessions`
+  /// fix: exactly one pending wait, armed only while something is snoozed,
+  /// fired at the NEAREST deadline, clamped so the ~100-year "Until I'm asked"
+  /// preset can't be scheduled literally. Not a fixed-interval poll.
+  @MainActor
+  func armSnoozeRegroupRefresh(sessions: [TerminalSessionSummary]) {
+    snoozeRegroupTask?.cancel()
+    snoozeRegroupTask = nil
+    guard let delay = workSnoozeRegroupDelay(sessions: sessions) else { return }
+    snoozeRegroupTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled else { return }
+      snoozeRegroupTask = nil
+      // Feeds `sessionPresentationTaskKey`, which re-runs the rebuild against a
+      // fresh `Date()` and re-arms the next wait from there.
+      snoozeEpoch &+= 1
+    }
+  }
+
+  @MainActor
+  func cancelSnoozeRegroupRefresh() {
+    snoozeRegroupTask?.cancel()
+    snoozeRegroupTask = nil
   }
 
   @MainActor
@@ -93,6 +126,7 @@ extension WorkRootScreen {
     sessionPresentationRebuildTask?.cancel()
     sessionPresentationRebuildTask = nil
     sessionPresentationRebuildGeneration += 1
+    cancelSnoozeRegroupRefresh()
     loadedProjectionProjectId = nil
     sessions = []
     lanes = []

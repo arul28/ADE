@@ -1811,4 +1811,25 @@ describe("sessionService settle override", () => {
     service.unsettleSessions(["session-override"]);
     expect(service.get("session-override")?.settleOverride).toBe("active");
   });
+
+  it("bulk settle drops an active pin on an already-settled row without restamping it", async () => {
+    const { service } = await makeService("ade-session-service-settled-then-pinned-");
+
+    // Declared settle first, Keep-active pinned after: the row carries BOTH a
+    // non-null settled_at and settle_override = 'active', and reads as NOT
+    // settled because canonicalSessionState consults the override first.
+    service.settleSession("session-override", { settledAt: "2026-03-17T01:00:00.000Z" });
+    service.setSettleOverride("session-override", "active");
+    expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
+
+    // Bulk settle must behave like the single-row path: drop the stale pin,
+    // report the row as changed, and preserve the original settle timestamp.
+    expect(service.settleSessions(["session-override"])).toEqual(["session-override"]);
+    expect(service.get("session-override")?.settleOverride).toBeNull();
+    expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
+
+    // Fully settled with no pin is still a no-op, so the return value keeps
+    // meaning "rows this call actually changed".
+    expect(service.settleSessions(["session-override"])).toEqual([]);
+  });
 });

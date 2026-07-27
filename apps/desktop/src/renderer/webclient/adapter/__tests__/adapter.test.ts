@@ -1759,6 +1759,36 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  // The machine actually answers these commands with an `{ ok, sessionId, … }`
+  // envelope, not the bare boolean the desktop's local IPC path returns.
+  // Reading the envelope as "not applied" would return false to the caller AND
+  // roll the optimistic patch back on a write the machine did take.
+  it("reads the host's `{ ok, … }` lifecycle envelope as the local path's boolean", async () => {
+    fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const untilIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    fake.commandResults.set("session.snoozeSession", { ok: true, sessionId: "session-1", snoozedUntil: untilIso });
+    fake.commandResults.set("session.wakeSession", { ok: false, sessionId: "session-1", reason: "manual" });
+    fake.commandResults.set("session.setSettleOverride", { ok: true, sessionId: "session-1", settleOverride: "active" });
+    fake.commandResults.set("session.clearWokeMarker", { ok: true, sessionId: "session-1" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.sessions.list();
+
+    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso)).resolves.toBe(true);
+    // Applied, so the optimistic patch has to survive until the host row lands.
+    const optimistic = await adapter.ade.sessions.list();
+    expect(optimistic[0]!.snoozedUntil).toBe(untilIso);
+    expect(isSessionSnoozed(optimistic[0]!)).toBe(true);
+
+    await expect(adapter.ade.sessions.setSettleOverride("session-1", "active")).resolves.toBe(true);
+    await expect(adapter.ade.sessions.clearWokeMarker("session-1")).resolves.toBe(true);
+    // `ok: false` still means no-op, exactly like a bare `false`.
+    await expect(adapter.ade.sessions.wakeSession("session-1", "manual")).resolves.toBe(false);
+
+    adapter.dispose();
+  });
+
   it("refuses lifecycle writes while the socket is down rather than silently no-op'ing", async () => {
     fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
     fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);

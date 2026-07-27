@@ -3,6 +3,7 @@ import { IPC } from "../shared/ipc";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
+import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
@@ -5313,26 +5314,26 @@ contextBridge.exposeInMainWorld("ade", {
       if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
     snoozeSession: async (sessionId: string, untilIso: string): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
         "snoozeSession",
         { args: { sessionId, untilIso } },
       );
       return runtime.handled
-        ? runtime.result === true
+        ? sessionLifecycleApplied(runtime.result)
         : ipcRenderer.invoke(IPC.sessionsSnooze, { sessionId, untilIso });
     },
     wakeSession: async (
       sessionId: string,
       reason?: SessionWakeReason,
     ): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
         "wakeSession",
         { args: { sessionId, ...(reason ? { reason } : {}) } },
       );
       return runtime.handled
-        ? runtime.result === true
+        ? sessionLifecycleApplied(runtime.result)
         : ipcRenderer.invoke(IPC.sessionsWake, { sessionId, ...(reason ? { reason } : {}) });
     },
     snoozeSessions: async (
@@ -5365,23 +5366,23 @@ contextBridge.exposeInMainWorld("ade", {
       sessionId: string,
       override: SessionSettleOverride | null,
     ): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
         "setSettleOverride",
         { args: { sessionId, override } },
       );
       return runtime.handled
-        ? runtime.result === true
+        ? sessionLifecycleApplied(runtime.result)
         : ipcRenderer.invoke(IPC.sessionsSetSettleOverride, { sessionId, override });
     },
     clearWokeMarker: async (sessionId: string): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
         "clearWokeMarker",
         { args: { sessionId } },
       );
       return runtime.handled
-        ? runtime.result === true
+        ? sessionLifecycleApplied(runtime.result)
         : ipcRenderer.invoke(IPC.sessionsClearWokeMarker, { sessionId });
     },
     readTranscriptTail: async (

@@ -74,6 +74,11 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let activeProjectId: String?
   let loadedProjectionProjectId: String?
   let pendingLaneDeletionIds: Set<String>
+  /// Bumped when the soonest snooze deadline lapses so the cached groups
+  /// re-derive. Snooze expiry has no event to key on — it is pure clock math —
+  /// so without this the row stays parked in the Snoozed tail until some
+  /// unrelated change happens to rebuild the presentation.
+  let snoozeEpoch: Int
 }
 
 struct WorkRootScreen: View {
@@ -96,6 +101,10 @@ struct WorkRootScreen: View {
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
+  /// Exactly one pending wait, armed only while something is actually snoozed
+  /// and only at the nearest deadline. Not a poll.
+  @State var snoozeRegroupTask: Task<Void, Never>?
+  @State var snoozeEpoch = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
   @AppStorage("ade.work.searchText") var searchText = ""
@@ -296,7 +305,8 @@ struct WorkRootScreen: View {
       activeRosterRevision: syncService.rosterRevision(for: syncService.activeProject),
       activeProjectId: syncService.activeProjectId,
       loadedProjectionProjectId: loadedProjectionProjectId,
-      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds
+      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds,
+      snoozeEpoch: snoozeEpoch
     )
   }
 
@@ -549,6 +559,8 @@ struct WorkRootScreen: View {
         guard sessionPresentationTaskKey != nil else {
           sessionPresentationRebuildTask?.cancel()
           sessionPresentationRebuildTask = nil
+          // Nothing is rendering the groups, so nothing needs waking.
+          cancelSnoozeRegroupRefresh()
           return
         }
         scheduleSessionPresentationRebuild()

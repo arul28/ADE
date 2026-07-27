@@ -465,6 +465,46 @@ func isSessionSnoozeExpired(_ session: SessionSnoozeState, now: Date = Date()) -
   return until <= now
 }
 
+/// Upper bound on the single snooze-expiry refresh. Mirrors the desktop
+/// `SNOOZE_TICK_MAX_DELAY_MS`. Expiry stays DERIVED — there is still no
+/// scheduler and no persisted wake event — but a list that CACHES its groups
+/// has to be told to re-derive, and the "Until I'm asked" preset parks its
+/// deadline ~100 years out. Waiting that literally is not a wait, so the delay
+/// is clamped and simply re-armed each time it lapses.
+let workSnoozeTickMaxDelay: TimeInterval = 10 * 60
+
+/// Floor so a deadline sitting exactly on `now` still makes forward progress
+/// instead of spinning the rebuild.
+private let workSnoozeTickMinDelay: TimeInterval = 0.25
+
+/// Soonest still-future snooze deadline across `sessions`, or nil when nothing
+/// is snoozed. Mirrors the desktop `nextSnoozeDeadlineMs`: rows with a missing,
+/// unparseable, or already-lapsed deadline never arm anything.
+func nextSessionSnoozeDeadline(
+  _ sessions: [TerminalSessionSummary],
+  now: Date = Date()
+) -> Date? {
+  var soonest: Date?
+  for session in sessions {
+    guard let until = sessionSnoozeParsedDate(session.snoozedUntil), until > now else { continue }
+    if let current = soonest, current <= until { continue }
+    soonest = until
+  }
+  return soonest
+}
+
+/// How long the Work list should wait before re-deriving its Snoozed section,
+/// or nil when no row is snoozed — in which case nothing is scheduled at all.
+/// Exactly one wait, at the nearest deadline, clamped at both ends.
+func workSnoozeRegroupDelay(
+  sessions: [TerminalSessionSummary],
+  now: Date = Date()
+) -> TimeInterval? {
+  guard let deadline = nextSessionSnoozeDeadline(sessions, now: now) else { return nil }
+  let remaining = deadline.timeIntervalSince(now)
+  return min(max(remaining, workSnoozeTickMinDelay), workSnoozeTickMaxDelay)
+}
+
 /// The load-bearing early-wake comparison.
 ///
 /// An error only raises a hand when it is STRICTLY NEWER than `snoozedAt`.

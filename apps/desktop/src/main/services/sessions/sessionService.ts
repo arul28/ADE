@@ -1437,8 +1437,18 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const ids = normalizeSessionIds(sessionIds);
       if (!ids.length) return [];
       const placeholders = ids.map(() => "?").join(", ");
+      // A row can carry BOTH a declared `settled_at` and an `active` pin (settle
+      // first, Keep-active after). `canonicalSessionState` consults the override
+      // first, so that row reads as NOT settled — filtering on `settled_at is
+      // null` alone skipped it and bulk settle became a silent no-op on exactly
+      // the rows the user could see needed settling. Match the single-row
+      // `settleSession`, which drops a stale pin unconditionally.
       const newlySettled = db.all<{ id: string }>(
-        `select id from terminal_sessions where settled_at is null and id in (${placeholders})`,
+        `
+          select id from terminal_sessions
+          where (settled_at is null or settle_override is not null)
+            and id in (${placeholders})
+        `,
         ids,
       ).map((row) => row.id);
       if (!newlySettled.length) return [];
@@ -1446,7 +1456,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run(
         `
           update terminal_sessions
-          set settled_at = ?,
+          set settled_at = coalesce(settled_at, ?),
               settle_override = null,
               attention_requested_at = null,
               attention_message = null

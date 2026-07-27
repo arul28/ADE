@@ -12,6 +12,7 @@ import type {
   SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
+import { sessionLifecycleApplied } from "../../../shared/sessionLifecycleResult";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
 import { stableCacheKey } from "./infra/cacheKey";
@@ -261,7 +262,10 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     }
   }
 
-  const appliedToAll = (result: unknown): boolean => result === true;
+  // The machine answers these with an `{ ok, sessionId, … }` envelope while the
+  // desktop's local IPC path answers with a bare boolean; normalize so callers
+  // (and the optimistic patch) see one shape regardless of transport.
+  const appliedToAll = (result: unknown): boolean => sessionLifecycleApplied(result);
   const appliedToId = (result: unknown, sessionId: string): boolean =>
     Array.isArray(result) ? result.includes(sessionId) : true;
 
@@ -320,21 +324,21 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
     },
     snoozeSession: async (sessionId: string, untilIso: string) =>
-      (await lifecycleCall<boolean>(
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.snoozeSession",
         { sessionId, untilIso },
         sessionId,
         snoozePatch(untilIso),
         appliedToAll,
-      )) === true,
+      )),
     wakeSession: async (sessionId: string, reason?: string) =>
-      (await lifecycleCall<boolean>(
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.wakeSession",
         { sessionId, ...(reason ? { reason } : {}) },
         sessionId,
         wakePatch(reason),
         appliedToAll,
-      )) === true,
+      )),
     snoozeSessions: async (sessionIds: string[], untilIso: string) =>
       (await lifecycleCall<string[]>(
         "session.snoozeSessions",
@@ -352,21 +356,21 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         appliedToId,
       )) ?? [],
     setSettleOverride: async (sessionId: string, override: "settled" | "active" | null) =>
-      (await lifecycleCall<boolean>(
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.setSettleOverride",
         { sessionId, override },
         sessionId,
         { settleOverride: override },
         appliedToAll,
-      )) === true,
+      )),
     clearWokeMarker: async (sessionId: string) =>
-      (await lifecycleCall<boolean>(
+      sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.clearWokeMarker",
         { sessionId },
         sessionId,
         CLEAR_WOKE_PATCH,
         appliedToAll,
-      )) === true,
+      )),
     readTranscriptTail: async (args: unknown) => {
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId");
