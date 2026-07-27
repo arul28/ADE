@@ -3133,14 +3133,75 @@ function RowHoverTimestamp({ iso, className }: { iso: string; className?: string
 }
 
 /**
- * Automatic per-turn ("live") context-usage snapshots exist only to drive the
+ * Automatic context-usage snapshots exist only to drive the
  * composer's context meter (ContextUsageDial) in real time — rendering them
  * inline spammed the thread with a repeating card. They are filtered out of the
  * transcript row list before it renders; only the user-requested `/context`
  * command ("command", or historical undefined-origin events) still shows a card.
  */
 function isAutomaticContextUsageEvent(event: { type: string; origin?: string }): boolean {
-  return event.type === "context_usage" && event.origin === "live";
+  return event.type === "context_usage" && event.origin !== undefined && event.origin !== "command";
+}
+
+function QueueRecoveryCard({
+  recoveryId,
+  messageCount,
+  expiresAt,
+  settled,
+  onRestore,
+}: {
+  recoveryId: string;
+  messageCount: number;
+  expiresAt: string;
+  settled: boolean;
+  onRestore?: (recoveryId: string) => Promise<boolean>;
+}) {
+  const expiresAtMs = Date.parse(expiresAt);
+  const [expired, setExpired] = useState(
+    () => !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now(),
+  );
+  const [restoring, setRestoring] = useState(false);
+
+  useEffect(() => {
+    if (settled || expired) return;
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      setExpired(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setExpired(true), remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [expired, expiresAtMs, settled]);
+
+  if (settled || expired) return null;
+  return (
+    <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60">
+      <Warning size={11} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
+      <span>
+        Cleared {messageCount} queued message{messageCount === 1 ? "" : "s"}.
+      </span>
+      {onRestore ? (
+        <button
+          type="button"
+          disabled={restoring}
+          onClick={() => {
+            setRestoring(true);
+            void onRestore(recoveryId).then((restored) => {
+              if (restored) setExpired(true);
+            }).catch(() => {
+              // The pane reports the error and keeps this recovery available
+              // for another attempt until its deadline.
+            }).finally(() => {
+              setRestoring(false);
+            });
+          }}
+          className="shrink-0 font-medium text-[var(--chat-accent)] underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-50"
+        >
+          {restoring ? "Restoring…" : "Undo"}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function renderEvent(
@@ -3178,6 +3239,8 @@ function renderEvent(
     staleInterruptReceipts?: Set<string>;
     /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
     onCancelQueuedMessage?: (uuid: string) => void;
+    onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
+    settledQueueRecoveryIds?: Set<string>;
   }
 ) {
   const event = envelope.event;
@@ -3873,6 +3936,19 @@ function renderEvent(
           </ul>
         ) : null}
       </div>
+    );
+  }
+
+  if (event.type === "queue_recovery") {
+    if (event.state === "expired" || event.state === "restored") return null;
+    return (
+      <QueueRecoveryCard
+        recoveryId={event.recoveryId}
+        messageCount={event.messageCount}
+        expiresAt={event.expiresAt}
+        settled={options?.settledQueueRecoveryIds?.has(event.recoveryId) ?? false}
+        onRestore={options?.onRestoreCancelledQueue}
+      />
     );
   }
 
@@ -5045,6 +5121,8 @@ type EventRowProps = {
   assistantTurnCopy?: { text: string } | null;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
+  onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
+  settledQueueRecoveryIds?: Set<string>;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -5088,6 +5166,8 @@ const EventRow = React.memo(function EventRow({
   assistantTurnCopy,
   staleInterruptReceipts,
   onCancelQueuedMessage,
+  onRestoreCancelledQueue,
+  settledQueueRecoveryIds,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -5173,6 +5253,8 @@ const EventRow = React.memo(function EventRow({
             assistantTurnCopy,
             staleInterruptReceipts,
             onCancelQueuedMessage,
+            onRestoreCancelledQueue,
+            settledQueueRecoveryIds,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -5571,6 +5653,7 @@ function AgentChatMessageListMain({
   onRevealChatTerminal,
   onRewindFiles,
   onCancelQueuedMessage,
+  onRestoreCancelledQueue,
   turnDiffSummaries,
   sessionEnded = false,
   hasOlderHistory = false,
@@ -5601,6 +5684,7 @@ function AgentChatMessageListMain({
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
   onCancelQueuedMessage?: (uuid: string) => void;
+  onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -5872,6 +5956,12 @@ function AgentChatMessageListMain({
     }
     return stale;
   }, [events]);
+  const settledQueueRecoveryIds = useMemo(() => new Set(
+    events.flatMap(({ event }) =>
+      event.type === "queue_recovery" && event.state !== "available"
+        ? [event.recoveryId]
+        : []),
+  ), [events]);
   const activeTurnStartedAt = useMemo(
     () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
     [events, showStreamingIndicator, activeTurnId],
@@ -6775,9 +6865,11 @@ function AgentChatMessageListMain({
         assistantTurnCopy={assistantTurnCopy}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
+        onRestoreCancelledQueue={onRestoreCancelledQueue}
+        settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage, transcriptToolActivity, turnEndDurationByRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

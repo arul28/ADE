@@ -406,6 +406,23 @@ describe("commands", () => {
     expect(goalStatus?.args).toBe("status active");
   });
 
+  it("registers queue-aware stop and recovery as ADE Code controls", () => {
+    expect(parseCommand("/stop keep-queue")).toMatchObject({
+      name: "/stop",
+      args: "keep-queue",
+      spec: { placement: "inline" },
+    });
+    expect(parseCommand("/restore-queue recovery-1")).toMatchObject({
+      name: "/restore-queue",
+      args: "recovery-1",
+      spec: { placement: "inline" },
+    });
+    expect(paletteCommands("/restore")).toContainEqual(expect.objectContaining({
+      name: "/restore-queue",
+      description: "Undo a recent Stop & clear queue",
+    }));
+  });
+
   it("drops the legacy /resume builtin", () => {
     const rows = paletteCommands("/resume", []);
     expect(rows.find((row) => row.name === "/resume" && row.source === "ade")).toBeUndefined();

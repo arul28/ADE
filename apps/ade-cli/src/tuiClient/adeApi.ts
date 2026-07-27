@@ -29,6 +29,9 @@ import type {
   AgentChatEventHistoryPage,
   AgentChatFileRef,
   AgentChatInteractionMode,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueResult,
+  AgentChatStopMode,
   AgentChatKillDroidWorkerArgs,
   AgentChatMessageSessionKind,
   AgentChatMessageSessionResult,
@@ -846,8 +849,32 @@ export async function respondToInput(args: {
   });
 }
 
-export async function interruptChat(connection: AdeCodeConnection, sessionId: string): Promise<void> {
-  await connection.action("chat", "interrupt", { sessionId });
+export async function interruptChat(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  mode: AgentChatStopMode = "stop_and_clear",
+): Promise<AgentChatInterruptResult> {
+  const result = await connection.action<AgentChatInterruptResult | null>(
+    "chat",
+    "interrupt",
+    { sessionId, mode },
+  );
+  return result ?? {
+    mode,
+    cancelledQueuedCount: 0,
+  };
+}
+
+export async function restoreCancelledQueue(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  recoveryId: string,
+): Promise<AgentChatRestoreCancelledQueueResult> {
+  return await connection.action<AgentChatRestoreCancelledQueueResult>(
+    "chat",
+    "restoreCancelledQueue",
+    { sessionId, recoveryId },
+  );
 }
 
 export async function recoverCodexTurn(
@@ -1066,6 +1093,7 @@ export function newestSession(sessions: AgentChatSessionSummary[]): AgentChatSes
 
 export type TokenStats = {
   percent: number | null;
+  contextState: "measured" | "compacting" | "recalculating" | "unknown";
   streaming: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -1085,6 +1113,7 @@ export function latestTokenStats(
   fallbackContextWindow?: number | null,
 ): TokenStats {
   let percent: number | null = null;
+  let contextState: TokenStats["contextState"] = "measured";
   let streaming = false;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
@@ -1120,6 +1149,7 @@ export function latestTokenStats(
     if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) streaming = false;
     if (event.type === "tokens") {
       if (compactionProtected) continue;
+      contextState = "measured";
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
       cacheReadTokens = readCacheReadTokens(event) ?? cacheReadTokens;
@@ -1133,6 +1163,7 @@ export function latestTokenStats(
       const hasContextOccupancy = typeof last?.inputTokens === "number" || typeof total?.inputTokens === "number";
       if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
       if (!hasContextOccupancy) continue;
+      contextState = "measured";
       inputTokens = typeof last?.inputTokens === "number"
         ? last.inputTokens
         : typeof total?.inputTokens === "number" ? total.inputTokens : inputTokens;
@@ -1147,7 +1178,15 @@ export function latestTokenStats(
     }
     if (event.type === "context_usage") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
-      inputTokens = typeof usage?.totalTokens === "number" ? usage.totalTokens : inputTokens;
+      const nextState = event.state === "compacting"
+        || event.state === "recalculating"
+        || event.state === "unknown"
+        ? event.state
+        : "measured";
+      contextState = nextState;
+      inputTokens = nextState === "measured" && typeof usage?.totalTokens === "number"
+        ? usage.totalTokens
+        : null;
       outputTokens = null;
       cacheReadTokens = null;
       cacheCreationTokens = null;
@@ -1168,10 +1207,21 @@ export function latestTokenStats(
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")
       || (event.type === "codex_context_compaction" && event.state === "completed");
+    if (
+      (event.type === "context_compact" && event.state === "started")
+      || (event.type === "codex_context_compaction" && event.state === "started")
+    ) {
+      contextState = "compacting";
+      inputTokens = null;
+      outputTokens = null;
+      cacheReadTokens = null;
+      cacheCreationTokens = null;
+    }
     if (completedCompaction) {
       compactionProtected = true;
       protectedCompactionTurnId = typeof event.turnId === "string" ? event.turnId : null;
       inputTokens = event.type === "context_compact" && typeof event.postTokens === "number" ? event.postTokens : null;
+      contextState = inputTokens != null ? "measured" : "recalculating";
       outputTokens = null;
       cacheReadTokens = null;
       cacheCreationTokens = null;
@@ -1187,12 +1237,29 @@ export function latestTokenStats(
       };
     }
   }
+  if (contextState !== "measured") {
+    inputTokens = null;
+    outputTokens = null;
+    cacheReadTokens = null;
+    cacheCreationTokens = null;
+  }
   const used = inputTokens != null || outputTokens != null ? (inputTokens ?? 0) + (outputTokens ?? 0) : null;
   const limit = eventLimit ?? (typeof fallbackContextWindow === "number" && fallbackContextWindow > 0 ? fallbackContextWindow : null);
-  if (used != null && limit != null && limit > 0) {
+  if (contextState === "measured" && used != null && limit != null && limit > 0) {
     percent = Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
   }
-  return { percent, streaming, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow: limit, costUsd, rateLimit };
+  return {
+    percent,
+    contextState,
+    streaming,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    contextWindow: limit,
+    costUsd,
+    rateLimit,
+  };
 }
 
 /**

@@ -2,6 +2,8 @@ import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatCreateScheduledWorkResult,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
@@ -197,9 +199,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     dispatchSteer: (args: unknown) => call("chat.dispatchSteer", args, { ok: false, error: "unsupported" }, false),
     cancelDispatchedSteer: (args: unknown) => call("chat.cancelDispatchedSteer", args, { ok: false, error: "unsupported" }, false),
-    interrupt: async (args: unknown) => {
-      await call("chat.interrupt", args, undefined, false);
-    },
+    interrupt: (args: unknown) => call<AgentChatInterruptResult>(
+      "chat.interrupt",
+      args,
+      { mode: "stop_and_clear", cancelledQueuedCount: 0 },
+      false,
+    ),
+    restoreCancelledQueue: (args: unknown) => call<AgentChatRestoreCancelledQueueResult>(
+      "chat.restoreCancelledQueue",
+      args,
+      { restored: false, restoredCount: 0 },
+      false,
+    ),
     approve: async (args: unknown) => {
       await call("chat.approve", args, undefined, false);
     },

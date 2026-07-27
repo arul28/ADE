@@ -46,11 +46,19 @@ describe("PersonalChatScope", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
         lastActivityAt: "2026-01-01T00:00:00.000Z",
       })),
-      getSessionSummary: vi.fn(async () => summary),
+      getSessionSummary: vi.fn(async (sessionId: string) =>
+        sessionId === summary.sessionId ? summary : null),
       sendMessage: vi.fn(async () => undefined),
       readTranscript: vi.fn(async () => []),
       steer: vi.fn(async () => undefined),
-      interrupt: vi.fn(async () => undefined),
+      interrupt: vi.fn(async ({ mode = "stop_and_clear" }: { mode?: string }) => ({
+        mode,
+        cancelledQueuedCount: mode === "stop_and_clear" ? 2 : 0,
+      })),
+      restoreCancelledQueue: vi.fn(async () => ({
+        restored: true,
+        restoredCount: 2,
+      })),
       recoverTurn: vi.fn(async ({ turnId, action }) => ({
         turnId,
         action,
@@ -376,6 +384,9 @@ describe("PersonalChatScope", () => {
       "list",
       "create",
       "send",
+      "interrupt",
+      "interruptWithQueueMode",
+      "restoreCancelledQueue",
       "recoverTurn",
       "resolveUnprocessedMessage",
       "createScheduledWork",
@@ -385,6 +396,41 @@ describe("PersonalChatScope", () => {
       "delete",
     ]));
     expect(capabilities.actions).not.toContain("projects.list");
+  });
+
+  it("forwards queue-aware stop and recovery only for an owned personal session", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("interruptWithQueueMode", {
+      sessionId: "chat-1",
+      mode: "stop_only",
+    })).resolves.toEqual({
+      action: "interruptWithQueueMode",
+      result: { mode: "stop_only", cancelledQueuedCount: 0 },
+    });
+    expect(service.interrupt).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      mode: "stop_only",
+    });
+
+    await expect(scope.call("restoreCancelledQueue", {
+      sessionId: "chat-1",
+      recoveryId: "recovery-1",
+    })).resolves.toEqual({
+      action: "restoreCancelledQueue",
+      result: { restored: true, restoredCount: 2 },
+    });
+    expect(service.restoreCancelledQueue).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      recoveryId: "recovery-1",
+    });
+
+    await expect(scope.call("restoreCancelledQueue", {
+      sessionId: "foreign-chat",
+      recoveryId: "recovery-1",
+    })).rejects.toThrow(/was not found/);
+    expect(service.restoreCancelledQueue).toHaveBeenCalledTimes(1);
   });
 
   it("owns terminal lifecycle inside the hidden workspace", async () => {

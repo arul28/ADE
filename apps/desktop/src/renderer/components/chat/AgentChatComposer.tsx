@@ -19,6 +19,7 @@ import {
   type AgentChatInteractionMode,
   type AgentChatOpenCodePermissionMode,
   type AgentChatSlashCommand,
+  type AgentChatStopMode,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type AppControlContextItem,
@@ -890,6 +891,40 @@ function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; siz
   return <ArrowBendDownRight size={size} weight="bold" />;
 }
 
+function useComposerSplitMenu(menuSelector: string) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const caretRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleDown = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (caretRef.current?.contains(target as Node)) return;
+      if (target?.closest?.(menuSelector)) return;
+      setMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", handleDown);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleDown);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [menuOpen, menuSelector]);
+  return { caretRef, menuOpen, setMenuOpen };
+}
+
+function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperties {
+  const rect = anchor.getBoundingClientRect();
+  const width = COMPOSER_COMPACT_MENU_WIDTH;
+  return {
+    left: Math.min(Math.max(8, rect.right - width), Math.max(8, window.innerWidth - width - 8)),
+    bottom: Math.max(8, window.innerHeight - rect.top + 8),
+    width,
+  };
+}
+
 function ActiveTurnSendButton({
   enabled,
   mode,
@@ -903,28 +938,8 @@ function ActiveTurnSendButton({
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const caretRef = useRef<HTMLButtonElement | null>(null);
+  const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-send-menu]");
   const selectedCopy = ACTIVE_TURN_SEND_COPY[mode];
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handleDown = (event: MouseEvent) => {
-      const target = event.target as Element | null;
-      if (caretRef.current?.contains(target as Node)) return;
-      if (target?.closest?.("[data-active-send-menu]")) return;
-      setMenuOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    window.addEventListener("mousedown", handleDown);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleDown);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [menuOpen]);
 
   return (
     <div className="relative inline-flex items-center">
@@ -981,23 +996,13 @@ function ActiveTurnSendButton({
       {menuOpen && caretRef.current
         ? createPortal(
             (() => {
-              const rect = caretRef.current.getBoundingClientRect();
-              const width = COMPOSER_COMPACT_MENU_WIDTH;
-              const left = Math.min(
-                Math.max(8, rect.right - width),
-                Math.max(8, window.innerWidth - width - 8),
-              );
               return (
                 <div
                   data-active-send-menu
                   role="menu"
                   aria-label="Send options"
                   className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={{
-                    left,
-                    bottom: Math.max(8, window.innerHeight - rect.top + 8),
-                    width,
-                  }}
+                  style={composerSplitMenuPosition(caretRef.current)}
                 >
                   {(["inline", "queue", ...(allowInterrupt ? ["interrupt" as const] : [])] as const).map((option, index) => {
                     const copy = ACTIVE_TURN_SEND_COPY[option];
@@ -1033,6 +1038,125 @@ function ActiveTurnSendButton({
                           </span>
                         </span>
                         <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
+                          {selected ? <Check size={11} weight="bold" /> : null}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })(),
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+const ACTIVE_TURN_STOP_COPY: Record<AgentChatStopMode, { label: string; description: string }> = {
+  stop_and_clear: {
+    label: "Stop & clear queue",
+    description: "Stop the active turn and cancel messages already queued for Claude.",
+  },
+  stop_only: {
+    label: "Stop only",
+    description: "Stop the active turn but keep queued messages ready for Claude.",
+  },
+};
+
+function ActiveTurnStopButton({
+  mode,
+  allowQueueChoice,
+  onModeChange,
+  onStop,
+}: {
+  mode: AgentChatStopMode;
+  allowQueueChoice: boolean;
+  onModeChange: (mode: AgentChatStopMode) => void;
+  onStop: () => void;
+}) {
+  const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
+  const selectedCopy = ACTIVE_TURN_STOP_COPY[mode];
+
+  if (!allowQueueChoice) {
+    return (
+      <SmartTooltip forceEnabled content={{ label: "Stop active turn", description: "Interrupt only the current model turn for this chat.", shortcut: `${modifierKeyLabel}+.` }}>
+        <button
+          type="button"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
+          aria-label="Stop active turn"
+          onClick={onStop}
+        >
+          <Square size={9} weight="fill" />
+        </button>
+      </SmartTooltip>
+    );
+  }
+
+  return (
+    <div className="relative inline-flex items-center">
+      <div className="inline-flex items-center overflow-hidden rounded-lg border border-red-500/25 bg-red-500/[0.08]">
+        <SmartTooltip forceEnabled content={{ label: selectedCopy.label, description: selectedCopy.description, shortcut: `${modifierKeyLabel}+.` }}>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center justify-center px-2 text-red-400/80 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
+            aria-label={selectedCopy.label}
+            onClick={onStop}
+          >
+            {mode === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+          </button>
+        </SmartTooltip>
+        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued Claude messages should be kept." }}>
+          <button
+            ref={caretRef}
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="More stop options"
+            onClick={() => setMenuOpen((current) => !current)}
+            className="inline-flex h-7 items-center justify-center border-l border-red-500/20 pl-1 pr-1.5 text-red-400/70 transition-all hover:bg-red-500/[0.12] hover:text-red-400"
+          >
+            <CaretDown size={10} weight="bold" className={cn("transition-transform duration-150", menuOpen && "rotate-180")} />
+          </button>
+        </SmartTooltip>
+      </div>
+      {menuOpen && caretRef.current
+        ? createPortal(
+            (() => {
+              return (
+                <div
+                  data-active-stop-menu
+                  role="menu"
+                  aria-label="Stop options"
+                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+                  style={composerSplitMenuPosition(caretRef.current)}
+                >
+                  {(["stop_and_clear", "stop_only"] as const).map((option, index) => {
+                    const copy = ACTIVE_TURN_STOP_COPY[option];
+                    const selected = option === mode;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        onClick={() => {
+                          onModeChange(option);
+                          setMenuOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                          index > 0 && "border-t border-white/[0.05]",
+                        )}
+                      >
+                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
+                          {option === "stop_and_clear" ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
+                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                        </span>
+                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
                           {selected ? <Check size={11} weight="bold" /> : null}
                         </span>
                       </button>
@@ -1261,7 +1385,7 @@ export function AgentChatComposer({
   onSubmitInBackground?: () => void;
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
-  onInterrupt: () => void;
+  onInterrupt: (mode?: AgentChatStopMode) => void;
   onApproval: (
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
@@ -1410,6 +1534,7 @@ export function AgentChatComposer({
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(() => findSmartLinks(draft).length > 0);
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
+  const [activeTurnStopMode, setActiveTurnStopMode] = useState<AgentChatStopMode>("stop_and_clear");
   const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
     ? "inline"
     : activeTurnSendMode;
@@ -1417,6 +1542,22 @@ export function AgentChatComposer({
   useEffect(() => {
     setActiveTurnSendMode("inline");
   }, [sessionId, turnActive]);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setActiveTurnStopMode("stop_and_clear");
+      return;
+    }
+    const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
+    setActiveTurnStopMode(stored === "stop_only" ? "stop_only" : "stop_and_clear");
+  }, [sessionId]);
+
+  const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
+    setActiveTurnStopMode(mode);
+    if (sessionId) {
+      window.localStorage.setItem(`ade.chat.stopMode.${sessionId}`, mode);
+    }
+  }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -3332,7 +3473,7 @@ export function AgentChatComposer({
       return;
     }
 
-    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(); return; }
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(activeTurnStopMode); return; }
 
     /* Tab to accept prompt suggestion */
     if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
@@ -4718,16 +4859,12 @@ export function AgentChatComposer({
                     </SmartTooltip>
                   )
                 ) : null}
-                <SmartTooltip forceEnabled content={{ label: "Stop active turn", description: "Interrupt only the current model turn for this chat.", shortcut: `${modifierKeyLabel}+.` }}>
-                  <button
-                    type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-red-500/25 bg-red-500/[0.08] text-red-400/80 transition-all hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400"
-                    aria-label="Stop active turn"
-                    onClick={onInterrupt}
-                  >
-                    <Square size={9} weight="fill" />
-                  </button>
-                </SmartTooltip>
+                <ActiveTurnStopButton
+                  mode={activeTurnStopMode}
+                  allowQueueChoice={sessionProvider === "claude"}
+                  onModeChange={updateActiveTurnStopMode}
+                  onStop={() => onInterrupt(activeTurnStopMode)}
+                />
               </>
             ) : (
               (() => {

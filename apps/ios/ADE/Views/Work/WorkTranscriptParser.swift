@@ -366,6 +366,18 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId,
           steerId: optionalString(eventDict["steerId"])
         )
+      case "queue_recovery":
+        event = .systemNotice(
+          kind: "queue_recovery",
+          message: stringValue(eventDict["state"]),
+          detail: optionalString(prettyPrintedJSONString([
+            "messageCount": eventDict["messageCount"] ?? 0,
+            "expiresAt": eventDict["expiresAt"] ?? "",
+            "stopMode": eventDict["stopMode"] ?? "",
+          ])),
+          turnId: turnId,
+          steerId: optionalString(eventDict["recoveryId"])
+        )
       case "error":
         let explicitDetail = optionalString(eventDict["detail"])
         let detailText = explicitDetail ?? optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
@@ -469,6 +481,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "context_usage":
         let usageDict = eventDict["usage"] as? [String: Any] ?? [:]
         let totalTokens = optionalWorkInt(usageDict["totalTokens"]) ?? 0
+        let contextState = optionalString(eventDict["state"])
+          .flatMap(WorkContextUsageState.init(rawValue:)) ?? .measured
         event = .tokens(
           usage: WorkUsageSummary(
             turnCount: 1,
@@ -479,7 +493,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             totalTokens: totalTokens,
             contextWindow: optionalWorkInt(usageDict["maxTokens"]),
             costUsd: 0,
-            isContextSnapshot: true
+            isContextSnapshot: true,
+            contextState: contextState,
+            contextSampleId: optionalWorkInt(eventDict["sampleId"])
           ),
           turnId: turnId ?? "",
           itemId: nil

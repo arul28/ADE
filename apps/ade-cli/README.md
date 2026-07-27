@@ -362,6 +362,8 @@ ade chat create --from-linear-issue ENG-431
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
 ade chat steer personal-session-id --personal --text "focus on the tradeoffs"
+ade chat interrupt personal-session-id --personal --keep-queue
+ade chat restore-queue personal-session-id recovery-id --personal
 ade chat actions --personal --text
 ade chat action --personal modelCatalog --input-json '{"mode":"cached"}' --json
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)

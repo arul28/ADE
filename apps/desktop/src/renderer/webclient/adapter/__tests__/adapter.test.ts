@@ -675,6 +675,54 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("returns queue-aware interrupt results and restores cancelled queue entries", async () => {
+    fake.descriptors = descriptors([
+      "chat.interrupt",
+      "chat.restoreCancelledQueue",
+    ]);
+    fake.commandResults.set("chat.interrupt", {
+      mode: "stop_and_clear",
+      cancelledQueuedCount: 2,
+      recoveryId: "recovery-1",
+      recoveryExpiresAt: "2026-07-27T12:00:08.000Z",
+    });
+    fake.commandResults.set("chat.restoreCancelledQueue", {
+      restored: true,
+      restoredCount: 2,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.interrupt({
+      sessionId: "chat-1",
+      mode: "stop_and_clear",
+    })).resolves.toEqual({
+      mode: "stop_and_clear",
+      cancelledQueuedCount: 2,
+      recoveryId: "recovery-1",
+      recoveryExpiresAt: "2026-07-27T12:00:08.000Z",
+    });
+    await expect(adapter.ade.agentChat.restoreCancelledQueue({
+      sessionId: "chat-1",
+      recoveryId: "recovery-1",
+    })).resolves.toEqual({
+      restored: true,
+      restoredCount: 2,
+    });
+    expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
+      {
+        action: "chat.interrupt",
+        args: { sessionId: "chat-1", mode: "stop_and_clear" },
+      },
+      {
+        action: "chat.restoreCancelledQueue",
+        args: { sessionId: "chat-1", recoveryId: "recovery-1" },
+      },
+    ]);
+
+    adapter.dispose();
+  });
+
   it("routes scheduled-work management through the web chat adapter", async () => {
     fake.descriptors = descriptors([
       "chat.createScheduledWork",

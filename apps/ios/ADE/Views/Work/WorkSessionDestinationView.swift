@@ -1233,6 +1233,20 @@ struct WorkSessionDestinationView: View {
       "chat.resolveUnprocessedMessage",
       sessionId: session.id
     )
+    let queueAwareStopAvailable = syncService.supportsChatRemoteAction(
+      "chat.interruptWithQueueMode",
+      sessionId: session.id
+    )
+    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
+      "chat.dispatchSteer",
+      sessionId: session.id
+    )
+    let restoreCancelledQueueAction: (@MainActor (String) async -> Void)? = syncService.supportsChatRemoteAction(
+      "chat.restoreCancelledQueue",
+      sessionId: session.id
+    ) ? { recoveryId in
+      await restoreCancelledQueue(recoveryId: recoveryId)
+    } : nil
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
       chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
@@ -1266,13 +1280,18 @@ struct WorkSessionDestinationView: View {
       canSendMessages: canSendChatMessages && !viewingSubagent,
       sendWillQueue: sendWillQueueChatMessage || shouldSteer,
       sendWillQueueIsReconnect: sendWillQueueChatMessage,
+      activeSendModesAvailable: activeSendModesAvailable,
+      queueAwareStopAvailable: queueAwareStopAvailable,
       transportHealth: syncService.connectionHealth.transport,
       composerDraftRestore: composerDraftRestore,
       inputLockMessage: inputLockMessage,
       transitionNamespace: transitionNamespace,
       onOpenLane: openLaneAction,
-      onSend: sendMessage,
+      onSend: { text, attachments, mode in
+        await sendMessage(text, attachments: attachments, deliveryMode: mode)
+      },
       onInterrupt: interruptSession,
+      onRestoreCancelledQueue: restoreCancelledQueueAction,
       onApproveRequest: approveRequest,
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,

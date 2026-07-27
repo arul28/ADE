@@ -5415,12 +5415,19 @@ describe("preload OAuth bridge", () => {
         paused: true,
       }),
     ).rejects.toThrow(/Project is switching/i);
+    await expect(
+      bridge.agentChat.restoreCancelledQueue({
+        sessionId: "session-1",
+        recoveryId: "recovery-1",
+      }),
+    ).rejects.toThrow(/Project is switching/i);
 
     expect(invoke).toHaveBeenCalledWith(IPC.projectSwitchToPath, { rootPath: "/next" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSend, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCreateScheduledWork, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSetScheduledWorkPaused, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatRestoreCancelledQueue, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;

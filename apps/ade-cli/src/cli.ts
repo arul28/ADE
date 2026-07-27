@@ -1739,7 +1739,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
-    $ ade chat interrupt <session>                  Stop an active turn
+    $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
+    $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade new chat --mode cli --lane <lane> --prompt "fix"
                                                     Start a tracked provider CLI session
@@ -2678,6 +2680,23 @@ function collectGenericObjectArgs(
 
 function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
+}
+
+function normalizeChatStopMode(value: unknown): "stop_and_clear" | "stop_only" {
+  if (value === "stop_and_clear" || value === "stop_only") return value;
+  throw new CliUsageError("chat interrupt --mode must be stop_and_clear or stop_only.");
+}
+
+function readChatStopMode(args: string[]): "stop_and_clear" | "stop_only" {
+  const explicitMode = readValue(args, ["--mode"]);
+  const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
+  const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
+  const selected = [explicitMode, keepQueue ? "stop_only" : null, clearQueue ? "stop_and_clear" : null]
+    .filter((value): value is string => value !== null);
+  if (selected.length > 1) {
+    throw new CliUsageError("Use only one of --mode, --keep-queue, or --clear-queue.");
+  }
+  return normalizeChatStopMode(selected[0] ?? "stop_and_clear");
 }
 
 /**
@@ -7420,7 +7439,12 @@ function buildChatPlan(args: string[]): CliPlan {
       pollIntervalMs,
     };
   }
-  if (sub === "interrupt")
+  if (sub === "interrupt" || sub === "stop") {
+    const interruptArgs = withSession({
+      sessionId: requireValue(sessionId, "sessionId"),
+      mode: readChatStopMode(args),
+    });
+    interruptArgs.mode = normalizeChatStopMode(interruptArgs.mode);
     return {
       kind: "execute",
       label: "chat interrupt",
@@ -7429,10 +7453,36 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "interrupt",
-          withSession({ sessionId: requireValue(sessionId, "sessionId") }),
+          interruptArgs,
         ),
       ],
     };
+  }
+  if (
+    sub === "restore-queue"
+    || sub === "restore-cancelled-queue"
+    || sub === "undo-stop"
+  ) {
+    const recoveryId = requireValue(
+      readValue(args, ["--recovery", "--recovery-id"]) ?? firstStandalonePositional(args),
+      "recoveryId",
+    );
+    return {
+      kind: "execute",
+      label: "chat restore cancelled queue",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "restoreCancelledQueue",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            recoveryId,
+          }),
+        ),
+      ],
+    };
+  }
   if (sub === "recover" || sub === "recovery") {
     const turnId = requireValue(readValue(args, ["--turn", "--turn-id"]), "turnId");
     const action = normalizeChatRecoveryCliAction(
@@ -7937,6 +7987,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "configure",
     "interrupt",
     "stop",
+    "restore-queue",
+    "restore-cancelled-queue",
+    "undo-stop",
     "recover",
     "recovery",
     "resolve-unprocessed",
@@ -7950,7 +8003,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, restore-queue, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -8023,10 +8076,33 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "interrupt" || sub === "stop") {
+    const interruptArgs = collectGenericObjectArgs(args, {
+      sessionId,
+      mode: readChatStopMode(args),
+    });
+    interruptArgs.mode = normalizeChatStopMode(interruptArgs.mode);
     return {
       ...base,
       label: "personal chat interrupt",
-      steps: [personalChatStep("interrupt", collectGenericObjectArgs(args, { sessionId }))],
+      steps: [personalChatStep("interrupt", interruptArgs)],
+    };
+  }
+  if (
+    sub === "restore-queue"
+    || sub === "restore-cancelled-queue"
+    || sub === "undo-stop"
+  ) {
+    const recoveryId = requireValue(
+      readValue(args, ["--recovery", "--recovery-id"]) ?? firstStandalonePositional(args),
+      "recoveryId",
+    );
+    return {
+      ...base,
+      label: "personal chat restore cancelled queue",
+      steps: [personalChatStep("restoreCancelledQueue", collectGenericObjectArgs(args, {
+        sessionId,
+        recoveryId,
+      }))],
     };
   }
   if (sub === "recover" || sub === "recovery") {

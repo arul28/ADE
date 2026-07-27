@@ -23,6 +23,7 @@ import {
   type AgentChatInteractionMode,
   type AgentChatDispatchSteerMode,
   type AgentChatSteerResult,
+  type AgentChatStopMode,
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
@@ -1099,6 +1100,16 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     } else if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+    } else if (event.type === "queue_recovery" && event.state === "restored") {
+      for (const steer of event.restoredSteers ?? []) {
+        resolvedSteerIds.delete(steer.steerId);
+        steerMap.set(steer.steerId, {
+          steerId: steer.steerId,
+          text: steer.text,
+          attachments: steer.attachments ?? [],
+          contextAttachments: steer.contextAttachments ?? [],
+        });
+      }
     }
   }
 
@@ -4232,6 +4243,17 @@ export function AgentChatPane({
     void window.ade.agentChat
       .cancelDispatchedSteer({ sessionId: selectedSessionId, steerId })
       .catch(() => { /* best-effort: already delivered or unknown steer */ });
+  }, [selectedSessionId]);
+  const restoreCancelledQueue = useCallback(async (recoveryId: string): Promise<boolean> => {
+    if (!selectedSessionId) return false;
+    try {
+      const result = await window.ade.agentChat
+        .restoreCancelledQueue({ sessionId: selectedSessionId, recoveryId });
+      return result.restored;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
   }, [selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedScheduledWorkSnapshots = useMemo(
@@ -10182,13 +10204,13 @@ export function AgentChatPane({
     }));
   }, [laneId, modelPickerOpenRequestSessionId, turnActive]);
 
-  const interrupt = useCallback(async () => {
+  const interrupt = useCallback(async (mode: AgentChatStopMode = "stop_and_clear") => {
     if (!selectedSessionId) return;
     // Let the stop button disappear immediately while the main-process interrupt finishes.
     setTurnActiveBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     try {
       touchSession(selectedSessionId);
-      await window.ade.agentChat.interrupt({ sessionId: selectedSessionId });
+      await window.ade.agentChat.interrupt({ sessionId: selectedSessionId, mode });
     } catch (interruptError) {
       setError(interruptError instanceof Error ? interruptError.message : String(interruptError));
     }
@@ -11625,8 +11647,8 @@ export function AgentChatPane({
             } : undefined}
             backgroundLaunchBusy={false}
             backgroundLaunchLabel={draftLaunchTargetIsAutoCreate ? "Auto-create" : "Background"}
-            onInterrupt={() => {
-              void interrupt();
+            onInterrupt={(mode) => {
+              void interrupt(mode);
             }}
             onApproval={(decision, responseText, answers) => {
               void approve(decision, responseText, answers);
@@ -12414,6 +12436,7 @@ export function AgentChatPane({
                       turnDiffSummaries={selectedTurnDiffSummaries}
                       onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
                       onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
+                      onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
                       onApproval={handleListApproval}
                       onCodexRecovery={handleListCodexRecovery}
                       onRunUnprocessedMessage={handleRunUnprocessedMessage}

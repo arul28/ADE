@@ -20,7 +20,11 @@ func workFilteredQuestionAnswersForSubmit(
 
 extension WorkSessionDestinationView {
   @MainActor
-  func sendMessage(_ text: String, attachments inputAttachments: [WorkChatInputAttachment] = []) async -> Bool {
+  func sendMessage(
+    _ text: String,
+    attachments inputAttachments: [WorkChatInputAttachment] = [],
+    deliveryMode: WorkActiveSendMode = .queue
+  ) async -> Bool {
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -77,6 +81,34 @@ extension WorkSessionDestinationView {
       }
       switch delivery {
       case .queued(let steerId):
+        if useSteer, let steerId, deliveryMode == .inline || deliveryMode == .interrupt {
+          do {
+            try await syncService.dispatchChatSteer(
+              sessionId: sessionId,
+              steerId: steerId,
+              mode: deliveryMode.rawValue
+            )
+          } catch {
+            // Staging already succeeded on the host. Keep the single queued
+            // message and clear the composer instead of restoring a duplicate
+            // draft when the requested immediate dispatch fails.
+            ADEHaptics.error()
+            updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+            upsertOptimisticPendingSteer(
+              id: steerId,
+              text: text,
+              timestamp: echo.timestamp,
+              attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+            )
+            await refreshChatStateAfterAction(forceRemote: true)
+            errorMessage = "Couldn’t send immediately. The message is still queued."
+            return true
+          }
+          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
+          await refreshChatStateAfterAction(forceRemote: true)
+          reconcileLocalEchoMessages()
+          break
+        }
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
         if let steerId {
           upsertOptimisticPendingSteer(
@@ -114,14 +146,34 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func interruptSession() async {
+  func interruptSession(mode: AgentChatStopMode = .stopAndClear) async {
     do {
-      try await syncService.interruptChatSession(sessionId: sessionId)
+      try await syncService.interruptChatSession(sessionId: sessionId, mode: mode)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func restoreCancelledQueue(recoveryId: String) async {
+    do {
+      let result = try await syncService.restoreCancelledChatQueue(
+        sessionId: sessionId,
+        recoveryId: recoveryId
+      )
+      guard result.restored else {
+        errorMessage = "The cancelled queue can no longer be restored."
+        return
+      }
+      ADEHaptics.success()
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "Couldn’t restore the cancelled queue. \(error.localizedDescription)"
     }
   }
 

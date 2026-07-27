@@ -289,7 +289,8 @@ whole transcript. The minimal non-agent headless fallback advertises
 `cursorKind: "index"` over its bounded in-memory transcript. Clients must keep
 the cursor opaque and use `cursorKind` only to select their local merge
 strategy.
-- `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
+- `create`, `send`, `interrupt`, `interruptWithQueueMode`,
+  `restoreCancelledQueue`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `recoverTurn`, legacy `recoverCodexTurn`, `resolveUnprocessedMessage`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
@@ -362,10 +363,26 @@ stale client row; desktop Edit uses it before restoring queued text and
 attachments to the composer. The field is optional so older clients retain the
 original idempotent cancel behavior.
 
+`chat.interruptWithQueueMode` is an additive capability probe for queue-aware
+Claude Stop. It takes
+`{ sessionId, mode: "stop_and_clear" | "stop_only" }` and returns
+`{ mode, cancelledQueuedCount, recoveryId?, recoveryExpiresAt? }`.
+`stop_and_clear` is the backward-compatible default; it asks a capable Claude
+runtime to interrupt with `cancel_queued: true`, then falls back to
+per-message cancellation where needed. `stop_only` interrupts the model turn
+and preserves queued messages. A controller that does not see this additive
+descriptor must call legacy `chat.interrupt` without assuming the host honors
+the mode. `chat.restoreCancelledQueue` takes `{ sessionId, recoveryId }`,
+returns `{ restored, restoredCount }`, and is accepted only during the
+eight-second recovery window for that same session. Both actions are
+viewer-allowed and non-queueable: replaying either after reconnect could stop a
+different turn or resurrect stale input.
+
 **Personal chat** (`personalChats.*`)
 - `list`, `create`, `getSummary`, `read`, `send`
 - `steer`, `cancelSteer`, `editSteer`, `dispatchSteer`,
-  `cancelDispatchedSteer`, `interrupt`, `respondToInput`, `approve`
+  `cancelDispatchedSteer`, `interrupt`, `interruptWithQueueMode`,
+  `restoreCancelledQueue`, `respondToInput`, `approve`
 - `createScheduledWork`, `cancelScheduledWork`, `setScheduledWorkPaused`
 - `updateSession`, `archive`, `unarchive`, `delete`
 - `models`, `modelCatalog`, `getEventHistory`, `getEventHistoryPage`

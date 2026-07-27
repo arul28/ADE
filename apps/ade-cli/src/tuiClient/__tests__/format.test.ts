@@ -383,6 +383,19 @@ describe("renderChatLines", () => {
             preview: "Run the old request",
           },
         },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: {
+            type: "queue_recovery",
+            recoveryId: "recovery-1",
+            state: "available",
+            messageCount: 2,
+            expiresAt: "2026-01-01T12:00:11.000Z",
+            stopMode: "stop_and_clear",
+          },
+        },
       ],
     });
 
@@ -390,9 +403,46 @@ describe("renderChatLines", () => {
       expect.objectContaining({ tone: "notice", body: "stopped — 2 queued messages will still run" }),
       expect.objectContaining({ tone: "notice", body: "conversation reset" }),
       expect.objectContaining({ tone: "notice", body: "queued message discarded · Run the old request" }),
+      expect.objectContaining({ tone: "notice", body: "cleared 2 queued messages · undo /restore-queue recovery-1" }),
     ]);
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(4);
     expect(lines.every((line) => line.tone === "notice")).toBe(true);
+
+    const terminalRecoveryLines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: {
+            type: "queue_recovery",
+            recoveryId: "recovery-1",
+            state: "available",
+            messageCount: 2,
+            expiresAt: "2026-01-01T12:00:11.000Z",
+            stopMode: "stop_and_clear",
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:11.000Z",
+          sequence: 5,
+          event: {
+            type: "queue_recovery",
+            recoveryId: "recovery-1",
+            state: "expired",
+            messageCount: 2,
+            expiresAt: "2026-01-01T12:00:11.000Z",
+            stopMode: "stop_and_clear",
+          },
+        },
+      ],
+    });
+    expect(terminalRecoveryLines).toEqual([
+      expect.objectContaining({ tone: "notice", body: "queue recovery expired" }),
+    ]);
   });
 
   it("renders tool, edit, and compaction events compactly", () => {

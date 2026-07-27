@@ -119,7 +119,9 @@ describe("latestContextUsageInput", () => {
       const before = toUsageViewModel(latestContextUsageInput(events.slice(0, 1), provider));
       expect(before?.usedTokens).toBe(200_000);
       expect(before?.ratio).toBe(1);
-      expect(latestContextUsageInput(events, provider)).toBeNull();
+      const recalculating = latestContextUsageInput(events, provider);
+      expect(recalculating?.state).toBe("recalculating");
+      expect(toUsageViewModel(recalculating)?.state).toBe("recalculating");
     },
   );
 
@@ -156,7 +158,7 @@ describe("latestContextUsageInput", () => {
       envelope(3, { type: "codex_token_usage", usage: { modelContextWindow: 200_000 }, turnId: "turn-1" }),
       envelope(4, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 190_000, contextWindow: 200_000 } }),
     ] as any;
-    expect(latestContextUsageInput(metadataOnlyEvents, "codex")).toBeNull();
+    expect(latestContextUsageInput(metadataOnlyEvents, "codex")?.state).toBe("recalculating");
 
     const explicitZero = latestContextUsageInput([
       envelope(1, { type: "context_compact", trigger: "auto", state: "completed", turnId: "turn-1" }),
@@ -179,7 +181,7 @@ describe("latestContextUsageInput", () => {
       envelope(7, { type: "status", turnStatus: "started", turnId: "turn-2" }),
       envelope(8, { type: "tokens", turnId: "turn-2", inputTokens: 32_000, outputTokens: 500, contextWindow: 200_000 }),
     ] as any;
-    expect(latestContextUsageInput(events.slice(0, 2), "codex")).toBeNull();
+    expect(latestContextUsageInput(events.slice(0, 2), "codex")?.state).toBe("recalculating");
 
     const exactRefill = toUsageViewModel(latestContextUsageInput(events.slice(0, 6), "codex"));
     expect(exactRefill?.usedTokens).toBe(26_000);

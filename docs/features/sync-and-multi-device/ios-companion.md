@@ -424,7 +424,8 @@ The Work model/activity parity path is concentrated in these files:
   `web_search` event's structured `CodexWebSearchResult` hits (`results` decoded
   through `ADELossyArray` so one malformed hit can't fail the event, plus
   `resultsTotal`), `MobileUsageQuotaSnapshot.spendControlReached` (Codex spending
-  cap), and host model rows including `defaultReasoningEffort`.
+  cap), Claude context lifecycle states, queue-aware Stop request DTOs, and
+  host model rows including `defaultReasoningEffort`.
 - `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
   host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
   and the Ultra usage warning.
@@ -434,15 +435,18 @@ The Work model/activity parity path is concentrated in these files:
   both live Codable events and persisted JSONL fallback (including Codex
   structured web-search `results`, threaded onto the tool card's `Sources` chips
   and deduped against the action URLs), plus the Work context meter's
-  provider-neutral usage and compaction-boundary reduction. The Codex spending
+  provider-neutral measured/compacting/recalculating/unknown reduction across
+  live and persisted history. The Codex spending
   cap surfaces as a "Spending cap reached" note under the Codex row in
   `WorkUsageActivityCarousel`.
 - `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
   and `WorkSessionDestinationView+Actions.swift` — host-advertised chat action
   dispatch, including provider-neutral `chat.recoverTurn` (with the legacy
   Codex action as a compatibility fallback), durable
-  `chat.resolveUnprocessedMessage`, and the non-queueable
-  `chat.cancelScheduledWork` wrapper used by Chat Info.
+  `chat.resolveUnprocessedMessage`, the additive
+  `chat.interruptWithQueueMode` capability with legacy `chat.interrupt`
+  fallback, and the non-queueable `chat.cancelScheduledWork` wrapper used by
+  Chat Info.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -2036,15 +2040,30 @@ different machine's cached limits.
   time without squeezing tool details into the same line. The association is
   data-driven and never invents file changes for providers that did not emit
   them.
+- **Active-turn send and Stop use dismissing native popovers.** For Claude,
+  the in-session composer mirrors desktop's three delivery choices: **Send
+  during turn**, **Send after turn**, and **Interrupt & send**. The primary
+  button's icon/label communicates the selected behavior, the chevron opens a
+  custom SwiftUI popover, and selection dismisses it immediately. Non-Claude
+  providers keep the single stage-behind-turn action. When the host advertises
+  additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
+  control for **Stop & clear queue**
+  and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
+  VoiceOver labels and haptics, and falls back to legacy Stop against older
+  brains. Immediate send still stages once on the host before
+  `chat.dispatchSteer`; if dispatch fails, the one queued message remains and
+  the draft is not restored as a duplicate.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
-  retain `context_compact.postTokens`. `workContextUsageViewModel` in
-  `WorkTimelineHelpers.swift` walks the ordered event stream, clears usage from
-  before a completed compaction for Claude, Codex, OpenCode, Cursor, and Droid,
-  and rejects generic `tokens` / `done` counters from the compacted turn. An
-  exact post-compaction token count or Codex context snapshot can refill the
-  meter immediately; otherwise it stays empty until a trustworthy later usage
-  event arrives.
+  retain `context_compact.postTokens` plus the automatic `context_usage.state`.
+  `workContextUsageViewModel` in `WorkTimelineHelpers.swift` walks the ordered
+  event stream, clears usage from before a completed compaction for Claude,
+  Codex, OpenCode, Cursor, and Droid, and rejects generic `tokens` / `done`
+  counters from the compacted turn. A compact start renders an ellipsis with
+  `compacting`; a completion without exact post tokens becomes
+  `recalculating`; a failed authoritative read shows `unknown` rather than a
+  stale percentage. Exact post-compaction tokens or a later measured snapshot
+  refill the meter immediately.
 - **Subagent lifecycle is rendered as chat structure, not event spam.**
   `RemoteModels.swift` accepts both legacy `subagent_started` /
   `subagent_progress` / `subagent_result` events and the canonical dotted

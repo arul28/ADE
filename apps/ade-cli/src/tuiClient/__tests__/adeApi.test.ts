@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, interruptChat, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, restoreCancelledQueue, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
 import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -430,6 +430,7 @@ describe("latestTokenStats", () => {
 
     expect(latestTokenStats(events)).toEqual({
       percent: 28,
+      contextState: "measured",
       streaming: false,
       inputTokens: 2_100,
       outputTokens: 700,
@@ -455,6 +456,7 @@ describe("latestTokenStats", () => {
 
     expect(latestTokenStats(events, 200_000)).toEqual({
       percent: 25,
+      contextState: "measured",
       streaming: false,
       inputTokens: 40_000,
       outputTokens: 10_000,
@@ -493,6 +495,36 @@ describe("latestTokenStats", () => {
     expect(stats.inputTokens).toBe(48_000);
     expect(stats.contextWindow).toBe(100_000);
     expect(stats.percent).toBe(48);
+  });
+
+  it("hides stale occupancy while context is compacting or recalculating", () => {
+    const compacting = latestTokenStats([
+      envelope(1, {
+        type: "context_usage",
+        state: "measured",
+        usage: { categories: [], totalTokens: 98_000, maxTokens: 100_000, percentage: 98 },
+      }),
+      envelope(2, {
+        type: "context_usage",
+        state: "compacting",
+        usage: { categories: [], totalTokens: 98_000, maxTokens: 100_000, percentage: 98 },
+      }),
+    ]);
+    expect(compacting.contextState).toBe("compacting");
+    expect(compacting.percent).toBeNull();
+    expect(compacting.inputTokens).toBeNull();
+
+    const recalculating = latestTokenStats([
+      envelope(1, {
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        provider: "claude",
+      }),
+    ], 100_000);
+    expect(recalculating.contextState).toBe("recalculating");
+    expect(recalculating.percent).toBeNull();
+    expect(recalculating.contextWindow).toBe(100_000);
   });
 
   it("reads cachedInputTokens / cacheReadTokens from both tokens and codex_token_usage events", () => {
@@ -828,6 +860,34 @@ describe("latestTokenStats", () => {
     expect(stats.inputTokens).toBe(24_000);
     expect(stats.contextWindow).toBe(100_000);
     expect(stats.percent).toBe(24);
+  });
+});
+
+describe("queue-aware interruption", () => {
+  it("forwards the selected stop mode and restores a cancelled queue", async () => {
+    const action = vi.fn()
+      .mockResolvedValueOnce({
+        mode: "stop_only",
+        cancelledQueuedCount: 0,
+      })
+      .mockResolvedValueOnce({
+        restored: true,
+        restoredCount: 2,
+      });
+    const connection = { action } as unknown as AdeCodeConnection;
+
+    await expect(interruptChat(connection, "session-1", "stop_only")).resolves.toEqual({
+      mode: "stop_only",
+      cancelledQueuedCount: 0,
+    });
+    await expect(restoreCancelledQueue(connection, "session-1", "recovery-1")).resolves.toEqual({
+      restored: true,
+      restoredCount: 2,
+    });
+    expect(action.mock.calls).toEqual([
+      ["chat", "interrupt", { sessionId: "session-1", mode: "stop_only" }],
+      ["chat", "restoreCancelledQueue", { sessionId: "session-1", recoveryId: "recovery-1" }],
+    ]);
   });
 });
 

@@ -235,6 +235,7 @@ export const IPC = {
   agentChatDispatchSteer: "ade.agentChat.dispatchSteer",
   agentChatCancelDispatchedSteer: "ade.agentChat.cancelDispatchedSteer",
   agentChatInterrupt: "ade.agentChat.interrupt",
+  agentChatRestoreCancelledQueue: "ade.agentChat.restoreCancelledQueue",
   agentChatRecoverTurn: "ade.agentChat.recoverTurn",
   agentChatRecoverCodexTurn: "ade.agentChat.recoverCodexTurn",
   agentChatResolveUnprocessedMessage: "ade.agentChat.resolveUnprocessedMessage",

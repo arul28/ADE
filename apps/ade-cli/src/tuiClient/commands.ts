@@ -42,6 +42,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/redo", description: "Redo the most recently undone HEAD change on the active lane", placement: "inline", category: "Lanes" },
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline", category: "Lanes" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline", category: "Chats" },
+  { name: "/stop", description: "Stop the active turn and clear or preserve its queue", placement: "inline", argumentHint: "[keep-queue|clear-queue]", category: "Chats" },
+  { name: "/restore-queue", description: "Undo a recent Stop & clear queue", placement: "inline", argumentHint: "<recovery-id>", category: "Chats" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline", category: "Nav" },
   { name: "/open", description: "Open this ADE context in desktop", placement: "inline", category: "Nav" },
   { name: "/quit", description: "Exit ade code", placement: "inline", category: "System" },

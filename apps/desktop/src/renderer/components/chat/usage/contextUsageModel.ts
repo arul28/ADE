@@ -1,4 +1,8 @@
-import type { AgentChatEventEnvelope, CodexThreadTokenUsage } from "../../../../shared/types";
+import type {
+  AgentChatContextUsageState,
+  AgentChatEventEnvelope,
+  CodexThreadTokenUsage,
+} from "../../../../shared/types";
 
 /**
  * Provider-agnostic context-usage view-model consumed by `ContextUsageDial`.
@@ -13,6 +17,7 @@ import type { AgentChatEventEnvelope, CodexThreadTokenUsage } from "../../../../
  */
 export type ContextUsageViewModel = {
   provider: string;
+  state: AgentChatContextUsageState;
   /** Effective context window for the active model, or null when unknown. */
   contextWindow: number | null;
   /** Tokens counted against the window (current context occupancy, see below). */
@@ -41,8 +46,8 @@ export type GenericUsageInput = {
 };
 
 export type ContextUsageInput =
-  | { kind: "codex"; provider: string; usage: CodexThreadTokenUsage }
-  | { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null };
+  | { kind: "codex"; provider: string; usage: CodexThreadTokenUsage; state?: AgentChatContextUsageState }
+  | { kind: "generic"; provider: string; usage: GenericUsageInput; contextWindow?: number | null; state?: AgentChatContextUsageState };
 
 function positive(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
@@ -140,6 +145,7 @@ export function toUsageViewModel(
 
   return {
     provider: input.provider,
+    state: input.state ?? "measured",
     contextWindow,
     usedTokens,
     inputTokens,
@@ -170,7 +176,7 @@ export function latestContextUsageInput(
 ): ContextUsageInput | null {
   let current: ContextUsageInput | null =
     fallbackCodexUsage && provider === "codex"
-      ? { kind: "codex", provider, usage: fallbackCodexUsage }
+      ? { kind: "codex", provider, usage: fallbackCodexUsage, state: "measured" }
       : null;
   let lastRuntimeWindow = positive(fallbackCodexUsage?.modelContextWindow);
   let compactionProtected = false;
@@ -183,7 +189,7 @@ export function latestContextUsageInput(
     if (compactionProtected) return;
     const runtimeWindow = positive(contextWindow);
     if (runtimeWindow != null) lastRuntimeWindow = runtimeWindow;
-    current = { kind: "generic", provider, usage, contextWindow };
+    current = { kind: "generic", provider, usage, contextWindow, state: "measured" };
   };
 
   for (const envelope of events) {
@@ -201,7 +207,7 @@ export function latestContextUsageInput(
       const hasContextOccupancy = typeof event.usage.last?.inputTokens === "number"
         || typeof event.usage.total?.inputTokens === "number";
       if (!hasContextOccupancy) continue;
-      current = { kind: "codex", provider: provider || "codex", usage: event.usage };
+      current = { kind: "codex", provider: provider || "codex", usage: event.usage, state: "measured" };
       continue;
     }
     if (event.type === "context_usage") {
@@ -229,7 +235,14 @@ export function latestContextUsageInput(
           totalTokens: event.usage.totalTokens,
         },
         contextWindow: event.usage.maxTokens,
+        state: event.state ?? "measured",
       };
+      continue;
+    }
+    const startedCompaction = (event.type === "context_compact" && event.state === "started")
+      || (event.type === "codex_context_compaction" && event.state === "started");
+    if (startedCompaction) {
+      if (current) current = { ...current, state: "compacting" };
       continue;
     }
     const completedCompaction = (event.type === "context_compact" && event.state !== "started")
@@ -243,8 +256,11 @@ export function latestContextUsageInput(
             provider,
             usage: { usedTokens: event.postTokens, inputTokens: event.postTokens },
             contextWindow: lastRuntimeWindow,
+            state: "measured",
           }
-        : null;
+        : current
+          ? { ...current, state: "recalculating" }
+          : null;
       continue;
     }
     if (event.type === "done" && event.usage) {

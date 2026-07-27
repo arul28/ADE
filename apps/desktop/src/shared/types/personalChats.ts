@@ -10,6 +10,7 @@ import type {
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatInterruptArgs,
+  AgentChatRestoreCancelledQueueArgs,
   AgentChatDispatchSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatModelCatalog,
@@ -42,6 +43,8 @@ export const PERSONAL_CHAT_ACTIONS = [
   "dispatchSteer",
   "cancelDispatchedSteer",
   "interrupt",
+  "interruptWithQueueMode",
+  "restoreCancelledQueue",
   "recoverTurn",
   "resolveUnprocessedMessage",
   "respondToInput",
@@ -112,6 +115,8 @@ export type PersonalChatCallArgs =
   | { action: "dispatchSteer"; args: AgentChatDispatchSteerArgs }
   | { action: "cancelDispatchedSteer"; args: AgentChatCancelDispatchedSteerArgs }
   | { action: "interrupt"; args: AgentChatInterruptArgs }
+  | { action: "interruptWithQueueMode"; args: AgentChatInterruptArgs }
+  | { action: "restoreCancelledQueue"; args: AgentChatRestoreCancelledQueueArgs }
   | { action: "recoverTurn"; args: AgentChatRecoverTurnArgs }
   | { action: "resolveUnprocessedMessage"; args: AgentChatResolveUnprocessedMessageArgs }
   | { action: "respondToInput"; args: AgentChatRespondToInputArgs }

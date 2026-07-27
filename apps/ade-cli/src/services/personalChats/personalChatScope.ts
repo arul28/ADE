@@ -226,8 +226,13 @@ export class PersonalChatScope {
         result = await service.cancelDispatchedSteer(args as never);
         break;
       case "interrupt":
+      case "interruptWithQueueMode":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.interrupt(args as never);
+        break;
+      case "restoreCancelledQueue":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.restoreCancelledQueue(args as never);
         break;
       case "recoverTurn":
         await this.requirePersonalSession(service, readSessionId(args));

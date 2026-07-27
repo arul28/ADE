@@ -457,6 +457,8 @@ private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout 
   combineOptional(usage.contextWindow, into: &hasher)
   hasher.combine(usage.costUsd)
   hasher.combine(usage.isContextSnapshot)
+  combineOptional(usage.contextState?.rawValue, into: &hasher)
+  combineOptional(usage.contextSampleId, into: &hasher)
 }
 
 private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactModel], into hasher: inout Hasher) {
@@ -2321,6 +2323,50 @@ func buildWorkEventCards(
   return order.compactMap { byId[$0] }
 }
 
+func workAvailableQueueRecovery(from transcript: [WorkChatEnvelope]) -> WorkQueueRecoveryModel? {
+  var availableById: [String: (model: WorkQueueRecoveryModel, order: Int)] = [:]
+
+  for (order, envelope) in sortedWorkChatEnvelopes(transcript).enumerated() {
+    guard case .systemNotice(let kind, let state, let detail, _, let recoveryId) = envelope.event,
+          kind == "queue_recovery",
+          let recoveryId,
+          !recoveryId.isEmpty
+    else {
+      continue
+    }
+
+    let normalizedState = state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalizedState == "available" else {
+      availableById.removeValue(forKey: recoveryId)
+      continue
+    }
+
+    let detailObject: [String: Any] = {
+      guard let detail,
+            let data = detail.data(using: .utf8),
+            let decoded = try? JSONSerialization.jsonObject(with: data),
+            let object = decoded as? [String: Any]
+      else {
+        return [:]
+      }
+      return object
+    }()
+    let messageCount = (detailObject["messageCount"] as? NSNumber)?.intValue ?? 0
+    let expiresAt = detailObject["expiresAt"] as? String ?? ""
+    guard messageCount > 0 else { continue }
+    availableById[recoveryId] = (
+      WorkQueueRecoveryModel(
+        recoveryId: recoveryId,
+        messageCount: messageCount,
+        expiresAt: expiresAt
+      ),
+      order
+    )
+  }
+
+  return availableById.values.max { $0.order < $1.order }?.model
+}
+
 private func workTerminalDoneTurnIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
   Set(transcript.compactMap { envelope in
     guard case .done(_, _, _, let turnId, _, _, _) = envelope.event else { return nil }
@@ -2781,6 +2827,7 @@ private func eventCard(
         metadata: [kind == "cron" ? "Cron \(normalized.lowercased())" : "Schedule \(normalized.lowercased())"]
       )
     case .systemNotice(let kind, let message, let detail, _, _):
+      guard kind != "queue_recovery" else { return nil }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
@@ -3448,35 +3495,53 @@ func workContextUsageViewModel(
 ) -> WorkContextUsageViewModel? {
 
   var latestUsage: WorkUsageSummary?
+  var usageState: WorkContextUsageState = .measured
+  var latestContextSampleId: Int?
   var compactionProtected = false
   var protectedCompactionTurnId: String?
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .contextCompact(_, let isInProgress, let postTokens, let turnId, _):
-      guard !isInProgress else { continue }
+      if isInProgress {
+        compactionProtected = true
+        protectedCompactionTurnId = turnId
+        usageState = .compacting
+        continue
+      }
       compactionProtected = true
       protectedCompactionTurnId = turnId
-      latestUsage = postTokens.map {
-        WorkUsageSummary(
+      if let postTokens {
+        latestUsage = WorkUsageSummary(
           turnCount: 1,
-          inputTokens: $0,
+          inputTokens: postTokens,
           outputTokens: 0,
           cacheReadTokens: 0,
           cacheCreationTokens: 0,
-          totalTokens: $0,
+          totalTokens: postTokens,
           contextWindow: latestUsage?.contextWindow,
           costUsd: 0,
           isContextSnapshot: true
         )
+        usageState = .measured
+      } else {
+        usageState = .recalculating
       }
     case .tokens(let usage, _, _):
+      if let sampleId = usage.contextSampleId {
+        if let latestContextSampleId, sampleId < latestContextSampleId {
+          continue
+        }
+        latestContextSampleId = sampleId
+      }
       if compactionProtected && !usage.isContextSnapshot { continue }
       latestUsage = usage
+      usageState = usage.contextState ?? .measured
     case .done(_, _, let usage, _, _, _, _):
       if let usage {
         if compactionProtected && !usage.isContextSnapshot { continue }
         latestUsage = usage
+        usageState = .measured
       }
     case .status(let turnStatus, _, let turnId):
       if turnStatus == "started", compactionProtected, let turnId,
@@ -3493,14 +3558,16 @@ func workContextUsageViewModel(
   return makeWorkContextUsageViewModel(
     usage: latestUsage,
     provider: provider,
-    fallbackContextWindow: fallbackContextWindow
+    fallbackContextWindow: fallbackContextWindow,
+    state: usageState
   )
 }
 
 private func makeWorkContextUsageViewModel(
   usage: WorkUsageSummary,
   provider: String,
-  fallbackContextWindow: Int?
+  fallbackContextWindow: Int?,
+  state: WorkContextUsageState = .measured
 ) -> WorkContextUsageViewModel? {
   let inputTokens = positiveWorkTokenCount(usage.inputTokens)
   let outputTokens = positiveWorkTokenCount(usage.outputTokens)
@@ -3530,6 +3597,7 @@ private func makeWorkContextUsageViewModel(
 
   return WorkContextUsageViewModel(
     provider: provider,
+    state: state,
     contextWindow: contextWindow,
     usedTokens: usedTokens,
     inputTokens: inputTokens,

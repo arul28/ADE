@@ -57,6 +57,7 @@ import type {
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
+  AgentChatRestoreCancelledQueueArgs,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
@@ -2361,8 +2362,20 @@ function parseAgentChatCancelDispatchedSteerArgs(value: Record<string, unknown>)
 }
 
 function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatInterruptArgs {
+  const mode = value.mode;
+  if (mode !== undefined && mode !== "stop_and_clear" && mode !== "stop_only") {
+    throw new Error("chat.interrupt mode must be 'stop_and_clear' or 'stop_only'.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.interrupt requires sessionId."),
+    ...(mode ? { mode } : {}),
+  };
+}
+
+function parseAgentChatRestoreCancelledQueueArgs(value: Record<string, unknown>): AgentChatRestoreCancelledQueueArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.restoreCancelledQueue requires sessionId."),
+    recoveryId: requireString(value.recoveryId, "chat.restoreCancelledQueue requires recoveryId."),
   };
 }
 
@@ -4363,8 +4376,17 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
   register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
-    return { ok: true };
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ...result, ok: true };
+  });
+  register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+    return { ...result, ok: true };
+  });
+  register("chat.restoreCancelledQueue", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .restoreCancelledQueue(parseAgentChatRestoreCancelledQueueArgs(payload));
+    return { ...result, ok: true };
   });
   register("chat.recoverCodexTurn", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.")

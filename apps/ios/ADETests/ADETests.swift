@@ -4323,6 +4323,8 @@ final class ADETests: XCTestCase {
         "type": "context_usage",
         "turnId": "turn-usage",
         "origin": "live",
+        "state": "measured",
+        "sampleId": 17,
         "usage": {
           "totalTokens": 31000,
           "maxTokens": 200000
@@ -4332,7 +4334,7 @@ final class ADETests: XCTestCase {
     """
 
     let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
-    guard case .contextUsage(let decodedUsage, let decodedTurnId, let origin) = envelope.event else {
+    guard case .contextUsage(let decodedUsage, let decodedTurnId, let origin, let state, let sampleId) = envelope.event else {
       return XCTFail("Expected a context usage event.")
     }
     XCTAssertTrue(decodedUsage.categories.isEmpty)
@@ -4341,12 +4343,16 @@ final class ADETests: XCTestCase {
     XCTAssertNil(decodedUsage.model)
     XCTAssertEqual(decodedTurnId, "turn-usage")
     XCTAssertEqual(origin, "live")
+    XCTAssertEqual(state, "measured")
+    XCTAssertEqual(sampleId, 17)
 
     let event = makeWorkChatEvent(from: envelope.event)
     guard case .tokens(let usage, let turnId, let itemId) = event else {
       return XCTFail("Expected Claude context usage to normalize to a tokens event.")
     }
     XCTAssertTrue(usage.isContextSnapshot)
+    XCTAssertEqual(usage.contextState, .measured)
+    XCTAssertEqual(usage.contextSampleId, 17)
     XCTAssertEqual(usage.inputTokens, 31_000)
     XCTAssertEqual(usage.contextWindow, 200_000)
     XCTAssertEqual(turnId, "turn-usage")
@@ -4376,6 +4382,7 @@ final class ADETests: XCTestCase {
       provider: "claude",
       fallbackContextWindow: nil
     )
+    XCTAssertEqual(viewModel?.state, .measured)
     XCTAssertEqual(viewModel?.usedTokens, 31_000)
     XCTAssertEqual(viewModel?.contextWindow, 200_000)
     XCTAssertEqual(viewModel?.ratio ?? 0, 0.155, accuracy: 0.0001)
@@ -4406,7 +4413,7 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(conversationId, "conversation-2")
 
-    guard case .interruptReceipt(let stillQueued) = snapshot.events[1].event else {
+    guard case .interruptReceipt(let stillQueued, _) = snapshot.events[1].event else {
       return XCTFail("Expected interrupt receipt.")
     }
     XCTAssertEqual(stillQueued, ["queued-1", "queued-2"])
@@ -4437,6 +4444,52 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.map(\.kind), ["conversationReset", "notice", "notice"])
     XCTAssertEqual(cards.last?.body, "Queued message discarded: Run the old request")
     XCTAssertNil(workClaudeGoal(snapshot: nil, transcript: transcript))
+  }
+
+  func testQueueRecoveryEventsDecodeAcrossTypedAndFallbackTranscriptPaths() throws {
+    let typedJSON = """
+    {
+      "sessionId": "session-recovery",
+      "timestamp": "2026-07-16T12:00:00.000Z",
+      "sequence": 1,
+      "event": {
+        "type": "queue_recovery",
+        "recoveryId": "recovery-1",
+        "state": "available",
+        "messageCount": 2,
+        "expiresAt": "2026-07-16T12:00:08.000Z",
+        "stopMode": "stop_and_clear"
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: Data(typedJSON.utf8)
+    )
+    let typedTranscript = makeWorkChatTranscript(from: [envelope])
+    let typedRecovery = try XCTUnwrap(workAvailableQueueRecovery(from: typedTranscript))
+    XCTAssertEqual(typedRecovery.recoveryId, "recovery-1")
+    XCTAssertEqual(typedRecovery.messageCount, 2)
+    XCTAssertEqual(typedRecovery.expiresAt, "2026-07-16T12:00:08.000Z")
+    XCTAssertTrue(buildWorkEventCards(from: typedTranscript).isEmpty)
+
+    let fallbackTranscript = parseWorkChatTranscript("""
+    {"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:00.000Z","sequence":1,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"available","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear"}}
+    """)
+    XCTAssertEqual(
+      workAvailableQueueRecovery(from: fallbackTranscript),
+      WorkQueueRecoveryModel(
+        recoveryId: "recovery-1",
+        messageCount: 2,
+        expiresAt: "2026-07-16T12:00:08.000Z"
+      )
+    )
+
+    let settledFallbackTranscript = parseWorkChatTranscript("""
+    {"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:00.000Z","sequence":1,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"available","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear"}}
+    {"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:02.000Z","sequence":2,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"restored","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear"}}
+    """)
+    XCTAssertNil(workAvailableQueueRecovery(from: settledFallbackTranscript))
   }
 
   @MainActor
@@ -5064,6 +5117,21 @@ final class ADETests: XCTestCase {
 
     let interrupt = try jsonDictionary(from: AgentChatInterruptRequest(sessionId: "session-1"))
     XCTAssertEqual(interrupt["sessionId"] as? String, "session-1")
+    XCTAssertNil(interrupt["mode"], "Legacy chat.interrupt must keep its original payload shape.")
+
+    let queueAwareInterrupt = try jsonDictionary(from: AgentChatInterruptRequest(
+      sessionId: "session-1",
+      mode: .stopOnly
+    ))
+    XCTAssertEqual(queueAwareInterrupt["sessionId"] as? String, "session-1")
+    XCTAssertEqual(queueAwareInterrupt["mode"] as? String, "stop_only")
+
+    let restoreQueue = try jsonDictionary(from: AgentChatRestoreCancelledQueueRequest(
+      sessionId: "session-1",
+      recoveryId: "recovery-1"
+    ))
+    XCTAssertEqual(restoreQueue["sessionId"] as? String, "session-1")
+    XCTAssertEqual(restoreQueue["recoveryId"] as? String, "recovery-1")
 
     let steer = try jsonDictionary(from: AgentChatSteerRequest(sessionId: "session-1", text: "Keep going"))
     XCTAssertEqual(steer["sessionId"] as? String, "session-1")
@@ -5803,6 +5871,9 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-legacy"))
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.interruptWithQueueMode", sessionId: "chat-legacy"))
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.restoreCancelledQueue", sessionId: "chat-legacy"))
     try await service.updateSessionMeta(sessionId: "chat-legacy", title: "Local-only rename")
     XCTAssertEqual(service.pendingOperationCount, 0)
     do {
@@ -5814,6 +5885,15 @@ final class ADETests: XCTestCase {
     do {
       _ = try await service.setScheduledWorkPaused(sessionId: "chat-legacy", paused: true)
       XCTFail("A legacy host must reject scheduled-work pause before transport")
+    } catch {
+      XCTAssertEqual((error as NSError).code, 15)
+    }
+    do {
+      _ = try await service.restoreCancelledChatQueue(
+        sessionId: "chat-legacy",
+        recoveryId: "recovery-1"
+      )
+      XCTFail("A legacy host must reject queue restoration before transport")
     } catch {
       XCTAssertEqual((error as NSError).code, 15)
     }
@@ -5953,6 +6033,27 @@ final class ADETests: XCTestCase {
                 "queueable": false,
               ],
             ],
+            [
+              "action": "chat.dispatchSteer",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
+            [
+              "action": "chat.interruptWithQueueMode",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
+            [
+              "action": "chat.restoreCancelledQueue",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
           ],
         ],
         "mobileCompatibility": [
@@ -5973,6 +6074,9 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.canInvokeChatRemoteAction("chat.createScheduledWork", sessionId: "chat-1"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
     XCTAssertFalse(service.isChatRemoteActionQueueable("chat.setScheduledWorkPaused", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.interruptWithQueueMode", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.restoreCancelledQueue", sessionId: "chat-1"))
     service.configureConnectedTransportForTesting()
     XCTAssertTrue(service.canInvokeChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
     service.disconnect()
@@ -13779,7 +13883,7 @@ final class ADETests: XCTestCase {
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3,"reasoningTokens":7,"contextWindow":200000},"costUsd":1.23}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":5,"event":{"type":"tokens","turnId":"turn-1","itemId":"tok-1","inputTokens":169600,"outputTokens":701,"cacheReadTokens":168300,"cacheWriteTokens":1200,"contextWindow":258400}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":6,"event":{"type":"codex_token_usage","turnId":"turn-2","usage":{"threadId":"thread-1","turnId":"turn-2","modelContextWindow":258400,"last":{"inputTokens":170000,"outputTokens":800,"cacheReadTokens":168500,"cacheWriteTokens":1300,"reasoningTokens":21},"total":{"totalTokens":170800}}}}
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:06.000Z","sequence":7,"event":{"type":"context_usage","turnId":"turn-3","usage":{"categories":[],"totalTokens":31000,"maxTokens":200000,"percentage":15.5}}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:06.000Z","sequence":7,"event":{"type":"context_usage","turnId":"turn-3","state":"compacting","sampleId":18,"usage":{"categories":[],"totalTokens":31000,"maxTokens":200000,"percentage":15.5}}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
@@ -13862,11 +13966,22 @@ final class ADETests: XCTestCase {
       return XCTFail("Expected Claude context usage to normalize to a tokens event.")
     }
     XCTAssertTrue(contextUsage.isContextSnapshot)
+    XCTAssertEqual(contextUsage.contextState, .compacting)
+    XCTAssertEqual(contextUsage.contextSampleId, 18)
     XCTAssertEqual(contextUsage.inputTokens, 31_000)
     XCTAssertEqual(contextUsage.totalTokens, 31_000)
     XCTAssertEqual(contextUsage.contextWindow, 200_000)
     XCTAssertEqual(contextTurnId, "turn-3")
     XCTAssertNil(contextItemId)
+
+    let contextViewModel = workContextUsageViewModel(
+      transcript: transcript,
+      provider: "claude",
+      fallbackContextWindow: nil
+    )
+    XCTAssertEqual(contextViewModel?.state, .compacting)
+    XCTAssertEqual(contextViewModel?.usedTokens, 31_000)
+    XCTAssertEqual(contextViewModel?.contextWindow, 200_000)
 
     let sessionUsage = summarizeWorkSessionUsage(from: transcript)
     XCTAssertEqual(sessionUsage?.turnCount, 1)
@@ -13985,6 +14100,113 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, 0.35, accuracy: 0.0001)
   }
 
+  func testWorkContextUsageViewModelKeepsCompactingStateAgainstLateTurnTotals() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 95_000,
+            outputTokens: 1_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 100_000,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          itemId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .contextCompact(
+          summary: "Compacting context",
+          isInProgress: true,
+          postTokens: nil,
+          turnId: "turn-1",
+          compactionId: "compact-1"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 95_000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 100_000,
+            costUsd: 0,
+            isContextSnapshot: true,
+            contextState: .compacting,
+            contextSampleId: 20
+          ),
+          turnId: "turn-1",
+          itemId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.500Z",
+        sequence: 4,
+        event: .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 100_000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 100_000,
+            costUsd: 0,
+            isContextSnapshot: true,
+            contextState: .measured,
+            contextSampleId: 19
+          ),
+          turnId: "turn-1",
+          itemId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 5,
+        event: .done(
+          status: "completed",
+          summary: "Late pre-compaction total",
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 100_000,
+            outputTokens: 1_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 100_000,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          model: nil,
+          modelId: nil
+        )
+      ),
+    ]
+
+    let viewModel = workContextUsageViewModel(
+      transcript: transcript,
+      provider: "claude",
+      fallbackContextWindow: 100_000
+    )
+    XCTAssertEqual(viewModel?.state, .compacting)
+    XCTAssertEqual(viewModel?.usedTokens, 95_000)
+    XCTAssertEqual(viewModel?.ratio, 0.95)
+  }
+
   func testWorkContextUsageViewModelInvalidatesStaleUsageAcrossAllProviderCompactions() {
     for provider in ["claude", "codex", "opencode", "cursor", "droid"] {
       let transcript = [
@@ -14044,14 +14266,18 @@ final class ADETests: XCTestCase {
         ),
       ]
 
-      XCTAssertNil(
-        workContextUsageViewModel(
-          transcript: transcript,
-          provider: provider,
-          fallbackContextWindow: 100_000
-        ),
-        "Expected stale usage to be cleared for \(provider)"
+      let viewModel = workContextUsageViewModel(
+        transcript: transcript,
+        provider: provider,
+        fallbackContextWindow: 100_000
       )
+      XCTAssertEqual(
+        viewModel?.state,
+        .recalculating,
+        "Expected stale usage to be hidden while \(provider) recalculates"
+      )
+      XCTAssertEqual(viewModel?.usedTokens, 100_000)
+      XCTAssertEqual(viewModel?.ratio, 1)
     }
   }
 

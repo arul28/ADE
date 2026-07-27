@@ -1138,6 +1138,8 @@ struct ADEComposerSendButton: View {
   /// While a send is in flight, swaps the arrow for an inline spinner.
   let sending: Bool
   var accessibilityLabelText: String = "Send message"
+  var systemImageName: String = "arrow.up"
+  var minimumTapTargetSize: CGFloat = 28
   /// Optional VoiceOver label used while disabled (e.g. "Enter a message to
   /// send") so users hear *why* the button is unavailable. Falls back to
   /// `accessibilityLabelText` when nil.
@@ -1161,7 +1163,7 @@ struct ADEComposerSendButton: View {
             .controlSize(.mini)
             .tint(enabled ? glyphColor : ADEColor.textSecondary)
         } else {
-          Image(systemName: "arrow.up")
+          Image(systemName: systemImageName)
             .font(.system(size: 14, weight: .bold))
         }
       }
@@ -1171,6 +1173,11 @@ struct ADEComposerSendButton: View {
         Circle()
           .fill(enabled ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
       )
+      .frame(
+        minWidth: minimumTapTargetSize,
+        minHeight: minimumTapTargetSize
+      )
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(!enabled)
