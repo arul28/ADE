@@ -115,8 +115,7 @@ extension WorkRootScreen {
     guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     let candidates = mergedSessions
       .filter { session in
-        !isRunOwnedSession(session)
-          && syncService.terminalBuffers[session.id] == nil
+        syncService.terminalBuffers[session.id] == nil
           && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) != "ended"
       }
       .prefix(8)
@@ -486,7 +485,7 @@ extension WorkRootScreen {
     // and hand it to Hub's roster resolver, including on a cold app launch
     // where ContentView's onChange may not observe the initial value.
     if syncService.navigationDestination(request) == .hub {
-      syncService.showProjectHome()
+      syncService.showProjectHub()
       return
     }
     navigationMutationPending = false

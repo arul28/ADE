@@ -64,10 +64,10 @@ describe("disk pressure monitor", () => {
   });
 
   it.each([
-    ["normal", [true, true, true, true, true]],
-    ["warning", [true, true, true, true, true]],
-    ["critical", [true, true, true, false, false]],
-    ["exhausted", [false, false, false, false, false]],
+    ["normal", [true, true, true, true]],
+    ["warning", [true, true, true, true]],
+    ["critical", [true, true, false, false]],
+    ["exhausted", [false, false, false, false]],
   ] satisfies Array<[DiskPressureState, boolean[]]>) (
     "applies the operation matrix in %s",
     (state, expected) => {
@@ -81,7 +81,7 @@ describe("disk pressure monitor", () => {
         roots: ["/matrix"],
         statfs: statfsSequence([freeByState[state]]),
       });
-      const kinds = ["chat_turn", "cli_launch", "process_start", "high_write_job", "compression"] as const;
+      const kinds = ["chat_turn", "cli_launch", "high_write_job", "compression"] as const;
       expect(kinds.map((kind) => monitor.canPerform(kind).allowed)).toEqual(expected);
     },
   );

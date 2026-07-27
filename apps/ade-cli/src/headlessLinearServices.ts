@@ -10,7 +10,6 @@ import type { createOperationService } from "../../desktop/src/main/services/his
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
@@ -52,7 +51,6 @@ import { createLinearClient as createLinearClientImpl } from "../../desktop/src/
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../desktop/src/main/services/cto/linearAppClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import { createFileService as createFileServiceImpl } from "../../desktop/src/main/services/files/fileService";
-import { createProcessService as createProcessServiceImpl } from "../../desktop/src/main/services/processes/processService";
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -135,7 +133,6 @@ type HeadlessLinearServices = {
   linearClient: ReturnType<typeof createLinearClient>;
   linearIssueTracker: ReturnType<typeof createLinearIssueTracker>;
   fileService: ReturnType<typeof createFileService>;
-  processService: ReturnType<typeof createProcessService>;
   prService: ReturnType<typeof createPrService>;
   agentChatService: {
     resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
@@ -2153,29 +2150,6 @@ export function createHeadlessLinearServices(
     laneService: args.laneService,
     onLaneWorktreeMutation: () => {},
   });
-  const sessionService = {
-    get: () => null,
-  };
-  const ptyService = {
-    create: async () => {
-      throw new Error(
-        "PTY-backed run commands are unavailable in headless Linear services.",
-      );
-    },
-    dispose: () => ({ disposed: false as const, reason: "missing" as const }),
-    onData: () => () => {},
-    onExit: () => () => {},
-  };
-  const processService = createProcessServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-    logger: args.logger,
-    laneService: args.laneService,
-    projectConfigService: args.projectConfigService,
-    sessionService,
-    ptyService,
-    broadcastEvent: () => {},
-  });
   const prService = createPrServiceImpl({
     db: args.db,
     logger: args.logger,
@@ -2200,7 +2174,6 @@ export function createHeadlessLinearServices(
     linearClient,
     linearIssueTracker: issueTracker,
     fileService,
-    processService,
     prService,
     agentChatService,
     dispose: () => {
@@ -2212,7 +2185,6 @@ export function createHeadlessLinearServices(
         }
       };
       swallow(() => fileService.dispose());
-      swallow(() => processService.disposeAll());
     },
   };
 }

@@ -132,7 +132,6 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
-import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
@@ -2911,7 +2910,6 @@ function parseChatActionsTab(value: unknown): ChatActionsTab {
     || value === "proof"
     || value === "handoff"
     || value === "missions"
-    || value === "run"
   ) return value;
   return "agents";
 }
@@ -10440,17 +10438,6 @@ export function AgentChatPane({
       handoffContent={handoffTabContent}
       sourcesContent={selectedSession?.provider === "codex" ? (
         <ChatSourcesPanel events={selectedEventsForDisplay} />
-      ) : undefined}
-      runContent={showWorkspaceChrome && laneId ? (
-        <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
-          <div>
-            <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/85">Run</div>
-            <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
-              Start this lane&rsquo;s process groups or open it in the Run / shell view.
-            </p>
-          </div>
-          <QuickRunInlineList laneId={laneId} />
-        </div>
       ) : undefined}
     />
   );

@@ -38,15 +38,12 @@ fallback target; the ADE runtime hosts the canonical instances.
 | `portAllocationService.ts` | W3 | Lease-based port range allocation, conflict detection, orphan recovery |
 | `laneProxyService.ts` | W4 | `*.localhost` reverse proxy, per-lane hostname routes |
 | `oauthRedirectService.ts` | W5 | OAuth callback routing (see [`oauth-redirect.md`](./oauth-redirect.md)) |
-| `runtimeDiagnosticsService.ts` | W6 | Aggregated health checks (port/process/proxy), fallback mode |
+| `runtimeDiagnosticsService.ts` | W6 | Aggregated health checks (port/proxy), fallback mode |
 
 Renderer surfaces:
 
 | Component | Role |
 |-----------|------|
-| `renderer/components/run/LaneRuntimeBar.tsx` | Compact status bar at the top of the Run page for the selected lane |
-| `renderer/components/run/RunPage.tsx` | Runtime dashboard (processes, commands, network) |
-| `renderer/components/run/RunNetworkPanel.tsx` | Proxy + port + preview details |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Per-step env init progress inside `CreateLaneDialog` |
 | `renderer/components/settings/ProxyAndPreviewSection.tsx` | Settings surface for proxy start/stop, OAuth redirect setup |
 | `renderer/components/settings/DiagnosticsDashboardSection.tsx` | Global diagnostics view |
@@ -116,7 +113,6 @@ additions:
 type LaneOverlayOverrides = {
   env?: Record<string, string>;
   cwd?: string;
-  processIds?: string[];
   testSuiteIds?: string[];
   portRange?: { start: number; end: number };
   proxyHostname?: string;
@@ -125,7 +121,7 @@ type LaneOverlayOverrides = {
 };
 ```
 
-The matcher in `src/shared/laneOverlayMatcher.ts` evaluates policies
+The matcher in `src/main/services/config/laneOverlayMatcher.ts` evaluates policies
 at lane creation:
 
 - `portRange`, `proxyHostname`, `computeBackend`: last-wins merge
@@ -205,13 +201,13 @@ IPC: `ade.lanes.proxy.getStatus / start / stop / addRoute / removeRoute
 
 ## Runtime diagnostics (W6)
 
-`runtimeDiagnosticsService` aggregates signals from the port, proxy,
-and process services into a per-lane `LaneHealthCheck`:
+`runtimeDiagnosticsService` aggregates signals from the port and proxy
+services into a per-lane `LaneHealthCheck`:
 
 ```ts
 type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
 type LaneHealthIssue = {
-  type: "process-dead" | "port-unresponsive" | "proxy-route-missing"
+  type: "port-unresponsive" | "proxy-route-missing"
       | "port-conflict" | "env-init-failed";
   message: string;
   actionLabel?: string;
@@ -221,7 +217,6 @@ type LaneHealthIssue = {
 type LaneHealthCheck = {
   laneId: string;
   status: LaneHealthStatus;
-  processAlive: boolean;
   portResponding: boolean;
   respondingPort: number | null;
   proxyRouteActive: boolean;
@@ -236,31 +231,25 @@ Check steps inside `runCheck(laneId)`:
 1. **Port responding** — `findResponsivePort` probes the route's
    target port first, then the lease's `rangeStart`, then sweeps
    the rest of the range with a 75 ms per-port timeout in parallel.
-2. **Process alive** — inferred from port responsiveness; a live
-   port implies a live process, and a non-responding port means
-   either the process is down or the lease hasn't been used yet.
-3. **Proxy route active** — route exists, proxy server is running,
+2. **Proxy route active** — route exists, proxy server is running,
    route's target port matches the actually responding port. When
    any condition fails, the service emits a precise `proxy-route-missing`
    issue with a context-specific message (proxy stopped, port
    mismatch, route missing, etc).
-4. **Port conflicts** — scan `getPortConflicts()` for unresolved
+3. **Port conflicts** — scan `getPortConflicts()` for unresolved
    conflicts involving this lane.
 
 Status derivation (`deriveStatus`):
 
 - No issues, no fallback → `healthy`
 - No issues, fallback active → `degraded`
-- Has `process-dead` or `port-unresponsive` → `unhealthy`
+- Has `port-unresponsive` → `unhealthy`
 - Otherwise → `degraded`
 
 **Proxy status unavailable** short-circuits to `unhealthy` with a
 single `proxy-route-missing` issue. This is the load-bearing check
 that tells the UI "the proxy itself failed" vs "this one lane is
 broken."
-
-De-duplication: if both `process-dead` and `port-unresponsive` are
-reported, only `port-unresponsive` is kept (it subsumes the other).
 
 Fallback mode (`activateFallback(laneId)`):
 
@@ -274,47 +263,6 @@ safe to call on a lane that has no cached health (no-op).
 
 IPC: `ade.lanes.diagnostics.getStatus / getLaneHealth / runHealthCheck
 / runFullCheck / activateFallback / deactivateFallback / event`.
-
-## LaneRuntimeBar
-
-`renderer/components/run/LaneRuntimeBar.tsx` is the compact runtime
-status bar rendered at the top of the Run page. For a given
-`laneId`:
-
-- `refreshHealthState` reads health + `processes.listRuntime` together.
-  The cheap passive pass runs every 10s while the document is visible;
-  the heavier `diagnosticsRunHealthCheck` pass is deferred 160ms on
-  mount and then no more often than every 30s.
-- `refreshRoutingState` reads preview routing, port lease, proxy status,
-  OAuth status, and the generated Google callback URL. It runs on
-  mount, on proxy/port events, and on a 30s safety poll while visible.
-- Uses separate `healthRefreshSeqRef` and `routingRefreshSeqRef`
-  counters to discard out-of-order responses when `laneId` changes
-  mid-flight.
-- On mount: run an immediate refresh with `runHealthCheck: false`,
-  run the routing refresh once, schedule the deferred health check,
-  then start independent health and routing intervals.
-- Subscribes to `onDiagnosticsEvent`, `onProxyEvent`, `onPortEvent`,
-  `processes.onEvent`. Proxy events schedule only a routing refresh;
-  process events update the runtime list immediately and schedule a
-  health refresh; port events update the lease and schedule both. The
-  two event paths have separate debounce timers.
-- Uses `inlineBadge` / `outlineButton` / `healthColor` helpers from
-  `laneDesignTokens.ts` to keep the bar visually coherent with the
-  rest of the Lanes tab.
-
-Props:
-
-```ts
-type LaneRuntimeBarProps = {
-  laneId: string | null;
-  onOpenPreviewRouting?: () => void;
-};
-```
-
-When `laneId === null` it renders a "Select a lane" placeholder and
-clears all local state so stale info from the previous lane doesn't
-flash.
 
 ## Gotchas
 
@@ -339,7 +287,6 @@ flash.
   user-controlled fields. Do not relax this — a proxy error can be
   triggered by a malicious OAuth provider redirecting to
   `<script>…`.
-- **Runtime bar refresh storms**. Keep health/process refreshes
-  separate from preview routing / port / OAuth refreshes. Process
-  events should not force preview and port reads; those are handled by
-  proxy/port events plus the 30s routing safety poll.
+- **Diagnostics refresh storms**. Keep health refreshes separate from
+  preview routing / port / OAuth refreshes. Proxy and port events plus
+  the 30s routing safety poll own those reads.

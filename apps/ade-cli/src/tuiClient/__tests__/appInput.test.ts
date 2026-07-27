@@ -1513,7 +1513,6 @@ describe("formatLaneDeleteRisk", () => {
     hasUnpushedCommits: false,
     unpushedCommitCount: 0,
     remoteBranchExists: false,
-    runningProcessCount: 0,
     activeChatCount: 0,
     activePtyCount: 0,
     activeWatcherCount: 0,
@@ -1526,7 +1525,6 @@ describe("formatLaneDeleteRisk", () => {
       dirty: true,
       hasUnpushedCommits: true,
       unpushedCommitCount: 1,
-      runningProcessCount: 2,
       activeChatCount: 1,
       activePtyCount: 1,
       remoteBranchExists: true,
@@ -1534,7 +1532,6 @@ describe("formatLaneDeleteRisk", () => {
     expect(summary).toContain("uncommitted changes");
     expect(summary).toContain("1 unpushed commit");
     expect(summary).not.toContain("1 unpushed commits");
-    expect(summary).toContain("2 running processes");
     expect(summary).toContain("1 chat session");
     expect(summary).toContain("1 terminal");
     expect(summary).toContain("remote branch exists");
@@ -1542,7 +1539,7 @@ describe("formatLaneDeleteRisk", () => {
   });
 
   it("reports a clean lane when there is nothing at risk", () => {
-    expect(formatLaneDeleteRisk(base)).toBe("Clean — no unpushed work or running processes.");
+    expect(formatLaneDeleteRisk(base)).toBe("Clean — no unpushed work or running sessions.");
   });
 });
 

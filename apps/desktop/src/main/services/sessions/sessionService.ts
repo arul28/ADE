@@ -346,7 +346,6 @@ export function createSessionService({ db }: { db: AdeDb }) {
     if (!value) return null;
     const allowed: TerminalToolType[] = [
       "shell",
-      "run-shell",
       "claude",
       "codex",
       "cursor-cli",

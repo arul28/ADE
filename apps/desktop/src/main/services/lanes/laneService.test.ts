@@ -3177,14 +3177,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
   function makeFakeServices() {
     const calls: string[] = [];
-    const processService = {
-      listRuntime: vi.fn(() => [
-        { status: "running", processId: "vite", laneId: "lane-target", runId: "r1" } as any,
-      ]),
-      stopAll: vi.fn(async (_args: { laneId: string }) => {
-        calls.push("stop_processes");
-      }),
-    };
     const agentChatService = {
       countActiveForLane: vi.fn(() => 0),
       disposeForLane: vi.fn(async () => {
@@ -3216,7 +3208,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
         // already counted by cancel_auto_rebase step; do not duplicate
       }),
     };
-    return { calls, processService, agentChatService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
+    return { calls, agentChatService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
   }
 
   async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
@@ -3238,7 +3230,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       worktreesDir,
       onDeleteEvent: (event) => opts.events.push(event),
       teardownDeps: {
-        processService: opts.teardown.processService,
         agentChatService: opts.teardown.agentChatService,
         ptyService: opts.teardown.ptyService,
         fileWatcherService: opts.teardown.fileWatcherService,
@@ -3279,7 +3270,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     // Teardown happens before the git destructive step.
     const wtIdx = fake.calls.indexOf("git_worktree_remove");
-    expect(fake.calls.indexOf("stop_processes")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_chats")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_ptys")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_watchers")).toBeLessThan(wtIdx);
@@ -3540,151 +3530,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(last.progress.overallStatus).toBe("completed");
   });
 
-  it("reports whether a lane delete is currently running", async () => {
-    const events: any[] = [];
-    const fake = makeFakeServices();
-    let releaseStop: (() => void) | null = null;
-    let stopStarted: (() => void) | null = null;
-    const stopStartedPromise = new Promise<void>((resolve) => {
-      stopStarted = resolve;
-    });
-    fake.processService.stopAll.mockImplementation(async () => {
-      fake.calls.push("stop_processes");
-      stopStarted?.();
-      await new Promise<void>((resolve) => {
-        releaseStop = resolve;
-      });
-    });
-    const { service } = await setupWithLane({ teardown: fake, events });
-    vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
-    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
 
-    const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
-    await stopStartedPromise;
-    expect(service.hasRunningDelete()).toBe(true);
 
-    expect(releaseStop).not.toBeNull();
-    releaseStop!();
-    await deletePromise;
-
-    expect(service.hasRunningDelete()).toBe(false);
-  });
-
-  it("runs independent lane delete teardown concurrently", async () => {
-    const events: any[] = [];
-    const fake = makeFakeServices();
-    const { service, db, worktreesDir } = await setupWithLane({ teardown: fake, events });
-    const now = "2026-03-11T12:00:00.000Z";
-    const siblingPath = path.join(worktreesDir, "sibling");
-    fs.mkdirSync(siblingPath, { recursive: true });
-    db.run(
-      `
-        insert into lanes(
-          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ["lane-sibling", "proj-delete", "Sibling", null, "worktree", "feature/parent", "feature/sibling", siblingPath, null, 0, "lane-parent", null, null, null, "active", now, null],
-    );
-
-    const order: string[] = [];
-    const startedStops = new Set<string>();
-    let releaseStops: (() => void) | null = null;
-    const stopGate = new Promise<void>((resolve) => {
-      releaseStops = resolve;
-    });
-    fake.processService.stopAll.mockImplementation(async ({ laneId }: { laneId: string }) => {
-      startedStops.add(laneId);
-      order.push(`stop:${laneId}`);
-      await stopGate;
-    });
-    vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
-      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
-      if (args[0] === "worktree" && args[1] === "remove") {
-        order.push(`worktree:${opts?.cwd ?? ""}:${args[2] ?? args[3] ?? ""}`);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      return { exitCode: 0, stdout: "", stderr: "" } as any;
-    });
-    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
-
-    const deletePromises = [
-      service.delete({ laneId: "lane-child", deleteBranch: false, force: true }),
-      service.delete({ laneId: "lane-sibling", deleteBranch: false, force: true }),
-    ];
-    await new Promise((resolve) => setTimeout(resolve, 40));
-
-    expect([...startedStops].sort()).toEqual(["lane-child", "lane-sibling"]);
-    expect(order.some((entry) => entry.startsWith("worktree:"))).toBe(false);
-
-    expect(releaseStops).not.toBeNull();
-    releaseStops!();
-    await Promise.all(deletePromises);
-
-    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
-    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-sibling"])).toBeNull();
-  });
-
-  it("allows lane creation while an in-flight delete is still in teardown", async () => {
-    const events: any[] = [];
-    const fake = makeFakeServices();
-    const order: string[] = [];
-    let releaseStop: (() => void) | null = null;
-    let stopStarted: (() => void) | null = null;
-    const stopStartedPromise = new Promise<void>((resolve) => {
-      stopStarted = resolve;
-    });
-    fake.processService.stopAll.mockImplementation(async () => {
-      fake.calls.push("stop_processes");
-      order.push("delete:stop_processes");
-      stopStarted?.();
-      await new Promise<void>((resolve) => {
-        releaseStop = resolve;
-      });
-    });
-    const { service } = await setupWithLane({ teardown: fake, events });
-    vi.mocked(getHeadSha).mockResolvedValue("parent-head");
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
-      if (args[0] === "worktree" && args[1] === "remove") {
-        order.push("delete:worktree_remove");
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "push") return { exitCode: 0, stdout: "", stderr: "" } as any;
-      if (args[0] === "rev-list") return { exitCode: 0, stdout: "0\n", stderr: "" } as any;
-      if (args[0] === "rev-parse") return { exitCode: 0, stdout: "parent-head\n", stderr: "" } as any;
-      return { exitCode: 0, stdout: "", stderr: "" } as any;
-    });
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "worktree" && args[1] === "add") {
-        order.push("create:worktree_add");
-      }
-      return { exitCode: 0, stdout: "", stderr: "" } as any;
-    });
-
-    const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
-    await stopStartedPromise;
-
-    const createPromise = service.create({ name: "New lane", parentLaneId: "lane-parent" });
-    for (let i = 0; i < 10 && !order.includes("create:worktree_add"); i += 1) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(order).toContain("create:worktree_add");
-    expect(order).not.toContain("delete:worktree_remove");
-
-    expect(releaseStop).not.toBeNull();
-    releaseStop!();
-    await Promise.all([deletePromise, createPromise]);
-
-    expect(order.indexOf("delete:worktree_remove")).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf("create:worktree_add")).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf("create:worktree_add")).toBeLessThan(order.indexOf("delete:worktree_remove"));
-  });
 
   it("deletes the lane locally when optional remote branch cleanup fails", async () => {
     const events: any[] = [];
@@ -3912,14 +3759,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       ["pack-child", projectId, "lane-child", "lane", path.join(repoRoot, "pack.json"), now],
     );
     db.run(
-      "insert into process_runtime(project_id, lane_id, process_key, status, readiness, updated_at) values (?, ?, ?, ?, ?, ?)",
-      [projectId, "lane-child", "vite", "running", "unknown", now],
-    );
-    db.run(
-      "insert into process_runs(id, project_id, lane_id, process_key, started_at, termination_reason, log_path) values (?, ?, ?, ?, ?, ?, ?)",
-      ["process-run-child", projectId, "lane-child", "vite", now, "completed", path.join(repoRoot, "process.log")],
-    );
-    db.run(
       "insert into test_runs(id, project_id, lane_id, suite_key, started_at, status, log_path) values (?, ?, ?, ?, ?, ?, ?)",
       ["test-run-child", projectId, "lane-child", "unit", now, "passed", path.join(repoRoot, "test.log")],
     );
@@ -4019,8 +3858,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("checkpoints", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("operations", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("packs_index", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("process_runtime", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("process_runs", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("test_runs", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("rebase_deferred", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("rebase_dismissed", "lane_id = ?", ["lane-child"])).toBe(0);
@@ -4044,32 +3881,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(last.progress.steps.find((s: any) => s.name === "stop_chats")?.status).toBe("warning");
   });
 
-  it("does not cancel a lane delete after it starts", async () => {
-    const events: any[] = [];
-    const fake = makeFakeServices();
-    fake.processService.stopAll.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 50));
-    });
-    const { service } = await setupWithLane({ teardown: fake, events });
-    vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
-    vi.mocked(runGitOrThrow).mockImplementation(async () => {
-      fake.calls.push("git_worktree_remove");
-      return { exitCode: 0, stdout: "", stderr: "" } as any;
-    });
 
-    const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false });
-    await new Promise((r) => setTimeout(r, 5));
-    const cancelResult = service.cancelDelete("lane-child");
-    expect(cancelResult.cancelled).toBe(false);
-    await deletePromise;
-
-    const last = events[events.length - 1];
-    expect(last.progress.overallStatus).toBe("completed");
-    expect(last.progress.cancellable).toBe(false);
-    expect(last.progress.steps.find((step: any) => step.name === "git_worktree_remove")?.status).toBe("completed");
-  });
-
-  it("getDeleteRisk reports running processes, chats, ptys, watchers, and unpushed commits", async () => {
+  it("getDeleteRisk reports chats, ptys, watchers, and unpushed commits", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     fake.agentChatService.countActiveForLane.mockReturnValue(1);
@@ -4085,7 +3898,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     });
 
     const risk = await service.getDeleteRisk("lane-child");
-    expect(risk.runningProcessCount).toBe(1);
     expect(risk.activeChatCount).toBe(1);
     expect(risk.activePtyCount).toBe(2);
     expect(risk.activeWatcherCount).toBe(1);
@@ -4335,11 +4147,6 @@ describe("laneService - branchSwitch", () => {
            values (?, ?, ?, ?, ?, ?, ?)`,
           ["term-1", "lane-src", 1, "shell", BSW_NOW, "running", path.join(repoRoot, "t.log")],
         );
-        db.run(
-          `insert into process_runtime(project_id, lane_id, process_key, status, readiness, updated_at)
-           values (?, ?, ?, ?, ?, ?)`,
-          ["proj-1", "lane-src", "vite", "running", "ready", BSW_NOW],
-        );
 
         vi.mocked(runGit).mockImplementation(makeRunGitResponder((args, opts) => {
           if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
@@ -4358,9 +4165,8 @@ describe("laneService - branchSwitch", () => {
         expect(preview.dirty).toBe(true);
         expect(preview.duplicateLaneId).toBe("lane-other");
         expect(preview.duplicateLaneName).toBe("Other Lane");
-        expect(preview.activeWork.length).toBeGreaterThanOrEqual(2);
+        expect(preview.activeWork.length).toBeGreaterThanOrEqual(1);
         expect(preview.activeWork.some((w) => w.kind === "terminal")).toBe(true);
-        expect(preview.activeWork.some((w) => w.kind === "process")).toBe(true);
         expect(preview.targetBranchRef).toBe("feature/target");
         expect(preview.mode).toBe("existing");
       } finally {
@@ -4494,7 +4300,7 @@ describe("laneService - branchSwitch", () => {
 
         const service = makeBswService(db, repoRoot, "proj-1");
         await expect(service.switchBranch({ laneId: "lane-a", branchName: "main" }))
-          .rejects.toThrow(/active sessions or processes/);
+          .rejects.toThrow(/active sessions/);
       } finally {
         db.close();
         fs.rmSync(repoRoot, { recursive: true, force: true });

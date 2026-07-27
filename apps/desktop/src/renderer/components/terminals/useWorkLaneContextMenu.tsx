@@ -83,10 +83,6 @@ export function useWorkLaneContextMenu(): {
                 close();
                 setManagedLaneId(laneId);
               }}
-              onOpenRun={(laneId) => {
-                selectLane(laneId);
-                void navigate("/project");
-              }}
               selectLane={(laneId) => {
                 if (!laneId) return;
                 goToLanesAction(laneId, "split-open");

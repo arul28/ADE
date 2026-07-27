@@ -728,7 +728,7 @@ private let projectIconImageCache = NSCache<NSString, UIImage>()
 
 /// Decodes a base64 `data:` URL project icon into a `UIImage`, memoised in a
 /// process-wide cache. Returns nil when the project has no icon. Shared by the
-/// project-home list rows and the root toolbar's projects affordance so both
+/// project hub rows and the root toolbar's projects affordance so both
 /// resolve icons through one cache.
 func projectIconImage(from dataUrl: String?) -> UIImage? {
   guard let dataUrl, !dataUrl.isEmpty else { return nil }
@@ -752,7 +752,7 @@ func projectIconImage(from dataUrl: String?) -> UIImage? {
 extension Image {
   /// Shared presentation for a decoded project icon: high-quality fit inside a
   /// rounded square. Size and corner radius vary per surface (toolbar capsule,
-  /// leading disc, project-home rows), so they stay parameters.
+  /// leading disc, project hub rows), so they stay parameters.
   func projectIconStyle(size: CGFloat, cornerRadius: CGFloat) -> some View {
     self
       .resizable()
@@ -763,11 +763,11 @@ extension Image {
   }
 }
 
-struct ADEProjectHomeButton: View {
+struct ADEProjectHubButton: View {
   @EnvironmentObject private var syncService: SyncService
 
   var body: some View {
-    Button(action: openProjectHome) {
+    Button(action: openProjectHub) {
       Label {
         Text("Projects")
       } icon: {
@@ -799,8 +799,8 @@ struct ADEProjectHomeButton: View {
     )
   }
 
-  fileprivate func openProjectHome() {
-    syncService.showProjectHome()
+  fileprivate func openProjectHub() {
+    syncService.showProjectHub()
   }
 }
 
@@ -816,14 +816,14 @@ struct ADEProjectHomeButton: View {
 @available(iOS 17.0, *)
 /// Permanent "back to the hub" affordance shown at the leading edge of every
 /// in-project tab header: a left chevron + the active project's icon. Tapping it
-/// returns to the all-projects hub (`showProjectHome`) from any tab's main page.
+/// returns to the all-projects hub (`showProjectHub`) from any tab's main page.
 /// Replaces the old top-right "Projects" grid button.
 struct ADEHubBackButton: View {
   @EnvironmentObject private var syncService: SyncService
 
   var body: some View {
     Button {
-      syncService.showProjectHome()
+      syncService.showProjectHub()
     } label: {
       HStack(spacing: 5) {
         Image(systemName: "chevron.left")
@@ -1017,7 +1017,7 @@ struct ADERootToolbarLeading: View {
   var body: some View {
     HStack(spacing: 10) {
       ADEConnectionDot()
-      ADEProjectHomeButton()
+      ADEProjectHubButton()
       AttentionDrawerButton()
     }
     .fixedSize(horizontal: true, vertical: false)
@@ -1117,7 +1117,7 @@ struct ADERootToolbarLeadingItems: ToolbarContent {
     .sharedBackgroundVisibility(.hidden)
 
     ToolbarItem(placement: .topBarLeading) {
-      ADEProjectHomeButton()
+      ADEProjectHubButton()
     }
     .sharedBackgroundVisibility(.hidden)
 

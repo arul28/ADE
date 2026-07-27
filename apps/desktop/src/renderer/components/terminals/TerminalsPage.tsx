@@ -737,7 +737,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = "Select a lane before inserting tool context.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
-  } else if (activeWorkSession.toolType === "shell" || activeWorkSession.toolType === "run-shell") {
+  } else if (activeWorkSession.toolType === "shell") {
     contextDisabledReason = "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.";
   } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
     contextDisabledReason = `Continue this ${formatToolTypeLabel(activeWorkSession.toolType)} session before inserting tool context.`;

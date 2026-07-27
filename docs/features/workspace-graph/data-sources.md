@@ -112,9 +112,8 @@ Sessions flow through `renderer/lib/sessionListCache.ts` which:
   bounded sets.
 
 The graph reads via `listSessionsCached({ limit: 150 })` and filters
-out run-owned sessions with `isRunOwnedSession`. This is
-intentional: run-owned sessions should not inflate a lane's
-activity — the Run page tracks those separately.
+out child shell sessions owned by chats so they do not double-count
+their parent chat's lane activity.
 
 ## History-backed activity refresh
 

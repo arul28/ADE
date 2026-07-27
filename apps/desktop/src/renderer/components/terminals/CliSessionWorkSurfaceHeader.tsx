@@ -8,7 +8,6 @@ import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { getLaneAccent } from "../lanes/laneColorPalette";
-import { QuickRunMenu } from "../run/QuickRunMenu";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import {
@@ -86,20 +85,6 @@ function StopSessionButton({
         <StopCircle size={14} weight="regular" />
       </button>
     </SmartTooltip>
-  );
-}
-
-/** Lane-scoped Run dropdown — only rendered when the session belongs to a lane. */
-function SessionRunMenu({ session }: { session: TerminalSessionSummary }) {
-  if (!session.laneId) return null;
-  return (
-    <QuickRunMenu
-      laneId={session.laneId}
-      compact
-      label="Run"
-      align="end"
-      triggerStyle={{ height: 24, padding: "0 8px" }}
-    />
   );
 }
 
@@ -187,7 +172,6 @@ export function CliSurfaceTrailingActions({
   return (
     <>
       <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
-      <SessionRunMenu session={session} />
       <SessionInfoButton session={session} onInfoClick={onInfoClick} />
       <SessionActionsButton session={session} onContextMenu={onContextMenu} />
     </>
@@ -198,7 +182,7 @@ export function CliSurfaceTrailingActions({
  * Consolidated action cluster for a CLI session's grid tile. The grid tile's
  * lane-colored FloatingPane header now carries everything the old secondary
  * header did, so this folds those controls into a single row in order:
- * PR chip → Stop → status dot → Run → Info → kebab.
+ * PR chip → Stop → status dot → Info → kebab.
  */
 export function GridTileSessionHeaderActions({
   session,
@@ -218,7 +202,6 @@ export function GridTileSessionHeaderActions({
       {session.laneId ? <ChatGitToolbar laneId={session.laneId} /> : null}
       <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
       <SessionStatusDot session={session} />
-      <SessionRunMenu session={session} />
       <SessionInfoButton session={session} onInfoClick={onInfoClick} />
       <SessionActionsButton session={session} onContextMenu={onContextMenu} />
     </div>

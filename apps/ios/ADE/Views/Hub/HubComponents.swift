@@ -791,7 +791,7 @@ struct HubEmptyProjectsCard: View {
   }
 }
 
-// MARK: - No-machine state (preserves the old ProjectHomeView landing)
+// MARK: - No-machine state (preserves the old project hub landing)
 
 struct HubNoMachineState: View {
   @EnvironmentObject private var syncService: SyncService

@@ -44,7 +44,6 @@ _    ____  _____
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -182,7 +181,6 @@ _    ____  _____
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -511,26 +509,6 @@ _    ____  _____
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
 
-## ade run --help
-_    ____  _____
-    / \  |  _ \| ____|
-   / _ \ | | | |  _|
-  / ___ \| |_| | |___
- /_/   \_\____/|_____|
-
-  Run tab
-
-  Run tab commands mirror ADE process definitions and runtime state. They use
-  the machine ADE brain when live process state is needed.
-
-    $ ade run defs --text                           List configured run commands
-    $ ade run ps --lane <lane> --text               List process runtime state
-    $ ade run start <process> --lane <lane>         Start a process in a lane
-    $ ade run stop <process> --lane <lane>          Stop a process in a lane
-    $ ade run logs <process> --run <run> --text     Tail process logs
-    $ ade run stack start --stack <id> --lane <lane> Start a process stack
-    $ ade run start-all --lane <lane>               Start all configured processes
-
 ## ade shell --help
 _    ____  _____
     / \  |  _ \| ____|
@@ -621,7 +599,9 @@ _    ____  _____
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
-                                                    Recover a stalled Codex turn: wait, nudge, retry, or resume
+                                                    Recover a stalled provider turn: wait, nudge, retry, or resume
+    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
+                                                    Run an accepted-but-unprocessed follow-up next, or dismiss it
     $ ade chat models --provider codex --json       List models and supported reasoning tiers
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
@@ -760,7 +740,6 @@ _    ____  _____
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -961,7 +940,6 @@ _    ____  _____
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -1171,9 +1149,8 @@ _    ____  _____
   ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
   {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
 
-  Reuse a Run-tab command: list configured processes with
-  `ade settings get --text`, then pass `--cwd` so the launch runs from the
-  same directory the Run tab uses. Relative cwds resolve against the lane root.
+  Pass `--cwd` to launch from a project subdirectory. Relative paths resolve
+  against the lane root.
 
   Discovery and lifecycle:
     $ ade app-control status --text                Show active session and provider readiness
@@ -1378,7 +1355,6 @@ _    ____  _____
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal

@@ -42,7 +42,6 @@ import type { createLaneTemplateService } from "../../../../desktop/src/main/ser
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -153,7 +152,6 @@ type SyncServiceArgs = {
    */
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
-  processService: ReturnType<typeof createProcessService>;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -364,7 +362,6 @@ function migrateLegacySyncSecretFile(args: {
     });
   }
 }
-const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 function isChatToolType(toolType: string | null | undefined): boolean {
   const normalized = toolType?.trim().toLowerCase();
   if (!normalized) return false;
@@ -748,7 +745,6 @@ export function createSyncService(args: SyncServiceArgs) {
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
     projectConfigService: args.projectConfigService,
-    processService: args.processService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,
@@ -825,7 +821,6 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionService: args.sessionService,
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
-      processService: args.processService,
       agentChatService: args.agentChatService,
       aiIntegrationService: args.aiIntegrationService,
       orchestrationService: args.orchestrationService,
@@ -1212,22 +1207,6 @@ export function createSyncService(args: SyncServiceArgs) {
       });
     }
 
-    const lanes = args.db.all<{ id: string }>(
-      "select id from lanes where status != 'archived'",
-    );
-    for (const lane of lanes) {
-      for (const runtime of args.processService.listRuntime(lane.id)) {
-        if (!RUNNING_PROCESS_STATES.has(runtime.status)) continue;
-        blockers.push({
-          kind: "managed_process",
-          id: `${lane.id}:${runtime.processId}`,
-          label: runtime.processId,
-          detail:
-            "Managed run processes must stop before the host role can move.",
-        });
-      }
-    }
-
     return {
       ready: blockers.length === 0,
       blockers,
@@ -1473,7 +1452,7 @@ export function createSyncService(args: SyncServiceArgs) {
             : "Machine sync is disabled because the CRDT database extension is unavailable on this platform.",
         blockingStateText:
           crdtSyncAvailable
-            ? "Live chats, terminals, or run processes must stop first."
+            ? "Live chats or terminals must stop first."
             : "Install Windows cr-sqlite support before pairing or syncing devices.",
       };
     },
@@ -1724,7 +1703,7 @@ export function createSyncService(args: SyncServiceArgs) {
       if (current.role === "brain") return current;
       if (!current.transferReadiness.ready) {
         throw new Error(
-          "Stop live chats, terminals, and run processes before transferring the host role.",
+          "Stop live chats and terminals before transferring the host role.",
         );
       }
       const localDevice = deviceRegistryService.ensureLocalDevice();

@@ -2566,7 +2566,7 @@ final class SyncService: ObservableObject {
   /// Debounces persistence of the roster snapshot to the App Group cache.
   var rosterPersistTask: Task<Void, Never>?
   @Published var settingsPresented = false
-  @Published var projectHomePresented = true
+  @Published var projectHubPresented = true
   @Published var attentionDrawerPresented = false
   /// Drives the global Linear pane sheet (a full-screen issue browser + launcher
   /// bound in `ContentView`). Opened from the Work top-bar Linear button and by
@@ -2948,8 +2948,8 @@ final class SyncService: ObservableObject {
     database.hasHydratedControllerData()
   }
 
-  var shouldShowProjectHome: Bool {
-    projectHomePresented || activeProjectId == nil
+  var shouldShowProjectHub: Bool {
+    projectHubPresented || activeProjectId == nil
   }
 
   var activeProject: MobileProjectSummary? {
@@ -2981,9 +2981,9 @@ final class SyncService: ObservableObject {
     return normalizedProjectRoot(project.rootPath) == switchingRoot
   }
 
-  func showProjectHome() {
+  func showProjectHub() {
     refreshProjectCatalog()
-    projectHomePresented = true
+    projectHubPresented = true
     if supportsProjectCatalog, canSendLiveRequests() {
       Task { @MainActor [weak self] in
         await self?.refreshRemoteProjectCatalog()
@@ -2991,16 +2991,16 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func closeProjectHome() {
+  func closeProjectHub() {
     guard activeProjectId != nil else { return }
-    projectHomePresented = false
+    projectHubPresented = false
   }
 
   /// A user-requested machine transition always returns the UI to the Hub
   /// before the socket changes. The active project remains cached, but no
   /// in-project screen can keep rendering state owned by the previous machine.
   func prepareForUserConnectionChange() {
-    projectHomePresented = true
+    projectHubPresented = true
     accountConnectSuccessClearTask?.cancel()
     accountConnectSuccessClearTask = nil
     accountConnectSuccessLabel = nil
@@ -3023,7 +3023,7 @@ final class SyncService: ObservableObject {
     unhideProject(project)
 
     if isActiveProject(project) {
-      projectHomePresented = false
+      projectHubPresented = false
       // An in-place hub activation can leave a project marked active while its
       // work domain never finished hydrating (or landed in a failed/dropped
       // state). Re-entering the project must repair that rather than no-op,
@@ -3073,7 +3073,7 @@ final class SyncService: ObservableObject {
     }
 
     setActiveProjectId(project.id, rootPath: project.rootPath)
-    projectHomePresented = false
+    projectHubPresented = false
     localStateRevision += 1
     refreshActiveSessionsAndSnapshot()
     scheduleWorkspaceSnapshotWrite()
@@ -3190,7 +3190,7 @@ final class SyncService: ObservableObject {
       setActiveProjectId(nil)
       latestRemoteDbVersion = 0
       resetOutboundCursorStateForActiveProject()
-      projectHomePresented = true
+      projectHubPresented = true
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
@@ -3643,7 +3643,7 @@ final class SyncService: ObservableObject {
       // reconnects via the WebSocket. Treat this as a successful switch:
       // preserve the new active project, tear down any live socket, and let
       // reconnectIfPossible re-establish streaming for the new project.
-      if dismissHome { projectHomePresented = false }
+      if dismissHome { projectHubPresented = false }
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
@@ -3752,7 +3752,7 @@ final class SyncService: ObservableObject {
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
       currentAddress = connectedEndpoint.host
-      if dismissHome { projectHomePresented = false }
+      if dismissHome { projectHubPresented = false }
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
@@ -3900,7 +3900,7 @@ final class SyncService: ObservableObject {
 
     if allowSingleProjectFallback, projects.count == 1, let onlyProject = projects.first {
       setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
-      projectHomePresented = false
+      projectHubPresented = false
     }
   }
 
@@ -4045,7 +4045,7 @@ final class SyncService: ObservableObject {
     personalChatSessions = loadCachedPersonalChats()
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
-    // The hub (all-projects ProjectHomeView) is the launch surface: always land
+    // The hub (all-projects project hub) is the launch surface: always land
     // there, even when a project was previously active. Opening a project from
     // the hub (`selectProject`) dismisses it into that project's tabs; Back
     // returns here. `activeProjectId` stays set so the roster's live overlay and
@@ -6855,26 +6855,6 @@ final class SyncService: ObservableObject {
       if let row = database.fetchSession(id: sessionId) { return row }
     }
     return nil
-  }
-
-  func listProcessDefinitions() async throws -> [ProcessDefinition] {
-    try await sendDecodableCommand(action: "processes.listDefinitions", as: [ProcessDefinition].self)
-  }
-
-  func listProcessRuntime(laneId: String) async throws -> [ProcessRuntime] {
-    try await sendDecodableCommand(action: "processes.listRuntime", args: ["laneId": laneId], as: [ProcessRuntime].self)
-  }
-
-  func startProcess(laneId: String, processId: String) async throws -> ProcessRuntime {
-    try await sendDecodableCommand(
-      action: "processes.start",
-      args: ["laneId": laneId, "processId": processId],
-      as: ProcessRuntime.self
-    )
-  }
-
-  func stopProcess(laneId: String, processId: String) async throws {
-    _ = try await sendCommand(action: "processes.stop", args: ["laneId": laneId, "processId": processId])
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
@@ -13516,7 +13496,7 @@ final class SyncService: ObservableObject {
            ?? syncNormalizedCommandScopeValue(activeHostProfile?.lastHostDeviceId)
        ) != incomingHostIdentity {
       setActiveProjectId(nil)
-      projectHomePresented = true
+      projectHubPresented = true
     }
     if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
@@ -13619,11 +13599,11 @@ final class SyncService: ObservableObject {
       activeProjectHostIdentity = incomingHostIdentity
       UserDefaults.standard.set(incomingHostIdentity, forKey: activeProjectHostIdentityKey)
     }
-    // Connecting must not navigate. Forcing `projectHomePresented = false`
+    // Connecting must not navigate. Forcing `projectHubPresented = false`
     // here yanked the user out of the machine's project list into the
     // remembered project on every (re)connect — and with background reconnect
     // cycles it re-fired while they sat on the main page. Entering a project
-    // is only ever a user action (selectProject / closeProjectHome).
+    // is only ever a user action (selectProject / closeProjectHub).
 
     allowAutoReconnect = true
     setAutoReconnectPausedByUser(false)
@@ -17413,7 +17393,7 @@ extension SyncService {
       }
       // Standalone CLI session (tracked terminal with no chat parent): a real
       // hub entry whether it is live or ended — mirrors the host rosterBuilder.
-      return !isRunOwnedSession(session)
+      return true
     }
     let chats: [RemoteRosterChat] = visibleSessions.map { session in
       let status = rosterStatus(forSession: session)

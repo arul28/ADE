@@ -59,7 +59,6 @@ For lanes that need more than a running server, ADE can run an **env-init** sequ
     Rather than configure env init lane by lane, package it once as a **template** — a complete init recipe plus an optional setup script. Manage templates in **Settings → Lane Templates**, set a default, and new lanes pick it up. The setup script can carry platform-specific variants (Unix vs. Windows commands) and expose the primary worktree's path to its commands.
   </Accordion>
   <Accordion title="Where to find these settings" icon="sliders">
-    - **Run tab** — the lane runtime bar (health, port, proxy, preview, OAuth) and process dashboards.
     - **Settings → Proxy & Preview** — start/stop the proxy and configure OAuth redirect.
     - **Settings → Lane Templates** — manage reusable init recipes and the default template.
     - **Settings → Diagnostics** — the global health view across lanes.
@@ -74,10 +73,7 @@ ADE aggregates port, proxy, and process signals into a per-lane health status (`
 Never paste production secrets into lane env files or templates. Lane runtime is for local, disposable dev environments — point lanes at test databases and feature flags, not live credentials.
 </Warning>
 
-<CardGroup cols={2}>
-  <Card title="Run & processes" icon="play" href="/tools/project-home">
-    Start dev servers, run tests, and watch lane runtime health.
-  </Card>
+<CardGroup cols={1}>
   <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
     How lanes isolate work and sync across surfaces.
   </Card>

@@ -45,22 +45,6 @@ function installAdeMocks() {
     app: {
       openExternal: vi.fn().mockResolvedValue(undefined),
     },
-    projectConfig: {
-      get: vi.fn().mockResolvedValue({
-        effective: {
-          processes: [],
-          processGroups: [],
-        },
-      }),
-      confirmTrust: vi.fn().mockResolvedValue(undefined),
-    },
-    processes: {
-      startAll: vi.fn().mockResolvedValue(undefined),
-      stopAll: vi.fn().mockResolvedValue(undefined),
-      startGroup: vi.fn().mockResolvedValue(undefined),
-      stopGroup: vi.fn().mockResolvedValue(undefined),
-      restartGroup: vi.fn().mockResolvedValue(undefined),
-    },
   } as any;
 }
 

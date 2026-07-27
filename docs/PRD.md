@@ -18,7 +18,7 @@ The clients of that brain are equal:
 - **iOS app** (`apps/ios/`) — SwiftUI controller; pairs with an ADE machine over WebSocket. The phone never runs agents.
 - **SSH-attached desktop** — a desktop window pointed at a remote machine is the same client as a local window; the remote machine's brain is authoritative for its projects.
 
-The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
+The primary unit of work inside any project is a **lane**: an isolated git worktree with its own agent and terminal sessions. Many lanes run concurrently — each with its own chat, sessions, and PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
 
 Layered on top, all owned by the brain:
 - **Agents** — lane-bound chat, machine-owned personal chat, plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware; Codex defaults to GPT-5.6 Sol with Terra/Luna beside it.
@@ -42,11 +42,11 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; used for dev/test work instead of the automated stable/beta/alpha brain service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Project | One repo entry in the brain's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Personal chat | Machine-owned general-purpose agent conversation with no project, lane, repository, or PR binding. Stored outside the project registry and reached through runtime-scoped RPC/sync actions. | [personal-chats/README.md](./features/personal-chats/README.md) |
-| Lane | Isolated git worktree + per-lane process pool + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
+| Lane | Isolated git worktree with agent and terminal sessions for one task. | [lanes/README.md](./features/lanes/README.md) |
 | Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
 | Agent | Model-backed operator. The persistent CTO plus ephemeral lane-bound and personal chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
-| Lane runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
+| Lane runtime | Per-lane env initialization, ports, proxy, OAuth routing, and diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
@@ -67,7 +67,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Controller | A client that reads runtime state and sends commands without running agents itself; the iOS app is always a controller. |
 | Catalog | The machine-level list of projects the brain serves to clients and ADE Mobile. |
 | Project | A registered repository root known to a machine brain and addressed by `projectId`. |
-| Lane | A task-scoped git worktree with its own process pool, agent chat, work sessions, and PR flow. |
+| Lane | A task-scoped git worktree with its own agent chat, work sessions, and PR flow. |
 | Worktree | The filesystem checkout backing a lane, usually under `.ade/worktrees/<lane-id>/`. |
 | Stack | A dependency chain of lanes that maps to stacked PRs. |
 | Work session | A tracked chat, agent CLI, shell, or PTY session associated with a lane or project surface. Its canonical lifecycle distinguishes active work, quiet “your move,” loud “Needs you,” failed/stale, ended, and settled states; settled sessions remain openable and are not archived. |
@@ -94,7 +94,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Work execution
 
-- [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Lane runtime covers ports, env, proxy, processes.
+- [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Lane runtime covers ports, env initialization, proxy routing, and health checks.
 - [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation, integration merge plans, and merge-into-lane workflows. Backed by lanes; dependencies rebase automatically.
 - [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution, external CLI resolver flow.
 - [**Workspace Graph**](./features/workspace-graph/README.md) — React Flow canvas projecting lanes/PRs/conflicts/sessions into a single view. Staged hydration (topology first, then activity/risk/sync).
@@ -113,10 +113,9 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Canonical cross-client session lifecycle, two-tier attention, the quiet settled tier, agent-authored status notes, process tracking, AI titles, lazy resume-target hydration, and stale reconciliation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY and session services. Canonical cross-client session lifecycle, two-tier attention, the quiet settled tier, agent-authored status notes, AI titles, lazy resume-target hydration, and stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
-- [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
 
 ### Integrations
@@ -130,11 +129,11 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ## Cross-Cutting Architecture
 
-For the system-wide picture — brain role, runtime machinery, clients, processes, data plane, IPC, security, build/test/deploy — read [**ARCHITECTURE.md**](./ARCHITECTURE.md).
+For the system-wide picture — brain role, runtime machinery, clients, data plane, IPC, security, build/test/deploy — read [**ARCHITECTURE.md**](./ARCHITECTURE.md).
 
 Quick pointers:
 
-- **ADE brain and execution machinery**: `apps/ade-cli/` — the brain is the per-machine source of truth for projects, lanes, agent chats, work sessions, processes, sync, and proof. Execution services inside that process do the work. Endpoint: `$ADE_HOME/sock/ade.sock`. Login-service installers: `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows). Multi-project RPC: `apps/ade-cli/src/multiProjectRpcServer.ts`. Project registry/scope: `apps/ade-cli/src/services/projects/`. Sync service: `apps/ade-cli/src/services/sync/`. Credentials, agent registry, service surfaces: `apps/ade-cli/src/services/`.
+- **ADE brain and execution machinery**: `apps/ade-cli/` — the brain is the per-machine source of truth for projects, lanes, agent chats, work sessions, sync, and proof. Execution services inside that process do the work. Endpoint: `$ADE_HOME/sock/ade.sock`. Login-service installers: `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows). Multi-project RPC: `apps/ade-cli/src/multiProjectRpcServer.ts`. Project registry/scope: `apps/ade-cli/src/services/projects/`. Sync service: `apps/ade-cli/src/services/sync/`. Credentials, agent registry, service surfaces: `apps/ade-cli/src/services/`.
 - **Desktop client**: `apps/desktop/` — Electron main + preload + renderer. Multi-window. `LocalRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/`) speaks to the local runtime; `RemoteConnectionPool` (`apps/desktop/src/main/services/remoteRuntime/`) speaks to a runtime over SSH after `bootstrapRemoteRuntime` uploads the bundled `ade-<platform-arch>` binary. `preload.ts` routes runtime-backed APIs through those pools. In-process desktop services remain only for flows that have no runtime binding yet, Electron-only side effects, diagnostics, and tests.
 - **Terminal client**: `apps/ade-cli/src/tuiClient/` — `ade code` Ink + React Work chat.
 - **iOS client**: `apps/ios/` — SwiftUI controller over WebSocket to the ADE brain's sync service.
@@ -161,7 +160,7 @@ Fragile areas flagged across the docs (read docs before editing):
 - Sync service inside the ADE runtime (`apps/ade-cli/src/services/sync/`) — desktop's old in-process sync host is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics; do not assume desktop owns sync.
 - Multi-window shell + `app/navigate` JSON-RPC handoff (desktop main `main.ts`, runtime side in `apps/ade-cli/src/adeRpcServer.ts`) — TUI/external controllers can drive desktop window navigation.
 - CTO smart-memory system — recent work: deterministic pre-compaction / pre-model-switch flush, file-backed durable memory, memory-rich reconstruction injection.
-- PTY / sessions / processes services — rewritten this branch.
+- PTY / session services — rewritten this branch.
 - OAuth redirect service — complex three-state machine with HMAC signing.
 - Chat transcript render pipeline — two-layer event→state→render path.
 

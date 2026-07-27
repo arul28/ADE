@@ -13,7 +13,6 @@ const previewDeps = {
   laneService: null,
   prService: null,
   fileService: null,
-  processService: null,
   testService: null,
   ptyService: null,
   automationService: null,

@@ -202,12 +202,6 @@ function isRosterTopLevelToolType(toolType: string | null | undefined): boolean 
   return raw.endsWith("-chat");
 }
 
-// Sessions spawned by process runs (`run-shell`) are infrastructure noise, not
-// user work — mirrors `isRunOwnedSession` on desktop and iOS.
-function isRunOwnedToolType(toolType: string | null | undefined): boolean {
-  return normalizedToolType(toolType) === "run-shell";
-}
-
 function normalizedParentSessionId(row: TerminalSessionRow): string | null {
   const parentId = row.chat_session_id?.trim() ?? "";
   if (!parentId || parentId === row.id) return null;
@@ -229,7 +223,7 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
     // Standalone CLI session (tracked terminal with no chat parent): a real
     // roster entry whether it is live or ended — the hub must list every CLI
     // session, not just agent chats.
-    return !isRunOwnedToolType(row.tool_type);
+    return true;
   });
 }
 

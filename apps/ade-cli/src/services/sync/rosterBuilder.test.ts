@@ -95,8 +95,6 @@ function seedDatabase(): void {
   // a real hub entry, not a chat: toolType passes through so the phone routes
   // it to the terminal surface.
   insertChat.run("cli-codex", "lane-work", null, "codex", "Codex CLI", "running", "cli", "2026-01-04T00:00:00Z", 0, null, "2026-01-04T00:00:00Z", null);
-  // Run-owned infrastructure session — never a hub entry.
-  insertChat.run("run-owned", "lane-work", null, "run-shell", "Dev server", "ended", "exited", "2026-01-04T06:00:00Z", 0, 0, "2026-01-04T00:00:00Z", null);
   // Archived chat — filtered out.
   insertChat.run("chat-arch", "lane-primary", null, "claude-chat", "Old", "ended", null, "2026-01-01T00:00:00Z", 0, 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
   // Chat whose lane was filtered out — orphan, dropped.

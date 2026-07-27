@@ -74,7 +74,7 @@ struct ContentView: View {
             }
           }
         )
-      } else if syncService.shouldShowProjectHome {
+      } else if syncService.shouldShowProjectHub {
         HubScreen()
       } else {
         rootTabs
@@ -118,7 +118,7 @@ struct ContentView: View {
       .onChange(of: selectedTab) { _, _ in
         captureCurrentRootScreen()
       }
-      .onChange(of: syncService.shouldShowProjectHome) { _, _ in
+      .onChange(of: syncService.shouldShowProjectHub) { _, _ in
         captureCurrentRootScreen()
       }
       .onChange(of: syncService.settingsPresented) { _, isPresented in
@@ -162,33 +162,33 @@ struct ContentView: View {
         // A linear-issue deep link opens the global pane (it consumes the
         // request once presented). Only reached when a project is active — the
         // router bounces the link to the Mac otherwise.
-        syncService.closeProjectHome()
+        syncService.closeProjectHub()
         syncService.linearPanePresented = true
       }
       .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        syncService.closeProjectHome()
+        syncService.closeProjectHub()
         if selectedTab != .files {
           selectedTab = .files
         }
       }
       .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        syncService.closeProjectHome()
+        syncService.closeProjectHub()
         if selectedTab != .lanes {
           selectedTab = .lanes
         }
       }
       .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        syncService.closeProjectHome()
+        syncService.closeProjectHub()
         if selectedTab != .work {
           selectedTab = .work
         }
       }
       .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
-        syncService.closeProjectHome()
+        syncService.closeProjectHub()
         if selectedTab != .prs {
           selectedTab = .prs
         }
@@ -203,7 +203,7 @@ struct ContentView: View {
   private func captureCurrentRootScreen() {
     guard hasMobileAccess else { return }
     ProductAnalytics.shared.captureScreen(
-      syncService.shouldShowProjectHome ? .hub : selectedTab.analyticsScreen
+      syncService.shouldShowProjectHub ? .hub : selectedTab.analyticsScreen
     )
   }
 
@@ -296,10 +296,10 @@ private struct WorkSessionNavigationModifier: ViewModifier {
       // A scoped or roster-resolved session may belong to any project. Keep
       // the machine-wide Hub mounted so it can activate and hydrate the target.
       if syncService.navigationDestination(request) == .hub {
-        syncService.showProjectHome()
+        syncService.showProjectHub()
         return
       }
-      syncService.closeProjectHome()
+      syncService.closeProjectHub()
       if selectedTab != .work {
         selectedTab = .work
       }

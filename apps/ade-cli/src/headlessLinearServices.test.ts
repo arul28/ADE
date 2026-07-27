@@ -25,10 +25,6 @@ vi.mock("../../desktop/src/main/services/files/fileService", () => ({
   createFileService: vi.fn(() => ({ dispose: vi.fn() })),
 }));
 
-vi.mock("../../desktop/src/main/services/processes/processService", () => ({
-  createProcessService: vi.fn(() => ({ disposeAll: vi.fn() })),
-}));
-
 vi.mock("../../desktop/src/main/services/prs/prService", () => ({
   createPrService: vi.fn(() => ({ setAgentChatService: vi.fn() })),
 }));
@@ -49,7 +45,6 @@ function createDeps(overrides: Record<string, any> = {}) {
     paths: {
       adeDir,
       logsDir: path.join(adeDir, "logs"),
-      processLogsDir: path.join(adeDir, "logs", "processes"),
       testLogsDir: path.join(adeDir, "logs", "tests"),
       transcriptsDir: path.join(adeDir, "transcripts"),
       worktreesDir: path.join(adeDir, "worktrees"),
@@ -548,7 +543,6 @@ describe("headlessLinearServices", () => {
     expect(services.linearClient).toBeTruthy();
     expect(services.linearIssueTracker).toBeTruthy();
     expect(services.fileService).toBeTruthy();
-    expect(services.processService).toBeTruthy();
     expect(services.prService).toBeTruthy();
     expect(services.agentChatService).toBeTruthy();
     expect(typeof services.dispose).toBe("function");

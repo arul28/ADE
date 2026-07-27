@@ -277,7 +277,7 @@ func buildWorkRootSessionPresentation(
       liveChatSessions.append(session)
     }
 
-    guard !isRunOwnedSession(session), !isArchived else { continue }
+    guard !isArchived else { continue }
     if status == "awaiting-input" {
       globalNeedsInputCount += 1
       globalLiveSessionCount += 1

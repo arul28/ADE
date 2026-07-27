@@ -9,51 +9,8 @@ import type { ModelConfig } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 
-// Backward compatible with earlier configs that used `on_crash`.
-export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
-export type StackStartOrder = "parallel" | "dependency";
-export type ProcessReadinessType = "none" | "port" | "logRegex";
-export type ProcessRuntimeStatus = "stopped" | "starting" | "running" | "degraded" | "stopping" | "exited" | "crashed";
-export type ProcessReadinessState = "unknown" | "ready" | "not_ready";
-export type StackAggregateStatus = "running" | "partial" | "stopped" | "error";
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
-
-export type ProcessReadinessConfig =
-  | { type: "none" }
-  | { type: "port"; port: number }
-  | { type: "logRegex"; pattern: string };
-
-export type ConfigProcessReadiness =
-  | { type?: "none" }
-  | { type: "port"; port?: number }
-  | { type: "logRegex"; pattern?: string };
-
-export type ProcessDefinition = {
-  id: string;
-  name: string;
-  command: string[];
-  cwd: string;
-  env: Record<string, string>;
-  groupIds: string[];
-  autostart: boolean;
-  restart: ProcessRestartPolicy;
-  gracefulShutdownMs: number;
-  dependsOn: string[];
-  readiness: ProcessReadinessConfig;
-};
-
-export type StackButtonDefinition = {
-  id: string;
-  name: string;
-  processIds: string[];
-  startOrder: StackStartOrder;
-};
-
-export type ProcessGroupDefinition = {
-  id: string;
-  name: string;
-};
 
 export type TestSuiteDefinition = {
   id: string;
@@ -63,32 +20,6 @@ export type TestSuiteDefinition = {
   env: Record<string, string>;
   timeoutMs: number | null;
   tags: TestSuiteTag[];
-};
-
-export type ConfigProcessDefinition = {
-  id: string;
-  name?: string;
-  command?: string[];
-  cwd?: string;
-  env?: Record<string, string>;
-  groupIds?: string[];
-  autostart?: boolean;
-  restart?: ProcessRestartPolicy;
-  gracefulShutdownMs?: number;
-  dependsOn?: string[];
-  readiness?: ConfigProcessReadiness;
-};
-
-export type ConfigStackButtonDefinition = {
-  id: string;
-  name?: string;
-  processIds?: string[];
-  startOrder?: StackStartOrder;
-};
-
-export type ConfigProcessGroupDefinition = {
-  id: string;
-  name?: string;
 };
 
 export type ConfigTestSuiteDefinition = {
@@ -112,7 +43,6 @@ export type LaneOverlayMatch = {
 export type LaneOverlayOverrides = {
   env?: Record<string, string>;
   cwd?: string;
-  processIds?: string[];
   testSuiteIds?: string[];
   /** Port range override for lane (e.g. { start: 3100, end: 3199 }) */
   portRange?: { start: number; end: number };
@@ -496,7 +426,7 @@ export type DecodeOAuthStateResult = { laneId: string; originalState: string } |
 export type LaneHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
 
 export type LaneHealthIssue = {
-  type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
+  type: "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
   message: string;
   actionLabel?: string;
   actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" | "refresh-preview";
@@ -505,7 +435,6 @@ export type LaneHealthIssue = {
 export type LaneHealthCheck = {
   laneId: string;
   status: LaneHealthStatus;
-  processAlive: boolean;
   portResponding: boolean;
   respondingPort: number | null;
   proxyRouteActive: boolean;
@@ -1451,9 +1380,6 @@ export type ProjectUiConfig = {
 export type ProjectConfigFile = {
   version?: number;
   project?: ProjectIdentityConfig;
-  processes?: ConfigProcessDefinition[];
-  stackButtons?: ConfigStackButtonDefinition[];
-  processGroups?: ConfigProcessGroupDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   automations?: ConfigAutomationRule[];
@@ -1496,9 +1422,6 @@ export type ProjectConfigCandidate = {
 export type EffectiveProjectConfig = {
   version: number;
   project?: ProjectIdentityConfig;
-  processes: ProcessDefinition[];
-  stackButtons: StackButtonDefinition[];
-  processGroups: ProcessGroupDefinition[];
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
   automations: AutomationRule[];
@@ -1576,45 +1499,6 @@ export type ProjectConfigDiff = {
   requiresSharedTrust: boolean;
 };
 
-export type ProcessRuntime = {
-  runId: string;
-  laneId: string;
-  processId: string;
-  status: ProcessRuntimeStatus;
-  readiness: ProcessReadinessState;
-  pid: number | null;
-  sessionId?: string | null;
-  ptyId?: string | null;
-  startedAt: string | null;
-  endedAt: string | null;
-  exitCode: number | null;
-  lastExitCode: number | null;
-  lastEndedAt: string | null;
-  uptimeMs: number | null;
-  ports: number[];
-  logPath: string | null;
-  updatedAt: string;
-};
-
-/** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "log"). */
-export type ProcessLogEvent = {
-  type: "log";
-  runId: string;
-  laneId: string;
-  processId: string;
-  stream: "stdout" | "stderr";
-  chunk: string;
-  ts: string;
-};
-
-/** Not directly imported by consumers, but used structurally via the ProcessEvent union (ev.type === "runtime"). */
-export type ProcessRuntimeEvent = {
-  type: "runtime";
-  runtime: ProcessRuntime;
-};
-
-export type ProcessEvent = ProcessLogEvent | ProcessRuntimeEvent;
-
 export type TestRunSummary = {
   id: string;
   suiteId: string;
@@ -1643,30 +1527,6 @@ export type TestLogEvent = {
 };
 
 export type TestEvent = TestRunEvent | TestLogEvent;
-
-export type ProcessActionArgs = {
-  laneId: string;
-  processId: string;
-  runId?: string;
-};
-
-export type ProcessStackArgs = {
-  laneId: string;
-  stackId: string;
-};
-
-/** Bulk run for a process group: each process starts/stops on its resolved lane (Run UI lane picker). */
-export type ProcessGroupArgs = {
-  groupId: string;
-  laneByProcessId: Record<string, string>;
-};
-
-export type GetProcessLogTailArgs = {
-  laneId: string;
-  processId: string;
-  runId?: string;
-  maxBytes?: number;
-};
 
 export type RunTestSuiteArgs = {
   laneId: string;

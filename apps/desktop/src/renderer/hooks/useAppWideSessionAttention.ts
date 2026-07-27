@@ -5,7 +5,6 @@ import {
   invalidateSessionListCache,
   listSessionsCached,
 } from "../lib/sessionListCache";
-import { isRunOwnedSession } from "../lib/sessions";
 import { summarizeTerminalAttention } from "../lib/terminalAttention";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
@@ -56,7 +55,7 @@ export function useAppWideSessionAttention(): void {
       try {
         const sessions: TerminalSessionSummary[] = (
           await listSessionsCached({ limit: 150 }, { force: true })
-        ).filter((session) => !isRunOwnedSession(session));
+        );
         if (cancelled) return;
         const attention = summarizeTerminalAttention(sessions);
         setTerminalAttention(attention);

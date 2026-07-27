@@ -11,7 +11,6 @@
  *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
  *
- * Run tab: `projectConfig` + `processes.*` mirror SQLite + merged `.ade/ade.yaml` / `local.yaml`
  * when a snapshot is exported; otherwise a built-in multi-command / groups / runtime demo is used.
  * Work tab: `sessions` come from the snapshot when present; otherwise built-in terminal session rows
  * (same shape as the export script) so the session list is not empty in Vite-only previews.
@@ -288,7 +287,6 @@ function mockBrowserLaneHealth(laneId: string) {
   return {
     laneId,
     status: "unknown" as const,
-    processAlive: false,
     portResponding: false,
     respondingPort: null as number | null,
     proxyRouteActive: false,
@@ -296,7 +294,6 @@ function mockBrowserLaneHealth(laneId: string) {
     lastCheckedAt: now,
     issues: [] as Array<{
       type:
-        | "process-dead"
         | "port-unresponsive"
         | "proxy-route-missing"
         | "port-conflict"
@@ -653,134 +650,6 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
   },
 ];
 
-/** Run tab preview when no `browser-mock-ade-snapshot.generated.json` (or empty processes). */
-const BUILTIN_RUN_PROCESS_GROUPS: any[] = [
-  { id: "grp-frontend", name: "Frontend" },
-  { id: "grp-quality", name: "Quality" },
-];
-
-const BUILTIN_RUN_PROCESS_DEFINITIONS: any[] = [
-  {
-    id: "mock-dev",
-    name: "Vite dev server",
-    command: ["npm", "run", "dev"],
-    cwd: "apps/desktop",
-    env: { NODE_ENV: "development" },
-    groupIds: ["grp-frontend"],
-    autostart: false,
-    restart: "on-failure",
-    gracefulShutdownMs: 8000,
-    dependsOn: [],
-    readiness: { type: "port", port: 5173 },
-  },
-  {
-    id: "mock-test",
-    name: "Unit tests",
-    command: ["npm", "run", "test:unit"],
-    cwd: "apps/desktop",
-    env: {},
-    groupIds: ["grp-quality"],
-    autostart: false,
-    restart: "never",
-    gracefulShutdownMs: 7000,
-    dependsOn: [],
-    readiness: { type: "none" },
-  },
-  {
-    id: "mock-typecheck",
-    name: "Typecheck",
-    command: ["npm", "run", "typecheck"],
-    cwd: "apps/desktop",
-    env: {},
-    groupIds: ["grp-quality"],
-    autostart: false,
-    restart: "never",
-    gracefulShutdownMs: 5000,
-    dependsOn: [],
-    readiness: { type: "none" },
-  },
-  {
-    id: "mock-story",
-    name: "Companion UI",
-    command: ["npm", "run", "dev:vite"],
-    cwd: "apps/desktop",
-    env: {},
-    groupIds: ["grp-frontend"],
-    autostart: false,
-    restart: "never",
-    gracefulShutdownMs: 10000,
-    dependsOn: ["mock-dev"],
-    readiness: {
-      type: "logRegex",
-      pattern: "Local:\\s+http://localhost:[0-9]+",
-    },
-  },
-];
-
-const BUILTIN_RUN_PROCESS_RUNTIME: any[] = (() => {
-  const laneId = "lane-main";
-  const ts = now;
-  return [
-    {
-      runId: `${laneId}:mock-dev`,
-      laneId,
-      processId: "mock-dev",
-      status: "running",
-      readiness: "ready",
-      pid: 92001,
-      sessionId: null,
-      ptyId: null,
-      startedAt: ts,
-      endedAt: null,
-      exitCode: null,
-      lastExitCode: null,
-      lastEndedAt: null,
-      uptimeMs: 890120,
-      ports: [5173],
-      logPath: "/tmp/mock/vite-dev.log",
-      updatedAt: ts,
-    },
-    {
-      runId: `${laneId}:mock-test`,
-      laneId,
-      processId: "mock-test",
-      status: "starting",
-      readiness: "not_ready",
-      pid: null,
-      sessionId: null,
-      ptyId: null,
-      startedAt: ts,
-      endedAt: null,
-      exitCode: null,
-      lastExitCode: null,
-      lastEndedAt: null,
-      uptimeMs: null,
-      ports: [],
-      logPath: null,
-      updatedAt: ts,
-    },
-    {
-      runId: `${laneId}:mock-typecheck`,
-      laneId,
-      processId: "mock-typecheck",
-      status: "exited",
-      readiness: "unknown",
-      pid: null,
-      sessionId: null,
-      ptyId: null,
-      startedAt: new Date(Date.now() - 600000).toISOString(),
-      endedAt: new Date(Date.now() - 580000).toISOString(),
-      exitCode: 0,
-      lastExitCode: 0,
-      lastEndedAt: new Date(Date.now() - 580000).toISOString(),
-      uptimeMs: 20000,
-      ports: [],
-      logPath: null,
-      updatedAt: ts,
-    },
-  ];
-})();
-
 function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
   const childCounts = new Map<string, number>();
   for (const row of laneRows) {
@@ -868,38 +737,6 @@ const ADE_DB_CHAT_TRANSCRIPTS: Record<
   typeof ADE_DB_SNAPSHOT.chatTranscripts === "object"
     ? ADE_DB_SNAPSHOT.chatTranscripts
     : {};
-const ADE_DB_PROCESS_DEFINITIONS: any[] =
-  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processDefinitions)
-    ? ADE_DB_SNAPSHOT.processDefinitions
-    : [];
-const ADE_DB_PROCESS_RUNTIME: any[] =
-  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processRuntime)
-    ? ADE_DB_SNAPSHOT.processRuntime
-    : [];
-const ADE_DB_STACK_BUTTONS: any[] =
-  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.stackButtons)
-    ? ADE_DB_SNAPSHOT.stackButtons
-    : [];
-const ADE_DB_PROCESS_GROUPS: any[] =
-  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processGroups)
-    ? ADE_DB_SNAPSHOT.processGroups
-    : [];
-
-const usingBuiltinRunDemo =
-  !USE_ADE_DB_SNAPSHOT || ADE_DB_PROCESS_DEFINITIONS.length === 0;
-const MOCK_PROCESS_DEFINITIONS: any[] = usingBuiltinRunDemo
-  ? BUILTIN_RUN_PROCESS_DEFINITIONS
-  : ADE_DB_PROCESS_DEFINITIONS;
-const MOCK_PROCESS_RUNTIME: any[] = usingBuiltinRunDemo
-  ? BUILTIN_RUN_PROCESS_RUNTIME
-  : ADE_DB_PROCESS_RUNTIME;
-const MOCK_STACK_BUTTONS: any[] = usingBuiltinRunDemo
-  ? []
-  : ADE_DB_STACK_BUTTONS;
-const MOCK_PROCESS_GROUPS: any[] = usingBuiltinRunDemo
-  ? BUILTIN_RUN_PROCESS_GROUPS
-  : ADE_DB_PROCESS_GROUPS;
-
 const ADE_DB_AUTOMATIONS =
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.automations
     ? ADE_DB_SNAPSHOT.automations
@@ -3054,18 +2891,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT: any = {
     shared: {
       version: 1,
-      processes: MOCK_PROCESS_DEFINITIONS,
-      stackButtons: MOCK_STACK_BUTTONS,
-      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
     },
     local: {
       version: 1,
-      processes: MOCK_PROCESS_DEFINITIONS,
-      stackButtons: MOCK_STACK_BUTTONS,
-      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
@@ -3090,9 +2921,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     effective: {
       version: 1,
-      processes: MOCK_PROCESS_DEFINITIONS,
-      stackButtons: MOCK_STACK_BUTTONS,
-      processGroups: MOCK_PROCESS_GROUPS,
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
@@ -4591,7 +4419,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         hasUnpushedCommits: false,
         unpushedCommitCount: 0,
         remoteBranchExists: false,
-        runningProcessCount: 0,
         activeChatCount: 0,
         activePtyCount: 0,
         activeWatcherCount: 0,
@@ -6391,25 +6218,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     graphState: {
       get: resolvedArg(null),
       set: resolvedArg2(undefined),
-    },
-    processes: {
-      listDefinitions: resolved(MOCK_PROCESS_DEFINITIONS),
-      listRuntime: async (laneId: string) =>
-        MOCK_PROCESS_RUNTIME.filter((runtime) => runtime.laneId === laneId),
-      start: resolvedArg({}),
-      stop: resolvedArg({}),
-      restart: resolvedArg({}),
-      kill: resolvedArg({}),
-      startStack: resolvedArg(undefined),
-      stopStack: resolvedArg(undefined),
-      restartStack: resolvedArg(undefined),
-      startGroup: resolvedArg(undefined),
-      stopGroup: resolvedArg(undefined),
-      restartGroup: resolvedArg(undefined),
-      startAll: resolvedArg(undefined),
-      stopAll: resolvedArg(undefined),
-      getLogTail: resolvedArg(""),
-      onEvent: noop,
     },
     tests: {
       listSuites: resolved([]),

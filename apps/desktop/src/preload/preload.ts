@@ -300,7 +300,6 @@ import type {
   GetLaneConflictStatusArgs,
   GetFileDiffArgs,
   GetFilePatchArgs,
-  GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
@@ -416,12 +415,6 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  ProcessActionArgs,
-  ProcessDefinition,
-  ProcessEvent,
-  ProcessGroupArgs,
-  ProcessRuntime,
-  ProcessStackArgs,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigSnapshot,
@@ -1629,7 +1622,6 @@ const remotePtyDataEventCallbacks = new Set<(payload: PtyDataEvent) => void>();
 const remotePtyExitEventCallbacks = new Set<(payload: PtyExitEvent) => void>();
 let ptyDataSubscriptionsConfigured = false;
 let subscribedPtyDataIds = new Set<string>();
-const remoteProcessEventCallbacks = new Set<(payload: ProcessEvent) => void>();
 const remoteTestEventCallbacks = new Set<(payload: TestEvent) => void>();
 const remoteFileChangeEventCallbacks = new Set<
   (payload: FileChangeEvent) => void
@@ -1813,7 +1805,6 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteLaneDiagnosticsEventCallbacks.size > 0 ||
     remotePtyDataEventCallbacks.size > 0 ||
     remotePtyExitEventCallbacks.size > 0 ||
-    remoteProcessEventCallbacks.size > 0 ||
     remoteTestEventCallbacks.size > 0 ||
     remoteFileChangeEventCallbacks.size > 0 ||
     remotePrEventCallbacks.size > 0 ||
@@ -2475,17 +2466,6 @@ function dispatchRemoteRuntimeEventPayload(
     }
   }
 
-  const processEvent = toProcessEvent(payload);
-  if (processEvent) {
-    for (const cb of [...remoteProcessEventCallbacks]) {
-      try {
-        cb(processEvent);
-      } catch (error) {
-        console.error("preload remote process listener failed", error);
-      }
-    }
-  }
-
   const testEvent = toTestEvent(payload);
   if (testEvent) {
     for (const cb of [...remoteTestEventCallbacks]) {
@@ -2720,16 +2700,6 @@ function subscribeRemotePtyExitEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remotePtyExitEventCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteProcessEvents(
-  cb: (payload: ProcessEvent) => void,
-): () => void {
-  remoteProcessEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteProcessEventCallbacks.delete(cb);
   };
 }
 
@@ -3079,33 +3049,6 @@ function toOrchestrationRuntimeEvent(
     return null;
   }
   return payload as unknown as OrchestrationEventPayload;
-}
-
-function toProcessEvent(payload: unknown): ProcessEvent | null {
-  if (!isRecord(payload) || typeof payload.type !== "string") return null;
-  if (payload.type === "runtime") {
-    const runtime = payload.runtime;
-    if (!isRecord(runtime)) return null;
-    if (
-      typeof runtime.laneId !== "string" ||
-      typeof runtime.processId !== "string"
-    )
-      return null;
-    return payload as unknown as ProcessEvent;
-  }
-  if (payload.type === "log") {
-    if (typeof payload.runId !== "string") return null;
-    if (
-      typeof payload.laneId !== "string" ||
-      typeof payload.processId !== "string"
-    )
-      return null;
-    if (payload.stream !== "stdout" && payload.stream !== "stderr") return null;
-    if (typeof payload.chunk !== "string" || typeof payload.ts !== "string")
-      return null;
-    return payload as unknown as ProcessEvent;
-  }
-  return null;
 }
 
 function toTestEvent(payload: unknown): TestEvent | null {
@@ -8512,170 +8455,6 @@ contextBridge.exposeInMainWorld("ade", {
         { args: { state } },
         () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
-  },
-  processes: {
-    listDefinitions: async (): Promise<ProcessDefinition[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<
-        ProcessDefinition[]
-      >("process", "listDefinitions");
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesListDefinitions);
-    },
-    listRuntime: async (laneId: string): Promise<ProcessRuntime[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime[]>(
-        "process",
-        "listRuntime",
-        { arg: laneId },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesListRuntime, { laneId });
-    },
-    start: async (args: ProcessActionArgs): Promise<ProcessRuntime> => {
-      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime>(
-        "process",
-        "start",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStart, args);
-    },
-    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ProcessRuntime | null>(
-          "process",
-          "stop",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStop, args);
-    },
-    restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> => {
-      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime>(
-        "process",
-        "restart",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesRestart, args);
-    },
-    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ProcessRuntime | null>(
-          "process",
-          "kill",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesKill, args);
-    },
-    startStack: async (args: ProcessStackArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "startStack",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStartStack, args);
-    },
-    stopStack: async (args: ProcessStackArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "stopStack",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStopStack, args);
-    },
-    restartStack: async (args: ProcessStackArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "restartStack",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesRestartStack, args);
-    },
-    startGroup: async (args: ProcessGroupArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "startGroup",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStartGroup, args);
-    },
-    stopGroup: async (args: ProcessGroupArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "stopGroup",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStopGroup, args);
-    },
-    restartGroup: async (args: ProcessGroupArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "restartGroup",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesRestartGroup, args);
-    },
-    startAll: async (args: { laneId: string }): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "startAll",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStartAll, args);
-    },
-    stopAll: async (args: { laneId: string }): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "process",
-        "stopAll",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesStopAll, args);
-    },
-    getLogTail: async (args: GetProcessLogTailArgs): Promise<string> => {
-      const runtime = await callProjectRuntimeActionIfBound<string>(
-        "process",
-        "getLogTail",
-        { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.processesGetLogTail, args);
-    },
-    onEvent: (cb: (ev: ProcessEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ProcessEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.processesEvent, listener);
-      const unsubscribeRemote = subscribeRemoteProcessEvents(cb);
-      return () => {
-        unsubscribeRemote();
-        ipcRenderer.removeListener(IPC.processesEvent, listener);
-      };
-    },
   },
   tests: {
     listSuites: async (): Promise<TestSuiteDefinition[]> => {

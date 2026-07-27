@@ -732,7 +732,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Strengthened iOS Simulator control, run-tab failure reporting, and desktop-to-mobile sync durability.
+- Strengthened iOS Simulator control and desktop-to-mobile sync durability.
 
 ## [1.1.8] - 2026-04-30
 
@@ -838,8 +838,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Consolidated Lanes, Runs, and Run surfaces into fewer, denser screens.
-- Replaced the dedicated Project Home with the Run page, added Quick Run and stacked-run tabs, and moved per-turn file diffs into the chat transcript.
+- Consolidated Lanes and Runs into fewer, denser screens, and moved per-turn file diffs into the chat transcript.
 - Batched renderer user-preference persistence and paused the event-loop watchdog while hidden.
 
 ### Fixed

@@ -14,7 +14,7 @@ import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
 } from "../../lib/chatSessionEvents";
-import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
 import {
   buildPtyContinuationLaunchFields,
   forgetWorkPtyLaunchPin,
@@ -241,7 +241,7 @@ export function useLaneWorkSessions(laneId: string | null) {
             { laneId: targetLaneId, limit: 200 },
             { force: Boolean(options.force) },
           )
-        ).filter((session) => !isRunOwnedSession(session));
+        );
         if (scopeKeyRef.current !== requestedScopeKey) return;
         const pending = pendingOptimisticSessionsRef.current;
         if (pending.size > 0) {

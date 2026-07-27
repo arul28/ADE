@@ -16,7 +16,6 @@ const SUBCOMMANDS = [
   "files",
   "search",
   "prs",
-  "run",
   "shell",
   "terminal",
   "chat",

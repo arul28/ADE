@@ -163,7 +163,6 @@ function createRuntime(projectRoot: string) {
     paths: {
       adeDir: path.join(projectRoot, ".ade"),
       logsDir: path.join(projectRoot, ".ade", "logs"),
-      processLogsDir: path.join(projectRoot, ".ade", "logs", "processes"),
       testLogsDir: path.join(projectRoot, ".ade", "logs", "tests"),
       transcriptsDir: path.join(projectRoot, ".ade", "transcripts"),
       worktreesDir: path.join(projectRoot, ".ade", "worktrees"),

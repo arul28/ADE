@@ -1,6 +1,6 @@
 // Derives a warm, project-specific accent color from a resolved icon's
 // dataUrl by sampling its dominant saturated pixels. Shared by the TopBar
-// project tabs and the RunPage welcome recents list so both surfaces tint
+// project tabs and the welcome recents list so both surfaces tint
 // their icon tiles with the same color the logo would suggest.
 
 const PROJECT_ICON_ACCENT_CACHE_MAX = 48;

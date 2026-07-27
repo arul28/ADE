@@ -151,7 +151,6 @@ describe("createRuntimeDiagnosticsService", () => {
 
       expect(health.laneId).toBe("lane-1");
       expect(health.status).toBe("healthy");
-      expect(health.processAlive).toBe(true);
       expect(health.portResponding).toBe(true);
       expect(health.proxyRouteActive).toBe(true);
       expect(health.fallbackMode).toBe(false);
@@ -167,7 +166,6 @@ describe("createRuntimeDiagnosticsService", () => {
 
       expect(health.status).toBe("unhealthy");
       expect(health.portResponding).toBe(false);
-      expect(health.processAlive).toBe(false);
       expect(health.issues.some((i) => i.type === "port-unresponsive")).toBe(true);
     });
 
@@ -228,21 +226,6 @@ describe("createRuntimeDiagnosticsService", () => {
       const proxyIssue = health.issues.find((i) => i.type === "proxy-route-missing");
       expect(proxyIssue).toBeDefined();
       expect(proxyIssue!.actionType).toBe("restart-proxy");
-    });
-
-    it("deduplicates process-dead and port-unresponsive issues", async () => {
-      leases.set("lane-1", makeLease("lane-1"));
-      routes.set("lane-1", makeRoute("lane-1"));
-      simulatePortUnresponsive();
-
-      const health = await svc.checkLaneHealth("lane-1");
-
-      // Both process-dead and port-unresponsive would be generated internally,
-      // but process-dead should be deduplicated away
-      const processDead = health.issues.filter((i) => i.type === "process-dead");
-      const portUnresponsive = health.issues.filter((i) => i.type === "port-unresponsive");
-      expect(processDead).toHaveLength(0);
-      expect(portUnresponsive).toHaveLength(1);
     });
 
     it("refreshes conflicts during a single-lane check", async () => {

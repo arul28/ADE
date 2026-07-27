@@ -10,13 +10,12 @@ binding. Local-bound windows spawn PTYs through the local ADE daemon
 (`ade serve`); remote-bound windows spawn PTYs on the remote host via
 the SSH-attached runtime, with stdin/stdout bytes streaming over the
 SSH-backed RPC. The renderer's `window.ade.pty.*`, `window.ade.sessions.*`,
-`window.ade.processes.*`, and `window.ade.terminal.*` calls in
+and `window.ade.terminal.*` calls in
 `apps/desktop/src/preload/preload.ts` route through
 `callProjectRuntimeActionIfBound("pty", …)` /
-`callProjectRuntimeActionIfBound("session", …)` /
-`callProjectRuntimeActionIfBound("process", …)` first and use the
+`callProjectRuntimeActionIfBound("session", …)` first and use the
 legacy in-process IPC handlers (the desktop's `ptyService.ts`,
-`sessionService.ts`, `processService.ts`) only when no runtime is
+`sessionService.ts`) only when no runtime is
 bound, such as tests or pre-binding diagnostics. A local-bound daemon
 failure is surfaced to the caller instead of being retried against the
 desktop process. The same source files run on both paths. Remote-bound windows
@@ -29,15 +28,7 @@ streams PTY events through `personalChats.streamEvents`. It does not expose the
 project Work terminal/session inventory or accept an arbitrary lane/cwd. See
 [Personal chats](../personal-chats/README.md).
 
-These services are large and have been repeatedly rewritten:
-`ptyService.ts`, `sessionService.ts`, and `processService.ts`. Treat
-them as fragile and re-read whenever wiring changes.
-
-`processService` keeps one runtime record per *invocation*, not per
-(lane, process) pair. A single `ProcessDefinition` can have many concurrent
-or historical `ProcessRuntime` rows in memory, each identified by `runId`. The
-Run page renders those runs on a single card and the aggregate persisted
-snapshot (the most recent run) is what lives in the `process_runtime` table.
+These services are large and have been repeatedly rewritten. Treat `ptyService.ts` and `sessionService.ts` as fragile and re-read them whenever wiring changes.
 
 ## External session import
 
@@ -107,7 +98,7 @@ and in tests.
   system memory in, skips the `ps` sample when nothing is active). Driven by
   the `ade.app.getResourceUsage` handler in `registerIpc.ts`;
   `ptyService.getResourceAttribution()` supplies the live PTY roots + kinds.
-  See [pty-and-processes.md](./pty-and-processes.md#resource-pressure-attribution).
+  See [pty-and-sessions.md](./pty-and-sessions.md#resource-pressure-attribution).
 - `apps/desktop/src/main/services/pty/resourceUsageSampling.test.ts` —
   collector coalescing/timeout/bounds and role-classification tests.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
@@ -172,15 +163,6 @@ and in tests.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
-- `apps/desktop/src/main/services/processes/processService.ts` — managed
-  process lifecycle keyed by `runId` (multi-run history per
-  `(laneId, processId)`), readiness checks, restart policy with
-  exponential backoff, stack buttons, process-group filtering. `start` is
-  gated on disk pressure through the optional `diskPressureMonitor`
-  (`canPerform("process_start")`): under `exhausted` pressure it throws a
-  `disk_full`-coded error rather than launching. ~870 lines.
-- `apps/desktop/src/main/services/processes/processService.test.ts` —
-  managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
   per-lane cwd resolution that gates PTY creation to the lane worktree.
 - `apps/desktop/src/main/services/externalSessions/` —
@@ -268,19 +250,12 @@ Shared types and IPC:
   times rather than exposing a gap. Its terminal-input ledger deduplicates
   stable input ids before PTY write and acknowledges success/duplicate/failure
   to ACK-capable web/iOS clients.
-- `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
-  (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
-  `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
-  `ProcessReadinessConfig`, `StackButtonDefinition`,
-  `ProcessRestartPolicy`. `ProcessActionArgs` and
-  `GetProcessLogTailArgs` accept an optional `runId`.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*` (including `ade.pty.sendToSession` — the send-or-continue
   channel that writes into a live agent CLI runtime or starts the
   provider continuation internally — and `ade.pty.resumeSession`, which
   relaunches an ended tracked CLI session without sending a prompt),
-  `ade.processes.*`, plus the
-  session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
+  the session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
   serialized xterm snapshot for the TUI / mobile renderers, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
   `ade.localhost.probePort`, plus `ade.externalSessions.list` and
@@ -289,8 +264,7 @@ Shared types and IPC:
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
-  `window.ade.pty`, `window.ade.processes`, and
-  `window.ade.externalSessions` APIs. The external-session calls prefer
+  `window.ade.pty` and `window.ade.externalSessions` APIs. The external-session calls prefer
   the runtime `external-sessions` ADE action domain and fall back to the
   legacy desktop IPC handlers only when no runtime binding exists.
 - `apps/desktop/src/preload/global.d.ts` — renderer-visible typing for
@@ -303,8 +277,7 @@ IPC registration:
   `sessionsUnsettle`, `sessionsSettleMany`, `sessionsUnsettleMany`,
   `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
   `ptyResumeSession`, `ptySendToSession`, `ptyWrite`, `ptyResize`,
-  `ptyDispose`, the `processes.*` handlers,
-  and the session-owned `terminalList` / `terminalRead` /
+  `ptyDispose`, and the session-owned `terminalList` / `terminalRead` /
   `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
   handlers, plus `externalSessionsList` / `externalSessionsImport`.
   `terminalRead` delegates transcript-tail reads to
@@ -745,8 +718,7 @@ iOS Work surfaces:
   standalone CLI sessions are always listed — **including ended ones**,
   which stay visible and resumable; chat-owned shell rows ride their
   parent chat's entry (an orphaned child whose parent chat isn't listed
-  surfaces only while it is actually live); `run-shell` infrastructure
-  rows never appear. Agent CLI continuation is
+  surfaces only while it is actually live). Agent CLI continuation is
   driven by sending text to the durable session, not a standalone
   row action. The earlier
   in-list activity feed is gone — running chats surface through the
@@ -830,7 +802,7 @@ their CLI fork flags within the limits above.
 
 ## Detail docs
 
-- [pty-and-processes.md](./pty-and-processes.md) — lifecycle, tool-type
+- [pty-and-sessions.md](./pty-and-sessions.md) — lifecycle, tool-type
   detection, transcript and preview handling, auto-titles, resume
   backfill, stale reconciliation. Covers the branch-heavy main-process
   code.
@@ -847,7 +819,6 @@ A session is a row in `terminal_sessions` (SQLite via `AdeDb`). The same
 schema is used for:
 
 - interactive shell PTYs (`toolType = "shell"`)
-- managed processes launched by `processService` (`toolType = "run-shell"`)
 - tracked CLI agent terminals (`claude`, `codex`, `cursor-cli`, `droid`,
   `opencode`)
 - agent chat sessions that run through the Claude/Codex/Cursor/Droid/
@@ -1096,21 +1067,6 @@ terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
 
-Processes (managed):
-
-| Channel | Purpose |
-|---|---|
-| `ade.processes.listDefinitions` | read from project config |
-| `ade.processes.listRuntime` | every in-memory run for the lane (one entry per `runId`, including recent stopped/crashed ones up to the 20-run history cap) |
-| `ade.processes.start` | lifecycle; always returns the new `ProcessRuntime` |
-| `ade.processes.stop` / `ade.processes.kill` | returns the targeted `ProcessRuntime`, or `null` when no active run exists for the `(laneId, processId[, runId])` tuple |
-| `ade.processes.restart` | stop active runs, wait for exit (up to 10 s), start a new run |
-| `ade.processes.startStack` / `stopStack` / `restartStack` | stack buttons |
-| `ade.processes.startGroup` / `stopGroup` / `restartGroup` | bulk ops over a `ProcessGroupDefinition`. Caller passes `{ groupId, laneByProcessId }` so each member can run on its own lane (the Run page builds this map from per-card lane selections). Start order is **parallel** — `dependsOn` is intentionally not topologically sorted across mixed lanes. Restart waits for in-flight stops before re-starting. |
-| `ade.processes.startAll` / `stopAll` | bulk ops |
-| `ade.processes.getLogTail` | transcript tail for the focused run (pass `runId` to target a specific invocation) |
-| `ade.processes.event` (event) | `runtime` events carrying a `ProcessRuntime` with `runId`, and `log` events carrying `runId` + `laneId` + `processId` |
-
 ## Gotchas
 
 - **Settlement is not a pending-input response.** Never restore the old
@@ -1126,11 +1082,6 @@ Processes (managed):
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
-- `processes.stop` / `processes.kill` resolve to `null` when nothing
-  matches the caller's `(laneId, processId[, runId])`. Don't treat a
-  null return as a failure — it just means there was no active run to
-  act on. Callers that need a sync confirmation should subscribe to
-  the `runtime` event instead.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
   main-process startup no longer excludes chat tool types — stale
   `running` chat rows are swept to `detached` like any other orphaned
@@ -1138,8 +1089,7 @@ Processes (managed):
   survive reconciliation, the caller has to pass `excludeToolTypes`
   explicitly.
 - `transcriptPath` may be blank for untracked sessions (tracked=false)
-  and for processes that died before their PTY opened — always
-  null-check before reading.
+ — always null-check before reading.
 - `resumeCommand` is derived from `resumeMetadata` when present, then
   falls back to `defaultResumeCommandForTool(toolType)`. Editing it
   directly is only allowed through `sessionService.setResumeCommand` or
@@ -1156,10 +1106,7 @@ Processes (managed):
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
 - Disk-pressure gating is enforced at the *start* boundary only:
-  `ptyService.create` refuses a new tracked agent CLI PTY and
-  `processService.start` refuses a managed process under `exhausted`
-  pressure (`disk_full` code). Existing sessions and running processes are
-  never killed by pressure. See
+  `ptyService.create` refuses a new tracked agent CLI PTY under `exhausted` pressure (`disk_full` code). Existing sessions are never killed by pressure. See
   [Storage and recovery](../storage-and-recovery/README.md#disk-pressure-and-enforcement).
 - A transcript may exist only as a `<transcript>.gz` after history
   compaction. Read paths (`ptyService`/`sessionService` tails, search) handle

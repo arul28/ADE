@@ -100,21 +100,13 @@ export function buildSuggestedConfig(args: {
 }): ProjectConfigFile {
   const out: ProjectConfigFile = {
     version: 1,
-    processes: [],
-    stackButtons: [],
     testSuites: [],
     laneOverlayPolicies: [],
     automations: []
   };
 
-  const addProcess = (id: string, name: string, command: string[], cwd = ".") => {
-    out.processes!.push({ id, name, command, cwd });
-  };
   const addTest = (id: string, name: string, command: string[], cwd = ".", tags: TestSuiteTag[] = ["custom"]) => {
     out.testSuites!.push({ id, name, command, cwd, tags });
-  };
-  const addStack = (id: string, name: string, processIds: string[]) => {
-    out.stackButtons!.push({ id, name, processIds, startOrder: "parallel" });
   };
 
   const has = (type: string) => args.indicators.some((ind) => ind.type === type);
@@ -122,42 +114,27 @@ export function buildSuggestedConfig(args: {
   if (has("node")) {
     const pm = guessNodePackageManager(args.projectRoot);
     if (pm === "pnpm") {
-      addProcess("install", "Install dependencies", ["pnpm", "install"]);
       addTest("unit", "Unit tests", ["pnpm", "test"], ".", ["unit"]);
-      addProcess("build", "Build", ["pnpm", "build"]);
     } else if (pm === "yarn") {
-      addProcess("install", "Install dependencies", ["yarn", "install", "--frozen-lockfile"]);
       addTest("unit", "Unit tests", ["yarn", "test"], ".", ["unit"]);
-      addProcess("build", "Build", ["yarn", "build"]);
     } else {
-      addProcess("install", "Install dependencies", ["npm", "install"]);
       addTest("unit", "Unit tests", ["npm", "test"], ".", ["unit"]);
-      addProcess("build", "Build", ["npm", "run", "build"]);
     }
   }
 
   if (has("make")) {
-    addProcess("make", "Make", ["make"]);
     addTest("make-test", "Make test", ["make", "test"], ".", ["custom"]);
   }
 
-  if (has("docker")) {
-    addProcess("docker-up", "Docker compose up", ["docker", "compose", "up"], ".");
-    addStack("dev", "Dev", ["docker-up"]);
-  }
-
   if (has("rust")) {
-    addProcess("cargo-build", "Cargo build", ["cargo", "build"]);
     addTest("cargo-test", "Cargo test", ["cargo", "test"], ".", ["unit"]);
   }
 
   if (has("go")) {
-    addProcess("go-build", "Go build", ["go", "build", "./..."]);
     addTest("go-test", "Go test", ["go", "test", "./..."], ".", ["unit"]);
   }
 
   if (has("python")) {
-    addProcess("py-install", "Install (editable)", ["python", "-m", "pip", "install", "-e", "."]);
     addTest("pytest", "Pytest", ["pytest"], ".", ["unit"]);
   }
 
@@ -173,9 +150,7 @@ export function buildSuggestedConfig(args: {
     addTest(id, `CI: ${cmd}`, splitShellCommand(cmd), ".", ["custom"]);
   }
 
-  out.processes = uniqueById(out.processes ?? []);
   out.testSuites = uniqueById(out.testSuites ?? []);
-  out.stackButtons = uniqueById(out.stackButtons ?? []);
 
   out.automations = [
     {

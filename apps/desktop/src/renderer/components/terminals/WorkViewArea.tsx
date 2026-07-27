@@ -71,7 +71,6 @@ function isAgentCliSession(session: TerminalSessionSummary): boolean {
   return Boolean(
     session.toolType
     && session.toolType !== "shell"
-    && session.toolType !== "run-shell"
     && !isChatToolType(session.toolType),
   );
 }

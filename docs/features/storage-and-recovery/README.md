@@ -151,22 +151,20 @@ fails open and logs each root once.
 |---|---|---|
 | `normal` | More than 12 GiB and more than 5% free | All operations allowed. |
 | `warning` | At most 12 GiB or 5% free | Indicator shown; all operations allowed. |
-| `critical` | At most 4 GiB or 2% free | New chats/CLI/processes remain allowed; compression and high-write jobs stop. |
+| `critical` | At most 4 GiB or 2% free | New chats and CLI sessions remain allowed; compression and high-write jobs stop. |
 | `exhausted` | At most 1 GiB free | New write-producing work is refused with plain-language `disk_full` guidance. |
 
 | Operation/session type | Normal | Warning | Critical | Exhausted |
 |---|---:|---:|---:|---:|
 | Chat turn | Allow | Allow | Allow | Refuse |
 | CLI session launch | Allow | Allow | Allow | Refuse |
-| Managed process start | Allow | Allow | Allow | Refuse |
 | High-write background job | Allow | Allow | Refuse | Refuse |
 | History compression | Allow | Allow | Refuse | Refuse |
 
-Existing sessions and processes are not killed when pressure rises. The gates
+Existing sessions are not killed when pressure rises. The gates
 apply at the next write-producing start boundary. Enforcement lives at each
 start boundary rather than in one place: `agentChatService` gates a new turn
-(`chat_turn`), `ptyService.create` gates a new tracked CLI PTY (`cli_launch`),
-`processService.start` gates a managed process (`process_start`), and the
+(`chat_turn`), `ptyService.create` gates a new tracked CLI PTY (`cli_launch`), and the
 history compressor gates its own sweeps (`compression`). Every refusal throws a
 `disk_full`-coded error whose message is the user-facing copy in
 `DISK_PRESSURE_REFUSAL_MESSAGES`. The monitor and `storageInsightsService` are

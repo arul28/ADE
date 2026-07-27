@@ -60,8 +60,6 @@ describe("projectConfigService - providers permissions", () => {
       localPath,
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -166,8 +164,6 @@ describe("projectConfigService - lane env init", () => {
       path.join(adeDir, "ade.yaml"),
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         automations: [],
         laneEnvInit: {
@@ -197,8 +193,6 @@ describe("projectConfigService - lane env init", () => {
       path.join(adeDir, "local.yaml"),
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         automations: [],
         laneEnvInit: {
@@ -256,8 +250,6 @@ describe("projectConfigService - lane env init", () => {
     const validation = service.validate({
       shared: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         automations: [],
         laneEnvInit: {
@@ -275,8 +267,6 @@ describe("projectConfigService - lane env init", () => {
       },
       local: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -289,70 +279,6 @@ describe("projectConfigService - lane env init", () => {
         expect.objectContaining({ path: "effective.laneOverlayPolicies[0].overrides.portRange" }),
         expect.objectContaining({ path: "effective.laneEnvInit.docker.composePath" }),
         expect.objectContaining({ path: "effective.laneEnvInit.dependencies[0].cwd" }),
-      ]),
-    );
-  });
-
-  it("rejects process, suite, and overlay cwd values outside the project root", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-cwd-");
-    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-cwd-outside-"));
-    tempDirs.push(outsideDir);
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-1",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const validation = service.validate({
-      shared: {
-        version: 1,
-        processes: [
-          {
-            id: "proc-1",
-            name: "Proc 1",
-            command: ["echo", "ok"],
-            cwd: outsideDir,
-          },
-        ],
-        stackButtons: [],
-        testSuites: [
-          {
-            id: "suite-1",
-            name: "Suite 1",
-            command: ["echo", "ok"],
-            cwd: outsideDir,
-          },
-        ],
-        laneOverlayPolicies: [
-          {
-            id: "overlay-1",
-            name: "Overlay 1",
-            overrides: {
-              cwd: outsideDir,
-            },
-          },
-        ],
-        automations: [],
-      },
-      local: {
-        version: 1,
-        processes: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      },
-    });
-
-    expect(validation.ok).toBe(false);
-    expect(validation.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: "effective.processes[0].cwd", message: expect.stringContaining("project root") }),
-        expect.objectContaining({ path: "effective.testSuites[0].cwd", message: expect.stringContaining("project root") }),
-        expect.objectContaining({ path: "effective.laneOverlayPolicies[0].overrides.cwd", message: expect.stringContaining("project root") }),
       ]),
     );
   });
@@ -372,8 +298,6 @@ describe("projectConfigService - lane env init", () => {
     service.save({
       shared: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         automations: [],
         laneEnvInit: {
@@ -383,8 +307,6 @@ describe("projectConfigService - lane env init", () => {
       },
       local: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         automations: [],
         laneEnvInit: {
@@ -412,8 +334,6 @@ describe("projectConfigService - AI mode migration", () => {
       localPath,
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -465,8 +385,6 @@ describe("projectConfigService - AI mode migration", () => {
       localPath,
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -517,8 +435,6 @@ describe("projectConfigService - AI mode migration", () => {
       localPath,
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -683,97 +599,6 @@ describe("projectConfigService - PR transcript gists", () => {
     persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
     expect(persisted.github?.prTranscriptGists?.enabled).toBe(false);
   });
-
-  it("writes config atomically so an interrupted save never wipes prior processes/testSuites", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-atomic-write-");
-
-    const localPath = path.join(adeDir, "local.yaml");
-    fs.writeFileSync(
-      localPath,
-      YAML.stringify({
-        version: 1,
-        processes: [{ id: "proc-1", name: "Proc 1", command: ["echo", "ok"], cwd: root }],
-        stackButtons: [],
-        testSuites: [{ id: "suite-1", name: "Suite 1", command: ["echo", "ok"], cwd: root }],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-1",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    // Baseline: a read-modify-write mutator keeps the prior processes/testSuites.
-    const enabled = service.setPrTranscriptGists({ enabled: true });
-    expect(enabled.effective.processes?.map((p) => p.id)).toContain("proc-1");
-    expect(enabled.effective.testSuites?.map((s) => s.id)).toContain("suite-1");
-
-    const before = fs.readFileSync(localPath, "utf8");
-
-    // Simulate a crash/ENOSPC after the temp file is written but before the rename
-    // commits. With a truncating writeFileSync the live file would be left empty or
-    // partial; the atomic write must leave the original file untouched.
-    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(() => {
-      throw new Error("simulated rename failure (ENOSPC)");
-    });
-    try {
-      expect(() => service.setPrTranscriptGists({ enabled: false })).toThrow();
-    } finally {
-      renameSpy.mockRestore();
-    }
-
-    // Live file content is byte-for-byte intact and still parses with prior data.
-    const after = fs.readFileSync(localPath, "utf8");
-    expect(after).toBe(before);
-    const persisted = YAML.parse(after) as Record<string, any>;
-    expect(persisted.processes?.map((p: any) => p.id)).toContain("proc-1");
-    expect(persisted.testSuites?.map((s: any) => s.id)).toContain("suite-1");
-
-    // No leftover temp files in the .ade dir after the failed atomic write.
-    const tempLeftovers = fs.readdirSync(adeDir).filter((name) => name.endsWith(".tmp"));
-    expect(tempLeftovers).toEqual([]);
-  });
-
-  it.skipIf(process.platform === "win32")(
-    "preserves restrictive permissions on local.yaml across an atomic save",
-    () => {
-      const { root, adeDir } = makeProjectFixture("ade-project-config-perms-");
-      const localPath = path.join(adeDir, "local.yaml");
-      fs.writeFileSync(
-        localPath,
-        YAML.stringify({
-          version: 1,
-          processes: [],
-          stackButtons: [],
-          testSuites: [],
-          laneOverlayPolicies: [],
-          automations: [],
-        }),
-        "utf8",
-      );
-      // The user restricts the file because local config can hold per-user env vars.
-      fs.chmodSync(localPath, 0o600);
-
-      const service = createProjectConfigService({
-        projectRoot: root,
-        adeDir,
-        projectId: "project-1",
-        db: makeDb(),
-        logger: makeLogger(),
-      });
-      service.setPrTranscriptGists({ enabled: true });
-
-      // The temp+rename atomic write must copy the prior mode, not widen it to
-      // the umask default (commonly 644).
-      expect(fs.statSync(localPath).mode & 0o777).toBe(0o600);
-    },
-  );
 });
 
 describe("projectConfigService - linear sync", () => {
@@ -906,8 +731,6 @@ describe("projectConfigService - automation execution", () => {
       path.join(adeDir, "ade.yaml"),
       YAML.stringify({
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [
@@ -1107,16 +930,12 @@ describe("projectConfigService - automation execution", () => {
     const validation = service.validate({
       shared: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
       },
       local: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [
@@ -1180,375 +999,5 @@ describe("projectConfigService - automation execution", () => {
         }),
       ]),
     );
-  });
-});
-
-describe("projectConfigService - process groups", () => {
-  it("merges processGroups by id with local overriding shared", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-groups-merge-");
-
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [],
-        processGroups: [
-          { id: "backend", name: "Backend" },
-          { id: "frontend", name: "Frontend" },
-        ],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    fs.writeFileSync(
-      path.join(adeDir, "local.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [],
-        processGroups: [{ id: "frontend", name: "Web" }],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-groups-merge",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const groups = service.get().effective.processGroups;
-    const byId = new Map(groups.map((g) => [g.id, g]));
-    expect(byId.has("backend")).toBe(true);
-    expect(byId.has("frontend")).toBe(true);
-    expect(byId.get("backend")!.name).toBe("Backend");
-    expect(byId.get("frontend")!.name).toBe("Web");
-  });
-
-  it("rolls back config-derived row refreshes when a snapshot write fails", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-rollback-");
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [],
-        processGroups: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-    const db = makeDb();
-    db.run.mockImplementation((sql: string) => {
-      if (/delete from stack_buttons/i.test(sql)) {
-        throw new Error("delete failed");
-      }
-    });
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-rollback",
-      db,
-      logger: makeLogger(),
-    });
-
-    expect(() => service.get()).toThrow("delete failed");
-    const statements = db.run.mock.calls.map((call: unknown[]) => String(call[0]).trim());
-    expect(statements[0]).toBe("BEGIN IMMEDIATE");
-    expect(statements).toContain("ROLLBACK");
-    expect(statements).not.toContain("COMMIT");
-  });
-
-  it("falls back to id when an effective processGroup has no name", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-groups-fallback-");
-
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [],
-        processGroups: [{ id: "infra" }],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-groups-fallback",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const groups = service.get().effective.processGroups;
-    const infra = groups.find((g) => g.id === "infra");
-    expect(infra).toBeTruthy();
-    expect(infra!.name).toBe("infra");
-  });
-
-  it("round-trips ProcessDefinition.groupIds with local overriding shared", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-groupids-override-");
-
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [
-          {
-            id: "api",
-            name: "API",
-            command: ["npm", "run", "api"],
-            groupIds: ["backend"],
-          },
-        ],
-        processGroups: [
-          { id: "backend", name: "Backend" },
-          { id: "frontend", name: "Frontend" },
-        ],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    fs.writeFileSync(
-      path.join(adeDir, "local.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [{ id: "api", groupIds: ["frontend"] }],
-        processGroups: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-groupids-override",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const api = service.get().effective.processes.find((p) => p.id === "api");
-    expect(api).toBeTruthy();
-    expect(api!.groupIds).toEqual(["frontend"]);
-  });
-
-  it("preserves shared groupIds when local does not override them", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-groupids-preserve-");
-
-    fs.writeFileSync(
-      path.join(adeDir, "ade.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [
-          {
-            id: "api",
-            name: "API",
-            command: ["npm", "run", "api"],
-            groupIds: ["backend"],
-          },
-        ],
-        processGroups: [{ id: "backend", name: "Backend" }],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    fs.writeFileSync(
-      path.join(adeDir, "local.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [{ id: "api", cwd: "./server" }],
-        processGroups: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-groupids-preserve",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const api = service.get().effective.processes.find((p) => p.id === "api");
-    expect(api).toBeTruthy();
-    expect(api!.groupIds).toEqual(["backend"]);
-  });
-
-  it("returns an empty array when processGroups section is absent", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-groups-empty-");
-
-    fs.writeFileSync(
-      path.join(adeDir, "local.yaml"),
-      YAML.stringify({
-        version: 1,
-        processes: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      }),
-      "utf8",
-    );
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-groups-empty",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const groups = service.get().effective.processGroups;
-    expect(Array.isArray(groups)).toBe(true);
-    expect(groups.length).toBe(0);
-  });
-
-  it("normalizes project-root absolute process and test paths to portable relative paths", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-portable-paths-");
-    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
-    fs.mkdirSync(path.join(root, "apps", "desktop"), { recursive: true });
-    fs.writeFileSync(path.join(root, "scripts", "dogfood.sh"), "#!/bin/sh\n", "utf8");
-    fs.writeFileSync(path.join(root, "scripts", "run-tests.sh"), "#!/bin/sh\n", "utf8");
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-portable-paths",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const snapshot = service.save({
-      shared: {
-        version: 1,
-        processes: [
-          {
-            id: "dogfood",
-            name: "Dogfood",
-            command: [path.join(root, "scripts", "dogfood.sh"), "code-review"],
-            cwd: root,
-          },
-        ],
-        stackButtons: [],
-        testSuites: [
-          {
-            id: "desktop-tests",
-            name: "Desktop tests",
-            command: [path.join(root, "scripts", "run-tests.sh")],
-            cwd: path.join(root, "apps", "desktop"),
-          },
-        ],
-        laneOverlayPolicies: [
-          {
-            id: "desktop",
-            name: "Desktop",
-            overrides: { cwd: path.join(root, "apps", "desktop") },
-          },
-        ],
-        automations: [],
-      },
-      local: {
-        version: 1,
-        processes: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      },
-    });
-
-    expect(snapshot.effective.processes[0]?.cwd).toBe(".");
-    expect(snapshot.effective.processes[0]?.command[0]).toBe("scripts/dogfood.sh");
-    expect(snapshot.effective.testSuites[0]?.cwd).toBe("apps/desktop");
-    expect(snapshot.effective.testSuites[0]?.command[0]).toBe("../../scripts/run-tests.sh");
-    expect(snapshot.effective.laneOverlayPolicies[0]?.overrides.cwd).toBe("apps/desktop");
-
-    const saved = YAML.parse(fs.readFileSync(path.join(adeDir, "ade.yaml"), "utf8"));
-    expect(saved.processes[0].cwd).toBe(".");
-    expect(saved.processes[0].command[0]).toBe("scripts/dogfood.sh");
-    expect(saved.testSuites[0].cwd).toBe("apps/desktop");
-    expect(saved.testSuites[0].command[0]).toBe("../../scripts/run-tests.sh");
-    expect(saved.laneOverlayPolicies[0].overrides.cwd).toBe("apps/desktop");
-  });
-
-  it("normalizes foreign-platform absolute process paths to portable relative paths", () => {
-    const { root, adeDir } = makeProjectFixture("ade-project-config-cross-platform-");
-
-    const projectDirName = path.basename(root);
-    const windowsProjectRoot = `C:\\repo\\${projectDirName}`;
-    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
-
-    const service = createProjectConfigService({
-      projectRoot: root,
-      adeDir,
-      projectId: "project-cross-platform-paths",
-      db: makeDb(),
-      logger: makeLogger(),
-    });
-
-    const snapshot = service.save({
-      shared: {
-        version: 1,
-        processes: [
-          {
-            id: "dogfood",
-            name: "Dogfood",
-            command: [`${windowsProjectRoot}\\scripts\\dogfood.sh`, "code-review"],
-            cwd: windowsProjectRoot,
-          },
-        ],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      },
-      local: {
-        version: 1,
-        processes: [],
-        stackButtons: [],
-        testSuites: [],
-        laneOverlayPolicies: [],
-        automations: [],
-      },
-    });
-
-    expect(snapshot.effective.processes[0]?.cwd).toBe(".");
-    expect(snapshot.effective.processes[0]?.command[0]).toBe("scripts/dogfood.sh");
-
-    const saved = YAML.parse(fs.readFileSync(path.join(adeDir, "ade.yaml"), "utf8"));
-    expect(saved.processes[0].cwd).toBe(".");
-    expect(saved.processes[0].command[0]).toBe("scripts/dogfood.sh");
   });
 });

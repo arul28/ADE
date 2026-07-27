@@ -45,7 +45,6 @@ export const WEB_HIDDEN_CAPABILITIES = {
   localPathOpen: false,
   cursorCloud: false,
   transcription: false,
-  processes: false,
   automations: false,
 } as const;
 
@@ -147,7 +146,6 @@ export function createAdeWebAdapter(
     layout: misc.layout,
     tilingTree: misc.tilingTree,
     graphState: misc.graphState,
-    processes: misc.processes,
     tests: misc.tests,
     projectConfig: misc.projectConfig,
     cto: misc.cto,

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  PlayCircle,
   GitBranch,
   FileCode,
   Terminal,
@@ -37,7 +36,6 @@ const mainItems = [
   { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/files", label: "Files", icon: FileCode },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
-  { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/review", label: "Review", icon: MagnifyingGlass },
   { to: "/cto", label: "CTO", icon: Brain },
   { to: "/graph", label: "Graph", icon: Graph },
@@ -64,10 +62,6 @@ const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = 
   "/prs": {
     description: "Review ADE and GitHub pull requests, queues, integration proposals, checks, and merge readiness.",
     docUrl: docs.prsOverview,
-  },
-  "/project": {
-    description: "Run configured processes, previews, network routes, diagnostics, and project setup actions.",
-    docUrl: docs.projectHome,
   },
   "/review": {
     description: "Run and inspect AI review passes for the current project and PR workflow.",

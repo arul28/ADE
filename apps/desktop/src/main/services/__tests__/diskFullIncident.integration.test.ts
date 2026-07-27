@@ -8,7 +8,6 @@ import { expectNoJargon } from "../../../test/jargonGuard";
 import { boundLaunchdLogs } from "../../../../../ade-cli/src/services/runtime/runtimeLogMaintenance";
 import { createAgentChatService } from "../chat/agentChatService";
 import { readThreadPointerLedger } from "../chat/threadPointerLedger";
-import { createProcessService } from "../processes/processService";
 import {
   computeStartupBackoffMs,
   readLastFailure,
@@ -372,94 +371,6 @@ describe("disk-full incident integration matrix", () => {
     expect(verified.get<{ value: string }>("select value from incident_fixture where id = 1")?.value).toBe("authoritative");
     expect(verified.get("select 1 from sqlite_master where name = '__ade_crr_repair_incident_fixture'")).toBeNull();
     verified.close();
-  });
-
-  it("enforces exhausted pressure for chat and process starts, then recovers after hysteresis", async () => {
-    const root = tempRoot("pressure-chain");
-    let sample = 0;
-    const free = [0.5 * GIB, 20 * GIB, 20 * GIB];
-    const monitor = createDiskPressureMonitor({
-      roots: [root],
-      statfs: vi.fn(() => ({
-        bavail: BigInt(Math.round(free[Math.min(sample++, free.length - 1)]!)),
-        blocks: BigInt(100 * GIB),
-        bsize: 1n,
-      })) as any,
-    });
-
-    const chatSessionId = "chat-pressure";
-    fs.mkdirSync(path.join(root, ".ade", "cache", "chat-sessions"), { recursive: true });
-    const chatRow = {
-      id: chatSessionId,
-      laneId: "lane-pressure",
-      toolType: "codex-chat",
-      status: "running",
-      title: "Pressure chat",
-      startedAt: new Date().toISOString(),
-      endedAt: null,
-      archivedAt: null,
-      transcriptPath: path.join(root, ".ade", "transcripts", "chat", `${chatSessionId}.jsonl`),
-      resumeCommand: null,
-      lastOutputPreview: null,
-      manuallyNamed: false,
-      goal: null,
-    };
-    writeJsonWithPrevious(path.join(root, ".ade", "cache", "chat-sessions", `${chatSessionId}.json`), {
-      version: 2,
-      sessionId: chatSessionId,
-      laneId: "lane-pressure",
-      provider: "codex",
-      model: "gpt-5.4",
-      updatedAt: new Date().toISOString(),
-    });
-    const chatEvents: Array<{ event: { type: string; message?: string; errorInfo?: { code?: string } } }> = [];
-    const chatService = createAgentChatService({
-      projectRoot: root,
-      transcriptsDir: path.join(root, ".ade", "transcripts"),
-      laneService: {
-        getLaneBaseAndBranch: vi.fn(() => ({ baseRef: "main", branchRef: "main", worktreePath: root, laneType: "primary" })),
-        listLinearIssuesForSession: vi.fn(() => []),
-      } as any,
-      sessionService: sessionServiceFor(chatRow),
-      projectConfigService: { get: vi.fn(() => ({ effective: { ai: { permissions: {}, chat: {}, sessionIntelligence: {} } } })) } as any,
-      aiIntegrationService: { getMode: vi.fn(() => "subscription") } as any,
-      logger: logger(),
-      appVersion: "pressure-test",
-      diskPressureMonitor: monitor,
-      onEvent: (envelope) => chatEvents.push(envelope as any),
-      getDirtyFileTextForPath: () => undefined,
-    });
-
-    await chatService.sendMessage({ sessionId: chatSessionId, text: "Start new work." });
-    const chatRefusal = chatEvents.find((entry) => entry.event.type === "error")?.event;
-    expect(chatRefusal).toMatchObject({ message: expect.stringContaining("Free up space"), errorInfo: { code: "disk_full" } });
-    expectNoJargon(chatRefusal?.message ?? "");
-
-    const processService = createProcessService({
-      db: {} as AdeDb,
-      projectId: "project-pressure",
-      logger: logger(),
-      laneService: {} as any,
-      projectConfigService: {} as any,
-      sessionService: { get: vi.fn() } as any,
-      ptyService: {
-        create: vi.fn(),
-        dispose: vi.fn(),
-        onData: vi.fn(() => () => {}),
-        onExit: vi.fn(() => () => {}),
-      } as any,
-      broadcastEvent: vi.fn(),
-      diskPressureMonitor: monitor,
-    });
-    await expect(processService.start({ laneId: "lane-pressure", processId: "web" }))
-      .rejects.toMatchObject({ code: "disk_full", message: expect.stringContaining("Free up space") });
-
-    expect(monitor.getSnapshot({ maxAgeMs: 0 }).state).toBe("exhausted");
-    expect(monitor.getSnapshot({ maxAgeMs: 0 }).state).toBe("normal");
-    expect(monitor.canPerform("chat_turn").allowed).toBe(true);
-    expect(monitor.canPerform("process_start").allowed).toBe(true);
-    chatService.forceDisposeAll();
-    processService.disposeAll();
   });
 
   it("never follows a symlink farm during snapshot, cleanup preview, or compression listing", async () => {

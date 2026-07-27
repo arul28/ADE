@@ -31,7 +31,6 @@ export const docs = {
   firstLane: `${DOCS_BASE}/getting-started/first-lane`,
 
   // Higher-level product areas
-  projectHome: `${DOCS_BASE}/tools/project-home`,
   ctoOverview: `${DOCS_BASE}/cto/overview`,
   ctoWorkers: `${DOCS_BASE}/cto/workers`,
   automationsOverview: `${DOCS_BASE}/automations/overview`,

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   ArrowClockwise,
   ArrowSquareOut,
-  CaretDown,
   Desktop,
   Keyboard,
   Link,
@@ -22,7 +21,6 @@ import type {
   AppControlSnapshot,
   AppControlStatus,
   AppControlTarget,
-  ProcessDefinition,
 } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -105,10 +103,6 @@ function writePanelUiState(key: string, state: PanelUiState): void {
   } catch {
     // Best-effort panel state only.
   }
-}
-
-function joinProcessCommand(command: string[]): string {
-  return command.map((part) => (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(part) ? part : `'${part.replace(/'/g, "'\\''")}'`)).join(" ");
 }
 
 function errorMessage(error: unknown): string {
@@ -279,8 +273,6 @@ export function ChatAppControlPanel({
   const [launchCommand, setLaunchCommand] = useState(initialUiState.launchCommand);
   const [launchCwd, setLaunchCwd] = useState(initialUiState.launchCwd);
   const [cdpPort, setCdpPort] = useState(initialUiState.cdpPort);
-  const [processes, setProcesses] = useState<ProcessDefinition[]>([]);
-  const [processesLoaded, setProcessesLoaded] = useState(false);
   const [snapshot, setSnapshot] = useState<AppControlSnapshot | null>(null);
   const [targets, setTargets] = useState<AppControlTarget[]>([]);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
@@ -351,27 +343,6 @@ export function ChatAppControlPanel({
     }
     writePanelUiState(uiStateKey, { launchCommand, launchCwd, cdpPort, mode });
   }, [cdpPort, launchCommand, launchCwd, mode, uiStateKey]);
-
-  // Load run-tab process commands so the launch picker can autopopulate.
-  useEffect(() => {
-    let cancelled = false;
-    setProcessesLoaded(false);
-    void window.ade.projectConfig
-      .get()
-      .then((snapshot) => {
-        if (cancelled) return;
-        setProcesses(snapshot.effective?.processes ?? []);
-        setProcessesLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setProcesses([]);
-        setProcessesLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectRoot]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -750,14 +721,6 @@ export function ChatAppControlPanel({
     [controlsDisabled, controlsDisabledMessage, laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, runBusy, sessionId],
   );
 
-  const pickProcess = useCallback((processId: string) => {
-    const proc = processes.find((p) => p.id === processId);
-    if (!proc) return;
-    setLaunchCommand(joinProcessCommand(proc.command));
-    setLaunchCwd(proc.cwd ?? "");
-    setMessage(null);
-  }, [processes]);
-
   const attachToTargetId = useCallback(
     (targetId: string) => {
       if (controlsDisabled) {
@@ -1019,17 +982,9 @@ export function ChatAppControlPanel({
   const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > 4_000;
   const focusElement = hoverElement ?? selectedElement;
 
-  const processOptions = useMemo(() => {
-    return processes.map((proc) => {
-      const cmd = joinProcessCommand(proc.command);
-      const cwd = proc.cwd?.trim().length ? proc.cwd : "(lane root)";
-      return { id: proc.id, label: `${cmd}  ·  ${cwd}` };
-    });
-  }, [processes]);
-
   return (
     <div className="flex h-full min-h-0 flex-col gap-1 font-sans text-[11px] text-fg/75">
-      {/* Top row: launch input + run-command picker + Run, or running command + Stop/Terminal */}
+      {/* Top row: launch input + Run, or running command + Stop/Terminal */}
       {!hasActiveSession ? (
         <div className="flex shrink-0 flex-wrap items-center gap-1">
           <input
@@ -1045,39 +1000,6 @@ export function ChatAppControlPanel({
               if (event.key === "Enter" && canLaunch) void launchSelected();
             }}
           />
-          <div className="relative shrink-0">
-            <select
-              value=""
-              disabled={!processesLoaded || processOptions.length === 0 || controlsDisabled}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (!value) return;
-                pickProcess(value);
-                event.target.value = "";
-              }}
-              aria-label="Select run command"
-              title={
-                processOptions.length === 0
-                  ? "Configure run commands in the Run tab to populate this picker."
-                  : "Pick a configured run command to autopopulate the launch field."
-              }
-              className="h-7 appearance-none rounded border border-white/[0.08] bg-white/[0.03] pl-2 pr-6 text-[10px] font-medium text-fg/72 outline-none transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
-            >
-              <option value="">
-                {processOptions.length === 0 ? "No run commands" : "Select run command…"}
-              </option>
-              {processOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <CaretDown
-              size={10}
-              weight="bold"
-              className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-fg/55"
-            />
-          </div>
           <button
             type="button"
             disabled={Boolean(busy) || !canLaunch}

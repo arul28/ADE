@@ -55,7 +55,6 @@ import {
   isIntegrationLaneFromMetadata,
 } from "../../lib/integrationLanes";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { isRunOwnedSession } from "../../lib/sessions";
 import { laneMatchesFilter } from "../lanes/laneUtils";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -767,7 +766,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       const includeOperations = options?.includeOperations ?? true;
       const [sessions, operations] = await Promise.all([
         listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }).then((rows) =>
-          rows.filter((session) => !isRunOwnedSession(session)),
+          rows,
         ),
         includeOperations
           ? window.ade.history.listOperations({ limit: GRAPH_ACTIVITY_OPERATION_LIMIT })

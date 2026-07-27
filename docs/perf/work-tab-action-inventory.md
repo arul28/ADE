@@ -973,13 +973,6 @@ Parallel composer coverage:
 
 Chat Git toolbar coverage:
 
-- Full Work UI probes tried DOM click, synthetic pointer events, and CDP mouse
-  input on the visible toolbar `Run` button; none opened the Radix menu, even
-  after switching the Work tools pane away from Browser and verifying the
-  native BrowserView was hidden. The focused `ChatGitToolbar.test.tsx` fixture
-  now covers the exact embedded `QuickRunMenu` Radix trigger with
-  pointerdown/up events, so `work.chat.git.run-menu` is measured by fixture even
-  though broad coordinate clicks remain flaky.
 - The valid `work.chat.git.commit-message` marker first switched away from the
   Browser tools panel, clicked `Stage & Commit` with CDP mouse input, typed
   `Perf toolbar commit message` into the inline commit input, then cleared the
@@ -992,17 +985,13 @@ Focused fixture command:
 npm --prefix apps/desktop run test -- src/renderer/components/chat/ChatGitToolbar.test.tsx
 ```
 
-Result: passed (`2` focused tests).
+Result: passed.
 
 Rows promoted to `measured`:
 
 - `work.chat.git.lane-open`: the toolbar fixture rendered the real current-lane
   button inside `MemoryRouter`, clicked `UI audit lane`, and verified navigation
   to `/lanes/lane-1`.
-- `work.chat.git.run-menu`: the same fixture opened the real `Run` trigger with
-  pointerdown/up, verified `Lane runtime`, `Open Run tab`, and
-  `Open shell in Work`, and verified no start/stop process action fired.
-
 Cursor Cloud inline launch fixture:
 
 ```bash
@@ -1788,9 +1777,8 @@ Result: passed (`2` focused tests).
 
 Rows promoted to `measured`:
 
-- `work.app-control.run-command`: the idle App Control fixture loaded a Run-tab
-  process, changed `Select run command` to `dev`, and verified the launch input
-  became `npm run dev`.
+- `work.app-control.run-command`: the idle App Control fixture selected the
+  `dev` launch command and verified the launch input became `npm run dev`.
 - `work.app-control.help-cdp`: the same fixture clicked `Help wire CDP` and
   verified `onInsertDraft` received the App Control CDP setup prompt.
 - `work.app-control.show-terminal`: the connected-session fixture clicked the

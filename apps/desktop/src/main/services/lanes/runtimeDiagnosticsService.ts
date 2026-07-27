@@ -97,9 +97,7 @@ export function createRuntimeDiagnosticsService({
 
   function deriveStatus(issues: LaneHealthIssue[], fallback: boolean): LaneHealthStatus {
     if (issues.length === 0) return fallback ? "degraded" : "healthy";
-    const hasCritical = issues.some((i) =>
-      i.type === "process-dead" || i.type === "port-unresponsive"
-    );
+    const hasCritical = issues.some((i) => i.type === "port-unresponsive");
     return hasCritical ? "unhealthy" : "degraded";
   }
 
@@ -120,7 +118,6 @@ export function createRuntimeDiagnosticsService({
       const health: LaneHealthCheck = {
         laneId,
         status: "unhealthy",
-        processAlive: false,
         portResponding: false,
         respondingPort: null,
         proxyRouteActive: false,
@@ -155,17 +152,7 @@ export function createRuntimeDiagnosticsService({
       });
     }
 
-    // 2. Process alive — inferred from port responding (if port responds, process is alive)
-    const processAlive = portResponding;
-    if (!processAlive && lease?.status === "active") {
-      issues.push({
-        type: "process-dead",
-        message: "Lane process appears to be stopped. No response on the allocated port.",
-        actionLabel: "Start dev server",
-      });
-    }
-
-    // 3. Proxy route active
+    // 2. Proxy route active
     const proxyRouteActive = !!(
       route &&
       route.status === "active" &&
@@ -212,7 +199,7 @@ export function createRuntimeDiagnosticsService({
       }
     }
 
-    // 4. Port conflicts
+    // 3. Port conflicts
     const conflicts = getPortConflicts().filter(
       (c) => !c.resolved && (c.laneIdA === laneId || c.laneIdB === laneId)
     );
@@ -226,27 +213,20 @@ export function createRuntimeDiagnosticsService({
       });
     }
 
-    // Deduplicate: if we have both process-dead and port-unresponsive, keep only port-unresponsive
-    const hasPortUnresponsive = issues.some((i) => i.type === "port-unresponsive");
-    const dedupedIssues = hasPortUnresponsive
-      ? issues.filter((i) => i.type !== "process-dead")
-      : issues;
-
     const health: LaneHealthCheck = {
       laneId,
-      status: deriveStatus(dedupedIssues, isFallback),
-      processAlive,
+      status: deriveStatus(issues, isFallback),
       portResponding,
       respondingPort,
       proxyRouteActive,
       fallbackMode: isFallback,
       lastCheckedAt: new Date().toISOString(),
-      issues: dedupedIssues,
+      issues,
     };
 
     healthCache.set(laneId, health);
     broadcastEvent({ type: "health-updated", laneId, health });
-    logger.debug("runtime_diagnostics.health_check", { laneId, status: health.status, issues: dedupedIssues.length });
+    logger.debug("runtime_diagnostics.health_check", { laneId, status: health.status, issues: issues.length });
 
     return health;
   }

@@ -498,15 +498,12 @@ export function formatLaneDeleteRisk(risk: LaneDeleteRisk): string {
   if (risk.hasUnpushedCommits) {
     parts.push(`${risk.unpushedCommitCount} unpushed commit${risk.unpushedCommitCount === 1 ? "" : "s"}`);
   }
-  if (risk.runningProcessCount > 0) {
-    parts.push(`${risk.runningProcessCount} running process${risk.runningProcessCount === 1 ? "" : "es"}`);
-  }
   if (risk.activeChatCount > 0) {
     parts.push(`${risk.activeChatCount} chat session${risk.activeChatCount === 1 ? "" : "s"}`);
   }
   if (risk.activePtyCount > 0) parts.push(`${risk.activePtyCount} terminal${risk.activePtyCount === 1 ? "" : "s"}`);
   if (risk.remoteBranchExists) parts.push("remote branch exists");
-  return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running processes.";
+  return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running sessions.";
 }
 
 export type ModelPickerEscapeAction =
@@ -6571,7 +6568,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     // Fetch the delete-risk first so the confirmation shows what would be lost
-    // (unpushed commits, dirty tree, running processes) rather than a blind prompt.
+    // (unpushed commits, dirty tree, running sessions) rather than a blind prompt.
     void (async () => {
       let description: string | undefined;
       const conn = connectionRef.current;

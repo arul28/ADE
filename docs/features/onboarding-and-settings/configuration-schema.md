@@ -7,14 +7,14 @@ merge rules, and trust model.
 
 Canonical type definitions: `apps/desktop/src/shared/types/config.ts`.
 Canonical service: `apps/desktop/src/main/services/config/projectConfigService.ts`
-(~2,870 lines; the largest service in the app).
+(~3,150 lines; the largest service in the app).
 
 ## Files
 
 | File | Scope | VCS | Purpose |
 |---|---|---|---|
-| `.ade/ade.yaml` | Shared | committed | Team-wide process, stack, test, overlay, automation, AI, lane template, proxy, and OAuth settings. |
-| `.ade/local.yaml` | Local | gitignored | Personal overrides: ports, env vars, local-only processes, machine-specific paths. |
+| `.ade/ade.yaml` | Shared | committed | Team-wide test, overlay, automation, AI, lane template, proxy, and OAuth settings. |
+| `.ade/local.yaml` | Local | gitignored | Personal overrides: ports, env vars, and machine-specific paths. |
 
 Both files use the lenient `ProjectConfigFile` shape at parse time.
 They are merged into the strict `EffectiveProjectConfig` at read
@@ -25,8 +25,7 @@ trust metadata.
 `projectConfigService.save({ shared, local })` is also the seam that
 promotes a project from the **local-only ADE scaffold** to the **shared
 scaffold**. Saving with any non-empty shared content
-(`hasSharedConfigContent(shared)` checks for processes, stack buttons,
-test suites, overlays, automations, environments, github/git/ai
+(`hasSharedConfigContent(shared)` checks for test suites, overlays, automations, environments, github/git/ai
 metadata, lane init, lane templates, lane cleanup, providers, linear
 sync, notifications, or a `project` block) calls
 `ensureSharedAdeProjectScaffold(projectRoot)` so the canonical
@@ -42,9 +41,6 @@ mode to keep the local-only `.git/info/exclude .ade/` rule in place.
 type ProjectConfigFile = {
   version?: number;
   project?: ProjectIdentityConfig;
-  processes?: ConfigProcessDefinition[];
-  processGroups?: ConfigProcessGroupDefinition[];
-  stackButtons?: ConfigStackButtonDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   automations?: ConfigAutomationRule[];
@@ -83,74 +79,6 @@ The lenient `Config*` variants allow every field to be optional so
 `ade.yaml` and `local.yaml` can be partial. `projectConfigService`
 applies defaults, merges, and validates on every read.
 
-## Processes
-
-```ts
-type ProcessDefinition = {
-  id: string;
-  name: string;
-  command: string[];          // e.g. ["npm", "run", "dev"]
-  cwd: string;                // relative to lane worktree
-  env: Record<string, string>;
-  groupIds: string[];         // refs into processGroups, for Run-page filtering
-  autostart: boolean;
-  restart: "never" | "on-failure" | "always" | "on_crash";
-  gracefulShutdownMs: number;
-  dependsOn: string[];        // IDs of other processes
-  readiness:
-    | { type: "none" }
-    | { type: "port"; port: number }
-    | { type: "logRegex"; pattern: string };
-};
-```
-
-Consumed by `processService`. See
-[../terminals-and-sessions/pty-and-processes.md](../terminals-and-sessions/pty-and-processes.md)
-for the lifecycle and backoff details.
-
-`groupIds` is purely a UI organization concept. The Run page's group
-chip row filters the visible command cards to those whose `groupIds`
-include the active chip; it does **not** affect start order or
-dependency resolution (those belong to `dependsOn` and stacks). Shared
-and local configs merge `groupIds` by entry: if `local.yaml` specifies
-`groupIds` for a process, it replaces the shared value entirely;
-otherwise the shared value is preserved.
-
-## Process groups
-
-```ts
-type ProcessGroupDefinition = {
-  id: string;
-  name: string;
-};
-```
-
-`EffectiveProjectConfig.processGroups` is merged `by id` across shared
-and local, with `name` falling back to `id` when a group was declared
-without one. Validation requires non-empty `id`, unique `id` per array,
-non-empty `name` (pre-fallback), and any `ProcessDefinition.groupIds`
-entry to reference an existing group. Groups persist in shared config
-(`.ade/ade.yaml`) because they represent project-wide categorization;
-local config rarely introduces its own groups, but merging is supported
-for completeness.
-
-## Stacks
-
-```ts
-type StackButtonDefinition = {
-  id: string;
-  name: string;
-  processIds: string[];
-  startOrder: "parallel" | "dependency";
-};
-```
-
-A stack is a named collection of processes that start/stop together.
-`dependency` ordering runs topologically with cycle detection.
-Stacks and process groups are deliberately separate concepts: stacks
-define execution bundles (Start/Stop/Restart All), groups define
-filter categories in the Run page.
-
 ## Tests
 
 ```ts
@@ -165,8 +93,7 @@ type TestSuiteDefinition = {
 };
 ```
 
-Suites run through `testService` (not covered here). Tags drive the
-Run tab's filter chips.
+Suites run through `testService` (not covered here). Tags categorize suites for test execution and filtering.
 
 ## Lane overlay policies
 
@@ -188,7 +115,6 @@ type LaneOverlayPolicy = {
   overrides: {
     env?: Record<string, string>;
     cwd?: string;
-    processIds?: string[];       // allow-list filter
     testSuiteIds?: string[];
     portRange?: { start: number; end: number };
     proxyHostname?: string;
@@ -199,12 +125,9 @@ type LaneOverlayPolicy = {
 ```
 
 Matched via `laneOverlayMatcher.matchLaneOverlayPolicies(lane,
-policies)`. Multiple matches merge: later wins per-field except for
-`processIds` and `testSuiteIds`, which are intersected (allow-list
-narrowing).
+policies)`. Multiple matches merge: later wins per-field except for `testSuiteIds`, which is intersected (allow-list narrowing).
 
-Used by `processService.getLaneOverlay()` and the lane runtime env
-resolver.
+Used by the lane runtime env resolver.
 
 ## Lane environment init
 
@@ -395,8 +318,7 @@ Resolved through `projectConfigService.linearSync` and surfaced in
 The service does a shallow-first, deep-on-known-fields merge:
 
 1. `shared` is the base.
-2. `local` overlays per top-level field. For arrays (`processes`,
-   `processGroups`, `stackButtons`, `testSuites`, `laneTemplates`,
+2. `local` overlays per top-level field. For arrays (`testSuites`, `laneTemplates`,
    `automations`, `laneOverlayPolicies`), entries are matched by `id`;
    matches are deep-merged, non-matches from `local` are appended.
 3. Scalar fields in `local` override `shared` when set.
@@ -421,8 +343,7 @@ approved. `ProjectConfigTrust` tracks:
 `getExecutableConfig()` throws if `requiresSharedTrust` is true —
 callers that bypass must use `{ skipTrust: true }` deliberately.
 
-The trust confirmation dialog (rendered from `RunPage` and
-`SettingsPage`) calls `projectConfigService.confirmTrust()`, which
+The trust confirmation dialog in `SettingsPage` calls `projectConfigService.confirmTrust()`, which
 writes the new approved hash. The Automations tab exposes the same
 `confirmTrust()` via a `Trust config` banner, but only when the rule
 list contains a shared-config (non-`local`) rule; `runRuleNow` blocks
@@ -440,15 +361,11 @@ overrides.
 type ProjectConfigValidationIssue = { path: string; message: string };
 ```
 
-Issues surface in the config editor inline (Run tab editor and
-Settings). The validator enforces:
+Issues surface inline in Settings. The validator enforces:
 
 - `id` fields non-empty and unique per array
 - `command` arrays non-empty and containing strings
 - `cwd` strings (path validation happens at runtime, not here)
-- `restart` values in the allowed set
-- readiness discriminator matches its payload shape
-- `dependsOn` entries reference existing process IDs
 
 Validation is best-effort — the service intentionally does not fail
 hard on unknown fields so newer configs remain openable by older app
@@ -498,9 +415,5 @@ name handled inside `registerIpc.ts`).
 
 ## Cross-links
 
-- Stack lifecycle and process wiring:
-  [../terminals-and-sessions/pty-and-processes.md](../terminals-and-sessions/pty-and-processes.md)
-- Run tab UI and config editor:
-  [../project-home/README.md](../project-home/README.md)
 - First-run setup dashboard (where suggested config gets seeded):
   [first-run.md](./first-run.md)

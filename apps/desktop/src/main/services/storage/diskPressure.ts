@@ -13,7 +13,6 @@ export type { DiskPressureSnapshot, DiskPressureState, DiskPressureThresholds } 
 export type DiskPressureOperationKind =
   | "chat_turn"
   | "cli_launch"
-  | "process_start"
   | "high_write_job"
   | "compression";
 
@@ -38,7 +37,6 @@ export const DEFAULT_DISK_PRESSURE_THRESHOLDS: DiskPressureThresholds = {
 export const DISK_PRESSURE_REFUSAL_MESSAGES = {
   chat_turn: "Your Mac is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
   cli_launch: "Your Mac is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
-  process_start: "Your Mac is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
   high_write_job: "Your Mac is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
   compression: "Your Mac is almost out of storage. ADE didn't start this task to avoid writing more data. Free up space, then try again.",
 } satisfies Record<DiskPressureOperationKind, string>;

@@ -28,9 +28,6 @@ function makeTemplate(overrides: Partial<LaneTemplate> = {}): LaneTemplate {
 function makeEffective(overrides: Partial<EffectiveProjectConfig> = {}): EffectiveProjectConfig {
   return {
     version: 1,
-    processes: [],
-    stackButtons: [],
-    processGroups: [],
     testSuites: [],
     laneOverlayPolicies: [],
     automations: [],
@@ -47,9 +44,6 @@ function makeSnapshot(overrides: {
   return {
     shared: {
       version: 1,
-      processes: [],
-      stackButtons: [],
-      processGroups: [],
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
@@ -57,9 +51,6 @@ function makeSnapshot(overrides: {
     },
     local: {
       version: 1,
-      processes: [],
-      stackButtons: [],
-      processGroups: [],
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],

@@ -26,7 +26,6 @@ rmSync(join(repo, "docs"), { recursive: true, force: true });
 rmSync(join(repo, "scripts"), { recursive: true, force: true });
 rmSync(join(repo, "fixtures"), { recursive: true, force: true });
 rmSync(join(repo, "untracked-scratch"), { recursive: true, force: true });
-mkdirSync(join(repo, ".ade"), { recursive: true });
 
 write("package.json", `${JSON.stringify({
   name: "ade-perf-pass",
@@ -55,50 +54,6 @@ setTimeout(() => {}, 10 * 60 * 1000);
 write("scripts/short-runner.mjs", `console.log("[perf-pass] short command", process.cwd());
 setTimeout(() => console.log("[perf-pass] short done"), 300);
 `);
-
-const commandGroups = [
-  { id: "web", name: "Web" },
-  { id: "api", name: "API" },
-  { id: "tests", name: "Tests" },
-  { id: "tools", name: "Tools" },
-  { id: "stress", name: "Stress" },
-];
-const commands = Array.from({ length: 36 }, (_, index) => {
-  const n = String(index + 1).padStart(2, "0");
-  const primaryGroup = commandGroups[index % (commandGroups.length - 1)].id;
-  const longRunning = index % 4 !== 0;
-  return {
-    id: `perf-cmd-${n}`,
-    name: `Perf command ${n}`,
-    command: longRunning
-      ? ["node", "scripts/long-runner.mjs", `cmd-${n}`, String(1200 + index * 17)]
-      : ["node", "scripts/short-runner.mjs"],
-    cwd: ".",
-    groupIds: [primaryGroup, "stress"],
-    gracefulShutdownMs: 1500,
-    readiness: { type: "none" },
-  };
-});
-const yamlLines = [
-  "version: 1",
-  "processGroups:",
-  ...commandGroups.flatMap((group) => [`  - id: ${group.id}`, `    name: ${group.name}`]),
-  "processes:",
-  ...commands.flatMap((cmd) => [
-    `  - id: ${cmd.id}`,
-    `    name: ${cmd.name}`,
-    "    command:",
-    ...cmd.command.map((part) => `      - ${JSON.stringify(part)}`),
-    `    cwd: ${JSON.stringify(cmd.cwd)}`,
-    "    groupIds:",
-    ...cmd.groupIds.map((groupId) => `      - ${groupId}`),
-    `    gracefulShutdownMs: ${cmd.gracefulShutdownMs}`,
-    "    readiness:",
-    "      type: none",
-  ]),
-  "",
-];
-write(".ade/ade.yaml", yamlLines.join("\n"));
 
 for (let dir = 0; dir < 18; dir += 1) {
   const dirName = `src/feature-${String(dir).padStart(2, "0")}`;
@@ -141,7 +96,7 @@ write("fixtures/huge-text.txt", `${"PERF_NEEDLE large file line\n".repeat(3000)}
 git(["add", "package.json", "scripts", "src", "docs", "fixtures"]);
 const staged = git(["diff", "--cached", "--name-only"]);
 if (staged) {
-  git(["commit", "-m", "Seed files and run perf fixture"]);
+  git(["commit", "-m", "Seed files perf fixture"]);
 }
 
 write("src/feature-00/component-000.ts", [

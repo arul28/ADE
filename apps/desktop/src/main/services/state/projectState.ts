@@ -7,7 +7,6 @@ import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 export type AdePaths = {
   adeDir: string;
   logsDir: string;
-  processLogsDir: string;
   testLogsDir: string;
   transcriptsDir: string;
   worktreesDir: string;
@@ -51,7 +50,6 @@ export function ensureAdeDirs(projectRoot: string): AdePaths {
   return {
     adeDir: paths.adeDir,
     logsDir: paths.logsDir,
-    processLogsDir: paths.processLogsDir,
     testLogsDir: paths.testLogsDir,
     transcriptsDir: paths.transcriptsDir,
     worktreesDir: paths.worktreesDir,

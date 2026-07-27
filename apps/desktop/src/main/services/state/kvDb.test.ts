@@ -119,7 +119,7 @@ function insertSessionAndPr(db: Awaited<ReturnType<typeof openKvDb>>) {
       null,
       1,
       "Ship W5",
-      "run-shell",
+      "shell",
       0,
       "npm test",
       now,
@@ -427,13 +427,13 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBe(0);
   });
 
-  it("keeps config-snapshot tables (process_definitions/stack_buttons/test_suites) local-only", async () => {
+  it("keeps the config-snapshot test_suites table local-only", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-config-snapshot-local-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
-    for (const table of ["process_definitions", "stack_buttons", "test_suites"]) {
+    for (const table of ["test_suites"]) {
       expect(
         db.get<{ present: number }>(
           `select 1 as present from sqlite_master where type = 'table' and name = '${table}__crsql_clock' limit 1`,
@@ -447,98 +447,6 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     }
   });
 
-  it("un-CRRs a previously-converted process_definitions so the snapshot rebuild delete never fires crsql triggers", async () => {
-    const projectRoot = makeProjectRoot("ade-kvdb-process-defs-crr-cleanup-");
-    const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const first = await openKvDb(dbPath, createLogger() as any);
-    insertProjectGraph(first);
-
-    // Simulate a DB written by an older build that incorrectly converted the
-    // config-snapshot table to a CRR (installs triggers calling
-    // crsql_internal_sync_bit + clock/pks shadow tables). Older builds' schema
-    // retrofit had rewritten the table with a NOT NULL primary key and no FK
-    // lines, so recreate that legacy shape first — the current retrofit
-    // intentionally no longer rewrites CRR-excluded tables, and crsql_as_crr
-    // refuses nullable primary keys.
-    first.run("drop table process_definitions");
-    first.run(`
-      create table process_definitions (
-        id text not null primary key,
-        project_id text not null default '',
-        key text not null default '',
-        name text not null default '',
-        command_json text not null default '',
-        cwd text not null default '',
-        env_json text not null default '',
-        autostart integer not null default 0,
-        restart_policy text not null default '',
-        graceful_shutdown_ms integer not null default 0,
-        depends_on_json text not null default '',
-        readiness_json text not null default '',
-        updated_at text not null default ''
-      )
-    `);
-    first.get("select crsql_as_crr(?)", ["process_definitions"]);
-    first.run(
-      `insert into process_definitions(
-        id, project_id, key, name, command_json, cwd, env_json, autostart,
-        restart_policy, graceful_shutdown_ms, depends_on_json, readiness_json, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        "proc-1",
-        "project-1",
-        "web",
-        "Web",
-        JSON.stringify(["npm", "run", "dev"]),
-        "/repo/ade",
-        "{}",
-        1,
-        "on-failure",
-        5000,
-        "[]",
-        "[]",
-        "2026-03-17T00:00:00.000Z",
-      ],
-    );
-    expect(
-      first.get<{ count: number }>(
-        "select count(1) as count from crsql_changes where [table] = ?",
-        ["process_definitions"],
-      )?.count,
-    ).toBeGreaterThan(0);
-    first.close();
-
-    const reopened = await openKvDb(dbPath, createLogger() as any);
-    activeDisposers.push(async () => reopened.close());
-
-    // CRR metadata is stripped on reopen: no shadow tables, no triggers, no
-    // replicated changes — so a crsqlite-less runtime can run the rebuild
-    // delete without hitting the missing crsql_internal_sync_bit function.
-    expect(
-      reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'process_definitions__crsql_clock' limit 1",
-      ),
-    ).toBeNull();
-    expect(
-      reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'table' and name = 'process_definitions__crsql_pks' limit 1",
-      ),
-    ).toBeNull();
-    expect(
-      reopened.get<{ present: number }>(
-        "select 1 as present from sqlite_master where type = 'trigger' and tbl_name = 'process_definitions' and name like 'process_definitions__crsql_%trig' limit 1",
-      ),
-    ).toBeNull();
-    expect(
-      reopened.get<{ count: number }>(
-        "select count(1) as count from crsql_changes where [table] = ?",
-        ["process_definitions"],
-      )?.count,
-    ).toBe(0);
-    expect(() =>
-      reopened.run("delete from process_definitions where project_id = ?", ["project-1"]),
-    ).not.toThrow();
-  });
 
   it("backfills phone-critical tables whose rows predate CRR enablement", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-pre-crr-");

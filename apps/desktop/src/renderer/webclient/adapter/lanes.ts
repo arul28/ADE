@@ -94,7 +94,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         hasUnpushedCommits: false,
         unpushedCommitCount: 0,
         remoteBranchExists: false,
-        runningProcessCount: 0,
         activeChatCount: 0,
         activePtyCount: 0,
         activeWatcherCount: 0,

@@ -1172,7 +1172,7 @@ describe("ADE CLI", () => {
         survivableState: ["Paused chats"],
       },
       survivableStateText: "Paused chats remain available.",
-      blockingStateText: "Live processes must stop first.",
+      blockingStateText: "Live sessions must stop first.",
     }, { text: true } as any, inferFormatter(plan));
 
     expect(output).toContain("ADE sync status");
@@ -1187,7 +1187,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("blocked by 1 active item");
     expect(output).toContain("Shell: Stop the active shell before transferring the host.");
     expect(output).toContain("Paused chats remain available.");
-    expect(output).toContain("Live processes must stop first.");
+    expect(output).toContain("Live sessions must stop first.");
   });
 
   it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {

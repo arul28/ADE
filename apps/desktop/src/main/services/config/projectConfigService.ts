@@ -29,10 +29,6 @@ import type {
   ConfigAutomationRule,
   ConfigLaneOverlayPolicy,
   ConfigLaneTemplate,
-  ConfigProcessDefinition,
-  ConfigProcessGroupDefinition,
-  ConfigProcessReadiness,
-  ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
   EnvironmentMapping,
   EffectiveProjectConfig,
@@ -46,9 +42,6 @@ import type {
   LaneMountPointConfig,
   LaneTemplate,
   LaneType,
-  ProcessDefinition,
-  ProcessGroupDefinition,
-  ProcessReadinessConfig,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigFile,
@@ -61,7 +54,6 @@ import type {
   LinearSyncConfig,
   ModelConfig,
   ProjectIdentityConfig,
-  StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
 } from "../../../shared/types";
@@ -73,7 +65,6 @@ import { ensureSharedAdeProjectScaffold, initializeOrRepairAdeProject } from "..
 
 const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
-const DEFAULT_GRACEFUL_MS = 7000;
 const EMPTY_CONTENT_HASH = createHash("sha256").update("").digest("hex");
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "repo",
@@ -304,14 +295,6 @@ function normalizeProjectCommand(projectRoot: string, command: string[] | undefi
 function normalizeConfigFilePaths(config: ProjectConfigFile, projectRoot: string): ProjectConfigFile {
   return {
     ...config,
-    processes: (config.processes ?? []).map((proc) => {
-      const cwd = normalizeProjectCwd(projectRoot, proc.cwd);
-      return {
-        ...proc,
-        ...(proc.command ? { command: normalizeProjectCommand(projectRoot, proc.command, cwd) } : {}),
-        ...(cwd != null ? { cwd } : {})
-      };
-    }),
     testSuites: (config.testSuites ?? []).map((suite) => {
       const cwd = normalizeProjectCwd(projectRoot, suite.cwd);
       return {
@@ -453,21 +436,6 @@ function coerceFeatureReasoningOverrides(value: unknown): AiConfig["featureReaso
     }
   }
   return Object.keys(featureReasoningOverrides).length ? featureReasoningOverrides : undefined;
-}
-
-function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
-  if (!isRecord(value)) return undefined;
-  const type = asString(value.type);
-  if (type === "port") {
-    return { type, port: asNumber(value.port) };
-  }
-  if (type === "logRegex") {
-    return { type, pattern: asString(value.pattern) };
-  }
-  if (type === "none") {
-    return { type };
-  }
-  return undefined;
 }
 
 function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined {
@@ -981,61 +949,6 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   return out;
 }
 
-function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
-  if (!isRecord(value)) return null;
-  const id = asString(value.id)?.trim() ?? "";
-  const out: ConfigProcessDefinition = { id };
-
-  const name = asString(value.name);
-  const command = asStringArray(value.command);
-  const cwd = asString(value.cwd);
-  const env = asStringMap(value.env);
-  const groupIds = asStringArray(value.groupIds);
-  const autostart = asBool(value.autostart);
-  const restart = asString(value.restart);
-  const gracefulShutdownMs = asNumber(value.gracefulShutdownMs);
-  const dependsOn = asStringArray(value.dependsOn);
-  const readiness = parseReadiness(value.readiness);
-
-  if (name != null) out.name = name;
-  if (command != null) out.command = command;
-  if (cwd != null) out.cwd = cwd;
-  if (env != null) out.env = env;
-  if (groupIds != null) out.groupIds = groupIds;
-  if (autostart != null) out.autostart = autostart;
-  if (restart === "never" || restart === "on_crash" || restart === "on-failure" || restart === "always") out.restart = restart;
-  if (gracefulShutdownMs != null) out.gracefulShutdownMs = gracefulShutdownMs;
-  if (dependsOn != null) out.dependsOn = dependsOn;
-  if (readiness != null) out.readiness = readiness;
-
-  return out;
-}
-
-function coerceProcessGroup(value: unknown): ConfigProcessGroupDefinition | null {
-  if (!isRecord(value)) return null;
-  const id = asString(value.id)?.trim() ?? "";
-  const out: ConfigProcessGroupDefinition = { id };
-  const name = asString(value.name);
-  if (name != null) out.name = name;
-  return out;
-}
-
-function coerceStackButton(value: unknown): ConfigStackButtonDefinition | null {
-  if (!isRecord(value)) return null;
-  const id = asString(value.id)?.trim() ?? "";
-  const out: ConfigStackButtonDefinition = { id };
-
-  const name = asString(value.name);
-  const processIds = asStringArray(value.processIds);
-  const startOrder = asString(value.startOrder);
-
-  if (name != null) out.name = name;
-  if (processIds != null) out.processIds = processIds;
-  if (startOrder === "parallel" || startOrder === "dependency") out.startOrder = startOrder;
-
-  return out;
-}
-
 function coerceTestSuite(value: unknown): ConfigTestSuiteDefinition | null {
   if (!isRecord(value)) return null;
   const id = asString(value.id)?.trim() ?? "";
@@ -1235,7 +1148,6 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
     const overrides: LaneOverlayOverrides = {};
     const env = asStringMap(value.overrides.env);
     const cwd = asString(value.overrides.cwd);
-    const processIds = asStringArray(value.overrides.processIds);
     const testSuiteIds = asStringArray(value.overrides.testSuiteIds);
     const portStart = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.start) : undefined;
     const portEnd = isRecord(value.overrides.portRange) ? asNumber(value.overrides.portRange.end) : undefined;
@@ -1244,7 +1156,6 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
     const envInit = coerceLaneEnvInitConfig(value.overrides.envInit);
     if (env != null) overrides.env = env;
     if (cwd != null) overrides.cwd = cwd;
-    if (processIds != null) overrides.processIds = processIds;
     if (testSuiteIds != null) overrides.testSuiteIds = testSuiteIds;
     if (portStart != null && portEnd != null) overrides.portRange = { start: portStart, end: portEnd };
     if (proxyHostname) overrides.proxyHostname = proxyHostname;
@@ -2081,9 +1992,6 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return {
       version: VERSION,
-      processes: [],
-      processGroups: [],
-      stackButtons: [],
       testSuites: [],
       laneOverlayPolicies: [],
       automations: [],
@@ -2092,15 +2000,6 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
 
   const version = asNumber(value.version) ?? VERSION;
   const project = coerceProjectIdentityConfig(value.project);
-  const processes = Array.isArray(value.processes)
-    ? value.processes.map(coerceProcessDef).filter((x): x is ConfigProcessDefinition => x != null)
-    : [];
-  const processGroups = Array.isArray(value.processGroups)
-    ? value.processGroups.map(coerceProcessGroup).filter((x): x is ConfigProcessGroupDefinition => x != null)
-    : [];
-  const stackButtons = Array.isArray(value.stackButtons)
-    ? value.stackButtons.map(coerceStackButton).filter((x): x is ConfigStackButtonDefinition => x != null)
-    : [];
   const testSuites = Array.isArray(value.testSuites)
     ? value.testSuites.map(coerceTestSuite).filter((x): x is ConfigTestSuiteDefinition => x != null)
     : [];
@@ -2146,9 +2045,6 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   return {
     version,
     ...(project ? { project } : {}),
-    processes,
-    processGroups,
-    stackButtons,
     testSuites,
     laneOverlayPolicies,
     automations,
@@ -2170,7 +2066,7 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim().length) {
       return {
-        config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] },
+        config: { version: VERSION, testSuites: [], laneOverlayPolicies: [], automations: [] },
         raw
       };
     }
@@ -2179,7 +2075,7 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   } catch (err: any) {
     if (err?.code === "ENOENT") {
       return {
-        config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] },
+        config: { version: VERSION, testSuites: [], laneOverlayPolicies: [], automations: [] },
         raw: ""
       };
     }
@@ -2200,8 +2096,6 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
   const normalized: ProjectConfigFile = {
     version: VERSION,
     ...(config.project ? { project: config.project } : {}),
-    processes: config.processes ?? [],
-    stackButtons: config.stackButtons ?? [],
     testSuites: config.testSuites ?? [],
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
     automations: config.automations ?? [],
@@ -2226,9 +2120,6 @@ function hashContent(content: string): string {
 function hasSharedConfigContent(config: ProjectConfigFile): boolean {
   return Boolean(
     config.project
-    || (config.processes?.length ?? 0) > 0
-    || (config.processGroups?.length ?? 0) > 0
-    || (config.stackButtons?.length ?? 0) > 0
     || (config.testSuites?.length ?? 0) > 0
     || (config.laneOverlayPolicies?.length ?? 0) > 0
     || (config.automations?.length ?? 0) > 0
@@ -2276,39 +2167,11 @@ function mergeById<T extends { id: string }>(base: T[] = [], local: T[] = [], me
   return out;
 }
 
-function resolveReadiness(readiness: ConfigProcessReadiness | undefined): ProcessReadinessConfig {
-  if (!readiness) return { type: "none" };
-  if (readiness.type === "port") return { type: "port", port: Number(readiness.port ?? 0) };
-  if (readiness.type === "logRegex") return { type: "logRegex", pattern: readiness.pattern ?? "" };
-  return { type: "none" };
-}
-
 function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigFile): EffectiveProjectConfig {
   const project = {
     ...(shared.project ?? {}),
     ...(local.project ?? {}),
   };
-  const mergedProcesses = mergeById(shared.processes ?? [], local.processes ?? [], (base, over) => ({
-    ...base,
-    ...over,
-    ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {}),
-    ...(over.groupIds != null ? { groupIds: over.groupIds } : base.groupIds != null ? { groupIds: base.groupIds } : {}),
-    ...(over.readiness != null ? { readiness: over.readiness } : base.readiness != null ? { readiness: base.readiness } : {}),
-    ...(over.dependsOn != null ? { dependsOn: over.dependsOn } : base.dependsOn != null ? { dependsOn: base.dependsOn } : {})
-  }));
-
-  const mergedProcessGroups = mergeById(
-    shared.processGroups ?? [],
-    local.processGroups ?? [],
-    (base, over) => ({ ...base, ...over }),
-  );
-
-  const mergedStackButtons = mergeById(shared.stackButtons ?? [], local.stackButtons ?? [], (base, over) => ({
-    ...base,
-    ...over,
-    ...(over.processIds != null ? { processIds: over.processIds } : base.processIds != null ? { processIds: base.processIds } : {})
-  }));
-
   const mergedSuites = mergeById(shared.testSuites ?? [], local.testSuites ?? [], (base, over) => ({
     ...base,
     ...over,
@@ -2366,32 +2229,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ? undefined
       : local.defaultLaneTemplate ?? shared.defaultLaneTemplate;
 
-  const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
-    id: entry.id.trim(),
-    name: entry.name?.trim() ?? "",
-    command: (entry.command ?? []).map((c) => c.trim()).filter(Boolean),
-    cwd: entry.cwd?.trim() ?? "",
-    env: entry.env ?? {},
-    groupIds: (entry.groupIds ?? []).map((id) => id.trim()).filter(Boolean),
-    autostart: entry.autostart ?? false,
-    restart: entry.restart ?? "never",
-    gracefulShutdownMs: entry.gracefulShutdownMs ?? DEFAULT_GRACEFUL_MS,
-    dependsOn: (entry.dependsOn ?? []).map((d) => d.trim()).filter(Boolean),
-    readiness: resolveReadiness(entry.readiness)
-  }));
-
-  const processGroups: ProcessGroupDefinition[] = mergedProcessGroups.map((entry) => ({
-    id: entry.id.trim(),
-    name: entry.name?.trim() ?? entry.id.trim(),
-  }));
-
-  const stackButtons: StackButtonDefinition[] = mergedStackButtons.map((entry) => ({
-    id: entry.id.trim(),
-    name: entry.name?.trim() ?? "",
-    processIds: (entry.processIds ?? []).map((id) => id.trim()).filter(Boolean),
-    startOrder: entry.startOrder ?? "parallel"
-  }));
-
   const testSuites: TestSuiteDefinition[] = mergedSuites.map((entry) => ({
     id: entry.id.trim(),
     name: entry.name?.trim() ?? "",
@@ -2416,7 +2253,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     overrides: {
       ...(entry.overrides?.env ? { env: entry.overrides.env } : {}),
       ...(entry.overrides?.cwd ? { cwd: entry.overrides.cwd.trim() } : {}),
-      ...(entry.overrides?.processIds ? { processIds: entry.overrides.processIds.map((v) => v.trim()).filter(Boolean) } : {}),
       ...(entry.overrides?.testSuiteIds ? { testSuiteIds: entry.overrides.testSuiteIds.map((v) => v.trim()).filter(Boolean) } : {}),
       ...(entry.overrides?.portRange ? { portRange: { ...entry.overrides.portRange } } : {}),
       ...(entry.overrides?.proxyHostname ? { proxyHostname: entry.overrides.proxyHostname.trim() } : {}),
@@ -2584,9 +2420,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
   return {
     version: VERSION,
     ...(Object.keys(project).length ? { project } : {}),
-    processes,
-    stackButtons,
-    processGroups,
     testSuites,
     laneOverlayPolicies,
     automations,
@@ -2702,38 +2535,6 @@ function isDirectory(absPath: string): boolean {
   }
 }
 
-function validateProcessCycles(processes: ProcessDefinition[], issues: ProjectConfigValidationIssue[]) {
-  const byId = new Map(processes.map((p) => [p.id, p] as const));
-  const visited = new Set<string>();
-  const inStack = new Set<string>();
-
-  const dfs = (id: string): boolean => {
-    if (inStack.has(id)) return true;
-    if (visited.has(id)) return false;
-
-    visited.add(id);
-    inStack.add(id);
-
-    const proc = byId.get(id);
-    if (proc) {
-      for (const dep of proc.dependsOn) {
-        if (!byId.has(dep)) continue;
-        if (dfs(dep)) return true;
-      }
-    }
-
-    inStack.delete(id);
-    return false;
-  };
-
-  for (const id of byId.keys()) {
-    if (dfs(id)) {
-      issues.push({ path: "effective.processes", message: `Cyclic dependsOn graph detected around '${id}'` });
-      return;
-    }
-  }
-}
-
 function validateEffectiveConfig(
   effective: EffectiveProjectConfig,
   projectRoot: string,
@@ -2742,12 +2543,6 @@ function validateEffectiveConfig(
 ): ProjectConfigValidationResult {
   const issues: ProjectConfigValidationIssue[] = [];
 
-  validateDuplicateIds(shared.processes ?? [], "processes", issues, "shared");
-  validateDuplicateIds(local.processes ?? [], "processes", issues, "local");
-  validateDuplicateIds(shared.processGroups ?? [], "processGroups", issues, "shared");
-  validateDuplicateIds(local.processGroups ?? [], "processGroups", issues, "local");
-  validateDuplicateIds(shared.stackButtons ?? [], "stackButtons", issues, "shared");
-  validateDuplicateIds(local.stackButtons ?? [], "stackButtons", issues, "local");
   validateDuplicateIds(shared.testSuites ?? [], "testSuites", issues, "shared");
   validateDuplicateIds(local.testSuites ?? [], "testSuites", issues, "local");
   validateDuplicateIds(shared.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "shared");
@@ -2783,107 +2578,6 @@ function validateEffectiveConfig(
         if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
           issues.push({ path: `${p}.color`, message: "Environment color must be a hex string like #22c55e" });
         }
-      }
-    }
-  }
-
-  const processIds = new Set<string>();
-  const processGroupIds = new Set<string>();
-  for (const [idx, group] of effective.processGroups.entries()) {
-    const p = `effective.processGroups[${idx}]`;
-    if (!group.id) {
-      issues.push({ path: `${p}.id`, message: "Process group id is required" });
-    } else if (processGroupIds.has(group.id)) {
-      issues.push({ path: `${p}.id`, message: `Duplicate process group id '${group.id}'` });
-    } else {
-      processGroupIds.add(group.id);
-    }
-
-    if (!group.name) {
-      issues.push({ path: `${p}.name`, message: "Process group name is required" });
-    }
-  }
-
-  for (const [idx, proc] of effective.processes.entries()) {
-    const p = `effective.processes[${idx}]`;
-
-    if (!proc.id) {
-      issues.push({ path: `${p}.id`, message: "Process id is required" });
-    } else if (processIds.has(proc.id)) {
-      issues.push({ path: `${p}.id`, message: `Duplicate process id '${proc.id}'` });
-    } else {
-      processIds.add(proc.id);
-    }
-
-    if (!proc.name) issues.push({ path: `${p}.name`, message: "Process name is required" });
-    if (!proc.command.length) issues.push({ path: `${p}.command`, message: "Process command must be a non-empty argv array" });
-    if (!proc.cwd) issues.push({ path: `${p}.cwd`, message: "Process cwd is required" });
-    if (!Number.isFinite(proc.gracefulShutdownMs) || proc.gracefulShutdownMs <= 0) {
-      issues.push({ path: `${p}.gracefulShutdownMs`, message: "gracefulShutdownMs must be > 0" });
-    }
-
-    if (proc.cwd) {
-      try {
-        resolvePathWithinRoot(projectRoot, proc.cwd, { allowMissing: true });
-      } catch {
-        issues.push({ path: `${p}.cwd`, message: `cwd must stay within the project root: ${proc.cwd}` });
-      }
-    }
-
-    if (proc.readiness.type === "port") {
-      if (!Number.isInteger(proc.readiness.port) || proc.readiness.port < 1 || proc.readiness.port > 65535) {
-        issues.push({ path: `${p}.readiness.port`, message: "Port readiness requires a valid port (1-65535)" });
-      }
-    }
-
-    if (proc.readiness.type === "logRegex") {
-      if (!proc.readiness.pattern) {
-        issues.push({ path: `${p}.readiness.pattern`, message: "logRegex readiness requires a pattern" });
-      } else {
-        try {
-          // Validate regex syntax once during config validation.
-          new RegExp(proc.readiness.pattern);
-        } catch {
-          issues.push({ path: `${p}.readiness.pattern`, message: "Invalid readiness regex pattern" });
-        }
-      }
-    }
-
-    for (const groupId of proc.groupIds) {
-      if (!processGroupIds.has(groupId)) {
-        issues.push({ path: `${p}.groupIds`, message: `Unknown process group id '${groupId}'` });
-      }
-    }
-  }
-
-  for (const [idx, proc] of effective.processes.entries()) {
-    const p = `effective.processes[${idx}]`;
-    for (const dep of proc.dependsOn) {
-      if (!processIds.has(dep)) {
-        issues.push({ path: `${p}.dependsOn`, message: `Unknown dependency '${dep}'` });
-      }
-    }
-  }
-
-  validateProcessCycles(effective.processes, issues);
-
-  const stackIds = new Set<string>();
-  for (const [idx, stack] of effective.stackButtons.entries()) {
-    const p = `effective.stackButtons[${idx}]`;
-
-    if (!stack.id) {
-      issues.push({ path: `${p}.id`, message: "Stack button id is required" });
-    } else if (stackIds.has(stack.id)) {
-      issues.push({ path: `${p}.id`, message: `Duplicate stack button id '${stack.id}'` });
-    } else {
-      stackIds.add(stack.id);
-    }
-
-    if (!stack.name) issues.push({ path: `${p}.name`, message: "Stack button name is required" });
-
-    for (const processId of stack.processIds) {
-      if (!processIds.has(processId)) {
-        issues.push({ path: `${p}.processIds`, message: `Unknown process id '${processId}'` });
       }
     }
   }
@@ -2938,11 +2632,6 @@ function validateEffectiveConfig(
         issues.push({ path: `${p}.overrides.cwd`, message: `cwd override does not exist: ${overrideCwd}` });
       } else if (!isPathWithinProjectRoot(projectRoot, absCwd)) {
         issues.push({ path: `${p}.overrides.cwd`, message: `cwd override must stay within the project root: ${overrideCwd}` });
-      }
-    }
-    for (const processId of policy.overrides.processIds ?? []) {
-      if (!processIds.has(processId)) {
-        issues.push({ path: `${p}.overrides.processIds`, message: `Unknown process id '${processId}'` });
       }
     }
     for (const suiteId of policy.overrides.testSuiteIds ?? []) {
@@ -3262,54 +2951,7 @@ export function createProjectConfigService({
 
     db.run("BEGIN IMMEDIATE");
     try {
-      db.run("delete from process_definitions where project_id = ?", [projectId]);
-      db.run("delete from stack_buttons where project_id = ?", [projectId]);
       db.run("delete from test_suites where project_id = ?", [projectId]);
-
-      for (const proc of effective.processes) {
-        db.run(
-          `
-            insert into process_definitions(
-              id, project_id, key, name, command_json, cwd, env_json, autostart,
-              restart_policy, graceful_shutdown_ms, depends_on_json, readiness_json, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          [
-            createDefId(projectId, `proc:${proc.id}`),
-            projectId,
-            proc.id,
-            proc.name,
-            JSON.stringify(proc.command),
-            proc.cwd,
-            JSON.stringify(proc.env),
-            proc.autostart ? 1 : 0,
-            proc.restart,
-            proc.gracefulShutdownMs,
-            JSON.stringify(proc.dependsOn),
-            JSON.stringify(proc.readiness),
-            now
-          ]
-        );
-      }
-
-      for (const stack of effective.stackButtons) {
-        db.run(
-          `
-            insert into stack_buttons(
-              id, project_id, key, name, process_keys_json, start_order, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?)
-          `,
-          [
-            createDefId(projectId, `stack:${stack.id}`),
-            projectId,
-            stack.id,
-            stack.name,
-            JSON.stringify(stack.processIds),
-            stack.startOrder,
-            now
-          ]
-        );
-      }
 
       for (const suite of effective.testSuites) {
         db.run(
@@ -3420,8 +3062,6 @@ export function createProjectConfigService({
       sharedPath,
       localPath,
       sharedHash,
-      sharedProcesses: shared.processes?.length ?? 0,
-      localProcesses: local.processes?.length ?? 0
     });
 
     const snapshot = readSnapshotFromDisk();

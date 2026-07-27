@@ -4743,7 +4743,6 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
     expect(usageActionFromRpcDomain("pr", "createQueuePrs")).toBe("prs.createQueue");
     expect(usageActionFromRpcDomain("file", "writeWorkspaceText")).toBe("files.writeText");
-    expect(usageActionFromRpcDomain("process", "restartStack")).toBe("processes.start");
     expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);
     expect(usageActionFromRpcDomain("external-sessions", "import")).toBe("work.importExternalSession");

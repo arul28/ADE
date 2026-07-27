@@ -110,14 +110,7 @@ Ground rules used to compile this list:
 - **Risk**: Low.
 - **Estimated gain**: 50–150 ms bundle parse.
 
-### 14. Coalesce duplicate IPC invokes
-- **Where**: `ProcessService.ts:~712` (`Promise.all(ordered.map(id => startByDefinition(...)))`).
-- **Issue**: Parallel IPC without deduplication of identical calls.
-- **Fix**: Request-coalescing dispatcher.
-- **Risk**: Medium (central infrastructure change).
-- **Estimated gain**: 50–200 ms on multi-process starts.
-
-### 15. Atomic `UserPreferences` store
+### 14. Atomic `UserPreferences` store
 - **Where**: `appStore.ts` — `theme`, `terminalPreferences`, `smartTooltips` each persist separately.
 - **Issue**: Three writes where one would do.
 - **Fix**: Single atomic store + write.

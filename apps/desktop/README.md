@@ -48,7 +48,7 @@ From `apps/desktop`:
 npm run dev:vite
 ```
 
-Optional: export SQLite snapshot so lanes, PRs, sessions, and run-tab config mirror a real project:
+Optional: export a SQLite snapshot so lanes, PRs, and sessions mirror a real project:
 
 ```bash
 ADE_PROJECT_ROOT=/path/to/your/project npm run export:browser-mock-ade

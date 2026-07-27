@@ -12,9 +12,6 @@ function makeSnapshot(overrides: Partial<ProjectConfigSnapshot> = {}): ProjectCo
     local: {},
     effective: {
       version: 1,
-      processes: [],
-      stackButtons: [],
-      processGroups: [],
       testSuites: [],
       laneOverlayPolicies: [],
       automations: [],
@@ -66,9 +63,6 @@ describe("LaneBehaviorSection", () => {
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: {
         version: 1,
-        processes: [],
-        stackButtons: [],
-        processGroups: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -93,9 +87,6 @@ describe("LaneBehaviorSection", () => {
       local: { git: { autoRebaseOnHeadChange: false, newLaneBaseSource: "local" } },
       effective: {
         version: 1,
-        processes: [],
-        stackButtons: [],
-        processGroups: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -122,9 +113,6 @@ describe("LaneBehaviorSection", () => {
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: {
         version: 1,
-        processes: [],
-        stackButtons: [],
-        processGroups: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
@@ -152,9 +140,6 @@ describe("LaneBehaviorSection", () => {
       local: { git: { autoRebaseOnHeadChange: false } },
       effective: {
         version: 1,
-        processes: [],
-        stackButtons: [],
-        processGroups: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],

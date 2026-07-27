@@ -67,7 +67,7 @@ const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
 const APP_ROUTE_ROOTS = [
   "/work", "/lanes", "/files", "/prs", "/review", "/history",
-  "/automations", "/cto", "/settings", "/graph", "/project", "/chats",
+  "/automations", "/cto", "/settings", "/graph", "/chats",
 ];
 
 function isAppRoute(pathname: string): boolean {

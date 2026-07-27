@@ -7,7 +7,7 @@ export type EventCategory =
   | "conflict"
   | "pr"
   | "automation"
-  | "process"
+  | "test"
   | "system";
 
 // ── Event Importance (controls default visibility) ───────────────
@@ -67,8 +67,8 @@ export const CATEGORY_META: Record<EventCategory, CategoryMeta> = {
     colorMuted: "rgba(20,184,166,0.15)",
     shape: "diamond",
   },
-  process: {
-    label: "Processes",
+  test: {
+    label: "Tests",
     color: "#6366F1",
     colorMuted: "rgba(99,102,241,0.15)",
     shape: "square",
@@ -189,13 +189,10 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "automation.run":         { label: "Automation Run", category: "automation", iconName: "Lightning",    description: "Automation run",        importance: "medium" },
   "automation.webhook":     { label: "Webhook",         category: "automation", iconName: "Webhook",      description: "Webhook received",      importance: "medium" },
 
-  // ── Process & Test ──────────────────────────────────────────
-  "process.started":    { label: "Process Start",  category: "process", iconName: "Play",        description: "Process started",  importance: "medium" },
-  "process.stopped":    { label: "Process Stop",   category: "process", iconName: "Stop",        description: "Process stopped",  importance: "medium" },
-  "process.crashed":    { label: "Process Crash",  category: "process", iconName: "Bug",         description: "Process crashed",  importance: "high" },
-  "test.run_started":   { label: "Tests Started",  category: "process", iconName: "TestTube",    description: "Test run started", importance: "medium" },
-  "test.run_passed":    { label: "Tests Passed",   category: "process", iconName: "CheckCircle", description: "All tests passed", importance: "high" },
-  "test.run_failed":    { label: "Tests Failed",   category: "process", iconName: "XCircle",     description: "Tests failed",     importance: "high" },
+  // ── Tests ───────────────────────────────────────────────────
+  "test.run_started":   { label: "Tests Started",  category: "test", iconName: "TestTube",    description: "Test run started", importance: "medium" },
+  "test.run_passed":    { label: "Tests Passed",   category: "test", iconName: "CheckCircle", description: "All tests passed", importance: "high" },
+  "test.run_failed":    { label: "Tests Failed",   category: "test", iconName: "XCircle",     description: "Tests failed", importance: "high" },
 
   // ── System ──────────────────────────────────────────────────
   "config.changed":        { label: "Config Changed",     category: "system", iconName: "Sliders",        description: "Configuration changed",   importance: "medium" },

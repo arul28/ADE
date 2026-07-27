@@ -55,7 +55,7 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
-import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
+import { getStaleRunningCliSessionAgeHours } from "../../lib/sessions";
 import {
   isStaleCliNoticeSnoozed,
   snoozeStaleCliNotice,
@@ -96,12 +96,11 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
 const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
-  "/project",
   "/lanes",
   "/files",
   "/work",
@@ -156,7 +155,6 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
   const pathname = location.pathname || "/work";
   const route = `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
   const allowedRoots = [
-    "/project",
     "/lanes",
     "/files",
     "/work",
@@ -675,7 +673,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         const nowMs = Date.now();
         const stale = sessions
           .filter((session) => {
-            if (isRunOwnedSession(session)) return false;
             return getStaleRunningCliSessionAgeHours(session, nowMs) != null;
           })
           .sort((left, right) => sessionActivityMs(left) - sessionActivityMs(right));
@@ -1107,7 +1104,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
-      "/project": "tab-tint-project",
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
       "/work": "tab-tint-work",
@@ -1126,7 +1122,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shouldHoldProjectRouteForOnboarding =
     Boolean(project?.rootPath) &&
     !showWelcome &&
-    location.pathname === "/project" &&
+    location.pathname === "/work" &&
     onboardingStatusLoading;
   const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
   const staleCliNoticeAgeHours = staleCliNotice

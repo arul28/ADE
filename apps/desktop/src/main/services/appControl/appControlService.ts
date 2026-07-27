@@ -1550,8 +1550,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         title: `App Control: ${resolved.label}`,
         tracked: true,
         // Use "shell" so the session shows up in the chat sidebar nested under
-        // its parent chat. "run-shell" is filtered out by isRunOwnedSession()
-        // because it belongs to the Run page's process pipeline.
+        // its parent chat.
         toolType: "shell",
         startupCommand: resolved.commandForDisplay,
         env,

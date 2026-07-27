@@ -343,19 +343,15 @@ Measured Work run `work-chat-controls-20260512-02`:
   Browser and verify `builtInBrowser.getStatus().visible === false` before
   measuring unrelated chat-toolbar controls. The chat Git commit-message input
   can then be measured with CDP mouse input without submitting; clear the input
-  value afterward, and treat close/submit behavior as separate evidence. Broad
-  Work UI coordinate probes did not open the Quick Run Radix menu, but
-  `ChatGitToolbar.test.tsx` covers the current-lane navigation button and the
-  embedded `QuickRunMenu` trigger with pointerdown/up; use that as fixture
-  evidence unless a future real-UI probe opens the menu reliably.
+  value afterward, and treat close/submit behavior as separate evidence.
 - The detached App Control tools pane can safely measure local text entry in
   `App Control launch command` and `CDP port` if the fields are restored and
   Run/Connect are not clicked. `Help wire CDP` is not rendered there unless
   `canAttachToChat` is true, and Control/Inspect mode plus focused-element
   typing need an active app session.
 - `ChatAppControlPanel.test.tsx` can cover safe App Control state controls
-  without launching or driving an app: selecting a configured Run-tab command,
-  inserting the Help wire CDP draft, showing the launch terminal, refreshing a
+  without launching or driving an app: inserting the Help wire CDP draft,
+  showing the launch terminal, refreshing a
   snapshot, dismissing the message, toggling Control/Inspect, typing in the
   local focused-element text field, switching controlled windows, and re-scanning
   controlled windows. It can also cover hovering an inspected screenshot

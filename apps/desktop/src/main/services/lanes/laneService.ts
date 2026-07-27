@@ -48,7 +48,6 @@ import type {
   LaneSummary,
   LaneType,
   ListLanesArgs,
-  ProcessRuntime,
   ReparentLaneArgs,
   ReparentLaneResult,
   RebaseAbortArgs,
@@ -869,10 +868,6 @@ async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
     .filter((entry) => entry.ref.length > 0);
 }
 
-function isActiveProcess(p: ProcessRuntime): boolean {
-  return p.status === "starting" || p.status === "running" || p.status === "degraded" || p.status === "stopping";
-}
-
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 
 function branchNameForDelete(branchRef: string, remoteName = "origin"): string {
@@ -899,10 +894,6 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
 }
 
 export type LaneDeleteTeardownDeps = {
-  processService?: {
-    listRuntime: (laneId: string) => ProcessRuntime[];
-    stopAll: (args: { laneId: string }) => Promise<void>;
-  };
   agentChatService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => Promise<number>;
@@ -1671,29 +1662,11 @@ export function createLaneService({
       `,
       [laneId],
     );
-    const processRows = db.all<{ process_key: string; status: string }>(
-      `
-        select process_key, status
-        from process_runtime
-        where project_id = ?
-          and lane_id = ?
-          and status in ('starting', 'running', 'ready', 'unhealthy')
-        order by updated_at desc
-        limit 10
-      `,
-      [projectId, laneId],
-    );
     return [
       ...terminalRows.map((row) => ({
         id: row.id,
         kind: "terminal" as const,
         title: row.title || row.id,
-        status: row.status,
-      })),
-      ...processRows.map((row) => ({
-        id: row.process_key,
-        kind: "process" as const,
-        title: row.process_key,
         status: row.status,
       })),
     ];
@@ -2894,8 +2867,6 @@ export function createLaneService({
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
     db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from process_runtime where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from process_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from test_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from rebase_deferred where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from rebase_dismissed where lane_id = ? and project_id = ?", [laneId, projectId]);
@@ -3984,7 +3955,7 @@ export function createLaneService({
         throw new Error(`Branch '${preview.targetBranchRef}' is already active in lane '${preview.duplicateLaneName ?? preview.duplicateLaneId}'.`);
       }
       if (preview.activeWork.length > 0 && !args.acknowledgeActiveWork) {
-        throw new Error("This lane has active sessions or processes. Confirm the branch switch to continue.");
+        throw new Error("This lane has active sessions. Confirm the branch switch to continue.");
       }
 
       const previousBranchRef = row.branch_ref;
@@ -5039,7 +5010,7 @@ export function createLaneService({
         (fs.existsSync(row.worktree_path) || worktreeRegistered);
       const stepNames: LaneDeleteStepName[] = [];
       if (hasWorktree) stepNames.push("git_status");
-      stepNames.push("cancel_auto_rebase", "stop_processes", "stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
+      stepNames.push("cancel_auto_rebase", "stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
       if (hasWorktree) stepNames.push("git_worktree_remove");
       if (deleteBranch && row.branch_ref) stepNames.push("git_branch_delete");
       if (deleteRemoteBranch && row.branch_ref) stepNames.push("git_remote_branch_delete");
@@ -5135,19 +5106,6 @@ export function createLaneService({
           } catch {
             // ignore
           }
-        });
-
-        await runStep("stop_processes", async () => {
-          const svc = teardownDeps?.processService;
-          if (!svc) return { detail: "no service" };
-          const active = svc.listRuntime(laneId).filter(isActiveProcess);
-          if (active.length === 0) return { detail: "none running" };
-          try {
-            await svc.stopAll({ laneId });
-          } catch (err) {
-            logger.warn("lane.delete.stop_processes_failed", { laneId, error: err instanceof Error ? err.message : String(err) });
-          }
-          return { detail: `stopped ${active.length} ${active.length === 1 ? "process" : "processes"}` };
         });
 
         await runStep("stop_chats", async () => {
@@ -5315,7 +5273,7 @@ export function createLaneService({
             return { detail: lanePackDir };
           } catch (err) {
             // Best-effort cleanup — match the warn pattern used by the other
-            // best-effort steps (cleanup_env, stop_processes) so a failure
+            // best-effort cleanup steps so a failure
             // here is at least surfaced in the lane's logs and progress UI
             // rather than vanishing silently.
             const message = err instanceof Error ? err.message : String(err);
@@ -5408,9 +5366,6 @@ export function createLaneService({
         );
         remoteBranchExists = remoteCheck.exitCode === 0 && remoteCheck.stdout.trim().length > 0;
       }
-      const runningProcessCount = teardownDeps?.processService
-        ? teardownDeps.processService.listRuntime(laneId).filter(isActiveProcess).length
-        : 0;
       const activeChatCount = teardownDeps?.agentChatService?.countActiveForLane(laneId) ?? 0;
       const activePtyCount = teardownDeps?.ptyService?.countActiveForLane(laneId) ?? 0;
       const activeWatcherCount = teardownDeps?.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0;
@@ -5421,7 +5376,6 @@ export function createLaneService({
         hasUnpushedCommits,
         unpushedCommitCount,
         remoteBranchExists,
-        runningProcessCount,
         activeChatCount,
         activePtyCount,
         activeWatcherCount,

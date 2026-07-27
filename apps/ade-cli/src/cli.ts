@@ -215,8 +215,6 @@ type FormatterId =
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
-  | "run-defs"
-  | "run-runtime"
   | "chat-list"
   | "chat-read"
   | "scheduled-work-create"
@@ -603,7 +601,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
-    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -1519,15 +1516,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Operations
 
   Poll status for long-running ADE operations that returned an operation,
-  test run, chat session, run graph, or PR id.
+  test run, chat session, or PR id.
 
     $ ade operations status --operation <id> --text
     $ ade operations wait --operation <id> --wait-ms 30000 --text
     $ ade actions wait --test-run <id> --wait-ms 30000 --text
 
   Generic operation logs are not persisted by the operation table. Use
-  "ade tests logs", "ade run logs", or terminal/app-control log commands for
-  surfaces that own logs.
+  "ade tests logs" or terminal/app-control log commands for surfaces that own
+  logs.
 `,
   history: `${ADE_BANNER}
   History
@@ -1581,20 +1578,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
-`,
-  run: `${ADE_BANNER}
-  Run tab
-
-  Run tab commands mirror ADE process definitions and runtime state. They use
-  the machine ADE brain when live process state is needed.
-
-    $ ade run defs --text                           List configured run commands
-    $ ade run ps --lane <lane> --text               List process runtime state
-    $ ade run start <process> --lane <lane>         Start a process in a lane
-    $ ade run stop <process> --lane <lane>          Stop a process in a lane
-    $ ade run logs <process> --run <run> --text     Tail process logs
-    $ ade run stack start --stack <id> --lane <lane> Start a process stack
-    $ ade run start-all --lane <lane>               Start all configured processes
 `,
   shell: `${ADE_BANNER}
   Shell sessions
@@ -1974,9 +1957,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
   {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
 
-  Reuse a Run-tab command: list configured processes with
-  \`ade settings get --text\`, then pass \`--cwd\` so the launch runs from the
-  same directory the Run tab uses. Relative cwds resolve against the lane root.
+  Pass \`--cwd\` to launch from a project subdirectory. Relative paths resolve
+  against the lane root.
 
   Discovery and lifecycle:
     $ ade app-control status --text                Show active session and provider readiness
@@ -6095,146 +6077,6 @@ function buildPrPlan(args: string[]): CliPlan {
   };
 }
 
-function buildRunPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "ps";
-  if (sub === "actions")
-    return {
-      kind: "execute",
-      label: "run actions",
-      steps: [listActionsStep("actions", "process")],
-    };
-  if (sub === "action")
-    return {
-      kind: "execute",
-      label: "run action",
-      steps: [buildActionRunStep(["process", ...args])],
-    };
-  if (sub === "defs" || sub === "definitions")
-    return {
-      kind: "execute",
-      label: "process definitions",
-      steps: [
-        actionStep(
-          "result",
-          "process",
-          "listDefinitions",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  const laneId = readLaneId(args);
-  const processId =
-    readValue(args, ["--process", "--process-id"]) ?? firstPositional(args);
-  const runId = readValue(args, ["--run", "--run-id"]);
-  const withProcess = (base: JsonObject = {}) =>
-    collectGenericObjectArgs(args, {
-      ...base,
-      ...(laneId ? { laneId } : {}),
-      ...(processId ? { processId } : {}),
-      ...(runId ? { runId } : {}),
-    });
-  if (sub === "ps" || sub === "list" || sub === "runtime") {
-    const id = requireValue(laneId, "laneId");
-    return {
-      kind: "execute",
-      label: "process runtime",
-      steps: [actionArgsListStep("result", "process", "listRuntime", [id])],
-    };
-  }
-  if (
-    sub === "start" ||
-    sub === "stop" ||
-    sub === "restart" ||
-    sub === "kill"
-  ) {
-    return {
-      kind: "execute",
-      label: `process ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "process",
-          sub,
-          withProcess({
-            laneId: requireValue(laneId, "laneId"),
-            processId: requireValue(processId, "processId"),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "logs" || sub === "log") {
-    return {
-      kind: "execute",
-      label: "process logs",
-      steps: [
-        actionStep(
-          "result",
-          "process",
-          "getLogTail",
-          withProcess({
-            laneId: requireValue(laneId, "laneId"),
-            processId: requireValue(processId, "processId"),
-            maxBytes: readIntOption(
-              args,
-              ["--max-bytes", "--tail-bytes"],
-              80_000,
-            ),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "stack") {
-    const mode = requireValue(firstPositional(args), "stack action");
-    const stackId = requireValue(
-      readValue(args, ["--stack", "--stack-id"]) ?? firstPositional(args),
-      "stackId",
-    );
-    const methodByMode: Record<string, string> = {
-      start: "startStack",
-      stop: "stopStack",
-      restart: "restartStack",
-    };
-    const method = methodByMode[mode];
-    if (!method)
-      throw new CliUsageError("run stack supports start, stop, or restart.");
-    return {
-      kind: "execute",
-      label: `stack ${mode}`,
-      steps: [
-        actionStep(
-          "result",
-          "process",
-          method,
-          collectGenericObjectArgs(args, {
-            laneId: requireValue(laneId, "laneId"),
-            stackId,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "start-all" || sub === "stop-all")
-    return {
-      kind: "execute",
-      label: `process ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "process",
-          sub === "start-all" ? "startAll" : "stopAll",
-          collectGenericObjectArgs(args, { ...(laneId ? { laneId } : {}) }),
-        ),
-      ],
-    };
-  return {
-    kind: "execute",
-    label: `process ${sub}`,
-    steps: [actionStep("result", "process", sub, withProcess())],
-  };
-}
-
 function buildShellPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
@@ -10323,7 +10165,6 @@ function buildActionStatusArgs(
     "chatSessionId",
     readValue(args, ["--chat-session", "--chat-session-id"]),
   );
-  maybePut(input, "runId", readValue(args, ["--run", "--run-id"]));
   maybePut(input, "prId", readValue(args, ["--pr", "--pr-id"]));
   maybePut(input, "previousHash", readValue(args, ["--previous-hash"]));
   maybePut(
@@ -10369,7 +10210,7 @@ function buildOperationsPlan(args: string[]): CliPlan {
   }
   if (sub === "logs" || sub === "log") {
     throw new CliUsageError(
-      "Generic operation logs are not available; use tests logs, run logs, terminal read, or app-control logs for log-owning surfaces.",
+      "Generic operation logs are not available; use tests logs, terminal read, or app-control logs for log-owning surfaces.",
     );
   }
   throw new CliUsageError("operations supports status or wait.");
@@ -11661,8 +11502,6 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--pr-id",
   "--pr-number",
   "--pr-url",
-  "--process",
-  "--process-id",
   "--project",
   "--project-root",
   "--poll-interval-ms",
@@ -11789,8 +11628,6 @@ function buildCliPlan(
     diffs: "diff",
     file: "files",
     pr: "prs",
-    process: "run",
-    processes: "run",
     pty: "shell",
     term: "terminal",
     chats: "chat",
@@ -12051,8 +11888,6 @@ function buildCliPlan(
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
-  if (primary === "run" || primary === "process" || primary === "processes")
-    return buildRunPlan(args);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
@@ -12869,7 +12704,7 @@ function buildReadinessSnapshot(args: {
     .map(([key, check]) => `${key}: ${check.nextAction}`);
   if (!attachedSocketAvailable) {
     recommendations.unshift(
-      "runtime: Start ADE runtime or remove --headless when Work chat, Run tab state, or shared proof state is required.",
+      "runtime: Start ADE runtime or remove --headless when Work chat or shared proof state is required.",
     );
   }
   const projectInitialized = fs.existsSync(adeDir);
@@ -13474,7 +13309,7 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     }
     rejectionCount += 1;
     // A single late async rejection must not tear down the project runtime:
-    // this process owns active Work chats, PTYs, and managed processes.
+    // this process owns active Work chats and PTYs.
     // JSON-RPC dispatch already returns per-request errors; anything that
     // still reaches here is logged for diagnosis while the runtime stays up.
     if (rejectionCount <= rejectionLogLimit) {
@@ -17139,26 +16974,6 @@ function formatDiffSummary(value: unknown): string {
   );
 }
 
-function formatRunTable(value: unknown, title: string): string {
-  const rows = firstArray(value, [
-    "processes",
-    "definitions",
-    "runtime",
-    "runs",
-    "items",
-  ]);
-  return `${title}\n${renderTable(
-    ["id", "status", "lane", "command"],
-    rows.map((row) => [
-      row.id ?? row.processId ?? row.runId ?? row.name,
-      row.status ?? row.state,
-      row.laneId ?? row.laneName,
-      row.command ?? row.startupCommand ?? row.title,
-    ]),
-    "(none)",
-  )}`;
-}
-
 function formatSearchResults(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const results = firstArray(value, ["results", "items"]);
@@ -18336,10 +18151,6 @@ function formatTextOutput(
       return formatPrChecks(value);
     case "pr-comments":
       return formatPrComments(value);
-    case "run-defs":
-      return formatRunTable(value, "ADE run definitions");
-    case "run-runtime":
-      return formatRunTable(value, "ADE process runtime");
     case "chat-list":
       return formatChatList(value);
     case "chat-read":
@@ -18476,8 +18287,6 @@ function inferFormatter(
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
-  if (label === "process definitions") return "run-defs";
-  if (label === "process runtime") return "run-runtime";
   if (label === "chat list") return "chat-list";
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";

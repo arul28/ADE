@@ -560,13 +560,6 @@ export function CommandPalette({
         run: startProjectRemote,
       },
       {
-        id: "go-project",
-        title: "Go to Run",
-        shortcut: "G 1",
-        group: "Navigation",
-        run: () => navigate("/project"),
-      },
-      {
         id: "go-lanes",
         title: "Go to Lanes",
         shortcut: "G L",

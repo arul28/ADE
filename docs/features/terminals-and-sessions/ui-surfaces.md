@@ -795,7 +795,7 @@ inherit a non-zero default); the Work CLI launch path in
 `AgentChatPane` passes `workCliStartupDelayMs = 180` and
 intentionally omits `command` / `args` so every Work CLI launch
 goes through the shell + `startupCommand` path (see
-[pty-and-processes.md](./pty-and-processes.md#create-flow-createargs)
+[pty-and-sessions.md](./pty-and-sessions.md#create-flow-createargs)
 for how the PTY service consumes the delay).
 
 `useLaneWorkSessions` (in
@@ -824,7 +824,7 @@ nothing when no delta is available.
 
 - `apps/desktop/src/renderer/lib/sessions.ts` — `primarySessionLabel`,
   `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
-  `isRunOwnedSession`, `buildOptimisticChatSessionSummary`.
+  `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
   `sessionStatusBucket`, `sessionStatusDot`, `sessionCapsuleBadge`,
@@ -877,7 +877,7 @@ nothing when no delta is available.
 ## Cross-links
 
 - Main-process services feeding these surfaces:
-  [pty-and-processes.md](./pty-and-processes.md)
+  [pty-and-sessions.md](./pty-and-sessions.md)
 - Lane gating and worktree isolation:
   [runtime-isolation.md](./runtime-isolation.md)
 - Agent chat pane lives under

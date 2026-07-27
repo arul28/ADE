@@ -1,12 +1,12 @@
 ---
 title: "Work sessions"
-description: "Agent chats, provider CLIs, plain shells, and managed processes — every Work session is lane-scoped and tracked in one place."
+description: "Agent chats, provider CLIs, and plain shells — every Work session is lane-scoped and tracked in one place."
 icon: "terminal"
 ---
 
-**Work** is where active sessions live. A session can be an agent chat, a provider CLI running in its own terminal, a plain shell you type into, or a managed process started from Run. Whatever kind it is, it's scoped to a lane's worktree and tracked as a durable session — with a transcript, a status, and a clear lane association — so nothing an agent does is anonymous.
+**Work** is where active sessions live. A session can be an agent chat, a provider CLI running in its own terminal, or a plain shell you type into. Whatever kind it is, it's scoped to a lane's worktree and tracked as a durable session — with a transcript, a status, and a clear lane association — so nothing an agent does is anonymous.
 
-## Four kinds of session
+## Three kinds of session
 
 Every Work session is the same kind of tracked record under the hood, which is why they all live in one list and one grid.
 
@@ -19,9 +19,6 @@ Every Work session is the same kind of tracked record under the hood, which is w
   </Card>
   <Card title="Shell" icon="rectangle-terminal">
     A plain interactive shell (a PTY) in the lane's worktree, for running commands by hand.
-  </Card>
-  <Card title="Managed process" icon="server">
-    A dev server or background command launched from [Run](/tools/project-home), with its logs and status surfaced here too.
   </Card>
 </CardGroup>
 
@@ -65,11 +62,8 @@ Work sessions aren't desktop-only. `ade code` attaches to the same machine and r
 
 If ADE restarts, it reconciles each session against the process that owns it: live sessions owned by another window or the daemon are left alone, while genuinely orphaned ones are marked detached. The durable row and transcript always remain, so even a session whose process is gone stays readable in [History](/tools/history).
 
-<CardGroup cols={2}>
+<CardGroup cols={1}>
   <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
     The same lanes, chats, and sessions in a fast TUI.
-  </Card>
-  <Card title="Run" icon="play" href="/tools/project-home">
-    Define and manage dev servers and test commands per lane.
   </Card>
 </CardGroup>

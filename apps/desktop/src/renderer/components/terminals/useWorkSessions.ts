@@ -19,7 +19,7 @@ import {
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { canonicalInputFromSummary, sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
-import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
@@ -832,7 +832,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             ? { force: true }
             : undefined,
         )
-      ).filter((session) => !isRunOwnedSession(session));
+      );
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }

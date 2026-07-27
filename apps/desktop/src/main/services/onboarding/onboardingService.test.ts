@@ -41,8 +41,6 @@ function createInMemoryAdeDb(): AdeDb {
 function createInMemoryProjectConfigService() {
   const empty: ProjectConfigFile = {
     version: 1,
-    processes: [],
-    stackButtons: [],
     testSuites: [],
     laneOverlayPolicies: [],
     automations: []
@@ -81,10 +79,7 @@ describe("onboardingService integration", () => {
       const res = await service.detectDefaults();
       expect(res.indicators.some((i) => i.type === "node")).toBe(true);
       const suggested = res.suggestedConfig;
-      const procIds = new Set((suggested.processes ?? []).map((p) => p.id));
       const suiteIds = new Set((suggested.testSuites ?? []).map((t) => t.id));
-      expect(procIds.has("install")).toBe(true);
-      expect(procIds.has("build")).toBe(true);
       expect(suiteIds.has("unit")).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });

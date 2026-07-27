@@ -607,7 +607,7 @@ describe("AppShell AI provider status", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/project"]}>
+      <MemoryRouter initialEntries={["/work"]}>
         <AppShell>
           <div>Main menu</div>
         </AppShell>

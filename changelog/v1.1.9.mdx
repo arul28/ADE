@@ -3,7 +3,7 @@ title: "v1.1.9"
 description: "Release notes for ADE v1.1.9 — May 1, 2026"
 ---
 
-v1.1.9 ships five commits since v1.1.8: Cursor SDK-backed chat, stronger iOS Simulator control, clearer run-tab failures, a more durable desktop-to-mobile sync path, and the next TestFlight build for the iOS companion. Ships in **TestFlight build 11** of 1.1.1.
+v1.1.9 ships five commits since v1.1.8: Cursor SDK-backed chat, stronger iOS Simulator control, a more durable desktop-to-mobile sync path, and the next TestFlight build for the iOS companion. Ships in **TestFlight build 11** of 1.1.1.
 
 ---
 
@@ -28,11 +28,9 @@ v1.1.9 ships five commits since v1.1.8: Cursor SDK-backed chat, stronger iOS Sim
     - **ADE CLI surface.** The CLI and ADE RPC server document and expose the updated iOS Simulator actions so desktop chats can discover and drive the supported simulator flow.
   </Tab>
 
-  <Tab title="Run, Lanes, and Files">
+  <Tab title="Lanes and Files">
     Daily desktop workflows get clearer failure states and less friction in lane, PR, and file surfaces.
 
-    - **Run-tab failures.** PTY startup errors are written into the run transcript, shell fallback assignment is guarded, and the PTY exit listener stays active so failed commands are visible instead of disappearing.
-    - **Run UI.** `CommandCard`, `RunPage`, and `ChatTerminalDrawer` tighten drawer behavior and terminal handling around failed or incomplete launches.
     - **Branch picker.** Lane creation now has a dedicated branch picker with search utilities, PR-open filtering that includes drafts, relative-age refresh, and reset behavior when opening the create-lane dialog.
     - **Files workspace.** The files service and floating files workspace handle file-state updates more reliably, with tests covering the updated file page and chat-pane interactions.
     - **PR list stability.** PR listing caps pagination, fixes table formatting, and adds tests around issue and review-thread resolution paths.

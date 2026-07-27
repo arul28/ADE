@@ -117,7 +117,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "details_usage", "details_form", "details_lane_details", "add_chat", "multi_chat_grid", "chat",
   ]),
   feature: new Set([
-    "chat", "cli", "work", "lanes", "files", "git", "processes", "orchestration", "prs",
+    "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
     "automations", "command_palette", "storage_doctor",
   ]),
   outcome: new Set([

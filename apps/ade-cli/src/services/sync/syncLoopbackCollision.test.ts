@@ -71,7 +71,6 @@ function createService(
       listSessions: vi.fn(async () => []),
       subscribeToEvents: vi.fn(() => () => {}),
     } as any,
-    processService: { listRuntime: vi.fn(() => []) } as any,
     ...overrides,
   });
 }

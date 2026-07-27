@@ -21,7 +21,7 @@ const originalAdeHome = process.env.ADE_HOME;
 let isolatedAdeHome = "";
 
 beforeEach(() => {
-  isolatedAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-home-"));
+  isolatedAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-runtime-"));
   process.env.ADE_HOME = isolatedAdeHome;
 });
 

@@ -122,7 +122,7 @@ export type NodePtySpawnHelperExecutableResult =
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
-  if (!tool || tool === "shell" || tool === "run-shell") return false;
+  if (!tool || tool === "shell") return false;
   return !CLI_USER_TITLE_TOOL_TYPES.has(tool);
 }
 
@@ -967,7 +967,6 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   if (!value) return null;
   const allowed: TerminalToolType[] = [
     "shell",
-    "run-shell",
     "claude",
     "codex",
     "cursor-cli",
@@ -1049,7 +1048,7 @@ export type PtyResourceAttribution = {
 // stay "shell"; anything without a recognized provider identity is "unknown"
 // rather than guessed from command lines.
 function attributionRootKindForToolType(toolType: TerminalToolType | null): ResourceAttributionRootKind {
-  if (toolType == null || toolType === "shell" || toolType === "run-shell") return "shell";
+  if (toolType == null || toolType === "shell") return "shell";
   if (toolType === "other") return "unknown";
   return "provider-agent";
 }
@@ -3918,7 +3917,7 @@ export function createPtyService({
     if (session?.tracked === false) {
       throw ptySendPreDeliveryError(`Terminal session '${sessionId}' is not tracked and cannot be ${action}.`);
     }
-    if (session && (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType))) {
+    if (session && (session.toolType === "shell" || isPersistedChatToolType(session.toolType))) {
       throw ptySendPreDeliveryError(`Terminal session '${sessionId}' is not an agent CLI session.`);
     }
   };
