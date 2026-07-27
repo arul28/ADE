@@ -2266,8 +2266,14 @@ extension AgentChatEvent {
     case options
     case id
     case origin
+    case sampleId
     case newConversationId
     case stillQueuedUuids
+    case cancelledUuids
+    case recoveryId
+    case messageCount
+    case expiresAt
+    case stopMode
     case commandUuid
     case preview
     case goal
@@ -2487,12 +2493,17 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "context_usage":
+      let usage = try container.decode(AgentChatContextUsage.self, forKey: .usage)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let origin = try container.decodeIfPresent(String.self, forKey: .origin)
+      let state = try container.decodeIfPresent(String.self, forKey: .state)
+      let sampleId = try container.decodeIfPresent(Int.self, forKey: .sampleId)
       self = .contextUsage(
-        usage: try container.decode(AgentChatContextUsage.self, forKey: .usage),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        origin: try container.decodeIfPresent(String.self, forKey: .origin),
-        state: try container.decodeIfPresent(String.self, forKey: .state),
-        sampleId: try container.decodeIfPresent(Int.self, forKey: .sampleId)
+        usage: usage,
+        turnId: turnId,
+        origin: origin,
+        state: state,
+        sampleId: sampleId
       )
     case "conversation_reset":
       self = .conversationReset(
@@ -2504,16 +2515,22 @@ extension AgentChatEvent {
         cancelledUuids: try container.decodeIfPresent([String].self, forKey: .cancelledUuids)
       )
     case "queue_recovery":
+      let state = try container.decode(String.self, forKey: .state)
+      let messageCount = try container.decode(Int.self, forKey: .messageCount)
+      let expiresAt = try container.decode(String.self, forKey: .expiresAt)
+      let stopMode = try container.decode(String.self, forKey: .stopMode)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let recoveryId = try container.decode(String.self, forKey: .recoveryId)
       self = .systemNotice(
         noticeKind: .queueRecovery,
-        message: try container.decode(String.self, forKey: .state),
+        message: state,
         detail: .object([
-          "messageCount": .number(Double(try container.decode(Int.self, forKey: .messageCount))),
-          "expiresAt": .string(try container.decode(String.self, forKey: .expiresAt)),
-          "stopMode": .string(try container.decode(String.self, forKey: .stopMode)),
+          "messageCount": .number(Double(messageCount)),
+          "expiresAt": .string(expiresAt),
+          "stopMode": .string(stopMode),
         ]),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        steerId: try container.decode(String.self, forKey: .recoveryId)
+        turnId: turnId,
+        steerId: recoveryId
       )
     case "command_lifecycle":
       self = .commandLifecycle(

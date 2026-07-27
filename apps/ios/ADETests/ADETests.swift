@@ -4678,21 +4678,39 @@ final class ADETests: XCTestCase {
         event: .tokens(usage: secondUsage, turnId: "turn-1", itemId: nil)
       ),
     ]
+    let crossSessionTranscript = [
+      WorkChatEnvelope(
+        sessionId: "session-2",
+        timestamp: "2026-07-27T12:00:01.000Z",
+        sequence: 2,
+        event: .tokens(usage: secondUsage, turnId: "turn-1", itemId: nil)
+      ),
+    ]
     let cache = WorkContextUsageViewModelCache()
 
     let first = try XCTUnwrap(cache.value(
+      sessionId: "session-1",
       transcript: firstTranscript,
       transcriptRenderSignature: 1,
       provider: "codex",
       fallbackContextWindow: nil
     ))
     let cached = try XCTUnwrap(cache.value(
+      sessionId: "session-1",
       transcript: secondTranscript,
       transcriptRenderSignature: 1,
       provider: "codex",
       fallbackContextWindow: nil
     ))
+    let crossSession = try XCTUnwrap(cache.value(
+      sessionId: "session-2",
+      transcript: crossSessionTranscript,
+      transcriptRenderSignature: 1,
+      provider: "codex",
+      fallbackContextWindow: nil
+    ))
     let refreshed = try XCTUnwrap(cache.value(
+      sessionId: "session-1",
       transcript: secondTranscript,
       transcriptRenderSignature: 2,
       provider: "codex",
@@ -4700,6 +4718,7 @@ final class ADETests: XCTestCase {
     ))
 
     XCTAssertEqual(cached.usedTokens, first.usedTokens)
+    XCTAssertNotEqual(crossSession.usedTokens, first.usedTokens)
     XCTAssertNotEqual(refreshed.usedTokens, first.usedTokens)
   }
 

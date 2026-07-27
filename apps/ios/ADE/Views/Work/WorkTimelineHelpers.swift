@@ -3565,6 +3565,7 @@ func workContextUsageViewModel(
 
 final class WorkContextUsageViewModelCache {
   private struct Key: Equatable {
+    let sessionId: String
     let transcriptRenderSignature: Int
     let provider: String
     let fallbackContextWindow: Int?
@@ -3578,12 +3579,14 @@ final class WorkContextUsageViewModelCache {
   private var entry: Entry?
 
   func value(
+    sessionId: String,
     transcript: [WorkChatEnvelope],
     transcriptRenderSignature: Int,
     provider: String,
     fallbackContextWindow: Int?
   ) -> WorkContextUsageViewModel? {
     let key = Key(
+      sessionId: sessionId,
       transcriptRenderSignature: transcriptRenderSignature,
       provider: provider,
       fallbackContextWindow: fallbackContextWindow

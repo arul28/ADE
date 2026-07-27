@@ -2924,6 +2924,7 @@ final class SyncService: ObservableObject {
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
+  private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestAtBySession: [String: Date] = [:]
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
@@ -8411,7 +8412,7 @@ final class SyncService: ObservableObject {
     else { return }
 
     cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
-    while pendingChatUnsubscribesBySession.count >= 4,
+    while pendingChatUnsubscribesBySession.count >= chatEventUnsubscribeRetentionLimit,
           let oldestSessionId = pendingChatUnsubscribesBySession.min(by: {
             $0.value.scheduledAt < $1.value.scheduledAt
           })?.key {

@@ -706,13 +706,13 @@ struct WorkSessionDestinationView: View {
       fallbackEntries: cached.fallbackEntries,
       cursorKind: cached.transcriptCursorKind
     )
+    initialTranscriptTailHydrated = cached.initialTranscriptTailHydrated
     if !cached.transcript.isEmpty {
       setTranscript(cached.transcript)
     }
     if !cached.fallbackEntries.isEmpty {
       setFallbackEntries(cached.fallbackEntries)
     }
-    initialTranscriptTailHydrated = cached.initialTranscriptTailHydrated
   }
 
   @MainActor
@@ -1143,7 +1143,9 @@ struct WorkSessionDestinationView: View {
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
         registerChatCommandScope()
-        if !isRemoteOnlyChat {
+        if !isRemoteOnlyChat,
+           let currentSession = session ?? initialSession,
+           isChatSession(currentSession) {
           syncService.retainChatEventSubscription(sessionId: sessionId)
         }
       }
@@ -1292,7 +1294,8 @@ struct WorkSessionDestinationView: View {
               syncService.clearPersonalChatScope(sessionId: sessionId)
             }
           }
-        } else {
+        } else if let currentSession = session ?? initialSession,
+                  isChatSession(currentSession) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }
@@ -1411,12 +1414,17 @@ struct WorkSessionDestinationView: View {
       "chat.dispatchSteer",
       sessionId: session.id
     )
-    let restoreCancelledQueueAction: (@MainActor (String) async -> Void)? = syncService.supportsChatRemoteAction(
+    let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
+    if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
       sessionId: session.id
-    ) ? { recoveryId in
-      await restoreCancelledQueue(recoveryId: recoveryId)
-    } : nil
+    ) {
+      restoreCancelledQueueAction = { recoveryId in
+        await restoreCancelledQueue(recoveryId: recoveryId)
+      }
+    } else {
+      restoreCancelledQueueAction = nil
+    }
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
       chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
