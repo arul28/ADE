@@ -62,16 +62,18 @@ describe("HtmlViewer", () => {
   });
 
   it("blocks network-capable document controls and injects the restrictive preview policy", () => {
-    const document = buildHtmlPreviewDocument(
+    const parseFromString = vi.spyOn(DOMParser.prototype, "parseFromString");
+    const previewDocument = buildHtmlPreviewDocument(
       '<!-- <head> must not capture policy injection --><html><head><base href="https://example.com"><meta content="0;url=https://example.com" http-equiv="refresh"></head><body class="app">Safe</body></html>',
     );
 
-    expect(document).not.toMatch(/<base\b/i);
-    expect(document).not.toMatch(/http-equiv="refresh"/i);
-    expect(document).toContain("Content-Security-Policy");
-    expect(document).toContain("default-src 'none'");
-    expect(document).toContain("form-action 'none'");
-    expect(document).toContain('<body class="app">');
+    expect(parseFromString).not.toHaveBeenCalled();
+    expect(previewDocument).not.toMatch(/<base\b/i);
+    expect(previewDocument).not.toMatch(/http-equiv="refresh"/i);
+    expect(previewDocument).toContain("Content-Security-Policy");
+    expect(previewDocument).toContain("default-src 'none'");
+    expect(previewDocument).toContain("form-action 'none'");
+    expect(previewDocument).toContain('<body class="app">');
   });
 
   it("switches to the editable source surface without keeping the iframe mounted", () => {

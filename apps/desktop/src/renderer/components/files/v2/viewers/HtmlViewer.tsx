@@ -24,7 +24,12 @@ const HTML_PREVIEW_POLICY = [
  * prevents the markup from fetching remote resources.
  */
 export function buildHtmlPreviewDocument(source: string): string {
-  const preview = new DOMParser().parseFromString(source, "text/html");
+  // A detached HTMLDocument has no browsing context, so parsing cannot start
+  // image, iframe, stylesheet, or other subresource requests before CSP exists.
+  const preview = document.implementation.createHTMLDocument("");
+  preview.open();
+  preview.write(source);
+  preview.close();
   preview.querySelectorAll("base").forEach((element) => element.remove());
   preview.querySelectorAll("meta[http-equiv]").forEach((element) => {
     if (element.getAttribute("http-equiv")?.trim().toLowerCase() === "refresh") {
