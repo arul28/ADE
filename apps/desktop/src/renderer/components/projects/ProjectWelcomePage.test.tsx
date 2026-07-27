@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { RunPage } from "./RunPage";
+import { ProjectWelcomePage } from "./ProjectWelcomePage";
 import { useAppStore } from "../../state/appStore";
 import type { ProjectPathInspection, RecentProjectSummary } from "../../../shared/types";
 import {
@@ -93,19 +93,6 @@ beforeEach(() => {
       onPortEvent: vi.fn(() => vi.fn()),
       onDiagnosticsEvent: vi.fn(() => vi.fn()),
     },
-    processes: {
-      onEvent: vi.fn(() => vi.fn()),
-      listRuntime: vi.fn(async () => []),
-      listDefinitions: vi.fn(async () => []),
-    },
-    projectConfig: {
-      get: vi.fn(async () => ({
-        effective: { processGroups: [] },
-        shared: { processGroups: [], processes: [] },
-        local: { processGroups: [], processes: [] },
-      })),
-    },
-    pty: { onExit: vi.fn(() => vi.fn()) },
     app: { openExternal: vi.fn(), writeClipboardText: vi.fn() },
     remoteRuntime: {
       getConnectionSnapshot: vi.fn(async () => ({
@@ -130,12 +117,12 @@ afterEach(() => cleanup());
 function renderWelcome() {
   return render(
     <MemoryRouter>
-      <RunPage />
+      <ProjectWelcomePage />
     </MemoryRouter>,
   );
 }
 
-describe("RunPage worktree recents", () => {
+describe("ProjectWelcomePage worktree recents", () => {
   it("renders a worktree chip and a merge action for a worktree recent", async () => {
     renderWelcome();
 

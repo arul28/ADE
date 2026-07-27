@@ -1526,50 +1526,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // process
-  // ---------------------------------------------------------------------------
-  {
-    domain: "process",
-    action: "listDefinitions",
-    label: "List process definitions",
-    description: "Return the configured background process definitions.",
-    params: [],
-  },
-  {
-    domain: "process",
-    action: "listRuntime",
-    label: "List process runtime",
-    description: "Return the live runtime state of background processes for a lane.",
-    params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "process",
-    action: "startAll",
-    label: "Start all processes",
-    description: "Start every configured background process for the lane.",
-    params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "process",
-    action: "stopAll",
-    label: "Stop all processes",
-    description: "Stop every configured background process for the lane.",
-    params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "process",
-    action: "getLogTail",
-    label: "Get process log tail",
-    description: "Return the tail of a process's log buffer.",
-    params: [
-      LANE_ID_PARAM,
-      { name: "processId", type: "string", required: true, description: "Process definition ID." },
-      { name: "runId", type: "string", description: "Specific run ID (defaults to most recent)." },
-      { name: "maxBytes", type: "number" },
-    ],
-  },
-
-  // ---------------------------------------------------------------------------
   // linear_dispatcher
   // ---------------------------------------------------------------------------
   {

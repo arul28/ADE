@@ -486,6 +486,9 @@ final class DatabaseService {
         }
       }
       try applyAcceptedRemoteChanges(acceptedChanges)
+      if try purgeRetiredTerminalSessions() > 0 {
+        touchedTables.insert("terminal_sessions")
+      }
       try exec("commit")
     } catch {
       try? exec("rollback")
@@ -3107,12 +3110,14 @@ final class DatabaseService {
       }
     }
 
-    // Older schemas shipped a `unified_memories` + `unified_memories_fts` (FTS5)
-    // search index that has since been removed. On an upgraded install the
-    // orphaned FTS virtual table lingers, dragging its shadow tables along.
-    // Drop the removed tables outright (dropping an FTS5 virtual table also
-    // removes its shadow tables). Best-effort: `listEligibleCrrTables` already
-    // skips shadow tables, so a failed drop here can never block connect.
+    if DatabaseService.retiredExecutionTables.contains(where: { hasTable(named: $0) }) {
+      _ = try? purgeRetiredTerminalSessions()
+    }
+
+    // Older schemas shipped tables that have since been removed. Drop them
+    // outright before CRR discovery so upgraded installs cannot export them.
+    // Best-effort: `listEligibleCrrTables` already skips missing base tables,
+    // so a failed drop here can never block connect.
     for orphan in DatabaseService.droppedIncomingSyncTables where hasTable(named: orphan) {
       try? dropCrrTriggers(for: orphan)
       try? exec("drop table if exists \(quoteIdentifier(orphan))")
@@ -3136,6 +3141,42 @@ final class DatabaseService {
       }
       try enableCrr(for: tableName)
     }
+  }
+
+  @discardableResult
+  private func purgeRetiredTerminalSessions() throws -> Int {
+    guard hasTable(named: "terminal_sessions") else { return 0 }
+    let retiredSessionIds = query(
+      "select id from terminal_sessions where tool_type = ?",
+      bind: { [self] statement in
+        try bindText("run-shell", to: statement, index: 1)
+      },
+      map: { statement in
+        sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? ""
+      }
+    ).filter { !$0.isEmpty }
+    guard !retiredSessionIds.isEmpty else { return 0 }
+
+    let placeholders = retiredSessionIds.map { _ in "?" }.joined(separator: ", ")
+    let bindSessionIds: (OpaquePointer) throws -> Void = { [self] statement in
+      for (index, sessionId) in retiredSessionIds.enumerated() {
+        try bindText(sessionId, to: statement, index: Int32(index + 1))
+      }
+    }
+    if hasTable(named: "session_linear_issues") {
+      _ = try execute("delete from session_linear_issues where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "session_deltas") {
+      _ = try execute("delete from session_deltas where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "checkpoints") {
+      _ = try execute("update checkpoints set session_id = null where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "claude_sessions") {
+      _ = try execute("update claude_sessions set chat_session_id = null where chat_session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    _ = try execute("delete from terminal_sessions where id in (\(placeholders))", bind: bindSessionIds)
+    return retiredSessionIds.count
   }
 
   private func wipeQueueLandingStateForStackedOverhaulIfNeeded() throws {
@@ -3233,11 +3274,18 @@ final class DatabaseService {
     "pull_request_snapshots",
   ]
 
+  private static let retiredExecutionTables: Set<String> = [
+    "process_definitions",
+    "process_runtime",
+    "process_runs",
+    "stack_buttons",
+  ]
+
   /// Tables removed locally that older desktop or phone peers may still export.
-  private static let droppedIncomingSyncTables: Set<String> = [
+  private static let droppedIncomingSyncTables: Set<String> = retiredExecutionTables.union([
     "unified_memories",
     "unified_memories_fts",
-  ]
+  ])
 
   private static let excludedCrrTables = localOnlyCacheTables.union(hydrationOwnedCrrExcludedTables)
 

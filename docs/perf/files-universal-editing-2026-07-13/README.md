@@ -10,7 +10,7 @@ makes large-folder expansion single-page.
 
 Real desktop app (`scripts/perf-launch.mjs --tab files`, dev runtime with
 `--no-sync` beside the production brain) against the perf-pass repo seeded via
-`scripts/seed-perf-pass-files-run.mjs` plus a committed fixture:
+`scripts/seed-perf-pass-files.mjs` plus a committed fixture:
 `fixtures/bigdir` (12,000 files) and `fixtures/meddir` (3,000 files).
 A CDP probe reloaded the renderer (cold module caches), navigated to Files,
 and measured click-to-expanded / click-to-visible-file with DOM polling at

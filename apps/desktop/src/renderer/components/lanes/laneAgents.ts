@@ -27,8 +27,8 @@ export type LaneAgent = {
   lastActivityAt: string;
 };
 
-/** CLI tool types that are agents (not plain shells / run-shells). */
-const SHELL_TOOL_TYPES = new Set<TerminalToolType>(["shell", "run-shell"]);
+/** CLI tool types that are agents (not plain shells). */
+const SHELL_TOOL_TYPES = new Set<TerminalToolType>(["shell"]);
 
 function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
   if (summary.status === "ended") return "ended";

@@ -79,7 +79,6 @@ export function LaneContextMenu({
   onClose,
   onAdoptAttached,
   onManage,
-  onOpenRun,
   selectLane,
   onRemoveFromSplit,
   onCloseOtherSplits,
@@ -94,7 +93,6 @@ export function LaneContextMenu({
   onClose: () => void;
   onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
-  onOpenRun: (laneId: string) => void;
   selectLane: (id: string) => void;
   onRemoveFromSplit: (laneId: string) => void;
   onCloseOtherSplits: (keepLaneId: string) => void;
@@ -314,17 +312,6 @@ export function LaneContextMenu({
             }}
           >
             Manage Lane
-          </HoverButton>
-          <HoverButton
-            style={menuItemStyle}
-            onClick={() => {
-              const ctxLaneId = laneContextMenu.laneId;
-              onClose();
-              selectLane(ctxLaneId);
-              onOpenRun(ctxLaneId);
-            }}
-          >
-            Open in Run
           </HoverButton>
         </>
       ) : null}

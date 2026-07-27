@@ -283,7 +283,6 @@ import type {
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetFilePatchArgs,
-  GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
@@ -397,11 +396,6 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
-  ProcessActionArgs,
-  ProcessDefinition,
-  ProcessRuntime,
-  ProcessGroupArgs,
-  ProcessStackArgs,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigSnapshot,
@@ -600,7 +594,6 @@ import {
   type OpenCodeAuthDeps,
 } from "../opencode/openCodeAuthService";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import type { createProcessService } from "../processes/processService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createOperationService } from "../history/operationService";
@@ -921,7 +914,6 @@ export type AppContext = {
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
-  processService: ReturnType<typeof createProcessService> | null;
   testService: ReturnType<typeof createTestService> | null;
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1292,7 +1284,6 @@ function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverla
     ...base,
     ...next,
     ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.processIds || next.processIds ? { processIds: [...(next.processIds ?? base.processIds ?? [])] } : {}),
     ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
     ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {})
   };
@@ -5029,8 +5020,6 @@ export function registerIpc({
         indicators: [],
         suggestedConfig: {
           version: 1,
-          processes: [],
-          stackButtons: [],
           testSuites: [],
           laneOverlayPolicies: [],
           automations: []
@@ -9791,99 +9780,6 @@ export function registerIpc({
       rowCount: filteredRows.length,
       format
     };
-  });
-
-  ipcMain.handle(IPC.processesListDefinitions, async (): Promise<ProcessDefinition[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return ctx.processService.listDefinitions();
-  });
-
-  ipcMain.handle(IPC.processesListRuntime, async (_event, arg: { laneId: string }): Promise<ProcessRuntime[]> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    if (!arg?.laneId) return [];
-    return ctx.processService.listRuntime(arg.laneId);
-  });
-
-  ipcMain.handle(IPC.processesStart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return await ctx.processService.start(arg);
-  });
-
-  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return await ctx.processService.stop(arg);
-  });
-
-  ipcMain.handle(IPC.processesRestart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return await ctx.processService.restart(arg);
-  });
-
-  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime | null> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return await ctx.processService.kill(arg);
-  });
-
-  ipcMain.handle(IPC.processesStartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.startStack(arg);
-  });
-
-  ipcMain.handle(IPC.processesStopStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.stopStack(arg);
-  });
-
-  ipcMain.handle(IPC.processesRestartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.restartStack(arg);
-  });
-
-  ipcMain.handle(IPC.processesStartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.startGroup(arg);
-  });
-
-  ipcMain.handle(IPC.processesStopGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.stopGroup(arg);
-  });
-
-  ipcMain.handle(IPC.processesRestartGroup, async (_event, arg: ProcessGroupArgs): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    await ctx.processService.restartGroup(arg);
-  });
-
-  ipcMain.handle(IPC.processesStartAll, async (_event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    if (!arg?.laneId) return;
-    await ctx.processService.startAll(arg);
-  });
-
-  ipcMain.handle(IPC.processesStopAll, async (_event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    if (!arg?.laneId) return;
-    await ctx.processService.stopAll(arg);
-  });
-
-  ipcMain.handle(IPC.processesGetLogTail, async (_event, arg: GetProcessLogTailArgs): Promise<string> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["processService"] as const);
-    return ctx.processService.getLogTail(arg);
   });
 
   ipcMain.handle(IPC.testsListSuites, async (): Promise<TestSuiteDefinition[]> => {

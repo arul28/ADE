@@ -253,7 +253,7 @@ export type LaneBranchSwitchMode = "existing" | "create";
 
 export type LaneBranchActiveWorkItem = {
   id: string;
-  kind: "terminal" | "process";
+  kind: "terminal";
   title: string;
   status: string;
 };
@@ -347,7 +347,6 @@ export type DeleteLaneArgs = {
 };
 
 export type LaneDeleteStepName =
-  | "stop_processes"
   | "stop_chats"
   | "stop_ptys"
   | "stop_watchers"
@@ -423,7 +422,6 @@ export type LaneDeleteRisk = {
   hasUnpushedCommits: boolean;
   unpushedCommitCount: number;
   remoteBranchExists: boolean;
-  runningProcessCount: number;
   activeChatCount: number;
   activePtyCount: number;
   activeWatcherCount: number;

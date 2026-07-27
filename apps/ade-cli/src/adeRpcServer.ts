@@ -362,7 +362,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_ade_action_status",
-    description: "Check status/progress for long-running ADE actions by operation/test/chat/run identifiers.",
+    description: "Check status/progress for long-running ADE actions by operation, test, chat, or PR identifiers.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -370,7 +370,6 @@ const TOOL_SPECS: ToolSpec[] = [
         operationId: { type: "string", minLength: 1 },
         testRunId: { type: "string", minLength: 1 },
         chatSessionId: { type: "string", minLength: 1 },
-        runId: { type: "string", minLength: 1 },
         prId: { type: "string", minLength: 1 },
         previousHash: { type: "string" },
         waitForMs: { type: "number", minimum: 0, maximum: 120000, default: 0 },
@@ -2688,7 +2687,6 @@ async function runCtoOperatorBridgeTool(
     laneService: runtime.laneService,
     prService: runtime.prService ?? null,
     fileService: runtime.fileService ?? null,
-    processService: runtime.processService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,
     listChats: agentChatService.listSessions,

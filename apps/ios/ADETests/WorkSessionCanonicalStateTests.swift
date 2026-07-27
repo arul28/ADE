@@ -232,7 +232,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     for chat in ["codex-chat", "claude-chat", "opencode-chat", "cursor", "droid-chat"] {
       XCTAssertTrue(isWorkChatToolType(chat), chat)
     }
-    for cli in ["codex", "claude", "droid", "run-shell", nil, ""] {
+    for cli in ["codex", "claude", "droid", nil, ""] {
       XCTAssertFalse(isWorkChatToolType(cli), cli ?? "nil")
     }
   }

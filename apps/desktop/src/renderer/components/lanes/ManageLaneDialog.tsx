@@ -57,7 +57,6 @@ import { colorsInUse, laneColorName } from "./laneColorPalette";
 const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   git_status: "Checking dirty state",
   cancel_auto_rebase: "Cancelling auto-rebase",
-  stop_processes: "Stopping processes",
   stop_chats: "Closing chat sessions",
   stop_ptys: "Closing terminal sessions",
   stop_watchers: "Stopping file watchers",
@@ -872,12 +871,6 @@ function PreflightPanel({
   chatSessionCount?: number;
 }) {
   const willStop: { icon: React.ReactNode; label: string }[] = [];
-  if (risk && risk.runningProcessCount > 0) {
-    willStop.push({
-      icon: <Cpu size={12} className="text-accent" />,
-      label: `${risk.runningProcessCount} running ${risk.runningProcessCount === 1 ? "process" : "processes"}`
-    });
-  }
   const chatCount = chatSessionCount ?? 0;
   if (chatCount > 0) {
     willStop.push({

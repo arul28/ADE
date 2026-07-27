@@ -34,14 +34,6 @@ export function chatToolTypeForProvider(provider: AgentChatProvider | string | n
   }
 }
 
-export function isRunOwnedToolType(toolType: string | null | undefined): boolean {
-  return toolType === "run-shell";
-}
-
-export function isRunOwnedSession(session: Pick<TerminalSessionSummary, "toolType">): boolean {
-  return isRunOwnedToolType(session.toolType);
-}
-
 export const STALE_RUNNING_CLI_SESSION_MS = 24 * 60 * 60 * 1_000;
 const STALE_RUNNING_CLI_SESSION_HOURS = STALE_RUNNING_CLI_SESSION_MS / (60 * 60 * 1_000);
 
@@ -57,7 +49,6 @@ export function getStaleRunningCliSessionAgeHours(
   nowMs: number = Date.now(),
 ): number | null {
   if (session.status !== "running") return null;
-  if (isRunOwnedSession(session)) return null;
   if (isChatToolType(session.toolType)) return null;
   const lastActivityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
   const startedMs = Date.parse(session.startedAt);
@@ -70,7 +61,6 @@ export function getStaleRunningCliSessionAgeHours(
 
 export function defaultSessionLabel(toolType: string | null | undefined): string {
   if (toolType === "shell" || toolType == null) return "Workspace";
-  if (toolType === "run-shell") return "Run inspector";
   if (toolType === "claude-orchestrated") return "Claude worker";
   if (toolType === "codex-orchestrated") return "Codex worker";
   if (toolType === "opencode-orchestrated") return "OpenCode worker";
@@ -142,7 +132,6 @@ export function buildOptimisticChatSessionSummary(args: {
 /** Exact tool-type -> short label map for compact card display. */
 const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   shell: "Shell",
-  "run-shell": "Run",
   cursor: "Cursor",
   "cursor-cli": "Cursor",
   droid: "Droid",
@@ -188,7 +177,6 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "droid-chat") return "Droid chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
-  if (toolType === "run-shell") return "Run inspector";
   if (toolType === "shell") return "Terminal session";
   return toolType ? toolType.replace(/-/g, " ") : "Unknown";
 }
@@ -286,9 +274,6 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
     (session.toolType === "shell" || session.toolType == null)
     && (normalized === "shell" || normalized === "terminal")
   ) {
-    return true;
-  }
-  if (session.toolType === "run-shell" && (normalized === "run inspector" || normalized === "inspector")) {
     return true;
   }
   return false;

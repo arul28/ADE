@@ -64,15 +64,12 @@ skipped to avoid noisy imports.
 
 ### Suggested config
 
-`buildSuggestedConfig` turns indicators into a partial `ProjectConfigFile`:
-
-- Node: `install`, `build` processes; `unit` test suite. Package manager
-  detection via `pnpm-lock.yaml` / `yarn.lock` defaults to npm.
-- Make: `make` process, `make-test` test.
-- Docker: `docker-up` process plus a `dev` stack.
-- Rust: `cargo-build` process, `cargo-test` test.
-- Go: `go-build` process, `go-test` test.
-- Python: `py-install` process, `pytest` test.
+`buildSuggestedConfig` turns indicators into a partial
+`ProjectConfigFile`. Node, Make, Rust, Go, and Python projects receive
+an appropriate test suite (`unit`, `make-test`, `cargo-test`, `go-test`,
+or `pytest`). Node package-manager detection uses `pnpm-lock.yaml` or
+`yarn.lock` and otherwise defaults to npm. Docker remains a detection
+signal but does not add project configuration.
 
 CI candidates are filtered down to obvious test/lint commands using a regex
 such as `npm run test`, `cargo test`, `pytest`, or `make test`. Up to six are
@@ -145,5 +142,3 @@ available through explicit re-entry.
 
 - Configuration schema:
   [configuration-schema.md](./configuration-schema.md)
-- Project home:
-  [../project-home/README.md](../project-home/README.md)

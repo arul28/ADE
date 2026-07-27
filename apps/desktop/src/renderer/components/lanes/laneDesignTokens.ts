@@ -1,5 +1,4 @@
 import type { CSSProperties } from "react";
-import type { ProcessRuntimeStatus } from "../../../shared/types";
 
 /** Semantic palette — resolves against `[data-theme]` / `:root` in `index.css`. */
 export const COLORS = {
@@ -220,22 +219,6 @@ export function floatingPane(overrides?: CSSProperties): CSSProperties {
     boxShadow: "var(--shadow-panel)",
     ...overrides,
   };
-}
-
-export function processStatusColor(status: ProcessRuntimeStatus | undefined): string {
-  switch (status) {
-    case "running":
-      return COLORS.success;
-    case "starting":
-    case "stopping":
-      return COLORS.warning;
-    case "degraded":
-    case "crashed":
-    case "exited":
-      return COLORS.danger;
-    default:
-      return COLORS.textDim;
-  }
 }
 
 export function healthColor(status: string): string {

@@ -161,14 +161,6 @@ export const GLOSSARY: Term[] = [
       "A Workspace is a root folder that ADE can browse and edit. The primary workspace is your main project folder. Each Lane gets its own workspace scoped to its worktree, so files stay isolated between branches.",
     docUrl: docs.lanesOverview,
   },
-  {
-    id: "process",
-    term: "Process",
-    shortDefinition: "A named command that ADE can start, stop, and monitor.",
-    longDefinition:
-      "A Process is a command definition saved in your project config. ADE can start it on demand or automatically, restart it on failure, and surface its logs in the Process Monitor. Processes run inside a lane's worktree so they see that branch's files.",
-    docUrl: docs.lanesStacks,
-  },
 ];
 
 export function findTerm(termId: string): Term | undefined {

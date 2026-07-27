@@ -2,7 +2,7 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, processes, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
+The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
 
 ## Reading order
 
@@ -38,13 +38,12 @@ docs/
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
-    ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands, session handoff
-    ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
+    ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
     └── workspace-graph/                   # React Flow canvas + data sources
 ```

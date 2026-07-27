@@ -258,7 +258,7 @@ The runtime path covers:
 - pty create / write / resize / dispose plus streamed data and exit events
 - file reads / writes / search / quick-open / tree listing and file-watch subscriptions
 - diff reads and most git operations
-- lanes, PRs, PR queue automation, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, processes, and project config
+- lanes, PRs, PR queue automation, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, and project config
 
 Operations with desktop-only side effects, such as some automation hooks and UI-native flows, still use the in-process IPC handlers until their side effects are moved into ade-cli services.
 

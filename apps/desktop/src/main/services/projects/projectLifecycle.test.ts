@@ -188,7 +188,7 @@ describe("initializeOrRepairAdeProject", () => {
     const root = createRepoFixture();
     const layout = resolveAdeLayout(root);
     fs.mkdirSync(layout.adeDir, { recursive: true });
-    fs.writeFileSync(path.join(layout.adeDir, "ade.yaml"), "version: 1\nprocesses:\n  - id: keep-me\n", "utf8");
+    fs.writeFileSync(path.join(layout.adeDir, "ade.yaml"), "version: 1\ntestSuites:\n  - id: keep-me\n", "utf8");
 
     initializeOrRepairAdeProject(root, { mode: "shared" });
 
@@ -230,7 +230,7 @@ describe("initializeOrRepairAdeProject", () => {
     git(root, ["init"]);
     const layout = resolveAdeLayout(root);
     fs.mkdirSync(layout.adeDir, { recursive: true });
-    fs.writeFileSync(layout.sharedConfigPath, "version: 1\nprocesses: []\n", "utf8");
+    fs.writeFileSync(layout.sharedConfigPath, "version: 1\ntestSuites: []\n", "utf8");
 
     const result = initializeOrRepairAdeProject(root);
 
@@ -277,9 +277,7 @@ describe("initializeOrRepairAdeProject", () => {
     service.save({
       shared: {
         version: 1,
-        processes: [{ id: "dev", name: "Dev", command: ["npm", "run", "dev"], cwd: "." }],
-        stackButtons: [],
-        testSuites: [],
+        testSuites: [{ id: "unit", name: "Unit", command: ["npm", "test"], cwd: "." }],
         laneOverlayPolicies: [],
         automations: [],
       },
@@ -310,17 +308,13 @@ describe("initializeOrRepairAdeProject", () => {
     service.save({
       shared: {
         version: 1,
-        processes: [],
-        stackButtons: [],
         testSuites: [],
         laneOverlayPolicies: [],
         automations: [],
       },
       local: {
         version: 1,
-        processes: [{ id: "dev", name: "Dev", command: ["npm", "run", "dev"], cwd: "." }],
-        stackButtons: [],
-        testSuites: [],
+        testSuites: [{ id: "unit", name: "Unit", command: ["npm", "test"], cwd: "." }],
         laneOverlayPolicies: [],
         automations: [],
       },
@@ -724,5 +718,3 @@ describe("getProjectDetail recent metadata", () => {
     expect(detail.lastOpenedAt).toBe("2026-05-09T00:00:00.000Z");
   });
 });
-
-

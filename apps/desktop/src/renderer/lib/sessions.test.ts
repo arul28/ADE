@@ -41,7 +41,6 @@ describe("isChatToolType", () => {
     expect(isChatToolType("codex-orchestrated")).toBe(false);
     expect(isChatToolType("opencode-orchestrated")).toBe(false);
     expect(isChatToolType("shell")).toBe(false);
-    expect(isChatToolType("run-shell")).toBe(false);
     expect(isChatToolType("claude")).toBe(false);
     expect(isChatToolType("codex")).toBe(false);
     expect(isChatToolType("cursor-cli")).toBe(false);
@@ -55,10 +54,6 @@ describe("shortToolTypeLabel", () => {
     expect(shortToolTypeLabel(null)).toBe("Shell");
     expect(shortToolTypeLabel(undefined)).toBe("Shell");
     expect(shortToolTypeLabel("shell")).toBe("Shell");
-  });
-
-  it('returns "Run" for run-shell', () => {
-    expect(shortToolTypeLabel("run-shell")).toBe("Run");
   });
 
   it('returns "Claude" for any claude-prefixed tool type', () => {
@@ -173,7 +168,6 @@ describe("getStaleRunningCliSessionAgeHours", () => {
   it("never flags chat, run-owned, or non-running sessions", () => {
     const idle = new Date(NOW - 50 * HOUR).toISOString();
     expect(getStaleRunningCliSessionAgeHours(session({ toolType: "claude-chat", lastActivityAt: idle }), NOW)).toBeNull();
-    expect(getStaleRunningCliSessionAgeHours(session({ toolType: "run-shell", lastActivityAt: idle }), NOW)).toBeNull();
     expect(getStaleRunningCliSessionAgeHours(session({ status: "detached", lastActivityAt: idle }), NOW)).toBeNull();
   });
 });

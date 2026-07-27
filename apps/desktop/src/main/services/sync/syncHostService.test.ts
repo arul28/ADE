@@ -1995,7 +1995,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
             tracked: true,
             pinned: false,
             goal: "Run tests",
-            toolType: "run-shell",
+            toolType: "shell",
             title: "npm test",
             status: "running",
             startedAt: "2026-03-17T00:10:00.000Z",
@@ -2119,9 +2119,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
-      requestId: "cmd-quick-run",
+      requestId: "cmd-terminal-command",
       payload: {
-        commandId: "cmd-quick-run",
+        commandId: "cmd-terminal-command",
         action: "work.runQuickCommand",
         projectId: "project-1",
         args: {
@@ -2138,17 +2138,17 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
     await waitFor(() => fs.existsSync(path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json")));
     const commandLedgerPath = path.join(projectRoot, ".ade", "cache", "sync-mobile-command-ledger.json");
-    const quickRunLedger = fs.readFileSync(commandLedgerPath, "utf8");
-    expect(quickRunLedger).toContain("cmd-quick-run");
-    expect(quickRunLedger).toContain("argsFingerprint");
-    expect(quickRunLedger).not.toContain("argsKey");
-    expect(quickRunLedger).not.toContain("npm test");
+    const commandLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(commandLedger).toContain("cmd-terminal-command");
+    expect(commandLedger).toContain("argsFingerprint");
+    expect(commandLedger).not.toContain("argsKey");
+    expect(commandLedger).not.toContain("npm test");
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
-      requestId: "cmd-quick-run-retry",
+      requestId: "cmd-terminal-command-retry",
       payload: {
-        commandId: "cmd-quick-run",
+        commandId: "cmd-terminal-command",
         action: "work.runQuickCommand",
         projectId: "project-1",
         args: {
@@ -2166,9 +2166,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",
-      requestId: "cmd-quick-run-conflict",
+      requestId: "cmd-terminal-command-conflict",
       payload: {
-        commandId: "cmd-quick-run",
+        commandId: "cmd-terminal-command",
         action: "work.runQuickCommand",
         projectId: "project-1",
         args: {

@@ -200,7 +200,7 @@ docs/
 └── features/
     ├── agents/              ├── memory/
     ├── automations/         ├── onboarding-and-settings/
-    ├── chat/                ├── project-home/
+    ├── chat/                ├── personal-chats/
     ├── computer-use/        ├── pull-requests/
     ├── conflicts/           ├── sync-and-multi-device/
     ├── context-packs/       ├── terminals-and-sessions/
@@ -230,7 +230,7 @@ Step 2: Map changed source to internal docs
 
 | Source Directory                                   | Doc Location                                       |
 |----------------------------------------------------|----------------------------------------------------|
-| apps/desktop/src/main/services/projects/           | docs/features/project-home/                        |
+| apps/desktop/src/main/services/projects/           | docs/features/onboarding-and-settings/             |
 | apps/desktop/src/main/services/proof/              | docs/features/proof.md                             |
 | apps/desktop/src/main/services/review/             | docs/features/pull-requests/                       |
 | apps/desktop/src/main/services/prs/                | docs/features/pull-requests/                       |

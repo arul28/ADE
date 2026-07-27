@@ -117,9 +117,6 @@ const MEANINGFUL_ACTIONS = new Set([
   "git.stashPush",
   "git.stashApply",
   "git.stashPop",
-  "processes.start",
-  "processes.stop",
-  "processes.kill",
   "orchestration.runCreate",
   "prs.createFromLane",
   "prs.createQueue",
@@ -176,11 +173,6 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
       writeWorkspaceText: "writeText",
     };
     return `files.${aliases[action] ?? action}`;
-  }
-  if (domain === "process") {
-    if (action === "kill") return "processes.kill";
-    if (action.startsWith("stop")) return "processes.stop";
-    if (action.startsWith("start") || action.startsWith("restart")) return "processes.start";
   }
   if (domain === "pty") {
     if (action === "create") return "work.startCliSession";

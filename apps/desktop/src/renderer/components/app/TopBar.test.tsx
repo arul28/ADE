@@ -53,7 +53,6 @@ vi.mock("../usage/HeaderUsageControl", () => ({
 }));
 
 vi.mock("../../lib/sessions", () => ({
-  isRunOwnedSession: () => false,
 }));
 
 vi.mock("../../lib/zoom", () => ({
@@ -390,7 +389,6 @@ describe("TopBar", () => {
         list: vi.fn(async () => []),
         onEvent: vi.fn(() => () => {}),
       },
-      processes: { listRuntime: vi.fn(async () => []) },
     } as any;
   });
 
@@ -1779,7 +1777,7 @@ describe("TopBar", () => {
   });
 
   it("offers the project picker when a Linear issue deeplink opens without an ADE project", async () => {
-    window.location.hash = "";
+    window.location.hash = "#/chats";
     useAppStore.setState({ project: null, projectBinding: null } as any);
 
     render(<TopBar />);
@@ -1791,7 +1789,8 @@ describe("TopBar", () => {
 
     expect(await screen.findByText("Open the ADE project for ADE-126")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /open project picker/i }));
-    expect(window.location.hash).toBe("#/project");
+    expect(useAppStore.getState().showWelcome).toBe(true);
+    expect(window.location.hash).toBe("#/work");
   });
 
   it("reveals Linear quick view after a later connection refresh", async () => {

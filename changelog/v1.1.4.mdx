@@ -31,7 +31,6 @@ PR detail gets a new convergence panel and timeline rails on both desktop and iO
 - **PR detail timeline rails.** `PrDetailTimelineRails` and `PrTimeline` render a single timeline of commits, reviews, comments, and check transitions instead of separate panels.
 - **`PrConvergencePanel` + `PrLaneCleanupBanner`.** Convergence panel surfaces auto-converge run state directly in PR detail; cleanup banner prompts to remove the working lane once the PR has merged.
 - **Issue inventory + resolver.** New `issueInventoryService` and `prIssueResolver` aggregate review-bot comments, classify them, and feed the same backing data the AI resolver CTA uses.
-- **External cwd allowed for managed processes.** `processService` accepts a configured absolute `cwd` for managed commands; the trust path is documented inline (originates from `projectConfigService`, no IPC surface lets UI input reach it).
 - **Auto-converge persistence.** New `pr_convergence_state` and `auto_converge_runs` tables in kvDb; iOS `DatabaseBootstrap.sql` regenerated for parity.
 
 ---

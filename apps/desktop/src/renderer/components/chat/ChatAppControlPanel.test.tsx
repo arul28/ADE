@@ -8,7 +8,6 @@ import type {
   AppControlSnapshot,
   AppControlStatus,
   AppControlTarget,
-  ProcessDefinition,
 } from "../../../shared/types";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 
@@ -117,33 +116,14 @@ const contextItem: AppControlContextItem = {
   selectedAt: "2026-05-12T00:00:03.000Z",
 };
 
-const devProcess: ProcessDefinition = {
-  id: "dev",
-  name: "Desktop dev",
-  command: ["npm", "run", "dev"],
-  cwd: "apps/desktop",
-  env: {},
-  groupIds: [],
-  autostart: false,
-  restart: "never",
-  gracefulShutdownMs: 1000,
-  dependsOn: [],
-  readiness: { type: "none" },
-};
-
 function installAdeMock({
   status = idleStatus,
-  processes = [],
   targetList = [],
 }: {
   status?: AppControlStatus;
-  processes?: ProcessDefinition[];
   targetList?: AppControlTarget[];
 } = {}) {
   const api = {
-    projectConfig: {
-      get: vi.fn().mockResolvedValue({ effective: { processes } }),
-    },
     appControl: {
       getStatus: vi.fn().mockResolvedValue(status),
       getSnapshot: vi.fn().mockResolvedValue(snapshot),
@@ -179,26 +159,18 @@ describe("ChatAppControlPanel", () => {
     delete (window as any).ade;
   });
 
-  it("selects a configured run command and inserts the CDP help draft", async () => {
-    const api = installAdeMock({ processes: [devProcess] });
+  it("inserts the CDP help draft", async () => {
+    installAdeMock();
     const onInsertDraft = vi.fn();
 
     render(
       <ChatAppControlPanel
-        sessionId="chat-run-command"
+        sessionId="chat-help-draft"
         laneId="lane-1"
         projectRoot="/repo"
         onInsertDraft={onInsertDraft}
       />,
     );
-
-    const runCommandSelect = await screen.findByLabelText("Select run command") as HTMLSelectElement;
-    await waitFor(() => expect(runCommandSelect.disabled).toBe(false));
-
-    fireEvent.change(runCommandSelect, { target: { value: "dev" } });
-
-    expect((screen.getByLabelText("App Control launch command") as HTMLInputElement).value).toBe("npm run dev");
-    expect(api.projectConfig.get).toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("Help wire CDP"));
 

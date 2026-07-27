@@ -255,7 +255,6 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { createOrchestrationDomainService } from "../../../../desktop/src/main/services/orchestration/orchestrationDomain";
 import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
@@ -327,7 +326,6 @@ type SyncRemoteCommandServiceArgs = {
    */
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
-  processService?: ReturnType<typeof createProcessService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
@@ -1101,21 +1099,6 @@ function parseOrchestrationRunCreateArgs(value: Record<string, unknown>): Orches
     ...(value as OrchestrationRunCreateRequest & { laneId: string }),
     laneId: requireString(value.laneId, "orchestration.runCreate requires laneId."),
   };
-}
-
-function parseProcessLaneArgs(payload: Record<string, unknown>, action: string): { laneId: string } {
-  return {
-    laneId: requireString(payload.laneId, `${action} requires laneId.`),
-  };
-}
-
-function parseProcessActionArgs(payload: Record<string, unknown>, action: string): { laneId: string; processId: string; runId?: string } {
-  const parsed = {
-    laneId: requireString(payload.laneId, `${action} requires laneId.`),
-    processId: requireString(payload.processId, `${action} requires processId.`),
-  };
-  const runId = asTrimmedString(payload.runId);
-  return runId ? { ...parsed, runId } : parsed;
 }
 
 async function summarizeChatSessionForRemote(
@@ -3262,7 +3245,6 @@ function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverla
     ...base,
     ...next,
     ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.processIds || next.processIds ? { processIds: [...(next.processIds ?? base.processIds ?? [])] } : {}),
     ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
     ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
   };
@@ -3797,7 +3779,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       tracked: parsed.tracked ?? true,
       cols: parsed.cols ?? 120,
       rows: parsed.rows ?? 36,
-      toolType: (parsed.toolType ?? "run-shell") as TerminalToolType,
+      toolType: (parsed.toolType ?? "shell") as TerminalToolType,
     });
   });
   register("work.startCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -3929,27 +3911,6 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
-}
-
-function registerProcessRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
-  register("processes.listDefinitions", { viewerAllowed: true }, async () =>
-    requireService(args.processService, "Process service not available.").listDefinitions());
-  register("processes.listRuntime", { viewerAllowed: true }, async (payload) =>
-    requireService(args.processService, "Process service not available.").listRuntime(
-      parseProcessLaneArgs(payload, "processes.listRuntime").laneId,
-    ));
-  register("processes.start", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.processService, "Process service not available.").start(
-      parseProcessActionArgs(payload, "processes.start"),
-    ));
-  register("processes.stop", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.processService, "Process service not available.").stop(
-      parseProcessActionArgs(payload, "processes.stop"),
-    ));
-  register("processes.kill", { viewerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.processService, "Process service not available.").kill(
-      parseProcessActionArgs(payload, "processes.kill"),
-    ));
 }
 
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -5199,7 +5160,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
-  registerProcessRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });

@@ -101,7 +101,6 @@ func workSessionShouldAppearInWorkList(
   _ session: TerminalSessionSummary,
   parentChatSessionIds: Set<String>
 ) -> Bool {
-  if isRunOwnedSession(session) { return false }
   if isChatSession(session) { return true }
 
   let parentId = session.chatSessionId?
@@ -214,7 +213,7 @@ func workSessionRuntimeLabel(session: TerminalSessionSummary) -> String {
   }
 
   switch raw {
-  case "run-shell", "shell", "terminal":
+  case "shell", "terminal":
     return "Terminal"
   case "claude-chat":
     return "Claude"

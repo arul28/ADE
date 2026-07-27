@@ -1393,7 +1393,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     if (selectedProposalRebaseLaneIds.length > 0) {
       advisories.push("One or more source lanes are behind their base branch. Rebase is recommended before you finalize this proposal.");
     }
-    advisories.push("The AI resolver edits the integration lane with bounded project/lane/conflict context. Treat the Run tab as the final validation gate before merging the resulting PR.");
+    advisories.push("The AI resolver edits the integration lane with bounded project/lane/conflict context. Validate the integration lane before merging the resulting PR.");
     return advisories;
   }, [laneById, selectedProposal, selectedProposalRebaseLaneIds.length, selectedProposalTargetLaneId]);
 

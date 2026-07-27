@@ -1,16 +1,4 @@
 version: 1
-processes:
-  - id: gq3sy4rj
-    name: npm run dev:desktop
-    command:
-      - npm
-      - run
-      - dev:desktop
-    cwd: .
-    gracefulShutdownMs: 7000
-    readiness:
-      type: none
-stackButtons: []
 testSuites: []
 laneOverlayPolicies: []
 automations: []

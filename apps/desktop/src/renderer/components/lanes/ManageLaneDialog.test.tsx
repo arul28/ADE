@@ -18,7 +18,6 @@ const deleteRisk: LaneDeleteRisk = {
   hasUnpushedCommits: false,
   unpushedCommitCount: 0,
   remoteBranchExists: true,
-  runningProcessCount: 0,
   activeChatCount: 0,
   activePtyCount: 0,
   activeWatcherCount: 0,

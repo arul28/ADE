@@ -234,69 +234,6 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
-  it("applies CRDT changes for composite primary-key tables", async () => {
-    const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-composite-pk-a-"), createLogger() as any);
-    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-composite-pk-b-"), createLogger() as any);
-    const now = "2026-03-15T00:00:00.000Z";
-
-    db1.run(
-      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
-       values (?, ?, ?, ?, ?, ?)`,
-      ["project-composite", "/repo/composite", "Composite", "main", now, now],
-    );
-    db1.run(
-      `insert into lanes(
-        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, attached_root_path,
-        is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        "lane-composite",
-        "project-composite",
-        "Composite Lane",
-        null,
-        "worktree",
-        "main",
-        "feature/composite",
-        "/repo/composite/.ade/worktrees/lane-composite",
-        null,
-        0,
-        null,
-        null,
-        null,
-        null,
-        null,
-        "active",
-        now,
-        null,
-      ],
-    );
-
-    const baselineChanges = db1.sync.exportChangesSince(0);
-    db2.sync.applyChanges(baselineChanges);
-
-    const versionBeforeRuntime = db1.sync.getDbVersion();
-    db1.run(
-      `insert into process_runtime(project_id, lane_id, process_key, status, readiness, updated_at)
-       values (?, ?, ?, ?, ?, ?)`,
-      ["project-composite", "lane-composite", "dev", "running", "ready", "2026-03-15T00:01:00.000Z"],
-    );
-
-    const runtimeChanges = db1.sync.exportChangesSince(versionBeforeRuntime);
-    expect(runtimeChanges.some((change) => change.table === "process_runtime")).toBe(true);
-
-    const result = db2.sync.applyChanges(runtimeChanges);
-    expect(result.appliedCount).toBe(runtimeChanges.length);
-    expect(result.touchedTables).toContain("process_runtime");
-    expect(
-      db2.get<{ status: string }>(
-        "select status from process_runtime where project_id = ? and lane_id = ? and process_key = ?",
-        ["project-composite", "lane-composite", "dev"],
-      )?.status,
-    ).toBe("running");
-
-    db1.close();
-    db2.close();
-  });
 
   it("repairs a legacy projects unique constraint before CRR marking", async () => {
     const dbPath = makeDbPath("ade-kvdb-sync-projects-legacy-");
@@ -436,9 +373,16 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db.close();
   });
 
-  it("ignores CRDT changes for legacy unified_memories tables removed in #329", async () => {
+  it("ignores CRDT changes for tables removed from the local schema", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-skip-"), createLogger() as any);
-    const legacyChanges = ["unified_memories", "unified_memories_fts_content"].map((table, index) => ({
+    const legacyChanges = [
+      "unified_memories",
+      "unified_memories_fts_content",
+      "process_definitions",
+      "process_runtime",
+      "process_runs",
+      "stack_buttons",
+    ].map((table, index) => ({
       table,
       pk: Buffer.from([0x01, 0x06, 0, 0, 0, 0, 0, index + 1]).toString("base64"),
       cid: "id",
@@ -456,6 +400,43 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     expect(result.touchedTables).toEqual([]);
     expect(db2.sync.getDbVersion()).toBe(beforeVersion);
 
+    db2.close();
+  });
+
+  it("purges retired terminal sessions sent by an older peer", async () => {
+    const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-retired-session-a-"), createLogger() as any);
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-retired-session-b-"), createLogger() as any);
+
+    db1.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-1", "/repo/a", "Repo A", "main", "2026-07-27T00:00:00.000Z", "2026-07-27T00:00:00.000Z"],
+    );
+    db1.run(
+      `insert into lanes(
+         id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+         attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json,
+         folder, status, created_at, archived_at
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "lane-1", "project-1", "Lane 1", null, "worktree", "main", "feature/legacy",
+        "/repo/a/.ade/worktrees/lane-1", null, 0, null, null, null, null, null,
+        "active", "2026-07-27T00:00:00.000Z", null,
+      ],
+    );
+    db1.run(
+      `insert into terminal_sessions(
+         id, lane_id, tracked, tool_type, pinned, manually_named, title, started_at,
+         transcript_path, status
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["session-legacy", "lane-1", 1, "run-shell", 0, 0, "Legacy", "2026-07-27T00:00:00.000Z", "/tmp/legacy.log", "completed"],
+    );
+
+    const result = db2.sync.applyChanges(db1.sync.exportChangesSince(0));
+    expect(result.touchedTables).toContain("terminal_sessions");
+    expect(db2.get("select 1 as present from terminal_sessions where id = ?", ["session-legacy"])).toBeNull();
+
+    db1.close();
     db2.close();
   });
 

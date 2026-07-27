@@ -1,11 +1,9 @@
-# PTY, Sessions, and Managed Processes
+# PTY and sessions
 
-Lifecycle and wiring for the three services that back the
-terminal/session system:
+Lifecycle and wiring for the two services that back the terminal/session system:
 
 - `apps/desktop/src/main/services/pty/ptyService.ts`
 - `apps/desktop/src/main/services/sessions/sessionService.ts`
-- `apps/desktop/src/main/services/processes/processService.ts`
 
 These services run inside the **active ADE runtime** (local machine runtime for
 local-bound windows, SSH-attached remote runtime for remote-bound
@@ -16,15 +14,9 @@ handlers after a daemon failure. PTY data and exit events flow over the runtime'
 event stream and the renderer subscribes via the preload runtime event
 pump. Remote-bound windows therefore have their PTYs spawn on the
 remote machine — `node-pty` runs on the remote host, the bytes stream
-back over SSH, and per-process readiness checks (TCP port probes) hit
-ports on the remote host as well.
+back over SSH, on the remote host.
 
-All three are large and carry a lot of cross-wiring through the
-ADE runtime's project boot and `registerIpc.ts`. Re-read them before
-any non-trivial change. The most recent structural shift was in
-`processService`: runtime entries are now keyed by `runId` so a single
-`(laneId, processId)` pair can have multiple concurrent and historical
-runs simultaneously.
+Both services carry cross-wiring through the ADE runtime's project boot and `registerIpc.ts`. Re-read them before any non-trivial change.
 
 Adjacent: the `apps/desktop/src/main/services/computerUse/`
 directory hosts the computer-use control plane and its broker
@@ -436,8 +428,7 @@ registry under `terminal.reattachChatCli`.
 `ptyService.hasLiveSessions()` walks the PTY map and returns true if
 any entry is not disposed. `main.ts`'s
 `hasActiveProjectWorkloads(ctx)` calls it (alongside
-`agentChatService.hasRetainableSessions()` and managed-process
-checks) so a project context with running CLIs / agents / shells is
+`agentChatService.hasRetainableSessions()`) so a project context with running CLIs / agents / shells is
 never evicted by the warm-idle cap.
 
 ### Resource-pressure attribution
@@ -445,7 +436,7 @@ never evicted by the warm-idle cap.
 `ptyService.getResourceAttribution()` returns the live PTY roots for the
 TopBar resource-pressure indicator: `{ activePtyCount, roots }` where each
 root is `{ pid, kind }` and `kind` is derived from the entry's
-`toolTypeHint` (`shell` / `run-shell` → `"shell"`, `other` → `"unknown"`,
+`toolTypeHint` (`shell` → `"shell"`, `other` → `"unknown"`,
 any recognized provider CLI → `"provider-agent"`). It only carries the PIDs
 and their spawn-metadata role — it no longer samples `ps` or aggregates CPU
 / memory itself. The actual machine sampling and per-role aggregation live in
@@ -610,7 +601,7 @@ Three paths, all gated by `sessionIntelligence.titles.enabled` and the
 presence of an AI integration service in non-guest mode (except the
 Claude runtime-title capture, which is free):
 
-- **Output snippet title** (shell, run-shell, cursor, aider, continue):
+- **Output snippet title** (shell, cursor, aider, continue):
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of
   ANSI-stripped early output to `aiIntegrationService.summarizeTerminal`
   with a "max 80 chars, plain text" prompt.
@@ -786,171 +777,6 @@ The user, owning service, or worker orchestration layer must call
 
 ---
 
-## `processService`
-
-File: `apps/desktop/src/main/services/processes/processService.ts`
-
-Wraps managed processes defined in project config (`.ade/ade.yaml` +
-`.ade/local.yaml`). Launches each via `ptyService.create` with
-`toolType = "run-shell"`, so managed processes get transcripts, runtime
-state signals, and session rows exactly like interactive PTYs.
-
-### Entry state (`ManagedProcessEntry`)
-
-Keyed by `runId` (a new UUID per invocation). A single
-`(laneId, processId)` pair can own many entries at once: one per live
-run plus up to `MAX_PROCESS_HISTORY_PER_LANE_PROCESS = 20` of the most
-recent terminated runs. Fields:
-
-- `runId`, `laneId`, `processId`
-- `definition`: `ProcessDefinition` captured at start
-- `runtime`: `ProcessRuntime` (status, readiness, pid, ports, timing,
-  `runId`, `sessionId`, `ptyId`, `uptimeMs`)
-- `stopIntent`: caller-supplied termination reason (`"stopped" |
-  "killed" | "crashed"`; `"restart"` is no longer an exit reason)
-- `sessionId` / `ptyId` / `transcriptPath`: the live PTY handle
-- readiness: `readinessRegex`, `readinessTimeout`, `readinessInterval`
-- health: `healthFailures`, `healthInterval`
-- restart: `restartAttempts`
-
-Auxiliary maps:
-
-- `sessionToRunId` / `ptyToRunId` — reverse lookups used by the PTY
-  data/exit subscribers.
-- `terminationWaiters` — `runId → Set<() => void>` queue that
-  `waitForEntryStopped` resolves when `handleProcessExit` fires.
-- `restartAttemptsByProcess` — keyed by `"laneId:processId"` so backoff
-  carries across runs even when each run has its own `runId`.
-
-`pruneOldEntriesForLaneProcess` is called after every exit and trims
-the history back down to `MAX_PROCESS_HISTORY_PER_LANE_PROCESS` —
-active runs are skipped so a stop storm never evicts live ones.
-
-### Readiness checks
-
-Three types, driven by `ProcessDefinition.readiness`:
-
-- `none` — immediately `running` / `ready`.
-- `port` — every 500 ms, TCP-connect to the configured port on
-  127.0.0.1. First success → `running`/`ready`. Health check interval
-  (`HEALTH_CHECK_INTERVAL_MS = 2500`) keeps probing; after
-  `HEALTH_DEGRADED_AFTER_FAILURES = 2` consecutive failures the status
-  flips to `degraded`/`not_ready` until the next success.
-- `logRegex` — compiled regex tested against each `ptyData` event; the
-  first match marks the process ready.
-
-A single `READINESS_TIMEOUT_MS = 15000` watchdog flips to `degraded` if
-nothing becomes ready in time.
-
-### Restart policy
-
-`ProcessRestartPolicy`: `never`, `on-failure`, `always`, `on_crash`
-(alias for `on-failure`).
-
-On exit:
-
-1. `handleProcessExit` clears timers, builds the termination `reason`
-   (`stopped`, `killed`, `crashed`). `"restart"` is no longer a reason
-   — a restart is modeled as a stop of the outgoing run followed by a
-   fresh start that gets its own `runId`.
-2. Finalizes the current `process_runs` row and emits runtime.
-3. Resolves any `terminationWaiters` registered for this `runId`, so
-   `restart()`/`restartStack()` callers can await actual exit.
-4. If there was no `stopIntent` and the policy says to auto-restart on
-   crash or always, applies exponential backoff keyed by
-   `"laneId:processId"` — `min(30_000, 400 * 2^(attempt-1))` plus up
-   to 250 ms jitter — and schedules a new `startById` via `setTimeout`.
-   A stop or kill that originated from the caller clears the attempt
-   counter for that process.
-
-`restart()` and `restartStack()` implement themselves by calling
-`stopEntries(...)` then awaiting `waitForEntriesStopped` (capped at
-`PROCESS_TERMINATION_WAIT_MS = 10 s`) before issuing the new start.
-That's why `stop()` / `kill()` return `ProcessRuntime | null`:
-the caller may be operating on a `(laneId, processId)` with no active
-run, and returning `null` lets the caller no-op without throwing.
-
-### Dependency ordering
-
-`resolveDependencyOrder` is a topological sort with cycle detection.
-Thrown errors surface as IPC rejections on `processes.startStack` and
-related calls.
-
-### Stack buttons
-
-- `startStack` / `stopStack` / `restartStack` take a `stackId` and
-  resolve the `StackButtonDefinition`. `startOrder === "dependency"`
-  starts sequentially and awaits each. `startOrder === "parallel"`
-  fires all at once.
-- `stopStack` reverses the order.
-- `startAll` / `stopAll` delegate to `runStartSet` / `runStopSet` with
-  `startOrder: "dependency"`.
-
-### Process groups
-
-`processService.startGroup` / `stopGroup` / `restartGroup` accept
-`ProcessGroupArgs = { groupId, laneByProcessId }`. `groupProcessIds`
-resolves the group id against `effective.processGroups` (throws on
-unknown group) and returns every process whose `groupIds[]` includes
-the id; `runStartGroupParallel` and `runStopGroupParallel` then drive
-the lifecycle. Group runs are intentionally **parallel** — definition
-order only affects fork order inside `Promise.all`. Per-process
-`dependsOn` is **not** topologically sorted across mixed lanes,
-because each member can run on its own lane (the Run page picks the
-lane per `CommandCard`). Groups exist to bundle commands for one-tap
-start/stop in the Run page; if you need strict dependency
-sequencing for a bundle, model it as a single-lane stack instead.
-`restartGroup` calls `stopGroup` first and awaits the corresponding
-`waitForEntriesStopped` for every targeted active entry before
-issuing the parallel restart.
-
-### Lane overlay integration
-
-`getLaneOverlay` runs `matchLaneOverlayPolicies` (from `laneOverlayMatcher`)
-against the lane summary and the current effective config's
-`laneOverlayPolicies`. The overlay can:
-
-- restrict `processIds` (so some processes are disabled per lane)
-- override `cwd`
-- merge extra `env`
-- override port ranges or proxy hostnames
-
-`applyProcessFilter` applies the restricted id list before dependency
-resolution. `startByDefinition` merges overlay `env` over definition
-`env` after the base lane runtime env.
-
-### Integration with PTY events
-
-The service subscribes once each to `ptyService.onData` and
-`ptyService.onExit` at construction:
-
-- on `data`, it resolves `ptyToRunId.get(event.ptyId) ??
-  sessionToRunId.get(event.sessionId)` into an entry, emits a
-  `log` event carrying `runId`, and tests the log-regex readiness check.
-- on `exit`, it resolves the same way and calls `handleProcessExit`.
-
-It never calls `ptyService.write` — managed processes can't receive
-stdin from the Run UI.
-
-### Persistence
-
-Two tables:
-
-- `process_runtime` — one aggregate snapshot per `(project_id, lane_id,
-  process_key)`. `persistAggregateRuntime` writes whichever run is the
-  latest (newest `updatedAt / startedAt / endedAt`) so the persisted
-  row mirrors the card the user sees in the Run page. If every entry
-  for that `(lane, process)` falls out of memory, the row is deleted.
-  On startup, any row left in an active status (`running`, `starting`,
-  `stopping`, `degraded`) is normalized to `exited` with
-  `ended_at = now`.
-- `process_runs` — one row per invocation keyed by `runId`.
-  `termination_reason` is `stopped`, `killed`, or `crashed`. `log_path`
-  is the transcript path of the run's session (empty string if the PTY
-  never opened before `handleStartFailure` wrote the row).
-
----
-
 ## Data flow summary
 
 ```
@@ -965,7 +791,6 @@ renderer pty.create  →  ade.pty.create (registerIpc)
 
 PTY data events  →  broadcastData (ade.pty.data)
                  →  writeTranscript / updatePreview / runtime signals
-                 →  listener callback (processService uses this)
 
 PTY exit         →  sessionService.end
                  →  scheduleTranscriptDependentWork
@@ -973,10 +798,6 @@ PTY exit         →  sessionService.end
                  │     ├─ backfillResumeTargetFromTranscriptBestEffort
                  │     └─ summarizeSessionBestEffort
                  └─ broadcastExit (ade.pty.exit)
-
-processes.start  →  processService.startByDefinition
-                 →  ptyService.create (toolType = "run-shell")
-                 →  readiness timers, health timers, restart backoff
 ```
 
 ---
@@ -997,19 +818,6 @@ processes.start  →  processService.startByDefinition
   If you add a new session-surfacing IPC, replicate that hydration
   or accept that freshly-ended sessions will show "no resume target"
   briefly.
-- `processService.startByDefinition` creates the `ManagedProcessEntry`
-  and emits `runtime` *before* the PTY is created, so the Run page's
-  card flips to `starting` immediately. If the PTY spawn fails,
-  `handleStartFailure` writes a `process_runs` row with
-  `termination_reason = "crashed"` and then rethrows. If you swallow
-  the throw, the UI still sees the crash.
-- `listRuntime(laneId)` returns every in-memory entry for the lane —
-  active runs *and* recent history (up to 20 per `(lane, process)`).
-  Callers that only want live runs need to filter by
-  `isProcessActive(status)` themselves.
-- Managed-process `healthInterval` timers can still fire during
-  teardown. Always call `disposeAll()` last so PTYs and process
-  entries are cleaned up after dependent timers stop scheduling work.
 - Transcript paths for resumed sessions come from the existing row. If
   an old row references a deleted transcript file, `create` opens it
   in append mode and creates a new empty file — old history is gone.
@@ -1028,6 +836,3 @@ processes.start  →  processService.startByDefinition
   [runtime-isolation.md](./runtime-isolation.md)
 - Session deltas and end-of-session summaries:
   `apps/desktop/src/main/services/sessions/sessionDeltaService.ts`
-- Configuration schema for `ProcessDefinition`, `StackButtonDefinition`,
-  `LaneOverlayPolicy`:
-  [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)

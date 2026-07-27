@@ -101,10 +101,6 @@ function readLinearVisibilityCached({
   return entry.inFlight;
 }
 
-function openProjectPickerRoute(): void {
-  window.location.hash = "#/project";
-}
-
 export function LinearQuickViewButton({
   variant = "icon",
   onMenuActivate,
@@ -117,6 +113,7 @@ export function LinearQuickViewButton({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
+  const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
@@ -613,7 +610,8 @@ export function LinearQuickViewButton({
               data-variant="primary"
               onClick={() => {
                 setConnectionPrompt(null);
-                openProjectPickerRoute();
+                setShowWelcome(true);
+                window.location.hash = "#/work";
               }}
             >
               Open project picker

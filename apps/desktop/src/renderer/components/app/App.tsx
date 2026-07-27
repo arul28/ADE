@@ -19,7 +19,7 @@ import {
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
-import { RunPage } from "../run/RunPage";
+import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
@@ -304,7 +304,6 @@ function bindingForProject(
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
   const pathname = location.pathname || "/work";
   const allowedRoots = [
-    "/project",
     "/lanes",
     "/files",
     "/work",
@@ -536,7 +535,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
       {active && !isWorkRoute && !isLanesRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
-          <Route path="/project" element={<PageErrorBoundary><RunPage /></PageErrorBoundary>} />
           <Route path="/onboarding" element={<PageErrorBoundary><ProjectSetupPage /></PageErrorBoundary>} />
           <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
           <Route path="/files" element={
@@ -772,7 +770,6 @@ function ProjectTabHost() {
     if (!activeSurfaceKey) return;
     const shouldKeepInitialRoute =
       currentRoute &&
-      currentRoute !== "/project" &&
       currentRoute !== "/onboarding";
     if (!previousSurfaceKey && shouldKeepInitialRoute) {
       writeStoredProjectRoute(activeSurfaceKey, currentRoute);
@@ -940,7 +937,7 @@ function ProjectTabHost() {
   if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
-        <RunPage />
+        <ProjectWelcomePage />
       </PageErrorBoundary>
     );
   }

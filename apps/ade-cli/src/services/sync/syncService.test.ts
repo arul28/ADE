@@ -62,9 +62,6 @@ function createService(
     agentChatService: {
       listSessions: vi.fn(async () => []),
     } as any,
-    processService: {
-      listRuntime: vi.fn(() => []),
-    } as any,
     ...overrides,
   });
 }

@@ -1582,21 +1582,21 @@ final class ADETests: XCTestCase {
   @MainActor
   func testUserDisconnectReturnsToHubBeforeTransportChanges() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    service.projectHomePresented = false
+    service.projectHubPresented = false
 
     service.disconnectForUserConnectionChange()
 
-    XCTAssertTrue(service.projectHomePresented)
+    XCTAssertTrue(service.projectHubPresented)
   }
 
   @MainActor
   func testOrdinaryReconnectDoesNotOverrideProjectPresentation() async {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    service.projectHomePresented = false
+    service.projectHubPresented = false
 
     await service.reconnectIfPossible(userInitiated: true)
 
-    XCTAssertFalse(service.projectHomePresented)
+    XCTAssertFalse(service.projectHubPresented)
   }
 
   func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
@@ -5160,7 +5160,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceProjectHomeUsesCachedProjectsAndLocalSelection() throws {
+  func testSyncServiceProjectHubUsesCachedProjectsAndLocalSelection() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
     let hiddenProjectsKey = "ade.sync.hiddenProjects"
@@ -5185,7 +5185,7 @@ final class ADETests: XCTestCase {
     """)
 
     let service = SyncService(database: database)
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertEqual(service.projects.map(\.id), ["project-2", "project-1"])
 
     let projectTwo = try XCTUnwrap(service.projects.first(where: { $0.id == "project-2" }))
@@ -5194,13 +5194,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.activeProjectId, "project-2")
     XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-two")
     XCTAssertEqual(database.currentProjectId(), "project-2")
-    XCTAssertFalse(service.shouldShowProjectHome)
+    XCTAssertFalse(service.shouldShowProjectHub)
     XCTAssertTrue(service.isActiveProject(projectTwo))
 
-    service.showProjectHome()
-    XCTAssertTrue(service.shouldShowProjectHome)
-    service.closeProjectHome()
-    XCTAssertFalse(service.shouldShowProjectHome)
+    service.showProjectHub()
+    XCTAssertTrue(service.shouldShowProjectHub)
+    service.closeProjectHub()
+    XCTAssertFalse(service.shouldShowProjectHub)
 
     database.close()
   }
@@ -5273,7 +5273,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertNil(service.activeProjectId)
     XCTAssertNil(service.activeProjectRootPath)
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
     XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
     XCTAssertNil(UserDefaults.standard.stringArray(forKey: hiddenProjectsKey))
@@ -5305,7 +5305,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceProjectHomeDeduplicatesCachedRowsByRootAndKeepsActive() throws {
+  func testSyncServiceProjectHubDeduplicatesCachedRowsByRootAndKeepsActive() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
     UserDefaults.standard.set("project-active", forKey: activeProjectIdKey)
@@ -5366,7 +5366,7 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     let projectOne = try XCTUnwrap(service.projects.first(where: { $0.id == "project-1" }))
     service.selectProject(projectOne)
-    service.showProjectHome()
+    service.showProjectHub()
 
     let uncachedProject = MobileProjectSummary(
       id: "project-2",
@@ -5382,7 +5382,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.activeProjectId, "project-1")
     XCTAssertEqual(database.currentProjectId(), "project-1")
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertEqual(
       service.lastError,
       "That project has not been cached on this phone yet. Connect to the ADE machine before opening it."
@@ -6289,7 +6289,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(service.activeProjectId)
     XCTAssertNil(service.activeProjectRootPath)
     XCTAssertNotEqual(database.currentProjectId(), "new-project")
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertTrue(service.projects.contains { $0.id == "new-project" })
 
     database.close()
@@ -6341,7 +6341,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertNil(service.activeProjectId)
     XCTAssertNil(service.activeProjectRootPath)
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertTrue(service.projects.contains { $0.id == "project-1" })
 
     database.close()
@@ -6395,7 +6395,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-one")
     XCTAssertEqual(database.currentProjectId(), "runtime-project")
     XCTAssertEqual(service.projects.map(\.id), ["runtime-project"])
-    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHub)
 
     database.close()
   }
@@ -8285,7 +8285,7 @@ final class ADETests: XCTestCase {
         tracked: true,
         pinned: false,
         goal: "Run tests",
-        toolType: "run-shell",
+        toolType: "shell",
         title: "npm test",
         status: "running",
         startedAt: "2026-03-17T00:10:00.000Z",
@@ -8431,7 +8431,7 @@ final class ADETests: XCTestCase {
       tracked: true,
       pinned: false,
       goal: nil,
-      toolType: "run-shell",
+      toolType: "shell",
       title: "App Control terminal",
       status: "running",
       startedAt: "2026-03-17T00:10:00.000Z",
@@ -8603,7 +8603,7 @@ final class ADETests: XCTestCase {
         tracked: true,
         pinned: false,
         goal: nil,
-        toolType: "run-shell",
+        toolType: "shell",
         title: "npm test",
         status: "exited",
         startedAt: "2026-03-17T00:10:00.000Z",
@@ -13962,11 +13962,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "claude")))
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "opencode")))
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "droid")))
-    XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "run-shell")))
-    XCTAssertTrue(isRunOwnedSession(makeTerminalSessionSummary(toolType: "run-shell")))
-    XCTAssertTrue(isRunOwnedSession(makeTerminalSessionSummary(toolType: " RUN-SHELL ")))
-    XCTAssertFalse(isRunOwnedSession(makeTerminalSessionSummary(toolType: "shell")))
-    XCTAssertFalse(isRunOwnedSession(makeTerminalSessionSummary(toolType: "codex-chat")))
   }
 
   func testWorkChatSessionClassificationTrimsWhitespaceAndRejectsBlankValues() {
@@ -14157,7 +14152,7 @@ final class ADETests: XCTestCase {
       resumeMetadata: nil
     )))
     XCTAssertFalse(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
-      toolType: "run-shell",
+      toolType: "shell",
       resumeCommand: "   ",
       resumeMetadata: nil
     )))
@@ -16882,35 +16877,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")))
   }
 
-  func testWorkFilteredSessionsHidesRunOwnedRowsLikeDesktop() {
-    let chatSession = makeTerminalSessionSummary(
-      id: "chat-1",
-      laneId: "lane-1",
-      laneName: "feature/work",
-      toolType: "codex-chat",
-      title: "Fix Work root"
-    )
-    let runOwnedSession = makeTerminalSessionSummary(
-      id: "run-1",
-      laneId: "lane-1",
-      laneName: "feature/work",
-      toolType: "run-shell",
-      runtimeState: "running",
-      title: "Run inspector",
-      lastOutputPreview: "npm test"
-    )
-
-    let filtered = workFilteredSessions(
-      [runOwnedSession, chatSession],
-      chatSummaries: [:],
-      archivedSessionIds: [],
-      selectedStatus: .all,
-      selectedLaneId: "all",
-      searchText: ""
-    )
-
-    XCTAssertEqual(filtered.map(\.id), ["chat-1"])
-  }
 
   func testWorkFilteredSessionsRetainsStaleStandaloneCliRowsAndChatOwnedShells() {
     let chatSession = makeTerminalSessionSummary(
@@ -20965,12 +20931,10 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
     XCTAssertFalse(rosterChat(toolType: nil, status: .failed).needsAttention)
   }
 
-  func testWorkListShowsEndedStandaloneCliButHidesRunShellAndOrphanedEndedChildren() {
+  func testWorkListShowsEndedStandaloneCliAndHidesOrphanedEndedChildren() {
     let endedCli = session(toolType: "cli", status: "completed", runtimeState: "exited")
     XCTAssertTrue(workSessionShouldAppearInWorkList(endedCli, parentChatSessionIds: []))
 
-    let runShell = session(toolType: "run-shell", status: "running", runtimeState: "running")
-    XCTAssertFalse(workSessionShouldAppearInWorkList(runShell, parentChatSessionIds: []))
 
     let orphanedEndedChild = session(
       toolType: "shell",

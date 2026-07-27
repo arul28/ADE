@@ -47,8 +47,6 @@ const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> =
 
 const DEFAULT_ADE_CONFIG = [
   "version: 1",
-  "processes: []",
-  "stackButtons: []",
   "testSuites: []",
   "laneOverlayPolicies: []",
   "automations: []",
@@ -339,7 +337,6 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   repairLegacyPaths(paths, actions);
 
   ensureDir(paths.logsDir, "transcripts/logs", actions);
-  ensureDir(paths.processLogsDir, "transcripts/logs/processes", actions);
   ensureDir(paths.testLogsDir, "transcripts/logs/tests", actions);
   ensureDir(paths.chatSessionsDir, "cache/chat-sessions", actions);
   ensureDir(paths.chatTranscriptsDir, "transcripts/chat", actions);

@@ -26,8 +26,19 @@ import {
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
 
+const RETIRED_EXECUTION_TABLES = [
+  "process_definitions",
+  "process_runtime",
+  "process_runs",
+  "stack_buttons",
+] as const;
+
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
-const SYNC_RETIRED_TABLES = new Set(["unified_memories", "unified_memories_fts"]);
+const SYNC_RETIRED_TABLES = new Set([
+  "unified_memories",
+  "unified_memories_fts",
+  ...RETIRED_EXECUTION_TABLES,
+]);
 
 function isRetiredIncomingSyncTable(tableName: string): boolean {
   return SYNC_RETIRED_TABLES.has(tableName) || tableName.startsWith("unified_memories_");
@@ -740,22 +751,15 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "pr_auto_link_ignores",
-  // Config snapshots rebuilt (delete+reinsert) from ade.yaml on every project
-  // config load (projectConfigService.syncSnapshots). Pure local-derived state —
-  // remote clients read these via RPC (e.g. processes.listDefinitions, which
-  // returns projectConfigService.get().effective, not the table), never from a
-  // synced replica — so they must not be CRRs. Leaving them CRR makes the
-  // rebuild DELETE fire crsql triggers that call crsql_internal_sync_bit, which
-  // crashes any runtime without the extension loaded (e.g. the static machine
-  // runtime), surfacing to remote clients as a fake "host unreachable" disconnect.
-  "process_definitions",
+  // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
+  // clients read effective config through RPC, never from a synced replica,
+  // so these tables must not be CRRs.
   "pull_request_ai_summaries",
   "runtime_processes",
   // Compact local interaction ledger used by Stats. Phones and browsers read
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
   "usage_events",
-  "stack_buttons",
   "test_suites",
   "local_worktree_residual_cleanups",
 ]);
@@ -1115,6 +1119,73 @@ function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger):
     hadBase: hasBaseTable,
     orphanRepairsDropped: orphanRepairs.length,
   });
+}
+
+/**
+ * Remove the retired command-execution schema and sessions it owned from
+ * upgraded databases. The sync apply path also purges the retired session
+ * tool type so an older peer cannot reintroduce those rows later.
+ */
+function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void {
+  const presentTables = RETIRED_EXECUTION_TABLES.filter((tableName) =>
+    rawHasTable(db, tableName)
+    || rawHasTable(db, `${tableName}__crsql_clock`)
+    || rawHasTable(db, `${tableName}__crsql_pks`),
+  );
+  if (presentTables.length === 0) return;
+
+  const retiredSessionCount = purgeRetiredTerminalSessions(db);
+
+  for (const tableName of RETIRED_EXECUTION_TABLES) {
+    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+    }
+    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
+      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "retired-execution-schema");
+    }
+    if (rawHasTable(db, tableName)) {
+      try {
+        getRow(db, "select crsql_as_table(?) as ok", [tableName]);
+      } catch {
+        // Partial legacy CRR state is covered by the explicit cleanup below.
+      }
+    }
+    dropCrrTriggers(db, tableName, logger);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_clock`)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(tableName)}`);
+  }
+
+  logger?.info("db.retired_execution_schema_cleaned", {
+    tables: presentTables,
+    sessionsRemoved: retiredSessionCount,
+  });
+}
+
+function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
+  if (!rawHasTable(db, "terminal_sessions")) return 0;
+  const retiredSessionIds = allRows<{ id: string }>(
+    db,
+    "select id from terminal_sessions where tool_type = ?",
+    ["run-shell"],
+  ).map((row) => row.id);
+  if (retiredSessionIds.length === 0) return 0;
+
+  const placeholders = retiredSessionIds.map(() => "?").join(", ");
+  if (rawHasTable(db, "session_linear_issues")) {
+    runStatement(db, `delete from session_linear_issues where session_id in (${placeholders})`, retiredSessionIds);
+  }
+  if (rawHasTable(db, "session_deltas")) {
+    runStatement(db, `delete from session_deltas where session_id in (${placeholders})`, retiredSessionIds);
+  }
+  if (rawHasTable(db, "checkpoints")) {
+    runStatement(db, `update checkpoints set session_id = null where session_id in (${placeholders})`, retiredSessionIds);
+  }
+  if (rawHasTable(db, "claude_sessions")) {
+    runStatement(db, `update claude_sessions set chat_session_id = null where chat_session_id in (${placeholders})`, retiredSessionIds);
+  }
+  runStatement(db, `delete from terminal_sessions where id in (${placeholders})`, retiredSessionIds);
+  return retiredSessionIds.length;
 }
 
 export type TableRebuildRecoveryReport = {
@@ -2092,80 +2163,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_claude_sessions_lane_id on claude_sessions(lane_id)");
   db.run("create index if not exists idx_claude_sessions_updated_at on claude_sessions(updated_at desc)");
 
-  // Phase 2 process/test config and history tables.
-  db.run(`
-    create table if not exists process_definitions (
-      id text primary key,
-      project_id text not null,
-      key text not null,
-      name text not null,
-      command_json text not null,
-      cwd text not null,
-      env_json text not null,
-      autostart integer not null,
-      restart_policy text not null,
-      graceful_shutdown_ms integer not null,
-      depends_on_json text not null,
-      readiness_json text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_process_definitions_project_id on process_definitions(project_id)");
-
-  db.run(`
-    create table if not exists process_runtime (
-      project_id text not null,
-      lane_id text not null,
-      process_key text not null,
-      status text not null,
-      pid integer,
-      started_at text,
-      ended_at text,
-      exit_code integer,
-      readiness text not null,
-      updated_at text not null,
-      primary key(project_id, lane_id, process_key),
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
-  db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
-
-  db.run(`
-    create table if not exists process_runs (
-      id text primary key,
-      project_id text not null,
-      lane_id text,
-      process_key text not null,
-      started_at text not null,
-      ended_at text,
-      exit_code integer,
-      termination_reason text not null,
-      log_path text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)");
-  db.run("create index if not exists idx_process_runs_project_lane on process_runs(project_id, lane_id)");
-  db.run("create index if not exists idx_process_runs_started_at on process_runs(started_at)");
-
-  db.run(`
-    create table if not exists stack_buttons (
-      id text primary key,
-      project_id text not null,
-      key text not null,
-      name text not null,
-      process_keys_json text not null,
-      start_order text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_stack_buttons_project_id on stack_buttons(project_id)");
-
+  // Test suite config and history tables.
   db.run(`
     create table if not exists test_suites (
       id text primary key,
@@ -3702,6 +3700,11 @@ export async function openKvDb(
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
+    try {
+      dropRetiredExecutionSchema(db, logger);
+    } catch (error) {
+      if (!isReadonlyDatabaseError(error)) throw error;
+    }
 
     // Clear any orphaned rebuild staging table before the retrofit passes issue
     // their bare `CREATE TABLE __ade_crr_repair_<name>`. A surviving orphan
@@ -4182,6 +4185,9 @@ export async function openKvDb(
           );
           appliedCount += result.changes;
           touchedTables.add(change.table);
+        }
+        if (purgeRetiredTerminalSessions(db) > 0) {
+          touchedTables.add("terminal_sessions");
         }
         runStatement(db, "commit");
       } catch (err) {

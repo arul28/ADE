@@ -45,12 +45,11 @@ function cli(overrides: Partial<TerminalSessionSummary>): TerminalSessionSummary
 }
 
 describe("buildLaneAgents", () => {
-  it("excludes plain shells and run-shells", () => {
+  it("excludes plain shells", () => {
     const agents = buildLaneAgents(
       [],
       [
         cli({ id: "shell", toolType: "shell" }),
-        cli({ id: "run", toolType: "run-shell" }),
         cli({ id: "codex", toolType: "codex" }),
       ],
     );

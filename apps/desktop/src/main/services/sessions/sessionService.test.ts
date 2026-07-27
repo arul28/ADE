@@ -985,7 +985,6 @@ describe("sessionService resume metadata", () => {
       "codex-orchestrated",
       "opencode-orchestrated",
       "shell",
-      "run-shell",
       "aider",
       "continue",
       "other",

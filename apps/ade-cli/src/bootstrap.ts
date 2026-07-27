@@ -51,7 +51,6 @@ import { createOAuthRedirectService } from "../../desktop/src/main/services/lane
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
-import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
@@ -170,7 +169,6 @@ export { createEventBuffer, type BufferedEvent, type EventBuffer };
 export type AdeRuntimePaths = {
   adeDir: string;
   logsDir: string;
-  processLogsDir: string;
   testLogsDir: string;
   transcriptsDir: string;
   worktreesDir: string;
@@ -255,7 +253,6 @@ export type AdeRuntime = {
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
-  processService?: ReturnType<typeof createProcessService> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   accountAuthService?: AccountAuthService | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
@@ -294,7 +291,6 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
   return {
     adeDir: paths.adeDir,
     logsDir: paths.logsDir,
-    processLogsDir: paths.processLogsDir,
     testLogsDir: paths.testLogsDir,
     transcriptsDir: paths.transcriptsDir,
     worktreesDir: paths.worktreesDir,
@@ -919,39 +915,6 @@ export async function createAdeRuntime(args: {
   });
   const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
 
-  // Headless lane runtime env uses the same persistent allocator/proxy hostname
-  // services as desktop so a remote runtime presents the same PORT and preview
-  // surface to process definitions.
-  const getHeadlessLaneRuntimeEnv = async (laneId: string): Promise<Record<string, string>> => {
-    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const lane = lanes.find((entry) => entry.id === laneId);
-    const lease = portAllocationService.getLease(laneId) ?? portAllocationService.acquire(laneId);
-    const hostname = laneProxyService.generateHostname(laneId, lane?.name ?? lane?.branchRef);
-    return {
-      PORT: String(lease.rangeStart),
-      PORT_RANGE_START: String(lease.rangeStart),
-      PORT_RANGE_END: String(lease.rangeEnd),
-      HOSTNAME: hostname,
-      PROXY_HOSTNAME: hostname,
-    };
-  };
-
-  const processService = createProcessService({
-    db,
-    projectId,
-    logger,
-    laneService,
-    projectConfigService,
-    sessionService,
-    ptyService,
-    diskPressureMonitor,
-    getLaneRuntimeEnv: getHeadlessLaneRuntimeEnv,
-    broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>),
-  });
-  laneTeardownDeps.processService = {
-    listRuntime: (laneId) => processService.listRuntime(laneId),
-    stopAll: (args) => processService.stopAll(args),
-  };
   laneTeardownDeps.ptyService = {
     countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
     disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
@@ -1115,7 +1078,6 @@ export async function createAdeRuntime(args: {
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
-      processService,
       diskPressureMonitor,
       getTestService: () => testService,
       ptyService,
@@ -1639,7 +1601,6 @@ export async function createAdeRuntime(args: {
       linearOAuthService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
-      processService,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
       hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
@@ -1785,7 +1746,6 @@ export async function createAdeRuntime(args: {
     prSummaryService,
     fileService: headlessLinearServices.fileService,
     linearIssueTracker: headlessLinearServices.linearIssueTracker,
-    processService,
     feedbackReporterService,
     usageTrackingService,
     productAnalyticsService,
@@ -1830,7 +1790,6 @@ export async function createAdeRuntime(args: {
       swallow(() => usageProductAnalyticsExporter.stop());
       swallow(() => storageInsightsService.dispose());
       swallow(() => syncService?.dispose());
-      swallow(() => processService.disposeAll());
       swallow(() => runtimeDiagnosticsService.dispose());
       swallow(() => oauthRedirectService.dispose());
       void laneProxyService.dispose().catch(() => {});

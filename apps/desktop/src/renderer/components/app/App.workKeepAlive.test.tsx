@@ -163,8 +163,8 @@ vi.mock("../onboarding/LaunchGate", () => ({
   LaunchGate: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-vi.mock("../run/RunPage", () => ({
-  RunPage: () => <div data-testid="project-page" />,
+vi.mock("../projects/ProjectWelcomePage", () => ({
+  ProjectWelcomePage: () => <div data-testid="project-page" />,
 }));
 
 vi.mock("../onboarding/ProjectSetupPage", () => ({
@@ -506,7 +506,7 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.unmounts).toBe(0);
   });
 
-  it("redirects to /project when there is no active project on the Work route", async () => {
+  it("shows the welcome page when there is no active project on the Work route", async () => {
     appStoreState.project = { rootPath: "" };
     const { App } = await import("./App");
 
@@ -517,7 +517,7 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.mounts).toBe(0);
   });
 
-  it("redirects to /project when the welcome flow is active on the Work route", async () => {
+  it("shows the welcome page when the welcome flow is active on the Work route", async () => {
     appStoreState.showWelcome = true;
     const { App } = await import("./App");
 
@@ -529,7 +529,8 @@ describe("App Work route keep-alive", () => {
   });
 
   it("enters the project surface instead of preserving the project picker route", async () => {
-    window.history.replaceState({}, "", "/project");
+    window.history.replaceState({}, "", "/work");
+    window.localStorage.setItem("ade:project-route:local:/fake/project", "/project");
     const { App } = await import("./App");
 
     render(<App />);
@@ -538,6 +539,7 @@ describe("App Work route keep-alive", () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe("/work");
     });
+    expect(window.localStorage.getItem("ade:project-route:local:/fake/project")).toBe("/work");
     expect(screen.queryByTestId("project-page")).toBeNull();
   });
 

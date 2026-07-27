@@ -1353,7 +1353,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       addProjectForTarget: vi.fn(async () => {
         throw new Error(
-          "no such function: crsql_internal_sync_bit [sql=delete from process_definitions where project_id = ?]",
+          "no such function: crsql_internal_sync_bit [sql=delete from test_suites where project_id = ?]",
         );
       }),
       onEntryEvicted: vi.fn(() => () => {}),

@@ -67,7 +67,6 @@ import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
-import { createProcessService } from "./services/processes/processService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
@@ -1943,29 +1942,6 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.laneService && ctx.processService) {
-        const lanes = await ctx.laneService.list({
-          includeArchived: false,
-          includeStatus: false,
-        });
-        for (const lane of lanes) {
-          if (
-            ctx.processService.listRuntime(lane.id).some((runtime) =>
-              runtime.status === "starting"
-              || runtime.status === "running"
-              || runtime.status === "degraded"
-              || runtime.status === "stopping"
-            )
-          ) {
-            return true;
-          }
-        }
-      }
-    } catch (error) {
-      return keepAliveOnProbeFailure("processes", error);
-    }
-
-    try {
       if ((ctx.laneProxyService?.getStatus().routes.length ?? 0) > 0) {
         return true;
       }
@@ -3086,25 +3062,7 @@ app.whenReady().then(async () => {
       disposePtyBackend: ptyBackend?.dispose,
     });
 
-    const processService = createProcessService({
-      db,
-      projectId,
-      logger,
-      laneService,
-      projectConfigService,
-      sessionService,
-      ptyService,
-      getLaneRuntimeEnv,
-      diskPressureMonitor,
-      broadcastEvent: (ev) =>
-        emitProjectEvent(projectRoot, IPC.processesEvent, ev),
-    });
-
     // Wire teardown deps for laneService.delete now that the underlying services exist.
-    laneTeardownDeps.processService = {
-      listRuntime: (laneId) => processService.listRuntime(laneId),
-      stopAll: (args) => processService.stopAll(args),
-    };
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
@@ -3204,7 +3162,6 @@ app.whenReady().then(async () => {
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
-      processService,
       diskPressureMonitor,
       getTestService: () => testServiceRef,
       ptyService,
@@ -3772,7 +3729,6 @@ app.whenReady().then(async () => {
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
-      processService,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
@@ -4170,7 +4126,6 @@ app.whenReady().then(async () => {
       ctoMemoryService,
       linearCredentialService,
       linearIssueTracker,
-      processService,
       githubService,
       automationService,
       automationPlannerService,
@@ -4366,7 +4321,6 @@ app.whenReady().then(async () => {
         projectSecretService,
         linearIssueTracker,
         fileService,
-        processService,
         ptyService,
         computerUseArtifactBrokerService,
         iosSimulatorService,
@@ -4449,7 +4403,6 @@ app.whenReady().then(async () => {
       agentChatService,
       projectConfigService,
       projectSecretService,
-      processService,
       sessionDeltaService,
       testService,
       ctoStateService,
@@ -4655,7 +4608,6 @@ app.whenReady().then(async () => {
       orchestrationService: null,
       projectConfigService: null,
       projectSecretService: null,
-      processService: null,
       sessionDeltaService: null,
       testService: null,
       ctoStateService: null,
@@ -4811,11 +4763,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.testService?.disposeAll();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.processService?.disposeAll();
     } catch {
       // ignore
     }
@@ -5706,11 +5653,6 @@ app.whenReady().then(async () => {
       }
       try {
         ctx.testService?.disposeAll?.();
-      } catch {
-        // ignore
-      }
-      try {
-        ctx.processService?.disposeAll?.();
       } catch {
         // ignore
       }

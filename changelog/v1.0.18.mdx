@@ -3,7 +3,7 @@ title: "v1.0.18"
 description: "Release notes for ADE v1.0.18 — April 14, 2026"
 ---
 
-A consolidation release: the Lanes, Runs, and Run surfaces shed several legacy panels in favour of fewer, denser screens; the chat transcript adds an in-line file-changes panel; a new Quick Run menu and stacked-run tabs land on the Run page; and the renderer picks up batched user-preference persistence, a visibility-aware watchdog, and a unified warmup timer.
+A consolidation release: the Lanes and Runs surfaces shed several legacy panels in favour of fewer, denser screens; the chat transcript adds an in-line file-changes panel; and the renderer picks up batched user-preference persistence, a visibility-aware watchdog, and a unified warmup timer.
 
 ---
 
@@ -16,7 +16,7 @@ A round of legacy lane panels were retired in favor of the consolidated lane wor
 - `LaneInspectorPane`, `LaneRow`, `LaneTerminalsPanel`, `LaneConflictsPanel`, `LaneOverlayConfigPanel`, and the `TilingLayout` shell are gone — their roles fold into `LanesPage` and the existing lane sidebar.
 - The standalone merge-simulation panel (`MergeSimulationPanel`, `ConflictFileDiff`, `extensionToLanguage`) is removed; merge previews now ride through the unified Conflicts experience.
 - `LanePrPanel` (and its tests) and the inline PR terminal (`InlineTerminal`) are removed; PR work is fully driven from the PRs page and the Path-to-Merge tab.
-- The `LaunchPanel` terminal launcher is gone — the same actions live in the new Quick Run menu and the existing Work surface.
+- The `LaunchPanel` terminal launcher is gone — terminal launches live in Work.
 
 ### Runs UI consolidation
 
@@ -24,14 +24,6 @@ The bespoke run micro-pages were absorbed into the main Runs experience:
 
 - `RunControlPage`, `RunPhaseBadge`, `UsageDashboard`, and `WorkerTranscriptPane` are removed — their content now renders inside `RunsPage` and the associated panels there.
 - The `WorkerDetailSlideOut` slideout for individual worker inspection was retired; the same details surface inside the worker timeline.
-
-### Run page replaces Project Home
-
-The dedicated `ProjectHomePage` is removed. The Run tab (formerly "Project Home") is the canonical place to start work, monitor processes, and browse stacked runs. Three new components ship with it:
-
-- `QuickRunMenu` — a Radix dropdown attached to the Run header that lists the project's stack buttons (start, restart, stop, terminal) for the currently selected lane.
-- `RunStackTabs` — a tab strip for switching between concurrently running stack entries on the Run page.
-- A repositioned `RunNetworkPanel` and `ProcessMonitor` continue to render under the lane selector with the same wiring.
 
 ### Chat: in-line file-changes panel
 
@@ -93,10 +85,6 @@ The `OutcomeDot` color/icon map in `IntegrationTab.tsx` was lifted to a module-l
 
 `apps/desktop/src/main/services/pty/ptyService.ts` was reworked (≈ 279 lines changed) to clean up session lifecycle and resize handling. Companion test updates land alongside.
 
-### Process service simplification
-
-`processService.ts` shed roughly 350 net lines while keeping the same public surface, with substantial test coverage added (`processService.test.ts` +219). The result is a tighter process registry without behavioural drift in `process.start` logging or env propagation.
-
 ### Agent chat service refactor
 
 `agentChatService.ts` was reorganized (≈ 300 lines moved) and its tests gained ≈ 440 lines of new coverage to lock down the new shape. Tool-selection paths (`refreshOpenCodeSessionToolSelection`) and the Claude V2 message builder both got incremental fixes.
@@ -149,7 +137,7 @@ The on-site docs at [ade-app.dev/docs](https://www.ade-app.dev/docs) received a 
 
 A new `## Applied` section was appended to `docs/OPTIMIZATION_OPPORTUNITIES.md` describing the renderer optimizations that landed this release.
 
-The internal architecture notes were reorganized: legacy `docs/architecture/*` and `docs/final-plan/*` trees were removed in favor of a new `docs/features/*` hierarchy with per-feature READMEs (lanes, runs, chat, cto, computer-use, terminals-and-sessions, sync-and-multi-device, automations, conflicts, files-and-editor, history, linear-integration, onboarding-and-settings, pull-requests, workspace-graph, agents, context-packs, project-home). The overall docs layout is captured in a top-level `docs/ARCHITECTURE.md` and `docs/README.md`.
+The internal architecture notes were reorganized: legacy `docs/architecture/*` and `docs/final-plan/*` trees were removed in favor of a new `docs/features/*` hierarchy with per-feature READMEs. The overall docs layout is captured in a top-level `docs/ARCHITECTURE.md` and `docs/README.md`.
 
 ---
 

@@ -25,15 +25,15 @@ directories. Onboarding writes to both.
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
 | Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
-| Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: processes, stacks, tests, automations, lane templates, AI mode, providers, Linear sync. |
-| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored: ports, env vars, local-only processes. |
+| Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: tests, overlays, automations, lane templates, AI mode, providers, Linear sync. |
+| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
 
 The ADE runtime is the seam that ties machine and project scope
 together: it owns `~/.ade/projects.json`, lazily builds an `AdeRuntime`
 per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
-desktops see live lanes, agent chats, work sessions, and processes.
+desktops see live lanes, agent chats, and work sessions.
 
 ## Source file map
 
@@ -63,11 +63,11 @@ Main process:
   application, plus passive glossary help state. The active renderer
   no longer mounts guided tours.
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
-  pure GitHub Actions workflow parsing and suggested process/test/stack
+  pure GitHub Actions workflow parsing and suggested test/automation/provider
   config generation for `.ade/ade.yaml`.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
-  Linear sync resolver. ~2,870 lines, the largest service.
+  Linear sync resolver. ~3,150 lines, the largest service.
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.
@@ -79,7 +79,7 @@ Main process:
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/config.ts` — central type module for
-  the configuration schema (processes, stacks, tests, overlays, lane
+  the configuration schema (tests, overlays, automations, lane
   templates, port allocation, proxy, OAuth, integrations, AI).
 - `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
   value, dotenv preview/import, and export request/result contracts.
@@ -107,6 +107,10 @@ Preload bridge:
 
 Renderer — onboarding:
 
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
+  — projectless welcome and project-picker surface. It lists recent local and
+  remote projects, opens or forgets entries, and launches project creation,
+  clone, or folder selection before a project-bound route is available.
 - `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
   — first-run and manual "re-run setup" dashboard. It renders the project
   header, Finish / Skip actions, the AI runtimes band, essentials row,
@@ -674,7 +678,7 @@ Repository onboarding covers five things:
 
 1. detect dev tools (git, gh CLI) and report availability
 2. detect stack signals (node, rust, go, python, docker, make)
-3. suggest config defaults for processes, tests, stacks
+3. suggest test, automation, and provider config defaults
 4. optionally import existing git branches as lanes
 5. prepare initial deterministic workspace state
 
@@ -775,7 +779,8 @@ Onboarding and settings follow a simple rule:
 - **Shared vs local.** Shared config is version-controlled and visible
   to the whole team; saving to shared triggers a trust confirmation
   dialog. Local config is per-user and gitignored — use it for ports,
-  local-only processes, personal env. Both are merged into `effective`.
+  machine-specific paths, and personal env. Both are merged into
+  `effective`.
 - **Trust boundary.** `projectConfigService.getExecutableConfig` gates
   on trust before returning a config that can spawn processes. Callers
   that skip trust (`{ skipTrust: true }`) do so only after trust has
@@ -832,7 +837,6 @@ Onboarding and settings follow a simple rule:
 
 ## Cross-links
 
-- Run/Project home: [../project-home/README.md](../project-home/README.md)
 - Lane templates used during lane creation: Lanes feature
 - Terminal preferences applied at runtime:
   [../terminals-and-sessions/ui-surfaces.md](../terminals-and-sessions/ui-surfaces.md)

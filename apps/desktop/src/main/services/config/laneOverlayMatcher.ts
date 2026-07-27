@@ -91,7 +91,6 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
     }
     const cwdTrimmed = typeof overrides.cwd === "string" ? overrides.cwd.trim() : "";
     if (cwdTrimmed) merged.cwd = cwdTrimmed;
-    merged.processIds = intersectOrAdopt(merged.processIds, overrides.processIds);
     merged.testSuiteIds = intersectOrAdopt(merged.testSuiteIds, overrides.testSuiteIds);
     if (overrides.portRange) merged.portRange = { ...overrides.portRange };
     const hostnameTrimmed = typeof overrides.proxyHostname === "string" ? overrides.proxyHostname.trim() : "";
@@ -102,9 +101,6 @@ export function matchLaneOverlayPolicies(lane: LaneSummary, policies: LaneOverla
     }
   }
 
-  if (merged.processIds && merged.processIds.length === 0) {
-    delete merged.processIds;
-  }
   if (merged.testSuiteIds && merged.testSuiteIds.length === 0) {
     delete merged.testSuiteIds;
   }

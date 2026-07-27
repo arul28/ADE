@@ -31,7 +31,6 @@ export type MiscNamespaces = {
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
-  processes: AdeNamespace<"processes">;
   tests: AdeNamespace<"tests">;
   feedback: AdeNamespace<"feedback">;
   computerUse: AdeNamespace<"computerUse">;
@@ -534,7 +533,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     } as unknown as AdeNamespace<"adeCli">),
     devTools: ({ detect: async () => ({ tools: [] }) } as unknown as AdeNamespace<"devTools">),
     localhost: { probePort: async () => false } as AdeNamespace<"localhost">,
-    processes: createProcessStubs() as AdeNamespace<"processes">,
     tests: createTestStubs() as AdeNamespace<"tests">,
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
@@ -632,27 +630,6 @@ function createTranscriptionNamespace(): AdeNamespace<"transcription"> {
     onModelDownloadProgress: () => () => {},
     requestMicAccess: async () => ({ status: "unknown" }),
   } as AdeNamespace<"transcription">;
-}
-
-function createProcessStubs(): Record<string, unknown> {
-  return {
-    listDefinitions: async () => [],
-    listRuntime: async () => [],
-    start: async () => null,
-    stop: async () => null,
-    restart: async () => null,
-    kill: async () => null,
-    startStack: async () => undefined,
-    stopStack: async () => undefined,
-    restartStack: async () => undefined,
-    startGroup: async () => undefined,
-    stopGroup: async () => undefined,
-    restartGroup: async () => undefined,
-    startAll: async () => undefined,
-    stopAll: async () => undefined,
-    getLogTail: async () => "",
-    onEvent: () => () => {},
-  };
 }
 
 function createTestStubs(): Record<string, unknown> {

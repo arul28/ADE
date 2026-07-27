@@ -12,12 +12,6 @@ vi.mock("../chat/ChatGitToolbar", () => ({
   ),
 }));
 
-vi.mock("../run/QuickRunMenu", () => ({
-  QuickRunMenu: ({ laneId }: { laneId: string }) => (
-    <div data-testid="quick-run-menu" data-lane-id={laneId} />
-  ),
-}));
-
 vi.mock("./LaneChip", () => ({
   LaneChip: ({ laneName, onClick }: { laneName: string; onClick?: () => void }) => (
     <button data-testid="lane-chip" onClick={onClick}>
@@ -84,7 +78,6 @@ describe("CliSessionWorkSurfaceHeader", () => {
     expect(screen.getByTestId("work-cli-session-header")).toBeTruthy();
     expect(screen.getByTestId("lane-chip").textContent).toBe("fix-login");
     expect(screen.getByTestId("chat-git-toolbar").getAttribute("data-lane-id")).toBe("lane-1");
-    expect(screen.getByTestId("quick-run-menu").getAttribute("data-lane-id")).toBe("lane-1");
   });
 
   it("renders the Claude cache badge for Claude Code CLI sessions while the cache window is warm", () => {

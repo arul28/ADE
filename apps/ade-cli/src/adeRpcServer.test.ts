@@ -95,7 +95,6 @@ function createRuntime() {
     paths: {
       adeDir: path.join(projectRoot, ".ade"),
       logsDir: path.join(projectRoot, ".ade", "logs"),
-      processLogsDir: path.join(projectRoot, ".ade", "logs", "processes"),
       testLogsDir: path.join(projectRoot, ".ade", "logs", "tests"),
       transcriptsDir: path.join(projectRoot, ".ade", "transcripts"),
       worktreesDir: path.join(projectRoot, ".ade", "worktrees"),
@@ -717,7 +716,6 @@ function createRuntime() {
         { id: "comment-1", body: "First comment", createdAt: "2026-03-17T19:00:00.000Z", userName: "arul", userDisplayName: "Arul" },
       ]),
     } as any,
-    processService: null,
     computerUseArtifactBrokerService: {
       getBackendStatus: vi.fn(() => ({ backends: [] })),
       listArtifacts: vi.fn(() => []),

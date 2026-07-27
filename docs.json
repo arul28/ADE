@@ -80,8 +80,7 @@
               "tools/files-editor",
               "tools/terminals",
               "tools/browser",
-              "tools/ios-simulator",
-              "tools/project-home"
+              "tools/ios-simulator"
             ]
           },
           {

@@ -71,7 +71,7 @@ struct LaneBranchPickerSheet: View {
             Task { await prepareCheckout(branch: branch) }
           }
         } message: { branch in
-          Text("Switch this lane to '\(branch.name)'? Running terminals and processes stay attached to this lane and continue on the new branch's worktree.")
+          Text("Switch this lane to '\(branch.name)'? Running terminals stay attached to this lane and continue on the new branch's worktree.")
         }
         .alert("Create branch", isPresented: $confirmingCreateBranch) {
           Button("Cancel", role: .cancel) {}
@@ -732,10 +732,7 @@ struct LaneBranchPickerSheet: View {
 
   private func activeWorkSummary(_ activeWork: [LaneBranchActiveWorkItem]) -> String {
     let visible = activeWork.prefix(4)
-    var lines = visible.map { item -> String in
-      let label = item.kind == "terminal" ? "Terminal" : "Process"
-      return "\(label): \(item.title)"
-    }
+    var lines = visible.map { "Terminal: \($0.title)" }
     let extra = activeWork.count - visible.count
     if extra > 0 {
       lines.append("+ \(extra) more")

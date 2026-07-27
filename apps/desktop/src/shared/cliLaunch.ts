@@ -256,7 +256,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   cursor: ["cursor-cli", "cursor"],
   droid: ["droid", "droid-chat"],
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
-  shell: ["shell", "run-shell"],
+  shell: ["shell"],
 };
 
 export function isLaunchProfile(value: string | null | undefined): value is LaunchProfile {

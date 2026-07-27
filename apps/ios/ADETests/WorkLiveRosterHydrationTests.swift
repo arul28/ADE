@@ -201,7 +201,7 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
       service.disconnect(clearCredentials: false)
     }
 
-    let request = Task { try await service.listProcessDefinitions() }
+    let request = Task { try await service.getModelFavorites() }
     var requestId: String?
     for _ in 0..<20 where requestId == nil {
       await Task.yield()

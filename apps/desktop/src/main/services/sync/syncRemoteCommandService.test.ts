@@ -334,30 +334,6 @@ function createMockLinearCredentialService() {
   } as any;
 }
 
-function createMockProcessService() {
-  return {
-    listDefinitions: vi.fn().mockReturnValue([
-      {
-        id: "dev",
-        name: "Dev server",
-        command: ["npm", "run", "dev"],
-        cwd: ".",
-        env: {},
-        groupIds: [],
-        autostart: false,
-        restart: "never",
-        gracefulShutdownMs: 7000,
-        dependsOn: [],
-        readiness: { type: "none" },
-      },
-    ]),
-    listRuntime: vi.fn().mockReturnValue([]),
-    start: vi.fn().mockResolvedValue({ runId: "run-1" }),
-    stop: vi.fn().mockResolvedValue(null),
-    kill: vi.fn().mockResolvedValue(null),
-  } as any;
-}
-
 function makePayload(action: string, args: Record<string, unknown> = {}): SyncCommandPayload {
   return { commandId: `cmd-${Date.now()}`, action: action as any, args };
 }
@@ -383,7 +359,6 @@ describe("createSyncRemoteCommandService", () => {
   let linearCredentialService: ReturnType<typeof createMockLinearCredentialService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
   let rebaseSuggestionService: ReturnType<typeof createMockRebaseSuggestionService>;
-  let processService: ReturnType<typeof createMockProcessService>;
   let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
@@ -400,7 +375,6 @@ describe("createSyncRemoteCommandService", () => {
     linearCredentialService = createMockLinearCredentialService();
     conflictService = createMockConflictService();
     rebaseSuggestionService = createMockRebaseSuggestionService();
-    processService = createMockProcessService();
     queueLandingService = createMockQueueLandingService();
     service = createSyncRemoteCommandService({
       laneService,
@@ -416,7 +390,6 @@ describe("createSyncRemoteCommandService", () => {
       getLinearIssueTracker: () => linearIssueTracker,
       conflictService,
       rebaseSuggestionService,
-      processService,
       ctoMemoryService: {
         getSnapshot: () => CTO_MEMORY_SNAPSHOT,
       } as any,
@@ -461,7 +434,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("chat.cancelScheduledWork");
       expect(actions).toContain("files.writeTextAtomic");
       expect(actions).toContain("work.listSessions");
-      expect(actions).toContain("processes.listDefinitions");
       expect(actions).toContain("conflicts.getLaneStatus");
     });
 
@@ -573,7 +545,6 @@ describe("createSyncRemoteCommandService", () => {
         diffService,
         agentChatService,
         conflictService,
-        processService,
         dispatchDeeplinkUrl,
         logger: createLogger() as any,
       });
@@ -820,7 +791,6 @@ describe("createSyncRemoteCommandService", () => {
         diffService,
         agentChatService,
         conflictService,
-        processService,
         projectConfigService: {
           getEffective: vi.fn(() => ({
             laneEnvInit: null,
@@ -1152,7 +1122,6 @@ describe("createSyncRemoteCommandService", () => {
         diffService,
         agentChatService,
         conflictService,
-        processService,
         logger: createLogger() as any,
         dispatchDeeplinkUrl,
       });
@@ -2089,7 +2058,7 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-1",
         title: "test run",
         startupCommand: "npm test",
-        toolType: "run-shell",
+        toolType: "shell",
       }));
       expect(ptyService.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2097,7 +2066,7 @@ describe("createSyncRemoteCommandService", () => {
           title: "test run",
           startupCommand: "npm test",
           tracked: true,
-          toolType: "run-shell",
+          toolType: "shell",
         }),
       );
     });
@@ -2124,7 +2093,7 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("work.runQuickCommand", {
         laneId: "lane-1",
         title: "test",
-        toolType: "run-shell",
+        toolType: "codex",
       }))).rejects.toThrow("work.runQuickCommand requires startupCommand unless toolType is shell.");
     });
 
@@ -2410,46 +2379,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(sessionService.get).toHaveBeenCalledWith("sess-1");
       expect(ptyService.dispose).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: true });
-    });
-  });
-
-  // ---------------------------------------------------------------
-  // execute: process commands
-  // ---------------------------------------------------------------
-
-  describe("execute — process commands", () => {
-    it("processes.listDefinitions routes to processService.listDefinitions", async () => {
-      const result = await service.execute(makePayload("processes.listDefinitions"));
-      expect(processService.listDefinitions).toHaveBeenCalled();
-      expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "dev" })]));
-    });
-
-    it("processes.listRuntime requires laneId and routes to processService.listRuntime", async () => {
-      await service.execute(makePayload("processes.listRuntime", { laneId: "lane-1" }));
-      expect(processService.listRuntime).toHaveBeenCalledWith("lane-1");
-    });
-
-    it("processes.start parses laneId and processId", async () => {
-      await service.execute(makePayload("processes.start", { laneId: "lane-1", processId: "dev" }));
-      expect(processService.start).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev" });
-    });
-
-    it("processes.kill preserves the target runId", async () => {
-      await service.execute(makePayload("processes.kill", { laneId: "lane-1", processId: "dev", runId: "run-1" }));
-      expect(processService.kill).toHaveBeenCalledWith({ laneId: "lane-1", processId: "dev", runId: "run-1" });
-    });
-
-    it("process commands throw when processService is not available", async () => {
-      const svcNoProcess = createSyncRemoteCommandService({
-        laneService,
-        prService,
-        ptyService,
-        sessionService,
-        fileService,
-        logger: createLogger() as any,
-      });
-      await expect(svcNoProcess.execute(makePayload("processes.listDefinitions")))
-        .rejects.toThrow("Process service not available.");
     });
   });
 

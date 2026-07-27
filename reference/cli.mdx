@@ -67,12 +67,10 @@ ade lanes list --json   # stable JSON for scripts and agents
     ```
   </Accordion>
 
-  <Accordion title="Tests & run" icon="flask">
-    Start dev processes and run test suites in a lane.
+  <Accordion title="Tests" icon="flask">
+    Run test suites in a lane.
 
     ```bash
-    ade run defs --text                     # list configured run targets
-    ade run start web --lane <lane-id>
     ade tests run --lane <lane-id> --suite unit --wait
     ```
   </Accordion>

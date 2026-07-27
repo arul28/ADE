@@ -56,7 +56,7 @@ function sessionStart(action: string): {
 
 function canonicalFeature(action: string): string {
   const prefix = action.split(".", 1)[0] ?? "other";
-  return ["chat", "work", "lanes", "files", "git", "processes", "orchestration", "prs", "automations"]
+  return ["chat", "work", "lanes", "files", "git", "orchestration", "prs", "automations"]
     .includes(prefix)
     ? prefix
     : "other";

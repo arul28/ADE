@@ -8,7 +8,7 @@ import SwiftUI
 // box is the inline new-chat composer — focusing it expands the full controls
 // above the keyboard (see HubInlineComposer).
 //
-// Replaces the connected-state layout of the old `ProjectHomeView`; the
+// Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
 struct HubScreen: View {
   @EnvironmentObject private var syncService: SyncService
@@ -60,7 +60,7 @@ struct HubScreen: View {
   }
 
   private var hubIsActive: Bool {
-    syncService.shouldShowProjectHome && openChatTarget == nil
+    syncService.shouldShowProjectHub && openChatTarget == nil
   }
 
   var body: some View {
@@ -156,7 +156,7 @@ struct HubScreen: View {
       // Hub is also the cold-launch root. An active/legacy request may already
       // exist before ContentView installs its onChange observer, so hand it to
       // the newly mounted Work root instead of leaving both surfaces waiting.
-      syncService.closeProjectHome()
+      syncService.closeProjectHub()
       return
     }
     guard let target = syncService.rosterNavigationTarget(for: request) else {
@@ -329,7 +329,7 @@ struct HubScreen: View {
   }
 
   private var workSessionDeepLinkKey: String? {
-    guard syncService.shouldShowProjectHome,
+    guard syncService.shouldShowProjectHub,
           openChatTarget == nil,
           let request = syncService.requestedWorkSessionNavigation else { return nil }
     return [

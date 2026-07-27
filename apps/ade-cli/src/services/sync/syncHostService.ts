@@ -129,7 +129,6 @@ import type { createLaneTemplateService } from "../../../../desktop/src/main/ser
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
-import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -622,9 +621,6 @@ const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "work.startCliSession",
   "work.sendToSession",
   "work.stopRuntime",
-  "processes.start",
-  "processes.stop",
-  "processes.kill",
   "chat.send",
   "chat.interrupt",
   "chat.approve",
@@ -771,7 +767,6 @@ type SyncHostServiceArgs = {
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
-  processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
@@ -2021,7 +2016,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     getLinearIssueTracker: args.getLinearIssueTracker,
     queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
-    processService: args.processService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,

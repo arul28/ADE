@@ -1,7 +1,6 @@
 # Runtime Isolation for Sessions
 
-Every interactive terminal, every managed process run, every agent
-chat session runs *inside a specific lane worktree*. The session
+Every interactive terminal and every agent chat session runs *inside a specific lane worktree*. The session
 system encodes that as a hard invariant: `laneId` is required on
 `PtyCreateArgs`, the lane's worktree directory is the only legal
 spawn cwd, and provider continuation will not cross lanes.
@@ -26,9 +25,6 @@ real, bounded cwd". Used by:
 
 - `ptyService.create` (for every interactive terminal and agent chat
   PTY)
-- `processService.startByDefinition` (indirectly — it resolves the
-  lane worktree, then calls `resolvePathWithinRoot` itself using the
-  same primitives)
 
 Behavior:
 
@@ -57,25 +53,6 @@ worktree via `..` segments or symlinks.
 primitive. It resolves, normalizes, and compares against the root
 prefix.
 
-## Process cwd gating
-
-`processService.startByDefinition` follows the same pattern:
-
-```ts
-const laneRoot = laneService.getLaneWorktreePath(laneId);
-const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd : definition.cwd;
-const cwdCandidate = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
-try {
-  cwd = resolvePathWithinRoot(laneRoot, cwdCandidate);
-} catch (error) {
-  // distinguishes "does not exist" from "escapes root"
-}
-```
-
-Overlay policies can override `cwd` but the override must still resolve
-within the lane worktree. `env` overrides are merged over the lane's
-runtime env (from `getLaneRuntimeEnv`) over the definition's `env`.
-
 ## Per-lane runtime env
 
 The lane environment is produced by `laneService.getLaneRuntimeEnv`
@@ -89,9 +66,7 @@ The lane environment is produced by `laneService.getLaneRuntimeEnv`
 - port allocations resolved via `portAllocationService`
 - proxy hostname when a proxy route is active
 
-Both `ptyService.create` and `processService.startByDefinition` merge
-this env in before `args.env` / overlay env, so individual launches can
-still override values.
+`ptyService.create` merges this env before `args.env`, so individual launches can still override values.
 
 ## Session-to-lane binding
 
@@ -134,19 +109,6 @@ Worker launches use the same `ptyService.create` and
 inside its assigned lane and does not bypass `resolveLaneLaunchContext`,
 which means worker work stays inside the lane's worktree.
 
-## Managed process scoping
-
-A managed process defined in `.ade/ade.yaml` runs in:
-
-- the caller-supplied lane (typically the Run tab's selected lane)
-- the resolved cwd inside that lane's worktree
-- the lane runtime env merged with the definition's env and the
-  overlay's env
-
-`LaneOverlayPolicy` can restrict `processIds` per lane, so you can
-define dev-server processes that only run in lanes matching a name
-pattern or lane type. `applyProcessFilter` is the enforcement point.
-
 ## Fallback and diagnostics
 
 `runtimeDiagnosticsService.ts`
@@ -169,8 +131,7 @@ inside the lane worktree, but hostname-based isolation is off.
   npm/yarn/pip caches, host-level docker daemon. The PTY inherits
   `process.env` including `HOME`, so CLIs write to their usual user
   paths regardless of the lane.
-- **Network sockets** — lane port ranges are advisory; processes can
-  bind to any free port unless explicitly constrained.
+- **Network sockets** — lane port ranges are advisory; commands can bind to any free port unless explicitly constrained.
 - **Shared database** — ADE's own SQLite file is per-project, not per
   lane. All lanes in a project write into the same `terminal_sessions`
   table.
@@ -185,7 +146,7 @@ is out of scope for `ptyService` itself.
 
 ## Cross-links
 
-- Session lifecycle: [pty-and-processes.md](./pty-and-processes.md)
+- Session lifecycle: [pty-and-sessions.md](./pty-and-sessions.md)
 - Lanes feature (branch/worktree management): [../lanes/](../lanes/)
 - Configuration schema for overlays and templates:
   [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)

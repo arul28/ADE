@@ -2449,7 +2449,7 @@ describe("ptyService", () => {
         title: "Run process",
         cols: 80,
         rows: 24,
-        toolType: "run-shell",
+        toolType: "shell",
         command: "npm",
         args: ["run", "dev"],
       });
@@ -2459,7 +2459,7 @@ describe("ptyService", () => {
         expect.objectContaining({
           sessionId: "session-process-1",
           title: "Run process",
-          toolType: "run-shell",
+          toolType: "shell",
         }),
       );
       expect(sessionService.reattach).not.toHaveBeenCalled();

@@ -87,7 +87,6 @@ vi.mock("../../lib/sessions", () => ({
     runtimeState: "idle",
     resumeCommand: null,
   })),
-  isRunOwnedSession: vi.fn(() => false),
   isChatToolType: vi.fn(() => false),
 }));
 

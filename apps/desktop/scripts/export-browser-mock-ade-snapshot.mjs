@@ -16,7 +16,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import YAML from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_ROOT = path.resolve(__dirname, "../src/renderer");
@@ -287,169 +286,6 @@ function buildFilesBrowserSnapshot(lanes) {
   return { filesTreeByWorkspace: trees, filesContentsByWorkspace: contents };
 }
 
-function mergeById(base, over, mergeFn) {
-  const map = new Map(base.map((item) => [String(item.id), item]));
-  for (const item of over) {
-    if (!item?.id) continue;
-    const id = String(item.id);
-    const existing = map.get(id);
-    map.set(id, existing ? mergeFn(existing, item) : item);
-  }
-  return [...map.values()];
-}
-
-/** Mirrors shared/local ade.yaml merge for processes, stacks, and groups (subset). */
-function mergeYamlConfigLayers(sharedRaw, localRaw) {
-  const empty = { processes: [], processGroups: [], stackButtons: [] };
-  const shared = sharedRaw && typeof sharedRaw === "object" ? sharedRaw : empty;
-  const local = localRaw && typeof localRaw === "object" ? localRaw : empty;
-  return {
-    processes: mergeById(shared.processes ?? [], local.processes ?? [], (base, over) => ({
-      ...base,
-      ...over,
-      ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {}),
-      ...(over.groupIds != null ? { groupIds: over.groupIds } : base.groupIds != null ? { groupIds: base.groupIds } : {}),
-      ...(over.readiness != null ? { readiness: over.readiness } : base.readiness != null ? { readiness: base.readiness } : {}),
-      ...(over.dependsOn != null ? { dependsOn: over.dependsOn } : base.dependsOn != null ? { dependsOn: base.dependsOn } : {}),
-    })),
-    processGroups: mergeById(shared.processGroups ?? [], local.processGroups ?? [], (base, over) => ({ ...base, ...over })),
-    stackButtons: mergeById(shared.stackButtons ?? [], local.stackButtons ?? [], (base, over) => ({
-      ...base,
-      ...over,
-      ...(over.processIds != null ? { processIds: over.processIds } : base.processIds != null ? { processIds: base.processIds } : {}),
-    })),
-  };
-}
-
-function readAdeYamlConfigs(projectRoot) {
-  const sharedPath = path.join(projectRoot, ".ade", "ade.yaml");
-  const localPath = path.join(projectRoot, ".ade", "local.yaml");
-  let shared = null;
-  let local = null;
-  try {
-    if (existsSync(sharedPath)) {
-      shared = YAML.parse(readFileSync(sharedPath, "utf8"));
-    }
-  } catch (error) {
-    console.warn(`[export-browser-mock-ade] Could not parse ${sharedPath}: ${error?.message ?? error}`);
-  }
-  try {
-    if (existsSync(localPath)) {
-      local = YAML.parse(readFileSync(localPath, "utf8"));
-    }
-  } catch (error) {
-    console.warn(`[export-browser-mock-ade] Could not parse ${localPath}: ${error?.message ?? error}`);
-  }
-  return mergeYamlConfigLayers(shared, local);
-}
-
-function normalizeReadinessExport(value) {
-  if (!value || typeof value !== "object") return { type: "none" };
-  const t = value.type === "port" || value.type === "logRegex" ? value.type : "none";
-  if (t === "port") {
-    const port = Number(value.port);
-    return Number.isInteger(port) && port > 0 ? { type: "port", port } : { type: "none" };
-  }
-  if (t === "logRegex") {
-    const pattern = String(value.pattern ?? "").trim();
-    return pattern ? { type: "logRegex", pattern } : { type: "none" };
-  }
-  return { type: "none" };
-}
-
-function overlayYamlOntoDbProcesses(dbDefs, yamlProcessesById) {
-  return dbDefs.map((def) => {
-    const y = yamlProcessesById.get(def.id);
-    if (!y) return def;
-    const groupIds = Array.isArray(y.groupIds)
-      ? y.groupIds.map((id) => String(id).trim()).filter(Boolean)
-      : def.groupIds;
-    const readiness = y.readiness != null ? normalizeReadinessExport(y.readiness) : def.readiness;
-    return {
-      ...def,
-      groupIds,
-      readiness,
-    };
-  });
-}
-
-/** Ensures Run tab browser mock has groups (and keeps stackButtons only when present on disk) when the DB is sparse. */
-function finalizeRunTabSnapshot(processDefinitions, stackButtons, processGroups) {
-  let defs = [...processDefinitions];
-  const stacks = [...stackButtons];
-  let groups = [...processGroups];
-  const ids = defs.map((p) => p.id).filter(Boolean);
-
-  if (groups.length === 0 && ids.length > 0) {
-    groups = [
-      { id: "grp-automation", name: "Automation" },
-      { id: "grp-local-dev", name: "Local dev" },
-    ];
-    defs = defs.map((p, idx) => ({
-      ...p,
-      groupIds:
-        p.groupIds?.length > 0
-          ? p.groupIds
-          : [idx % 2 === 0 ? "grp-automation" : "grp-local-dev"],
-    }));
-  }
-
-  return { processDefinitions: defs, stackButtons: stacks, processGroups: groups };
-}
-
-function ensureDemoProcessRuntime(processRuntime, lanes, processDefinitions) {
-  if (processRuntime.length > 0 || processDefinitions.length === 0) return processRuntime;
-  const laneId = lanes.find((l) => l.laneType === "primary")?.id ?? lanes[0]?.id;
-  if (!laneId) return processRuntime;
-  const ts = new Date().toISOString();
-  const p0 = processDefinitions[0];
-  const rows = [
-    {
-      runId: `${laneId}:${p0.id}`,
-      laneId,
-      processId: p0.id,
-      status: "running",
-      readiness: "ready",
-      pid: 48192,
-      sessionId: null,
-      ptyId: null,
-      startedAt: ts,
-      endedAt: null,
-      exitCode: null,
-      lastExitCode: null,
-      lastEndedAt: null,
-      uptimeMs: 125000,
-      ports: [5173],
-      logPath: null,
-      updatedAt: ts,
-    },
-  ];
-  if (processDefinitions.length > 1) {
-    const p1 = processDefinitions[1];
-    const ended = new Date(Date.now() - 1800000).toISOString();
-    const started = new Date(Date.now() - 3600000).toISOString();
-    rows.push({
-      runId: `${laneId}:${p1.id}`,
-      laneId,
-      processId: p1.id,
-      status: "exited",
-      readiness: "unknown",
-      pid: null,
-      sessionId: null,
-      ptyId: null,
-      startedAt: started,
-      endedAt: ended,
-      exitCode: 0,
-      lastExitCode: 0,
-      lastEndedAt: ended,
-      uptimeMs: null,
-      ports: [],
-      logPath: null,
-      updatedAt: ts,
-    });
-  }
-  return rows;
-}
 
 function isChatToolType(toolType) {
   const normalized = String(toolType ?? "").trim().toLowerCase();
@@ -944,51 +780,6 @@ function buildSessions(projectId) {
   }));
 }
 
-function buildProcessDefinitions(projectId) {
-  return maybeAll(
-    "process_definitions",
-    "select * from process_definitions where project_id = ? order by name asc",
-    [projectId],
-  ).map((row) => ({
-    id: row.key ?? row.id,
-    name: row.name,
-    command: safeJson(row.command_json, []),
-    cwd: row.cwd ?? ".",
-    env: safeJson(row.env_json, {}),
-    groupIds: [],
-    autostart: Boolean(row.autostart),
-    restart: row.restart_policy ?? "never",
-    gracefulShutdownMs: Number(row.graceful_shutdown_ms ?? 7000),
-    dependsOn: safeJson(row.depends_on_json, []),
-    readiness: safeJson(row.readiness_json, { type: "none" }),
-  }));
-}
-
-function buildProcessRuntime(projectId) {
-  return maybeAll(
-    "process_runtime",
-    "select * from process_runtime where project_id = ? order by updated_at desc limit 500",
-    [projectId],
-  ).map((row) => ({
-    runId: `${row.lane_id}:${row.process_key}`,
-    laneId: row.lane_id,
-    processId: row.process_key,
-    status: row.status ?? "stopped",
-    readiness: row.readiness ?? "unknown",
-    pid: row.pid ?? null,
-    sessionId: null,
-    ptyId: null,
-    startedAt: row.started_at ?? null,
-    endedAt: row.ended_at ?? null,
-    exitCode: row.exit_code ?? null,
-    lastExitCode: row.exit_code ?? null,
-    lastEndedAt: row.ended_at ?? null,
-    uptimeMs: null,
-    ports: [],
-    logPath: null,
-    updatedAt: row.updated_at ?? row.ended_at ?? row.started_at ?? new Date().toISOString(),
-  }));
-}
 
 function emptyUsageSnapshot() {
   return {
@@ -1604,23 +1395,6 @@ const githubSnapshot = buildGithubSnapshot({
 });
 const operations = buildOperations(projectId);
 const sessions = buildSessions(projectId);
-let processDefinitions = buildProcessDefinitions(projectId);
-let processRuntime = buildProcessRuntime(projectId);
-
-const yamlMerged = readAdeYamlConfigs(projectRoot);
-const yamlProcessById = new Map(
-  (yamlMerged.processes ?? []).filter((p) => p?.id).map((p) => [String(p.id), p]),
-);
-processDefinitions = overlayYamlOntoDbProcesses(processDefinitions, yamlProcessById);
-const finalizedRun = finalizeRunTabSnapshot(
-  processDefinitions,
-  yamlMerged.stackButtons ?? [],
-  yamlMerged.processGroups ?? [],
-);
-processDefinitions = finalizedRun.processDefinitions;
-const stackButtons = finalizedRun.stackButtons;
-const processGroups = finalizedRun.processGroups;
-processRuntime = ensureDemoProcessRuntime(processRuntime, lanes, processDefinitions);
 
 const automations = buildAutomations(projectId);
 const usageSnapshot = buildUsageSnapshot();
@@ -1668,10 +1442,6 @@ const snapshot = {
   operations,
   sessions,
   chatTranscripts,
-  processDefinitions,
-  processRuntime,
-  stackButtons,
-  processGroups,
   usageSnapshot,
   adeUsageStatsByPreset,
   ctoState,
@@ -1684,7 +1454,7 @@ const snapshot = {
 await fs.writeFile(OUT_FILE, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
 console.log(
   `[export-browser-mock-ade] Wrote browser snapshot for ${projectRow.displayName} → ${OUT_FILE}\n` +
-    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length} processes=${processDefinitions.length}/${processRuntime.length} stacks=${stackButtons.length} groups=${processGroups.length}\n` +
+    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length}\n` +
     `  filesWorkspaces=${lanes.length} filesTreeWorkspaces=${filesTreeWorkspaceCount} filesTreeDirs=${filesTreeDirKeys} filesWithEmbeddedText=${filesContentEntryCount}\n` +
     "Restart Vite or refresh the browser to pick up the updated data.",
 );

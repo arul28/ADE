@@ -24,7 +24,6 @@ import {
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
-import { isRunOwnedSession } from "../../lib/sessions";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
@@ -45,7 +44,6 @@ import {
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import type {
-  ProcessRuntime,
   ProjectIcon,
   OpenProjectBinding,
   RecentProjectSummary,
@@ -76,11 +74,6 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 
-const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
-  "starting",
-  "running",
-  "degraded",
-];
 const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 const ADE_PROJECT_TAB_DROP_HANDLED_PREFIX =
@@ -1245,40 +1238,20 @@ export function TopBar({
       if (project?.rootPath !== projectRootPath) return true;
 
       try {
-        const [lanes, runningSessions, agentChats] =
+        const [runningSessions, agentChats] =
           await Promise.all([
-            window.ade.lanes.list({ includeArchived: false }),
             window.ade.sessions.list({ status: "running" }),
             window.ade.agentChat.list(),
           ]);
 
-        const laneRuntimes = await Promise.all(
-          lanes.map((lane) =>
-            window.ade.processes
-              .listRuntime(lane.id)
-              .catch(() => [] as ProcessRuntime[]),
-          ),
-        );
-
-        const activeProcesses = laneRuntimes
-          .flat()
-          .filter((runtime) =>
-            RUNNING_LANE_PROCESS_STATES.includes(runtime.status),
-          );
         const activeSessionCount = runningSessions.filter(
-          (session) =>
-            session.status === "running" && !isRunOwnedSession(session),
+          (session) => session.status === "running",
         ).length;
         const activeChatCount = agentChats.filter(
           (chat) => chat.status === "active",
         ).length;
 
         const warnings: string[] = [];
-        if (activeProcesses.length > 0) {
-          warnings.push(
-            `${activeProcesses.length} running lane process${activeProcesses.length === 1 ? "" : "es"}`,
-          );
-        }
         if (activeSessionCount > 0) {
           warnings.push(
             `${activeSessionCount} running terminal session${activeSessionCount === 1 ? "" : "s"}`,

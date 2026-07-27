@@ -70,7 +70,7 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
   - Inside the Work right-edge sidebar's `app-control` tab (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<laneId>:<projectRoot>"]`).
 
   Two modes:
-  - **Control** — shows live screencast frames, Run-tab style launch/connect controls, explicit Show/Minimize window buttons, click/type input, and quick actions for `terminal write` (answer a prompt) and `terminal signal` (interrupt). Live clicks and wheel events are mapped to viewport coordinates before CDP input dispatch.
+  - **Control** — shows live screencast frames, launch/connect controls, explicit Show/Minimize window buttons, click/type input, and quick actions for `terminal write` (answer a prompt) and `terminal signal` (interrupt). Live clicks and wheel events are mapped to viewport coordinates before CDP input dispatch.
   - **Inspect** — overlays a DevTools-style outline on the screenshot or live frame. Hovering calls backend `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
 
   Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.

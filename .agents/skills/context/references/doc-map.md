@@ -14,7 +14,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 
 | Path pattern | Feature docs | Perf skill |
 |---|---|---|
-| `apps/desktop/src/main/services/projects/` | `docs/features/project-home/` | `ade-perf-boot` |
+| `apps/desktop/src/main/services/projects/` | `docs/features/onboarding-and-settings/` | `ade-perf-boot` |
 | `apps/desktop/src/main/services/lanes/` | `docs/features/lanes/` | `ade-perf-lanes` |
 | `apps/desktop/src/main/services/prs/`, `services/review/` | `docs/features/pull-requests/` | `ade-perf-prs` |
 | `apps/desktop/src/main/services/proof/` | `docs/features/proof.md` | — |

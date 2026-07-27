@@ -50,7 +50,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     } as any,
     prService: null,
     fileService: null,
-    processService: null,
     sessionService: {
       updateMeta: vi.fn(),
     } as any,
@@ -110,12 +109,6 @@ describe("createCtoOperatorTools", () => {
     // Linear issue tools
     expect(toolKeys).toContain("commentOnLinearIssue");
     expect(toolKeys).toContain("updateLinearIssueState");
-
-    // Process tools
-    expect(toolKeys).toContain("listManagedProcesses");
-    expect(toolKeys).toContain("startManagedProcess");
-    expect(toolKeys).toContain("stopManagedProcess");
-    expect(toolKeys).toContain("getManagedProcessLog");
 
     // File workspace tools
     expect(toolKeys).toContain("listFileWorkspaces");
@@ -574,82 +567,6 @@ describe("createCtoOperatorTools", () => {
       });
 
       expect(result).toMatchObject({ success: false, error: expect.stringContaining("Provide either stateId or stateName") });
-    });
-  });
-
-  // ── Process tools ───────────────────────────────────────────────
-
-  describe("process tools", () => {
-    it("lists managed processes", async () => {
-      const defs = [{ id: "proc-1" }];
-      const runtime = [{ id: "proc-1", status: "running" }];
-      const deps = buildDeps({
-        processService: {
-          listDefinitions: vi.fn().mockReturnValue(defs),
-          listRuntime: vi.fn().mockReturnValue(runtime),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.listManagedProcesses as any).execute({});
-
-      expect(result).toMatchObject({ success: true, definitions: defs, runtime });
-    });
-
-    it("returns error when processService is null", async () => {
-      const deps = buildDeps({ processService: null });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.listManagedProcesses as any).execute({});
-
-      expect(result).toMatchObject({ success: false, error: expect.stringContaining("Process service") });
-    });
-
-    it("starts a managed process", async () => {
-      const runtime = { id: "proc-1", status: "running" };
-      const deps = buildDeps({
-        processService: {
-          start: vi.fn().mockResolvedValue(runtime),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.startManagedProcess as any).execute({
-        processId: "proc-1",
-      });
-
-      expect(result).toMatchObject({ success: true, runtime });
-    });
-
-    it("stops a managed process", async () => {
-      const runtime = { id: "proc-1", status: "stopped" };
-      const deps = buildDeps({
-        processService: {
-          stop: vi.fn().mockResolvedValue(runtime),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.stopManagedProcess as any).execute({
-        processId: "proc-1",
-      });
-
-      expect(result).toMatchObject({ success: true, runtime });
-    });
-
-    it("reads bounded process log tail", async () => {
-      const deps = buildDeps({
-        processService: {
-          getLogTail: vi.fn().mockReturnValue("line 1\nline 2\n"),
-        } as any,
-      });
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.getManagedProcessLog as any).execute({
-        processId: "proc-1",
-      });
-
-      expect(result).toMatchObject({ success: true, content: "line 1\nline 2\n" });
     });
   });
 

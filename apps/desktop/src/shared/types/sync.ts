@@ -239,8 +239,7 @@ export type SyncClientStatus = {
 
 export type SyncTransferBlockerKind =
   | "chat_runtime"
-  | "terminal_session"
-  | "managed_process";
+  | "terminal_session";
 
 export type SyncTransferBlocker = {
   kind: SyncTransferBlockerKind;
@@ -257,9 +256,8 @@ export type SyncTransferReadiness = {
 
 export type SyncGetStatusArgs = {
   /**
-   * Transfer readiness scans active chats, terminal sessions, and managed run
-   * processes. Top-level chrome can skip it when it only needs the
-   * connection label.
+   * Transfer readiness scans active chats and terminal sessions. Top-level
+   * chrome can skip it when it only needs the connection label.
    */
   includeTransferReadiness?: boolean;
   forceTransferReadiness?: boolean;
@@ -1459,11 +1457,6 @@ export type SyncRemoteCommandAction =
   | "work.importExternalSession"
   | "work.sendToSession"
   | "work.stopRuntime"
-  | "processes.listDefinitions"
-  | "processes.listRuntime"
-  | "processes.start"
-  | "processes.stop"
-  | "processes.kill"
   | "chat.getSlashCommands"
   | "chat.resolveSmartLinkPreview"
   | "chat.getParallelLaunchState"

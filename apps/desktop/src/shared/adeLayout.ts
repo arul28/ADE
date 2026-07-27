@@ -34,7 +34,6 @@ export type AdeLayoutPaths = {
   apiKeysPath: string;
   legacyApiKeysPath: string;
   logsDir: string;
-  processLogsDir: string;
   testLogsDir: string;
   packsDir: string;
   logBundlesDir: string;
@@ -112,7 +111,6 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),
     logsDir,
-    processLogsDir: path.join(logsDir, "processes"),
     testLogsDir: path.join(logsDir, "tests"),
     packsDir: path.join(artifactsDir, "packs"),
     logBundlesDir: path.join(artifactsDir, "log-bundles"),

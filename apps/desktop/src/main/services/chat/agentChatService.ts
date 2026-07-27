@@ -143,7 +143,6 @@ import {
   type ThreadPointerLedgerEntry,
 } from "./threadPointerLedger";
 import type { createFileService } from "../files/fileService";
-import type { createProcessService } from "../processes/processService";
 import type { createPtyService } from "../pty/ptyService";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
@@ -6478,7 +6477,6 @@ export function createAgentChatService(args: {
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
-  processService?: ReturnType<typeof createProcessService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: Pick<
@@ -6532,7 +6530,6 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
-    processService,
     diskPressureMonitor,
     getTestService,
     ptyService,
@@ -8051,7 +8048,6 @@ export function createAgentChatService(args: {
         laneService,
         prService: prService ?? null,
         fileService: fileService ?? null,
-        processService: processService ?? null,
         testService: getTestService?.() ?? null,
         ptyService: ptyService ?? null,
         automationService: getAutomationService?.() ?? null,

@@ -56,12 +56,6 @@ func isChatSession(_ session: TerminalSessionSummary) -> Bool {
   isWorkChatToolType(session.toolType)
 }
 
-func isRunOwnedSession(_ session: TerminalSessionSummary) -> Bool {
-  session.toolType?
-    .trimmingCharacters(in: .whitespacesAndNewlines)
-    .lowercased() == "run-shell"
-}
-
 func isStoppableRuntimeSession(_ session: TerminalSessionSummary, summary: AgentChatSessionSummary? = nil) -> Bool {
   guard !isChatSession(session) else { return false }
   let status = normalizedWorkChatSessionStatus(session: session, summary: summary)
@@ -277,14 +271,13 @@ func providerLabel(_ provider: String) -> String {
   }
 }
 
-/// Compact sidebar label for a session's tool type: "Claude", "Codex", "Shell", "Run". Mirrors
+/// Compact sidebar label for a session's tool type. Mirrors
 /// the desktop `shortToolTypeLabel` helper so iOS rows read the same as the desktop sidebar.
 func shortProviderLabel(_ toolType: String?) -> String {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   if raw.isEmpty { return "Shell" }
   switch raw {
   case "shell": return "Shell"
-  case "run-shell": return "Run"
   case "cursor": return "Cursor"
   case "aider": return "Aider"
   case "continue": return "Continue"

@@ -196,6 +196,51 @@ describe("kvDb migrations - legacy upgrade paths", () => {
     }
   });
 
+  it("drops retired execution tables and their terminal sessions on upgrade", async () => {
+    const dbPath = makeDbPath("ade-kvdb-retired-execution-");
+    const first = await openKvDb(dbPath, createLogger());
+    first.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-1", "/repo", "ADE", "main", "2026-07-27T00:00:00.000Z", "2026-07-27T00:00:00.000Z"],
+    );
+    first.run(
+      `insert into lanes(id, project_id, name, description, base_ref, branch_ref, worktree_path, status, created_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["lane-1", "project-1", "main", "", "main", "main", "/repo", "active", "2026-07-27T00:00:00.000Z"],
+    );
+    first.run(
+      `insert into terminal_sessions(
+         id, lane_id, tracked, tool_type, pinned, manually_named, title, started_at,
+         transcript_path, status
+       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["session-1", "lane-1", 1, "run-shell", 0, 0, "Legacy", "2026-07-27T00:00:00.000Z", "/tmp/legacy.log", "completed"],
+    );
+    first.close();
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    rawDb.exec(`
+      create table process_definitions (id text primary key);
+      create table process_runtime (id text primary key);
+      create table process_runs (id text primary key);
+      create table stack_buttons (id text primary key);
+    `);
+    rawDb.close();
+
+    const reopened = await openKvDb(dbPath, createLogger());
+    try {
+      for (const table of ["process_definitions", "process_runtime", "process_runs", "stack_buttons"]) {
+        expect(
+          reopened.get("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [table]),
+        ).toBeNull();
+      }
+      expect(reopened.get("select 1 as present from terminal_sessions where id = ?", ["session-1"])).toBeNull();
+    } finally {
+      reopened.close();
+    }
+  });
+
   it.skipIf(!isCrsqliteAvailable())("skips primary-key retrofit for tables that already have __crsql_clock companions", async () => {
     const dbPath = makeDbPath("ade-kvdb-pk-retrofit-skip-crr-");
     const first = await openKvDb(dbPath, createLogger());

@@ -3554,47 +3554,6 @@ extension TerminalSessionSummary {
   }
 }
 
-struct ProcessReadinessConfig: Codable, Equatable {
-  var type: String
-  var port: Int?
-  var pattern: String?
-}
-
-struct ProcessDefinition: Codable, Identifiable, Equatable {
-  var id: String
-  var name: String
-  var command: [String]
-  var cwd: String
-  var env: [String: String]
-  var groupIds: [String]
-  var autostart: Bool
-  var restart: String
-  var gracefulShutdownMs: Int
-  var dependsOn: [String]
-  var readiness: ProcessReadinessConfig
-}
-
-struct ProcessRuntime: Codable, Identifiable, Equatable {
-  var id: String { runId }
-  var runId: String
-  var laneId: String
-  var processId: String
-  var status: String
-  var readiness: String
-  var pid: Int?
-  var sessionId: String?
-  var ptyId: String?
-  var startedAt: String?
-  var endedAt: String?
-  var exitCode: Int?
-  var lastExitCode: Int?
-  var lastEndedAt: String?
-  var uptimeMs: Int?
-  var ports: [Int]
-  var logPath: String?
-  var updatedAt: String
-}
-
 struct PrSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String

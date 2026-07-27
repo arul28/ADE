@@ -26,7 +26,6 @@ import {
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneWorkPane } from "./LaneWorkPane";
-import { QuickRunMenu } from "../run/QuickRunMenu";
 import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
@@ -315,7 +314,6 @@ function LaneLoadingSkeleton() {
 const LANE_DELETE_STEP_LABELS: Record<string, string> = {
   git_status: "dirty-state check",
   cancel_auto_rebase: "auto-rebase cancellation",
-  stop_processes: "process shutdown",
   stop_chats: "chat shutdown",
   stop_ptys: "terminal shutdown",
   stop_watchers: "file watcher shutdown",
@@ -2779,11 +2777,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 {pendingBranchSwitch ? (
                   <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }}>
                     <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
-                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals and processes stay attached to this lane and will keep running on the new branch's worktree.</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals stay attached to this lane and will keep running on the new branch's worktree.</div>
                     <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
                       {pendingBranchSwitch.activeWork.slice(0, 3).map((item) => (
                         <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
-                          {item.kind === "terminal" ? "Terminal" : "Process"}: {item.title}
+                          Terminal: {item.title}
                         </div>
                       ))}
                       {pendingBranchSwitch.activeWork.length > 3 ? (
@@ -3384,15 +3382,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   Awaiting you
                 </span>
               ) : null}
-              {!isDeleting ? (
-                <span
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
-                  onClick={(event) => event.stopPropagation()}
-                  onMouseDown={(event) => event.stopPropagation()}
-                >
-                  <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
-                </span>
-              ) : null}
               {/* Lane name */}
               <span className="truncate" style={{
                 maxWidth: 180,
@@ -3765,10 +3754,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             requestAdoptAttachedLane(laneId);
           }}
           onManage={openManageDialog}
-          onOpenRun={(laneId) => {
-            selectLane(laneId);
-            void navigate("/project");
-          }}
           selectLane={selectLane}
           onRemoveFromSplit={removeSplitLane}
           onCloseOtherSplits={(keepLaneId) => {

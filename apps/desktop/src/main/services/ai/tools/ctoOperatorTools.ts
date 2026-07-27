@@ -20,7 +20,6 @@ import type { IssueTracker } from "../../cto/issueTracker";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
-import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import type { CtoMemoryService } from "../../cto/ctoMemoryService";
@@ -41,7 +40,6 @@ export interface CtoOperatorToolDeps {
   laneService: ReturnType<typeof createLaneService>;
   prService?: ReturnType<typeof createPrService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
-  processService?: ReturnType<typeof createProcessService> | null;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   testService?: {
     listSuites: () => TestSuiteDefinition[];
@@ -638,96 +636,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
-  tools.listManagedProcesses = tool({
-    description: "Inspect ADE-managed processes for a lane, including configured definitions and current runtime state.",
-    inputSchema: z.object({
-      laneId: z.string().optional(),
-    }),
-    execute: async ({ laneId }) => {
-      if (!deps.processService) return { success: false, error: "Process service is not available." };
-      const resolvedLaneId = laneId?.trim() || deps.defaultLaneId;
-      try {
-        const [definitions, runtime] = await Promise.all([
-          Promise.resolve(deps.processService.listDefinitions()),
-          Promise.resolve(deps.processService.listRuntime(resolvedLaneId)),
-        ]);
-        return {
-          success: true,
-          laneId: resolvedLaneId,
-          definitions,
-          runtime,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "lanes",
-            laneId: resolvedLaneId,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.startManagedProcess = tool({
-    description: "Start an ADE-managed lane process.",
-    inputSchema: z.object({
-      laneId: z.string().trim().min(1).optional(),
-      processId: z.string().trim().min(1),
-    }),
-    execute: async ({ laneId, processId }) => {
-      if (!deps.processService) return { success: false, error: "Process service is not available." };
-      try {
-        const runtime = await deps.processService.start({
-          laneId: laneId?.trim() || deps.defaultLaneId,
-          processId,
-        });
-        return { success: true, runtime };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.stopManagedProcess = tool({
-    description: "Stop an ADE-managed lane process.",
-    inputSchema: z.object({
-      laneId: z.string().trim().min(1).optional(),
-      processId: z.string().trim().min(1),
-    }),
-    execute: async ({ laneId, processId }) => {
-      if (!deps.processService) return { success: false, error: "Process service is not available." };
-      try {
-        const runtime = await deps.processService.stop({
-          laneId: laneId?.trim() || deps.defaultLaneId,
-          processId,
-        });
-        return { success: true, runtime };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getManagedProcessLog = tool({
-    description: "Read the bounded tail of an ADE-managed process log.",
-    inputSchema: z.object({
-      laneId: z.string().trim().min(1).optional(),
-      processId: z.string().trim().min(1),
-      maxBytes: z.number().int().positive().max(500_000).optional().default(40_000),
-    }),
-    execute: async ({ laneId, processId, maxBytes }) => {
-      if (!deps.processService) return { success: false, error: "Process service is not available." };
-      try {
-        const content = deps.processService.getLogTail({
-          laneId: laneId?.trim() || deps.defaultLaneId,
-          processId,
-          maxBytes,
-        });
-        return { success: true, laneId: laneId?.trim() || deps.defaultLaneId, processId, content };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
 
   tools.commentOnLinearIssue = tool({
     description: "Post a comment to a Linear issue.",

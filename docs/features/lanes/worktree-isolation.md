@@ -89,7 +89,7 @@ the directory first:
    path under the repo now resolves to the primary checkout, ADE treats
    the lane as stale instead of reading the primary worktree's status.
 3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
-4. Stop ADE-managed processes, PTYs, and file watchers for the lane,
+4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.
 5. If managed worktree: enter the shared worktree-mutation guard and
    run `git worktree remove --force <path>`. If Git reports success
@@ -226,8 +226,8 @@ worktree, but a full parallel development environment.
 - **Git lock files**: a stray `.git/index.lock` in one worktree can
   block operations in that lane but not others. ADE does not auto-
   remove stale locks — users must.
-- **Stopping a running dev server on delete**: ADE-managed processes,
-  PTYs, and watchers are stopped before worktree removal, but processes
+- **Stopping a running dev server on delete**: lane-owned PTYs and
+  watchers are stopped before worktree removal, but processes
   that were launched outside ADE may still hold file handles or keep a
   port alive briefly. The delete pipeline recovers residual files after
   a successful `git worktree remove` and runtime diagnostics may lag

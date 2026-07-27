@@ -96,7 +96,6 @@ import type {
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetFilePatchArgs,
-  GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
@@ -440,12 +439,6 @@ import type {
   DeleteSessionArgs,
   ListTestRunsArgs,
   OperationRecord,
-  ProcessActionArgs,
-  ProcessDefinition,
-  ProcessEvent,
-  ProcessGroupArgs,
-  ProcessRuntime,
-  ProcessStackArgs,
   ProjectConfigCandidate,
   ProjectConfigDiff,
   ProjectConfigSnapshot,
@@ -2262,24 +2255,6 @@ declare global {
       graphState: {
         get: (projectId: string) => Promise<GraphPersistedState | null>;
         set: (projectId: string, state: GraphPersistedState) => Promise<void>;
-      };
-      processes: {
-        listDefinitions: () => Promise<ProcessDefinition[]>;
-        listRuntime: (laneId: string) => Promise<ProcessRuntime[]>;
-        start: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
-        restart: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
-        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime | null>;
-        startStack: (args: ProcessStackArgs) => Promise<void>;
-        stopStack: (args: ProcessStackArgs) => Promise<void>;
-        restartStack: (args: ProcessStackArgs) => Promise<void>;
-        startGroup: (args: ProcessGroupArgs) => Promise<void>;
-        stopGroup: (args: ProcessGroupArgs) => Promise<void>;
-        restartGroup: (args: ProcessGroupArgs) => Promise<void>;
-        startAll: (args: { laneId: string }) => Promise<void>;
-        stopAll: (args: { laneId: string }) => Promise<void>;
-        getLogTail: (args: GetProcessLogTailArgs) => Promise<string>;
-        onEvent: (cb: (ev: ProcessEvent) => void) => () => void;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;
