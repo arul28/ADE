@@ -1408,8 +1408,8 @@ final class DatabaseService {
           insert into pull_requests(
             id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
             title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-            last_synced_at, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_synced_at, created_at, updated_at, merged_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             project_id = excluded.project_id,
             lane_id = excluded.lane_id,
@@ -1428,7 +1428,8 @@ final class DatabaseService {
             deletions = excluded.deletions,
             last_synced_at = excluded.last_synced_at,
             created_at = excluded.created_at,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            merged_at = coalesce(excluded.merged_at, merged_at)
         """) { statement in
           try bindText(pr.id, to: statement, index: 1)
           try bindText(projectId, to: statement, index: 2)
@@ -1457,6 +1458,11 @@ final class DatabaseService {
           }
           try bindText(pr.createdAt, to: statement, index: 18)
           try bindText(pr.updatedAt, to: statement, index: 19)
+          if let mergedAt = pr.mergedAt {
+            try bindText(mergedAt, to: statement, index: 20)
+          } else {
+            sqlite3_bind_null(statement, 20)
+          }
         }
       }
 
@@ -2234,7 +2240,7 @@ final class DatabaseService {
     let sql = """
       select id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
              title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-             last_synced_at, created_at, updated_at
+             last_synced_at, created_at, updated_at, merged_at
         from pull_requests
        where project_id = ?
        order by updated_at desc
@@ -2261,7 +2267,8 @@ final class DatabaseService {
         deletions: Int(sqlite3_column_int64(statement, 15)),
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
-        updatedAt: stringValue(statement, index: 18) ?? ""
+        updatedAt: stringValue(statement, index: 18) ?? "",
+        mergedAt: stringValue(statement, index: 19)
       )
     }
   }
@@ -3015,6 +3022,7 @@ final class DatabaseService {
         last_synced_at text,
         created_at text not null,
         updated_at text not null,
+        merged_at text,
         last_polled_at text,
         head_sha text
       )
@@ -3022,6 +3030,7 @@ final class DatabaseService {
     try ensureColumn(tableName: "pull_requests", columnName: "last_polled_at", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "head_sha", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "creation_strategy", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "merged_at", definition: "text")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,

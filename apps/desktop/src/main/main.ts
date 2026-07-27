@@ -100,6 +100,7 @@ import { createProjectScaffoldService } from "./services/projects/projectScaffol
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
@@ -190,7 +191,8 @@ import {
   ADE_ACTION_ALLOWLIST,
   type AdeActionDomain,
   getAdeActionDomainServices,
-  isAllowedAdeAction,
+  isAutomationAllowedAdeAction,
+  isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
@@ -2835,12 +2837,15 @@ app.whenReady().then(async () => {
       void prService.tryAutoMapLaneByBranch(lane.id);
     });
 
+    let prMergeAutoSettlementServiceRef: ReturnType<typeof createPrMergeAutoSettlementService> | null = null;
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
       db,
       onEvent: emitPrEvent,
+      onPullRequestsSnapshot: (snapshot) =>
+        prMergeAutoSettlementServiceRef?.processSnapshot(snapshot),
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
@@ -3237,6 +3242,12 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
+      db,
+      sessionService,
+      agentChatService,
+      emitEvent: emitPrEvent,
+    });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
@@ -4297,7 +4308,7 @@ app.whenReady().then(async () => {
     {
       const adeActionLookup: AutomationAdeActionRegistry = {
         isAllowed(domain: string, action: string): boolean {
-          return isAllowedAdeAction(domain as AdeActionDomain, action);
+          return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
         },
         getService(domain: string): Record<string, unknown> | null {
           const pseudoRuntime = buildAdeActionRuntimeForAutomations();
@@ -4309,7 +4320,8 @@ app.whenReady().then(async () => {
           return Object.keys(ADE_ACTION_ALLOWLIST);
         },
         listActions(domain: string): string[] {
-          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
+          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+            .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
         },
       };
       automationService?.bindAdeActionRegistry(adeActionLookup);

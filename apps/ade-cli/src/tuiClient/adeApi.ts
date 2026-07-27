@@ -241,7 +241,7 @@ export async function settleSession(
   outcome?: string,
   options: { dismissPendingInput?: boolean } = {},
 ): Promise<void> {
-  await connection.action("session", "settleSelfSession", {
+  await connection.action("session", "settleSession", {
     sessionId,
     ...(outcome ? { outcome } : {}),
     ...(options.dismissPendingInput ? { dismissPendingInput: true } : {}),

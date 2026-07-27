@@ -8939,7 +8939,8 @@ final class ADETests: XCTestCase {
             deletions: 4,
             lastSyncedAt: "2026-03-17T00:10:00.000Z",
             createdAt: "2026-03-17T00:10:00.000Z",
-            updatedAt: "2026-03-17T00:10:00.000Z"
+            updatedAt: "2026-03-17T00:10:00.000Z",
+            mergedAt: "2026-03-17T00:11:00.000Z"
           ),
         ],
         snapshots: [
@@ -8979,7 +8980,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(prs.count, 1)
     XCTAssertEqual(prs.first?.id, "pr-1")
     XCTAssertEqual(prs.first?.title, "Fix mobile hydration")
+    XCTAssertEqual(prs.first?.mergedAt, "2026-03-17T00:11:00.000Z")
     XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-1")?.status?.isMergeable, true)
+
+    var legacySummary = try XCTUnwrap(prs.first)
+    legacySummary.mergedAt = nil
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(refreshedCount: 1, prs: [legacySummary], snapshots: [])
+    )
+    XCTAssertEqual(
+      database.fetchPullRequests().first?.mergedAt,
+      "2026-03-17T00:11:00.000Z",
+      "Legacy hosts that omit mergedAt must not erase a timestamp already received through sync."
+    )
     database.close()
   }
 

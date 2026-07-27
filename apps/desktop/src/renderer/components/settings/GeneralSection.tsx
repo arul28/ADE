@@ -8,6 +8,7 @@ import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { ProductAnalyticsSection } from "./ProductAnalyticsSection";
 import { ProjectSection } from "./ProjectSection";
+import { SessionLifecycleSection } from "./SessionLifecycleSection";
 
 export function GeneralSection() {
   return (
@@ -23,6 +24,8 @@ export function GeneralSection() {
       <AgentCompletionSoundSection />
 
       <PrChatTranscriptsSection />
+
+      <SessionLifecycleSection />
 
       <ProductAnalyticsSection />
 

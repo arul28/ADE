@@ -132,7 +132,7 @@ describe("session lifecycle parity", () => {
     expect(action.mock.calls).toEqual([
       ["session", "requestSessionAttention", { sessionId: "session-1", message: "Which account?" }],
       ["session", "setSessionStatusNote", { sessionId: "session-1", note: "" }],
-      ["session", "settleSelfSession", {
+      ["session", "settleSession", {
         sessionId: "session-1",
         outcome: "PR merged",
         dismissPendingInput: true,

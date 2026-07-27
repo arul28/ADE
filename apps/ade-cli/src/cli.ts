@@ -225,6 +225,7 @@ type FormatterId =
   | "chat-read"
   | "session-lifecycle"
   | "lane-drift"
+  | "session-settlement"
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
@@ -1692,7 +1693,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
-    $ ade chat settle --outcome "PR #841, CI green" Mark this session complete
+    $ ade chat settle --outcome "PR #841, CI green" Settle only after runtime lifecycle checks pass
+                                                    Exits 1 and prints exact blockers when rejected
     $ ade chat unsettle                             Return this session to the active lifecycle
                                                     These four commands default to the caller and accept --session <id>
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
@@ -6984,20 +6986,26 @@ function buildChatPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "settle") {
-    const outcome = readValue(args, ["--outcome"]);
+    const outcome = requireValue(
+      readValue(args, ["--outcome"]),
+      "outcome",
+    );
     return {
       kind: "execute",
       label: "chat settle",
+      formatter: "session-settlement",
       steps: [
         actionStep(
           "result",
           "session",
           "settleSelfSession",
           withSession({
-            ...(outcome !== null ? { outcome } : {}),
+            outcome,
           }),
         ),
       ],
+      exitCodeFromResult: (result) =>
+        isRecord(result) && result.ok === false ? 1 : 0,
     };
   }
   if (sub === "unsettle") {
@@ -18632,6 +18640,24 @@ function formatTextOutput(
       return formatSessionLifecycle(value);
     case "lane-drift":
       return formatLaneDrift(value);
+    case "session-settlement": {
+      if (!isRecord(value)) return JSON.stringify(value, null, 2);
+      const sessionId = asString(value.sessionId) ?? "unknown";
+      if (value.ok === true) {
+        return `Session ${sessionId} settled.`;
+      }
+      const blockers = Array.isArray(value.blockers)
+        ? value.blockers.filter(isRecord)
+        : [];
+      return [
+        `Session ${sessionId} was not settled.`,
+        ...blockers.map((blocker) => {
+          const code = asString(blocker.code) ?? "blocked";
+          const message = asString(blocker.message) ?? "Settlement is blocked.";
+          return `- ${code}: ${message}`;
+        }),
+      ].join("\n");
+    }
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};

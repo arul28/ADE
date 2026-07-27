@@ -570,3 +570,32 @@ export type SessionDeltaSummary = {
   failureLines: string[];
   computedAt: string | null;
 };
+
+export type SessionSettlementBlockerCode =
+  | "pending_input"
+  | "turn_failed"
+  | "scheduled_work"
+  | "active_workload"
+  | "unfinished_goal"
+  | "unfinished_plan"
+  | "incomplete_report";
+
+export type SessionSettlementBlocker = {
+  code: SessionSettlementBlockerCode;
+  message: string;
+};
+
+export type AgentSessionSettlementResult =
+  | {
+      ok: true;
+      sessionId: string;
+    }
+  | {
+      ok: false;
+      sessionId: string;
+      blockers: SessionSettlementBlocker[];
+    };
+
+export type SessionLifecycleSettings = {
+  autoSettleLaneSessionsOnPrMerge: boolean;
+};

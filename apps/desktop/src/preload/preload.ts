@@ -559,6 +559,7 @@ import type {
   DecodeOAuthStateResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  SessionLifecycleSettings,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionChangedEvent,
@@ -5328,7 +5329,7 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<void> => {
       const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
-        "settleSelfSession",
+        "settleSession",
         {
           args: {
             sessionId,
@@ -5436,6 +5437,27 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? sessionLifecycleApplied(runtime.result)
         : ipcRenderer.invoke(IPC.sessionsClearWokeMarker, { sessionId });
+    },
+    getLifecycleSettings: async (): Promise<SessionLifecycleSettings> => {
+      const runtime = await callProjectRuntimeActionIfBound<SessionLifecycleSettings>(
+        "session",
+        "getLifecycleSettings",
+      );
+      return runtime.handled
+        ? runtime.result!
+        : ipcRenderer.invoke(IPC.sessionsLifecycleSettingsGet);
+    },
+    updateLifecycleSettings: async (
+      settings: SessionLifecycleSettings,
+    ): Promise<SessionLifecycleSettings> => {
+      const runtime = await callProjectRuntimeActionIfBound<SessionLifecycleSettings>(
+        "session",
+        "updateLifecycleSettings",
+        { args: settings },
+      );
+      return runtime.handled
+        ? runtime.result!
+        : ipcRenderer.invoke(IPC.sessionsLifecycleSettingsUpdate, settings);
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,

@@ -75,7 +75,7 @@ import { ToastStack } from "./toast/ToastStack";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
-import { useToasts } from "./toast/toastStore";
+import { showToast, useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import {
   useProductAnalyticsLifecycle,
@@ -1075,6 +1075,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
 
     const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type === "pr-sessions-auto-settled") {
+        showToast({
+          title: `PR #${event.prNumber} merged · ${event.settledCount} ${
+            event.settledCount === 1 ? "session" : "sessions"
+          } settled`,
+          tone: "success",
+        });
+        return;
+      }
       if (event.type === "pr-auto-linked") {
         const id = newId();
         setAutoLinkToasts((prev) => [{ id, event }, ...prev].slice(0, 4));

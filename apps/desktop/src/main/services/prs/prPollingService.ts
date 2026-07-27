@@ -103,6 +103,7 @@ export function createPrPollingService({
   prService,
   projectConfigService,
   onEvent,
+  onPullRequestsSnapshot,
   onPullRequestsChanged,
   db,
 }: {
@@ -110,6 +111,10 @@ export function createPrPollingService({
   prService: ReturnType<typeof createPrService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   onEvent: (event: PrEventPayload) => void;
+  onPullRequestsSnapshot?: (args: {
+    prs: PrSummary[];
+    polledAt: string;
+  }) => void | Promise<void>;
   onPullRequestsChanged?: (args: {
     prs: PrSummary[];
     changedPrs: PrSummary[];
@@ -250,6 +255,13 @@ export function createPrPollingService({
           onEvent({ type: "prs-updated", polledAt, prs: [] });
           lastPrFingerprint = "[]";
         }
+        try {
+          await onPullRequestsSnapshot?.({ prs: [], polledAt });
+        } catch (error) {
+          logger.warn("prs.snapshot_hook_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         return;
       }
 
@@ -262,6 +274,13 @@ export function createPrPollingService({
         await prService.refresh();
       }
       const prs = prService.listAll();
+      try {
+        await onPullRequestsSnapshot?.({ prs, polledAt });
+      } catch (error) {
+        logger.warn("prs.snapshot_hook_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       const fingerprintPrs = [...prs].sort((left, right) => left.id.localeCompare(right.id));
 
       // Only notify the renderer when PR data actually changed —

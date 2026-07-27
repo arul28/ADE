@@ -2920,6 +2920,41 @@ describe("ADE CLI", () => {
         },
       });
     }
+    const settlePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "settle",
+      "--outcome",
+      "done",
+    ]));
+    expect(settlePlan.formatter).toBe("session-settlement");
+    expect(settlePlan.exitCodeFromResult?.({ ok: false, blockers: [] })).toBe(1);
+    expect(settlePlan.exitCodeFromResult?.({ ok: true })).toBe(0);
+    expect(() => buildCliPlan(["chat", "settle"]))
+      .toThrow(/outcome is required/i);
+    expect(() => buildCliPlan(["chat", "settle", "--outcome", ""]))
+      .toThrow(/outcome is required/i);
+
+    const blockedText = formatOutput({
+      ok: false,
+      sessionId: "session-x",
+      blockers: [
+        {
+          code: "pending_input",
+          message: "Resolve the pending input before settling.",
+        },
+        {
+          code: "scheduled_work_active",
+          message: "Cancel or complete scheduled work before settling.",
+        },
+      ],
+    }, { text: true } as any, settlePlan.formatter);
+    expect(blockedText).toContain("Session session-x was not settled.");
+    expect(blockedText).toContain(
+      "- pending_input: Resolve the pending input before settling.",
+    );
+    expect(blockedText).toContain(
+      "- scheduled_work_active: Cancel or complete scheduled work before settling.",
+    );
 
     const clearNote = expectExecutePlan(buildCliPlan(["chat", "note", ""]));
     expect(clearNote.steps[0]?.params).toMatchObject({
@@ -2975,6 +3010,8 @@ describe("ADE CLI", () => {
       expect(help.text).toContain("ade chat ask");
       expect(help.text).toContain("ade chat settle");
       expect(help.text).toContain("ade chat unsettle");
+      expect(help.text).toContain("runtime lifecycle checks");
+      expect(help.text).toContain("prints exact blockers");
       expect(help.text).toContain("--session <id>");
     }
   });
