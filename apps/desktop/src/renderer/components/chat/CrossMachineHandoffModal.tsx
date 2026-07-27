@@ -245,6 +245,7 @@ export function CrossMachineHandoffModal({
     return (
       <PermissionModePicker
         ariaLabel="Permission mode for the new chat"
+        menuLayerClassName="z-[200]"
         selectedValue={current}
         options={options.map((option) => ({
           value: option.value,

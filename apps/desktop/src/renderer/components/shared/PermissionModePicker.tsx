@@ -146,6 +146,7 @@ export function PermissionModePicker<Value extends string>({
   disabled,
   onSelect,
   title,
+  menuLayerClassName = "z-[100]",
 }: {
   ariaLabel: string;
   selectedValue: Value;
@@ -153,6 +154,14 @@ export function PermissionModePicker<Value extends string>({
   disabled?: boolean;
   onSelect?: (value: Value) => void;
   title?: string;
+  /**
+   * Tailwind z-index for the portalled option list. The default sits above the
+   * composer, but a caller inside a modal must raise it above that modal's
+   * overlay: the list is portalled to `document.body`, so it does not inherit
+   * the modal's stacking context and would otherwise render behind the
+   * backdrop where it cannot be clicked.
+   */
+  menuLayerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -228,7 +237,10 @@ export function PermissionModePicker<Value extends string>({
               role="listbox"
               aria-label={ariaLabel}
               data-permission-mode-picker-dropdown
-              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn(
+                "fixed overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+                menuLayerClassName,
+              )}
               style={{
                 left,
                 bottom: Math.max(8, window.innerHeight - rect.top + 8),

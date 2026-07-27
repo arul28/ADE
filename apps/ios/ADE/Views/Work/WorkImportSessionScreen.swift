@@ -897,7 +897,14 @@ extension ExternalSessionSummary {
 
   var latestAnchorMessage: ExternalSessionMessage? {
     guard let latest = conversationMessages.last else { return nil }
-    guard workImportHeadingText(latest.text) != rowHeading else { return nil }
+    // Normalize both sides before comparing, and check the started anchor too:
+    // a titled single-message thread clears the heading check yet still repeats
+    // the opening prompt, which reads as a rendering bug.
+    let normalizedLatest = workImportHeadingText(latest.text)
+    guard normalizedLatest != workImportHeadingText(rowHeading) else { return nil }
+    if let started = startedAnchorSnippet, normalizedLatest == workImportHeadingText(started) {
+      return nil
+    }
     return latest
   }
 
