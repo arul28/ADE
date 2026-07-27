@@ -185,7 +185,13 @@ function StickyGroupHeader({
   if (count === 0) return null;
   const isLane = variant === "lane";
   const branchText = subLabel?.trim() ?? "";
-  const showBranchCluster = branchText.length > 0;
+  // The lane header no longer renders the branch. The lane name is already
+  // derived from the branch (CreateLaneDialog seeds one from the other), so
+  // showing both spent a whole column on a duplicate — and, worse, put two
+  // flexible text nodes in one row competing for width, which is what pushed the
+  // PR badge off the edge. Non-lane group headers keep their sub-label.
+  const showBranchCluster = !isLane && branchText.length > 0;
+  const laneHeaderTitle = branchText ? `${label} · ${branchText}` : label;
   const laneTint = laneSurfaceTint(accentColor, isLane ? "pastel" : "soft");
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
@@ -211,7 +217,10 @@ function StickyGroupHeader({
         >
           <button
             type="button"
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+            // `overflow-hidden` is load-bearing: without it, unshrinkable
+            // children spill past the button's box and render on top of the
+            // trailing PR badge / count cluster, which the sidebar then clips.
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 overflow-hidden text-left"
             onClick={onToggleCollapsed}
             onContextMenu={onContextMenu}
             disabled={Boolean(busyLabel)}
@@ -223,9 +232,9 @@ function StickyGroupHeader({
             )}
             {icon}
             <span
-              className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 max-w-[60%] shrink truncate text-[13px] font-semibold leading-tight text-fg/90"
+              className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 flex-1 shrink truncate text-[13px] font-semibold leading-tight text-fg/90"
               style={laneLabelColor ? { color: laneLabelColor } : undefined}
-              title={label}
+              title={laneHeaderTitle}
             >
               {label}
             </span>

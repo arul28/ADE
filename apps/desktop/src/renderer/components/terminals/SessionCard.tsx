@@ -566,7 +566,10 @@ export const SessionCard = React.memo(function SessionCard({
         <div className={cn("flex items-stretch", compact ? "gap-2 px-2 py-1" : "gap-2.5 px-2.5 py-2")}>
           {/* Logo — vertically centered against full card height */}
           <div className="flex shrink-0 self-stretch items-center justify-center">
-            <ToolLogo toolType={session.toolType} size={compact ? 18 : 26} />
+            {/* The provider mark is the least informative element in the row —
+                most rows share a provider — so it must not outweigh the title.
+                It reads as an identifier, not a focal point. */}
+            <ToolLogo toolType={session.toolType} size={compact ? 16 : 18} />
           </div>
 
           {/* Content — 3 rows */}
@@ -576,7 +579,7 @@ export const SessionCard = React.memo(function SessionCard({
               <span
                 className={cn(
                   "min-w-0 flex-1 truncate rounded px-1 -mx-1 font-semibold text-fg/90",
-                  compact ? "text-[11px]" : "text-[13px]",
+                  compact ? "text-[11px]" : "text-[14px]",
                 )}
                 style={{
                   transition: "background-color 900ms ease-out, box-shadow 900ms ease-out",
@@ -730,7 +733,10 @@ export const SessionCard = React.memo(function SessionCard({
               <div className="mt-0.5 min-w-0">
                 <span
                   key={`${previewLine.source}:${previewLine.text}`}
-                  className="block truncate text-[10px] text-muted-fg/50 leading-snug motion-safe:animate-[ade-session-preview-in_180ms_ease-out_1]"
+                  // The status line is the highest-signal text in the row — it is
+                  // what tells you whether a chat needs you — so it should not be
+                  // the quietest thing rendered.
+                  className="block truncate text-[12px] text-muted-fg/65 leading-snug motion-safe:animate-[ade-session-preview-in_180ms_ease-out_1]"
                   data-session-preview-source={previewLine.source}
                 >
                   {previewLine.linkify ? (

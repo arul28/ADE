@@ -2,7 +2,8 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, TerminalSessionSummary } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
+import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
@@ -1209,17 +1210,35 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? prev.projectBinding
           : null;
       const projectChanged = previousProjectRoot !== nextProjectRoot;
-      const warmLaneCache = projectChanged && nextProjectRoot
-        ? prev.laneCacheByProject[nextProjectRoot] ?? readPersistedLaneCache(nextProjectRoot)
+      // Lane caches and lane selection are keyed by the *binding* key
+      // (`remote:<targetId>:<projectId>` for remote projects), which is what
+      // `refreshLanes` writes via `selectActiveProjectStateKey`. Looking them up
+      // by `rootPath` misses every remote project entirely.
+      const previousStateKey = normalizeProjectKey(selectActiveProjectStateKey(prev));
+      const nextStateKey = matchingRemoteBinding
+        ? projectStateKeyForBinding(matchingRemoteBinding)
+        : normalizeProjectKey(nextProjectRoot);
+      // On a remote cold start `setProjectBinding` runs first and already claims
+      // the root, so by the time we get here neither the root nor the state key
+      // has "changed" and the warm-cache branch never fires — the lane list
+      // renders empty even though the cache is sitting in localStorage. Treat an
+      // unhydrated lane list for a known key as equally deserving of a warm
+      // restore. `readPersistedLaneCache` returns null when there is nothing to
+      // restore, so this stays a no-op for genuinely lane-less projects.
+      const stateKeyChanged = previousStateKey !== nextStateKey;
+      const shouldHydrateLanes = Boolean(nextStateKey)
+        && (projectChanged || stateKeyChanged || (prev.lanes.length === 0 && !prev.lanesLoading));
+      const warmLaneCache = shouldHydrateLanes
+        ? prev.laneCacheByProject[nextStateKey] ?? readPersistedLaneCache(nextStateKey)
         : null;
-      const nextLaneCacheByProject = projectChanged && nextProjectRoot && warmLaneCache && !prev.laneCacheByProject[nextProjectRoot]
+      const nextLaneCacheByProject = warmLaneCache && !prev.laneCacheByProject[nextStateKey]
         ? {
             ...prev.laneCacheByProject,
-            [nextProjectRoot]: warmLaneCache,
+            [nextStateKey]: warmLaneCache,
           }
         : prev.laneCacheByProject;
-      const restoredSelection = projectChanged && nextProjectRoot
-        ? prev.laneSelectionByProject[nextProjectRoot] ?? {
+      const restoredSelection = shouldHydrateLanes
+        ? prev.laneSelectionByProject[nextStateKey] ?? {
             laneId: warmLaneCache?.lanes[0]?.id ?? null,
             sessionId: null,
           }
@@ -1242,15 +1261,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
         laneDeleteProgressByLaneId:
           projectChanged ? {} : prev.laneDeleteProgressByLaneId,
+        // Per-lane UI context only resets when the project itself changes.
         ...(projectChanged
+          ? {
+              laneInspectorTabs: {},
+              terminalAttention: EMPTY_TERMINAL_ATTENTION,
+            }
+          : {}),
+        // Lane data is replaced on a project change, and additionally restored
+        // when a warm cache turns up for an as-yet-unhydrated project (the
+        // remote cold-start path above). Without a warm cache and without a
+        // project change this is a no-op, so an in-place `setProject` — a rename,
+        // say — never clears the lanes already on screen.
+        ...(projectChanged || warmLaneCache
           ? {
               laneSnapshots: warmLaneCache?.laneSnapshots ?? [],
               lanes: warmLaneCache?.lanes ?? [],
               lanesLoading: project ? !warmLaneCache : false,
               selectedLaneId: restoredSelection?.laneId ?? null,
               focusedSessionId: restoredSelection?.sessionId ?? null,
-              laneInspectorTabs: {},
-              terminalAttention: EMPTY_TERMINAL_ATTENTION,
               laneCacheByProject: nextLaneCacheByProject,
             }
           : {}),
@@ -2067,8 +2096,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (!hasProjectScopedStateToPrune) return;
 
       window.setTimeout(() => {
-        void window.ade.project.listRecent().then((recentRows) => {
-          const recentRoots = new Set(recentRows.map((r: { rootPath: string }) => r.rootPath));
+        void window.ade.project.listRecent().then((recentRows: RecentProjectSummary[]) => {
+          // Remote recents must contribute their *binding* key, not their root
+          // path — retention below protects open remote tabs by binding key, so
+          // keying recents by path let a closed-but-recent remote project lose
+          // its warm lane cache on the next project switch.
+          const recentRoots = new Set(recentRows.map(recentProjectStateKey));
           const activeProjectKey = selectActiveProjectStateKey(get());
           const openProjectRoots = new Set(get().openProjectTabRoots);
           const openRemoteProjectKeys = new Set(

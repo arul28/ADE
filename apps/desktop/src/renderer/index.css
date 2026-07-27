@@ -3425,9 +3425,16 @@ button:active, [role="button"]:active {
   flex-shrink: 0;
 }
 
-/* Sidebar lane tabs: lane name wins over branch */
+/* Sidebar lane tabs: lane name wins over branch.
+   The branch cluster carries `flex-shrink: 999`, so it still collapses first by
+   three orders of magnitude — the lane name only gives up space once the branch
+   is already gone. It must stay shrinkable: pinning it to `flex-shrink: 0` here
+   outranked the Tailwind `shrink` utility on the element, so a long lane name
+   overflowed its container and was clipped by the sidebar's `overflow-x-hidden`,
+   taking the trailing PR badge and chat count with it. */
 .ade-lane-group-header .ade-lane-branch-inline-lane {
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .ade-lane-branch-inline-lane {
