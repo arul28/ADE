@@ -8013,9 +8013,7 @@ final class SyncService: ObservableObject {
     target: String,
     mode: String,
     model: String? = nil,
-    permissionMode: String? = nil,
-    reasoningEffort: String? = nil,
-    fastMode: Bool? = nil
+    permissionMode: String? = nil
   ) async throws -> ExternalSessionImportResult {
     var args: [String: Any] = [
       "provider": provider,
@@ -8029,12 +8027,6 @@ final class SyncService: ObservableObject {
     }
     if let permissionMode, !permissionMode.isEmpty {
       args["permissionMode"] = permissionMode
-    }
-    if let reasoningEffort, !reasoningEffort.isEmpty {
-      args["reasoningEffort"] = reasoningEffort
-    }
-    if let fastMode {
-      args["fastMode"] = fastMode
     }
     return try await sendDecodableCommand(
       action: "work.importExternalSession",

@@ -12,6 +12,7 @@ import {
   normalizeExternalSessionLimit,
   readFileSuffix,
   readJsonlRecords,
+  canonicalCodexRecords,
   recentExternalSessionMessagesFromRecords,
   recordWithFile,
   resolveHomeDir,
@@ -809,7 +810,7 @@ export async function discoverCodexSessions(
       return {
         ...record,
         messages: recentExternalSessionMessagesFromRecords(
-          recentCodexRecords(record.sourcePath, lookupId != null),
+          canonicalCodexRecords(recentCodexRecords(record.sourcePath, lookupId != null)),
         ),
       };
     });

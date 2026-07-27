@@ -5527,7 +5527,11 @@ export function AgentChatPane({
   const crossMachineHandoffTarget = useMemo(() => ({
     targetModelId: remoteHandoffModelId,
     reasoningEffort: handoffReasoningEffort,
-    ...(remoteHandoffTargetProvider === "codex" || remoteHandoffTargetProvider === "opencode"
+    // Serialize fast mode for exactly the models whose toggle the modal renders
+    // (`modelSupportsFastMode`), not a hardcoded provider pair — otherwise a
+    // fast-capable Claude model shows a live control that never reaches the
+    // capsule, and the destination silently inherits the source's tier.
+    ...(remoteHandoffTargetDescriptor && modelSupportsFastMode(remoteHandoffTargetDescriptor)
       ? { fastMode: handoffFastMode }
       : {}),
     claudePermissionMode: handoffClaudePermissionMode,
@@ -5551,6 +5555,7 @@ export function AgentChatPane({
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
     remoteHandoffModelId,
+    remoteHandoffTargetDescriptor,
     remoteHandoffNativePermissionMode,
     remoteHandoffTargetProvider,
   ]);

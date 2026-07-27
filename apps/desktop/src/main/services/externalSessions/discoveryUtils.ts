@@ -550,6 +550,22 @@ export function recentExternalSessionMessagesFromRecords(
     .slice(-limit);
 }
 
+/**
+ * Codex persists a single conversational turn twice: a canonical `event_msg`
+ * and a mirrored `response_item`. Sampling the raw rows would show every turn
+ * twice and evict genuinely older exchanges from the capped window, so drop the
+ * mirror whenever the canonical form is present in the same file.
+ */
+export function canonicalCodexRecords(records: unknown[]): unknown[] {
+  const hasCanonical = records.some((record) => (
+    asString(asRecord(record)?.type)?.toLowerCase() === "event_msg"
+  ));
+  if (!hasCanonical) return records;
+  return records.filter((record) => (
+    asString(asRecord(record)?.type)?.toLowerCase() !== "response_item"
+  ));
+}
+
 function isCanonicalCodexUserRecord(record: unknown): boolean {
   const obj = asRecord(record);
   const payload = asRecord(obj?.payload);

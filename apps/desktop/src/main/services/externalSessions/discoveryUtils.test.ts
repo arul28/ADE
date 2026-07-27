@@ -6,6 +6,7 @@ import {
   cleanExternalSessionUserText,
   cleanSessionTitle,
   clipExternalSessionText,
+  canonicalCodexRecords,
   countExternalSessionUserMessages,
   firstUserTextFromRecords,
   recentExternalSessionMessagesFromRecords,
@@ -115,6 +116,28 @@ describe("external session user text", () => {
    * could become the preview, but was silently dropped from `messages`. They now
    * share one classifier, so a record either appears in all three or none.
    */
+  /**
+   * Codex writes each turn twice — a canonical `event_msg` and a mirrored
+   * `response_item`. Sampling the raw rows showed every turn twice and evicted
+   * genuinely older exchanges from the capped window.
+   */
+  it("drops Codex mirror rows so a turn is sampled once", () => {
+    const rows = [
+      { type: "event_msg", payload: { type: "user_message", message: "first ask" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: "first ask" } },
+      { type: "event_msg", payload: { type: "agent_message", message: "the answer" } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: "the answer" } },
+    ];
+    const messages = recentExternalSessionMessagesFromRecords(canonicalCodexRecords(rows));
+    expect(messages).toHaveLength(2);
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("leaves records untouched when there is no canonical form to prefer", () => {
+    const rows = [{ type: "response_item", payload: { type: "message", role: "user", content: "only form" } }];
+    expect(canonicalCodexRecords(rows)).toHaveLength(1);
+  });
+
   it("agrees across count, preview, and messages about what a user turn is", () => {
     const records = [
       { type: "message", message: { content: "roleless message rows are user turns" } },
