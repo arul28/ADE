@@ -514,7 +514,22 @@ Renderer surfaces:
   auto-fit grid and the embedded lane selector can fill its parent.
   Lane group headers expose the same lane context menu used by the Work
   tab so color, manage, split, and batch actions stay reachable without
-  leaving the session list. A lane with shared delete progress is dimmed and
+  leaving the session list. The list is a **cross-machine union**
+  (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
+  in flight on every connected machine appear regardless of which machine the
+  project tab is bound to. A lane that is not on This Mac carries a monochrome
+  `Desktop` marker on its header — the lane accent owns the color channel — that
+  promotes from a bare glyph to the machine's name when a glyph alone would be
+  ambiguous (the machine is offline, two or more foreign machines are on screen,
+  or the branch also exists elsewhere). Foreign lanes are listed only when they
+  have sessions, after the same search and lane filter the local list applies, so
+  the union stays "work in flight" rather than an inventory of every lane
+  everywhere; the empty state accounts for them, so "No sessions" cannot claim an
+  empty machine while another is busy. Foreign session rows are read-only:
+  clicking one switches the tab to that machine (`switchRemoteProject`), which is
+  the same explicit move as opening a remote project — nothing executes across
+  machines implicitly. A machine that goes offline keeps its rows, dimmed and
+  inert, rather than having them reflow away on a wifi blip. A lane with shared delete progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
   organization modes. The bottom Add Lane button opens
@@ -681,7 +696,12 @@ Renderer surfaces:
   switches it hydrates the destination project's cached rows but marks them
   non-authoritative until the active project refresh returns; cache mirroring
   and open-tab pruning pause during that window so the previous project's
-  sessions cannot poison the new project's Work state. Remote-bound projects
+  sessions cannot poison the new project's Work state. `canMutatePinnedProjectUi`
+  gates pinned updates on whether the pinned binding is still **open**
+  (`isLivePinnedBinding`), not on whether it is the active one: a pin that differs
+  from the active binding is the normal state of any chat whose lane lives on
+  another open machine, so only a pin for a closed project is discarded.
+  Remote-bound projects
   use a slower running-session refresh cadence and skip visibility-triggered
   refreshes unless hidden changes were observed, reducing background SSH
   chatter. `launchPtySession`
