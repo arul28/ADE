@@ -1026,6 +1026,21 @@ let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
 let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
+/**
+ * Kind of the binding this window was attached to when the in-flight project
+ * transition began. `currentProjectBinding` is deliberately nulled for the
+ * duration of a transition, so during a switch it cannot answer "was I attached
+ * to a remote runtime?". This value can — it is only ever consulted while a
+ * transition is in flight (see `isRemoteProjectRuntimeContext`).
+ *
+ * It must be snapshotted at DETACH time (`detachProjectBindingForTransition`),
+ * not merely left at the last non-null binding: a window that closed a remote
+ * project and is now projectless would otherwise keep reporting "remote"
+ * forever, and every later local transition (open repo, close) would answer
+ * "runtime unreachable" for projectless chats the local service can legitimately
+ * serve.
+ */
+let lastProjectRuntimeBindingKind: OpenProjectBinding["kind"] | null = null;
 const projectBindingChangedCallbacks = new Set<
   (binding: OpenProjectBinding | null) => void
 >();
@@ -1035,6 +1050,7 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const nextKey = binding?.key ?? null;
   projectBindingVersion += 1;
   currentProjectBinding = binding;
+  if (binding) lastProjectRuntimeBindingKind = binding.kind;
   if (previousKey !== nextKey) {
     projectBindingGeneration += 1;
     resetRemoteRuntimeEventDedup(nextKey);
@@ -1043,6 +1059,20 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   if (binding) {
     ensureRemoteRuntimeEventPump();
   }
+}
+
+/**
+ * Detach the current binding at the start of a project transition.
+ *
+ * Records the kind we are LEAVING before nulling, so `isRemoteProjectRuntimeContext`
+ * answers for this transition rather than for whatever project was bound last.
+ * Detaching from nothing (a projectless/machine-tab window) clears the value:
+ * there is no remote runtime to protect, so chat reads must fall through to the
+ * local service.
+ */
+function detachProjectBindingForTransition(): void {
+  lastProjectRuntimeBindingKind = currentProjectBinding?.kind ?? null;
+  rememberProjectBinding(null);
 }
 
 function notifyProjectBindingChangedCallbacks(
@@ -1112,6 +1142,28 @@ async function getLocalProjectBinding(options?: { fresh?: boolean }): Promise<Ex
 async function getProjectRuntimeBinding(options?: { fresh?: boolean }): Promise<OpenProjectBinding | null> {
   if (!options?.fresh && currentProjectBinding) return currentProjectBinding;
   return refreshProjectBinding();
+}
+
+/**
+ * Synchronous, transition-safe answer to "is the project runtime this window
+ * talks to a REMOTE one?".
+ *
+ * Unlike `getRemoteProjectBinding()` this never refreshes and never awaits, so
+ * it stays valid inside the window where a project switch has intentionally
+ * nulled `currentProjectBinding`. Three signals, in precedence order:
+ *  1. A live binding answers for itself.
+ *  2. A remote `openProject` in flight means we are switching TO a remote
+ *     runtime (that path nulls the binding for the whole open).
+ *  3. Otherwise, only while a transition is in flight, fall back to the kind of
+ *     the binding we were attached to when the switch began.
+ */
+function isRemoteProjectRuntimeContext(): boolean {
+  if (currentProjectBinding) return currentProjectBinding.kind === "remote";
+  if (activeRemoteProjectOpenGeneration !== null) return true;
+  return (
+    projectRuntimeTransitionDepth > 0 &&
+    lastProjectRuntimeBindingKind === "remote"
+  );
 }
 
 function normalizePathForContainment(value: string): string {
@@ -3407,7 +3459,7 @@ contextBridge.exposeInMainWorld("ade", {
       // event pumping until another refresh restored it. Null once up front;
       // the listener handles the post-action update.
       const previousBinding = currentProjectBinding;
-      rememberProjectBinding(null);
+      detachProjectBindingForTransition();
       try {
         const project = await clearAround(
           () => {
@@ -3491,7 +3543,7 @@ contextBridge.exposeInMainWorld("ade", {
     closeCurrent: async (): Promise<void> =>
       clearAround(
         () => {
-          rememberProjectBinding(null);
+          detachProjectBindingForTransition();
           clearProjectScopedReadCaches();
         },
         () => runProjectRuntimeTransition(() =>
@@ -5952,9 +6004,29 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
         argsList: [args.sessionId, { maxEvents: args.maxEvents }],
       });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
+      if (runtime.handled) return runtime.result;
+      // Read-only chat calls are intentionally left unhandled while a project
+      // transition is in flight. For a REMOTE runtime we must not fall through
+      // to the local main-process chat service: it has never heard of the
+      // remote session id, so it answers `sessionFound: false` — a FALSE
+      // "this session does not exist" that the renderer treats as
+      // authoritative and uses to wipe the transcript and its cache. Report
+      // "runtime temporarily unreachable" instead so the renderer keeps what
+      // it has and re-queries once the switch settles. Local bindings keep the
+      // IPC fallback below: there the local service IS the right answer.
+      if (isRemoteProjectRuntimeContext()) {
+        return {
+          sessionId: args.sessionId,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: false,
+          hasOlderHistory: false,
+          unavailable: true,
+        };
+      }
+      return ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
     },
     getEventHistoryPage: async (args: {
       sessionId: string;
@@ -5964,9 +6036,24 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
         argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
       });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.agentChatGetEventHistoryPage, args);
+      if (runtime.handled) return runtime.result;
+      // See getEventHistory: answering a REMOTE session from the local
+      // main-process service yields a FALSE `sessionFound: false` that the
+      // renderer acts on destructively. Return an unreachable-runtime page and
+      // keep the caller's cursor (`startOffset: args.beforeOffset`) so we do
+      // not also claim the head of the transcript was reached. Local bindings
+      // still fall through to IPC.
+      if (isRemoteProjectRuntimeContext()) {
+        return {
+          sessionId: args.sessionId,
+          events: [],
+          startOffset: args.beforeOffset,
+          hasMore: false,
+          sessionFound: false,
+          unavailable: true,
+        };
+      }
+      return ipcRenderer.invoke(IPC.agentChatGetEventHistoryPage, args);
     },
     codex: {
       getGoal: (

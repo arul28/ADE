@@ -77,10 +77,12 @@ import {
   buildTextRenderKey,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncrementalWithContext,
+  countRowsAppendedSince,
   deriveWebSearchResultDisplay,
   formatStructuredValue,
   groupChatTranscriptRows,
   readRecord,
+  shouldCollapseUserMessageText,
   summarizeDiffStats,
   summarizeInlineText,
   type BackgroundFinishChipRenderEvent,
@@ -106,12 +108,11 @@ import { MosaicCard } from "./MosaicCard";
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
-  buildMinimapDisplayEntries,
   collectUserMessageMinimapSourceEntries,
-  computeActiveDisplayIndex,
   computeActiveFullUserOrdinal,
   computeRowStartOffsets,
   computeScrollTopForRow,
+  resolveRowAnchorAtScrollTop,
 } from "./chatUserMinimap.logic";
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
@@ -2993,6 +2994,64 @@ function InlineQuestionRequestCard({
 // replay read as a flicker once the bubble settled.
 const animatedUserMessageKeys = new Set<string>();
 
+// Which long user bubbles the reader has expanded. Module-level for the same
+// reason as `animatedUserMessageKeys`: the virtualizer unmounts and remounts
+// rows as they leave/enter the window, and component state would silently
+// re-collapse a message the reader had opened.
+const expandedUserMessageBodyKeys = new Set<string>();
+
+/**
+ * Fades the last ~1.75rem of a clamped bubble instead of hard-cutting it.
+ * A CSS mask (not `line-clamp`) so the clamped content can still be markdown,
+ * chips or code — `line-clamp` needs a single inline formatting context and
+ * mangles all three.
+ */
+const COLLAPSED_USER_MESSAGE_MASK = "linear-gradient(to bottom, black calc(100% - 1.75rem), transparent)";
+
+/**
+ * Clamps an over-long user prompt so one giant paste cannot dominate the
+ * transcript. Row keys are untouched, so the normal
+ * ResizeObserver → `handleMeasure` → `reconcileMeasuredScrollTop` chain absorbs
+ * the height change (expanding a row above the viewport keeps the visible
+ * content still).
+ */
+function CollapsibleUserMessageBody({ rowKey, children }: { rowKey: string; children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(() => expandedUserMessageBodyKeys.has(rowKey));
+  const toggle = useCallback(() => {
+    setExpanded((current) => {
+      const next = !current;
+      if (next) expandedUserMessageBodyKeys.add(rowKey);
+      else expandedUserMessageBodyKeys.delete(rowKey);
+      return next;
+    });
+  }, [rowKey]);
+
+  return (
+    <div className="min-w-0">
+      <div
+        data-testid="user-message-collapsible-body"
+        data-collapsed={expanded ? "false" : "true"}
+        className={cn("min-w-0", expanded ? null : "relative max-h-44 overflow-hidden")}
+        style={
+          expanded
+            ? undefined
+            : { WebkitMaskImage: COLLAPSED_USER_MESSAGE_MASK, maskImage: COLLAPSED_USER_MESSAGE_MASK }
+        }
+      >
+        {children}
+      </div>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={toggle}
+        className="-ml-1 mt-1 inline-flex items-center rounded px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/60 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
+      >
+        {expanded ? "Show less" : "Show full message"}
+      </button>
+    </div>
+  );
+}
+
 /** Stable-ish identity for an interrupt receipt row (no id on the event). */
 function interruptReceiptIdentity(event: Extract<AgentChatEvent, { type: "interrupt_receipt" }>): string {
   return `${event.turnId ?? ""}:${(event.stillQueuedUuids ?? []).join(",")}`;
@@ -3198,14 +3257,11 @@ function renderEvent(
               );
             }
             const parsed = parseLeadingIosContextChips(event.text);
-            if (!parsed.chips.length) {
-              return (
-                <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                  {event.text}
-                </div>
-              );
-            }
-            return (
+            const body = !parsed.chips.length ? (
+              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
+                {event.text}
+              </div>
+            ) : (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
                   {parsed.chips.map((label, idx) => (
@@ -3222,6 +3278,10 @@ function renderEvent(
                 {parsed.rest}
               </div>
             );
+            // Only the plain prompt body clamps. The hidden-prompt brief and the
+            // displayText + <details> variant already have their own disclosure.
+            if (!shouldCollapseUserMessageText(event.text)) return body;
+            return <CollapsibleUserMessageBody rowKey={envelope.key}>{body}</CollapsibleUserMessageBody>;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
             <ChatAttachmentTray
@@ -5013,6 +5073,15 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
 
 /** Estimated height per message row (px) used before real measurement. */
 const ESTIMATED_ROW_HEIGHT = 80;
+
+/**
+ * Shared deadband for every measured box below. Sub-pixel churn (zoom,
+ * fractional layout, backdrop-filter reflow) would otherwise land a state write
+ * on frames where nothing visibly moved.
+ */
+function movedByAPixel(current: number, next: number): boolean {
+  return Math.abs(current - next) >= 1;
+}
 /** Number of extra rows to render above/below the visible viewport. */
 const OVERSCAN = 10;
 /** Minimum number of rows before virtualization kicks in. */
@@ -5031,6 +5100,44 @@ const TOUCH_SCROLL_DEADBAND_PX = 2;
  * up requests the next older transcript page (when one exists).
  */
 const LOAD_OLDER_THRESHOLD_PX = 300;
+
+/* ── Per-chat scroll memory ────────────────────────────────────────────────
+ * The owning pane force-remounts this list with `key={selectedSessionId}`, so
+ * every ref and piece of state is destroyed on a chat switch. Module scope is
+ * what survives that remount, which is why the memory lives here and not in a
+ * ref or the store (it is throwaway view state, not user data).
+ */
+type ChatScrollMemory = {
+  /** Whether the reader was following the live tail when they left. */
+  wasPinnedToBottom: boolean;
+  /** Row key of the row occupying the top of the viewport. */
+  anchorRowKey: string | null;
+  /** How far into that row the viewport top sat. */
+  anchorOffsetPx: number;
+  /** Last row present when they left — seeds the "N new" counter on return. */
+  lastSeenRowKey: string | null;
+  savedAtMs: number;
+};
+
+/** Bounded so a long-lived window can't accumulate memory for every chat ever opened. */
+const CHAT_SCROLL_MEMORY_LIMIT = 32;
+/** Insertion order doubles as LRU order: writes re-insert at the tail. */
+const chatScrollMemoryBySession = new Map<string, ChatScrollMemory>();
+
+function readChatScrollMemory(sessionId: string | null | undefined): ChatScrollMemory | null {
+  if (!sessionId) return null;
+  return chatScrollMemoryBySession.get(sessionId) ?? null;
+}
+
+function rememberChatScrollMemory(sessionId: string, memory: ChatScrollMemory): void {
+  chatScrollMemoryBySession.delete(sessionId);
+  chatScrollMemoryBySession.set(sessionId, memory);
+  while (chatScrollMemoryBySession.size > CHAT_SCROLL_MEMORY_LIMIT) {
+    const oldest = chatScrollMemoryBySession.keys().next().value;
+    if (oldest === undefined) break;
+    chatScrollMemoryBySession.delete(oldest);
+  }
+}
 
 export function shouldAbsorbProgrammaticScrollEvent({
   scrollTop,
@@ -5328,6 +5435,7 @@ function AgentChatMessageListMain({
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const listRootRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
@@ -5345,9 +5453,32 @@ function AgentChatMessageListMain({
     rows: [],
     context: null,
   });
-  const [stickToBottom, setStickToBottom] = useState(true);
+  // Read once per mount: the pane remounts this component per chat, so this is
+  // effectively "the state this chat was left in".
+  const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
+  const [stickToBottom, setStickToBottom] = useState(() => restoredScrollMemory?.wasPinnedToBottom ?? true);
   const [filesWorkspaces, setFilesWorkspaces] = useState<FilesWorkspace[]>([]);
-  const stickToBottomRef = useRef(true);
+  const stickToBottomRef = useRef(restoredScrollMemory?.wasPinnedToBottom ?? true);
+  // Scroll bookkeeping written from `handleScroll` only — never state, so
+  // scrolling stays render-free.
+  const lastScrollTopRef = useRef(0);
+  const scrollRestoreSettledRef = useRef(false);
+  const scrollRestoreAppliedTopRef = useRef<number | null>(null);
+  const scrollRestoreCorrectionRafRef = useRef<number | null>(null);
+  const pendingScrollRestoreRef = useRef<{ anchorRowKey: string; anchorOffsetPx: number } | null>(null);
+  // Row key that was last in the transcript when bottom-follow broke; drives
+  // the "N new" count on the jump pill.
+  const [detachAnchorRowKey, setDetachAnchorRowKey] = useState<string | null>(
+    restoredScrollMemory?.wasPinnedToBottom === false ? (restoredScrollMemory.lastSeenRowKey ?? null) : null,
+  );
+  // Measured geometry the minimap rail needs. Kept as two pieces of state so a
+  // width-only change (pane resize) and a height-only change don't invalidate
+  // each other. `top` is viewport-space: it is what converts the floating PR
+  // pane's published bottom edge into the rail's own coordinate frame.
+  const [listRootBoxPx, setListRootBoxPx] = useState<{ width: number; height: number; top: number }>(
+    { width: 0, height: 0, top: 0 },
+  );
+  const [columnWidthPx, setColumnWidthPx] = useState(0);
   // Track the single pending rAF handle for scroll-to-bottom writes so we
   // coalesce every source (ResizeObserver, stick-flip effect, jump button)
   // into at most one scrollTop assignment per frame.
@@ -5453,6 +5584,10 @@ function AgentChatMessageListMain({
       cancelAnimationFrame(anchorCorrectionRafRef.current);
       anchorCorrectionRafRef.current = null;
     }
+    if (scrollRestoreCorrectionRafRef.current !== null) {
+      cancelAnimationFrame(scrollRestoreCorrectionRafRef.current);
+      scrollRestoreCorrectionRafRef.current = null;
+    }
   }, []);
 
   const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => {
@@ -5485,6 +5620,12 @@ function AgentChatMessageListMain({
     [rows],
   );
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
+  // Mirrored for the render-free paths (scroll handler, unmount snapshot) that
+  // must not re-subscribe every time the transcript grows.
+  const groupedRowKeysRef = useRef<readonly string[]>(groupedRowKeys);
+  groupedRowKeysRef.current = groupedRowKeys;
+  const timelineRowGapPxRef = useRef(timelineRowGapPx);
+  timelineRowGapPxRef.current = timelineRowGapPx;
   const forkHistoryDividerRowKey = useMemo(
     () => computeForkHistoryDividerRowKey(events, groupedRowKeys),
     [events, groupedRowKeys],
@@ -5618,10 +5759,47 @@ function AgentChatMessageListMain({
     const el = scrollRef.current;
     if (!el) return;
     const nextHeight = el.clientHeight;
-    setContainerHeight((current) => (
-      Math.abs(current - nextHeight) >= 1 ? nextHeight : current
+    setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
+  }, []);
+
+  // The minimap rail is positioned against the LIST ROOT (its offset parent), so
+  // its gutter maths need that element's box — nothing else measures it.
+  const measureListRootBox = useCallback(() => {
+    const el = listRootRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = Math.max(el.clientWidth, rect.width);
+    const height = Math.max(el.clientHeight, rect.height);
+    const top = rect.top;
+    setListRootBoxPx((current) => (
+      movedByAPixel(current.width, width)
+        || movedByAPixel(current.height, height)
+        || movedByAPixel(current.top, top)
+        ? { width, height, top }
+        : current
     ));
   }, []);
+
+  /** Centered column width — the other half of the rail's gutter maths. */
+  const measureContentColumnWidth = useCallback(() => {
+    const el = contentWrapperRef.current;
+    if (!el) return;
+    const width = Math.max(el.clientWidth, el.getBoundingClientRect().width);
+    setColumnWidthPx((current) => (movedByAPixel(current, width) ? width : current));
+  }, []);
+
+  useEffect(() => {
+    const el = listRootRef.current;
+    if (!el) return;
+    if (typeof ResizeObserver === "undefined") {
+      measureListRootBox();
+      return;
+    }
+    const ro = new ResizeObserver(() => measureListRootBox());
+    ro.observe(el);
+    measureListRootBox();
+    return () => ro.disconnect();
+  }, [measureListRootBox]);
 
   // Unified stick-to-bottom autoscroll:
   // - scrollToBottomSoon coalesces every scroll-to-bottom request into a
@@ -5663,18 +5841,25 @@ function AgentChatMessageListMain({
     scrollRafRef.current = requestAnimationFrame(run);
   }, []);
 
+  /** Row the transcript ended on at the moment bottom-follow broke. */
+  const markDetachAnchor = useCallback(() => {
+    const keys = groupedRowKeysRef.current;
+    setDetachAnchorRowKey(keys.length ? keys[keys.length - 1]! : null);
+  }, []);
+
   const releaseBottomStickinessForUserScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el || el.scrollHeight <= el.clientHeight + 1 || !stickToBottomRef.current) return;
     stickToBottomRef.current = false;
     setStickToBottom(false);
+    markDetachAnchor();
     scrollFollowFramesRef.current = 0;
     programmaticScrollTargetRef.current = null;
     if (scrollRafRef.current !== null) {
       cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
     }
-  }, []);
+  }, [markDetachAnchor]);
 
   useEffect(() => () => {
     if (scrollRafRef.current !== null) {
@@ -5698,15 +5883,21 @@ function AgentChatMessageListMain({
     if (!wrapper || typeof ResizeObserver === "undefined") {
       // Fallback: when ResizeObserver is unavailable (test env) we still
       // want sticky behavior as content mutates.
+      measureContentColumnWidth();
       if (stickToBottomRef.current) scrollToBottomSoon();
       return;
     }
     const ro = new ResizeObserver(() => {
+      // One observation, two consumers: bottom-follow and the minimap's gutter
+      // maths. The rail costs no extra observer, and the width setter has a 1px
+      // deadband so streaming height churn never re-renders for it.
+      measureContentColumnWidth();
       if (stickToBottomRef.current) scrollToBottomSoon(2);
     });
     ro.observe(wrapper);
+    measureContentColumnWidth();
     return () => ro.disconnect();
-  }, [scrollToBottomSoon]);
+  }, [measureContentColumnWidth, scrollToBottomSoon]);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -5720,9 +5911,7 @@ function AgentChatMessageListMain({
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       const nextHeight = Math.max(entry?.contentRect.height ?? 0, el.clientHeight);
-      setContainerHeight((current) => (
-        Math.abs(current - nextHeight) >= 1 ? nextHeight : current
-      ));
+      setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
     });
     ro.observe(el);
     measureScrollContainerHeight();
@@ -6046,8 +6235,114 @@ function AgentChatMessageListMain({
     if (el) prependDomMetricsRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
   });
 
+  // ── Smart-hybrid scroll restore ────────────────────────────────────────
+  // Pinned readers come back to the live tail (the bottom-stick path already
+  // does that); detached readers come back to the exact row they left on.
+  // Restoration always completes before a prepend can fire — paging requires
+  // being scrolled near the TOP — so this never races the prepend anchor.
+  /**
+   * Row start offsets under the measured-height model (ESTIMATED_ROW_HEIGHT for
+   * anything not yet measured). Stable, and reads only refs, so the unmount
+   * cleanup can call it too.
+   */
+  const measuredRowStartOffsets = useCallback((keys: readonly string[]): number[] => (
+    computeRowStartOffsets(
+      keys.length,
+      (index) => measuredHeights.current.get(keys[index]!) ?? ESTIMATED_ROW_HEIGHT,
+      timelineRowGapPxRef.current,
+    )
+  ), []);
+
+  const applyScrollRestore = useCallback((anchorRowKey: string, anchorOffsetPx: number) => {
+    const el = scrollRef.current;
+    if (!el) return false;
+    const keys = groupedRowKeysRef.current;
+    const anchorIndex = keys.indexOf(anchorRowKey);
+    if (anchorIndex < 0) return false;
+    // The SAME height model the prepend anchor and the minimap use — one shared
+    // function, so they cannot disagree about where a row starts.
+    const offsets = measuredRowStartOffsets(keys);
+    const target = Math.max(0, computeScrollTopForRow(anchorIndex, offsets) + anchorOffsetPx);
+    const before = el.scrollTop;
+    el.scrollTop = target;
+    if (el.scrollTop !== before) programmaticScrollTargetRef.current = el.scrollTop;
+    lastScrollTopRef.current = el.scrollTop;
+    scrollRestoreAppliedTopRef.current = el.scrollTop;
+    setScrollTop(el.scrollTop);
+    return true;
+  }, [measuredRowStartOffsets]);
+
+  useLayoutEffect(() => {
+    if (scrollRestoreSettledRef.current) return;
+    const memory = restoredScrollMemory;
+    if (!memory || memory.wasPinnedToBottom || !memory.anchorRowKey) {
+      scrollRestoreSettledRef.current = true;
+      return;
+    }
+    // The scroll container measures 0 on the first frame; writing scrollTop
+    // against that clamps to 0 and reads as "it forgot where I was".
+    if (containerHeight <= 0 || groupedRowKeys.length === 0) return;
+    scrollRestoreSettledRef.current = true;
+    if (applyScrollRestore(memory.anchorRowKey, memory.anchorOffsetPx)) {
+      pendingScrollRestoreRef.current = {
+        anchorRowKey: memory.anchorRowKey,
+        anchorOffsetPx: memory.anchorOffsetPx,
+      };
+    }
+  }, [applyScrollRestore, containerHeight, groupedRowKeys, restoredScrollMemory]);
+
+  // Exactly one correction once measured heights land: the first pass runs on
+  // ESTIMATED_ROW_HEIGHT for anything not yet measured.
+  useEffect(() => {
+    const pending = pendingScrollRestoreRef.current;
+    if (!pending || scrollRestoreCorrectionRafRef.current !== null) return;
+    scrollRestoreCorrectionRafRef.current = requestAnimationFrame(() => {
+      scrollRestoreCorrectionRafRef.current = null;
+      pendingScrollRestoreRef.current = null;
+      const el = scrollRef.current;
+      const applied = scrollRestoreAppliedTopRef.current;
+      // A real scroll since the restore means the reader took over — never
+      // yank them back.
+      if (!el || (applied !== null && Math.abs(el.scrollTop - applied) >= 1)) return;
+      applyScrollRestore(pending.anchorRowKey, pending.anchorOffsetPx);
+    });
+  }, [applyScrollRestore, measurementTick]);
+
+  // Snapshot on unmount only — refs are still live in the cleanup, so following
+  // the scroll costs no renders while the chat is open.
+  useEffect(() => {
+    if (!sessionId) return;
+    const memorySessionId = sessionId;
+    return () => {
+      const keys = groupedRowKeysRef.current;
+      const pinned = stickToBottomRef.current;
+      const scrollTopAtExit = lastScrollTopRef.current;
+      let anchorRowKey: string | null = null;
+      let anchorOffsetPx = 0;
+      if (!pinned && keys.length) {
+        // Same offsets model as the restore path it feeds, so a round trip
+        // through this snapshot cannot drift.
+        const anchor = resolveRowAnchorAtScrollTop(measuredRowStartOffsets(keys), scrollTopAtExit);
+        if (anchor) {
+          anchorRowKey = keys[anchor.index] ?? null;
+          anchorOffsetPx = anchor.offsetPx;
+        }
+      }
+      rememberChatScrollMemory(memorySessionId, {
+        wasPinnedToBottom: pinned,
+        anchorRowKey,
+        anchorOffsetPx,
+        lastSeenRowKey: keys.length ? keys[keys.length - 1]! : null,
+        savedAtMs: Date.now(),
+      });
+    };
+  }, [measuredRowStartOffsets, sessionId]);
+
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
+    // Ref write, not state: the per-chat scroll memory is snapshotted at unmount
+    // so following the scroll costs zero renders.
+    lastScrollTopRef.current = target.scrollTop;
     // Absorb scroll events produced by our own programmatic scroll-to-bottom
     // writes so we never flip sticky state based on them — only the user's
     // own gesture (wheel / trackpad / keyboard) should break auto-follow.
@@ -6072,11 +6367,18 @@ function AgentChatMessageListMain({
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
-      if (nextStick) onReturnToLatest?.();
+      // Re-sticking means everything is caught up, so the "N new" baseline goes
+      // away; detaching starts a fresh one.
+      if (nextStick) {
+        setDetachAnchorRowKey(null);
+        onReturnToLatest?.();
+      } else {
+        markDetachAnchor();
+      }
     }
     setScrollTop(target.scrollTop);
     maybeRequestOlderHistory(target.scrollTop);
-  }, [maybeRequestOlderHistory, onReturnToLatest]);
+  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (event.deltaY < 0) {
@@ -6104,17 +6406,20 @@ function AgentChatMessageListMain({
   const jumpToLatest = useCallback(() => {
     stickToBottomRef.current = true;
     setStickToBottom(true);
+    setDetachAnchorRowKey(null);
     onReturnToLatest?.();
     scrollToBottomSoon();
   }, [onReturnToLatest, scrollToBottomSoon]);
 
-  const fullUserMinimapEntries = useMemo(
-    () => collectUserMessageMinimapSourceEntries(groupedRows),
-    [groupedRows],
+  // How much arrived after bottom-follow broke. Fails quiet (0) when the anchor
+  // row was re-grouped away, so the pill degrades to its plain label.
+  const newRowsSinceDetach = useMemo(
+    () => countRowsAppendedSince(groupedRowKeys, detachAnchorRowKey),
+    [groupedRowKeys, detachAnchorRowKey],
   );
 
-  const minimapDisplayEntries = useMemo(
-    () => buildMinimapDisplayEntries(groupedRows),
+  const minimapSourceEntries = useMemo(
+    () => collectUserMessageMinimapSourceEntries(groupedRows),
     [groupedRows],
   );
 
@@ -6123,14 +6428,11 @@ function AgentChatMessageListMain({
     return computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
   }, [groupedRows, rowHeight, measurementTick, timelineRowGapPx]);
 
+  // Ticks are 1:1 with entries, so the ordinal IS the rail index — no
+  // display-index translation step exists any more.
   const activeFullUserOrdinal = useMemo(
-    () => computeActiveFullUserOrdinal(scrollTop, fullUserMinimapEntries, rowStartOffsetsForMinimap),
-    [scrollTop, fullUserMinimapEntries, rowStartOffsetsForMinimap],
-  );
-
-  const activeMinimapDisplayIndex = useMemo(
-    () => computeActiveDisplayIndex(activeFullUserOrdinal, minimapDisplayEntries),
-    [activeFullUserOrdinal, minimapDisplayEntries],
+    () => computeActiveFullUserOrdinal(scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap),
+    [scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap],
   );
 
   const jumpToRowFromMinimap = useCallback(
@@ -6314,17 +6616,26 @@ function AgentChatMessageListMain({
   const showJumpToLatest = !stickToBottom && !sessionEnded;
 
   return (
-    <div className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}>
-      {/* Bound the minimap to the centered chat column, then place it just outside
-          the transcript gutter on wide layouts so it does not stripe the message text. */}
-      <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-column,52rem)]">
-        <ChatUserMinimap
-          displayEntries={minimapDisplayEntries}
-          activeDisplayIndex={activeMinimapDisplayIndex}
-          onJumpToRow={jumpToRowFromMinimap}
-          placement="outsideRight"
-        />
-      </div>
+    <div
+      ref={listRootRef}
+      data-chat-message-list-root=""
+      className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}
+    >
+      {/* Direct child of the list root on purpose: the rail's `left-0` and all of
+          its gutter maths assume the offset parent is the element whose width is
+          `listWidthPx`. An intermediate max-width wrapper would silently shift
+          the rail into the message column. The PR pane's edge is NOT passed —
+          the rail reads it from context (see chatPrPaneInset.ts) and subtracts
+          the list-root top measured here to land in its own frame. */}
+      <ChatUserMinimap
+        entries={minimapSourceEntries}
+        activeIndex={activeFullUserOrdinal}
+        onJumpToRow={jumpToRowFromMinimap}
+        listWidthPx={listRootBoxPx.width}
+        listHeightPx={listRootBoxPx.height}
+        listTopViewportPx={listRootBoxPx.top}
+        columnWidthPx={columnWidthPx}
+      />
       <div
         ref={scrollRef}
         className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
@@ -6337,28 +6648,29 @@ function AgentChatMessageListMain({
       >
         <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
           {hasOlderHistory ? (
-            /* Constant-height slot while older pages exist so toggling the
-               loading text never shifts the transcript below it. Unmounts
-               entirely once the head of the transcript is reached. */
+            /* Older history backfills silently: the IntersectionObserver on this
+               sentinel (and the underfill effect) page it in without ever asking
+               the reader to do anything, so the healthy path renders an EMPTY
+               fixed-height slot. Only a latched failure earns words. The height
+               is constant either way, so toggling never shifts the transcript.
+               Unmounts entirely once the head of the transcript is reached. */
             <div
               ref={olderHistorySentinelRef}
               className="flex h-7 shrink-0 items-center justify-center font-sans text-[11px] text-fg/45"
               role="status"
               aria-live="polite"
             >
-              {loadingOlderHistory ? (
-                "loading earlier messages…"
-              ) : (
+              {olderHistoryError ? (
                 <button
                   type="button"
                   onClick={() => onLoadOlderHistory?.()}
                   className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
-                  aria-label={olderHistoryError ? "Retry loading earlier messages" : "Load earlier messages"}
-                  title={olderHistoryError ?? undefined}
+                  aria-label="Retry loading earlier messages"
+                  title={olderHistoryError}
                 >
-                  {olderHistoryError ? "couldn’t load earlier messages · retry" : "load earlier messages"}
+                  couldn’t load earlier messages · retry
                 </button>
-              )}
+              ) : null}
             </div>
           ) : null}
           {rows.length === 0 && !streamingIndicator ? (
@@ -6395,10 +6707,11 @@ function AgentChatMessageListMain({
           type="button"
           onClick={jumpToLatest}
           className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-violet-400/30 bg-violet-500/20 px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
-          aria-label="Jump to latest message"
+          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest message"}
         >
           <CaretDown size={11} weight="bold" />
-          <span>Jump to latest</span>
+          {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
+          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest"}</span>
         </button>
       ) : null}
     </div>

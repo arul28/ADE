@@ -1413,6 +1413,10 @@ export function TopBar({
       setOpenRemoteProjectTabs((prev) =>
         prev.filter((entry) => entry.key !== binding.key),
       );
+      // Explicit tab close is a deliberate "forget this surface": drop the view
+      // state and the remembered route as well. Disconnects take the narrower
+      // `evictProjectDataCaches` path in `confirmAndCloseRemoteTargetTabs` so
+      // reconnecting can restore the chat that was open.
       evictProjectState(binding.key);
       removeStoredProjectRoute(binding.key);
     };
@@ -1497,12 +1501,24 @@ export function TopBar({
       const nextRemoteTabs = latestRemoteTabs.filter(
         (entry) => !affectedKeys.has(entry.key),
       );
+      // A disconnect is temporary: the machine can come back, so keep the view
+      // state (which chat/tile was open) and the remembered route, and only drop
+      // the data snapshots that could be stale against a remote that changed
+      // while it was unreachable. Removing a machine deletes its saved details,
+      // so that stays a full eviction — as does an explicit tab close.
+      const evictForAction = (bindingKey: string) => {
+        if (action === "remove") {
+          useAppStore.getState().evictProjectState(bindingKey);
+          removeStoredProjectRoute(bindingKey);
+          return;
+        }
+        useAppStore.getState().evictProjectDataCaches(bindingKey);
+      };
       const finishAffectedTabClose = () => {
         openRemoteProjectTabsRef.current = nextRemoteTabs;
         setOpenRemoteProjectTabs(nextRemoteTabs);
         for (const binding of affectedTabs) {
-          useAppStore.getState().evictProjectState(binding.key);
-          removeStoredProjectRoute(binding.key);
+          evictForAction(binding.key);
         }
       };
 
@@ -1531,9 +1547,16 @@ export function TopBar({
           if (nextLocalRoot) {
             await latestState.switchProjectToPath(nextLocalRoot);
           } else {
-            await latestState.closeProject();
-            for (const binding of affectedTabs) {
-              removeStoredProjectRoute(binding.key);
+            // No project tab left to fall back to. A disconnect must still keep
+            // the view state (which chat/tile was open) and the route memory so
+            // reconnecting lands where the user left off; a remove drops both.
+            await latestState.closeProject({
+              preserveRemoteViewState: action === "disconnect",
+            });
+            if (action === "remove") {
+              for (const binding of affectedTabs) {
+                removeStoredProjectRoute(binding.key);
+              }
             }
             return true;
           }

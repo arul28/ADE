@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
@@ -94,6 +94,7 @@ function installAde(over?: {
       getChecks: vi.fn().mockResolvedValue(over?.getChecks ?? []),
       getReviews: vi.fn().mockResolvedValue(over?.getReviews ?? []),
       getStatus: vi.fn().mockResolvedValue(over?.getStatus ?? null),
+      syncLanePr: vi.fn().mockResolvedValue(null),
     },
     github: {
       getAppInstallationStatus: vi.fn().mockResolvedValue({
@@ -114,20 +115,23 @@ function deferred<T>() {
 }
 
 function installAdeWithEvents(stalePr: PrSummary, freshPr: PrSummary) {
-  let prEventListener: ((event: PrEventPayload) => void) | null = null;
+  // The pane keeps TWO subscriptions (PR rows + reconcile-on-focus), so the
+  // harness must fan out to every registered listener, not just the last one.
+  const prEventListeners = new Set<(event: PrEventPayload) => void>();
   (globalThis.window as { ade?: unknown }).ade = {
     prs: {
       getForLane: vi.fn().mockResolvedValue(stalePr),
       refresh: vi.fn().mockResolvedValue([freshPr]),
       onEvent: vi.fn().mockImplementation((listener) => {
-        prEventListener = listener;
+        prEventListeners.add(listener);
         return () => {
-          if (prEventListener === listener) prEventListener = null;
+          prEventListeners.delete(listener);
         };
       }),
       getChecks: vi.fn().mockResolvedValue([]),
       getReviews: vi.fn().mockResolvedValue([]),
       getStatus: vi.fn().mockResolvedValue(null),
+      syncLanePr: vi.fn().mockResolvedValue(null),
     },
     github: {
       getAppInstallationStatus: vi.fn().mockResolvedValue({
@@ -140,7 +144,7 @@ function installAdeWithEvents(stalePr: PrSummary, freshPr: PrSummary) {
 
   return {
     emitPrEvent: (event: PrEventPayload) => {
-      prEventListener?.(event);
+      for (const listener of [...prEventListeners]) listener(event);
     },
   };
 }
@@ -244,7 +248,9 @@ describe("ChatPrPane", () => {
     await waitFor(() => {
       expect((window.ade.prs.refresh as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ prIds: ["pr-333"] });
     });
-    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
+    // Exactly two stable subscriptions: PR rows + reconcile-on-focus. Neither
+    // may be torn down and re-created as PR state changes.
+    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(2);
 
     act(() => {
       emitPrEvent({
@@ -257,7 +263,9 @@ describe("ChatPrPane", () => {
     await waitFor(() => {
       expect(screen.queryByText("Fix stale PR pane after merge")).toBeNull();
     });
-    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
+    // Exactly two stable subscriptions: PR rows + reconcile-on-focus. Neither
+    // may be torn down and re-created as PR state changes.
+    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(2);
   });
 
   it("renders a projection-only PR without calling row-based refresh or enrichment APIs", async () => {
@@ -402,5 +410,88 @@ describe("ChatPrPane", () => {
     installAde({ relayConfigured: false });
     renderPane();
     expect(await screen.findByText("polling")).toBeTruthy();
+  });
+});
+
+describe("ChatPrPane title bar", () => {
+  it("syncs the lane PR then re-reads it when ↻ is pressed", async () => {
+    installAde();
+    renderPane();
+
+    await screen.findByText("Add webhook relay for PR sync");
+    const readsBefore = (window.ade.prs.getForLane as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh pull request" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.syncLanePr).toHaveBeenCalledWith("lane1");
+    });
+    await waitFor(() => {
+      expect((window.ade.prs.getForLane as ReturnType<typeof vi.fn>).mock.calls.length)
+        .toBeGreaterThan(readsBefore);
+    });
+  });
+
+  it("spins ↻ while a backend reconcile runs and stops after the hide debounce", async () => {
+    vi.useFakeTimers();
+    try {
+      const pr = makePr({ id: "pr-reconcile", title: "Reconcile me" });
+      const { emitPrEvent } = installAdeWithEvents(pr, pr);
+      renderPane();
+      await act(async () => { await Promise.resolve(); });
+
+      const icon = () => screen.getByRole("button", { name: "Refresh pull request" }).querySelector("svg");
+      expect(icon()?.getAttribute("class") ?? "").not.toContain("animate-spin");
+
+      act(() => {
+        emitPrEvent({ type: "pr-reconcile", state: "running", polledAt: "2026-07-27T00:00:00.000Z" });
+      });
+      expect(icon()?.getAttribute("class") ?? "").toContain("animate-spin");
+
+      act(() => {
+        emitPrEvent({ type: "pr-reconcile", state: "idle", polledAt: "2026-07-27T00:00:01.000Z" });
+      });
+      // Still spinning inside the 300ms anti-flicker debounce.
+      expect(icon()?.getAttribute("class") ?? "").toContain("animate-spin");
+
+      act(() => { vi.advanceTimersByTime(400); });
+      expect(icon()?.getAttribute("class") ?? "").not.toContain("animate-spin");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not strand the reconcile hide timer when the pane unmounts mid-debounce", async () => {
+    vi.useFakeTimers();
+    try {
+      const pr = makePr({ id: "pr-reconcile-unmount" });
+      const { emitPrEvent } = installAdeWithEvents(pr, pr);
+      const { unmount } = renderPane();
+      await act(async () => { await Promise.resolve(); });
+
+      act(() => {
+        emitPrEvent({ type: "pr-reconcile", state: "running", polledAt: "2026-07-27T00:00:00.000Z" });
+        emitPrEvent({ type: "pr-reconcile", state: "idle", polledAt: "2026-07-27T00:00:01.000Z" });
+      });
+
+      const clearSpy = vi.spyOn(window, "clearTimeout");
+      unmount();
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
+
+      // The pending hide must not fire into an unmounted tree.
+      act(() => { vi.advanceTimersByTime(400); });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("calls onClose from the ✕ button", async () => {
+    installAde();
+    const onClose = vi.fn();
+    renderPane({ onClose });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close pull request panel" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -131,8 +131,21 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   LRU: inactive mounted surfaces are inert and animation-paused, while older
   open surfaces snapshot their state before unmounting. Returning to a tab
   restores its cached surface and revalidates lanes; a failed reconnect leaves
-  that stale surface visible. Explicit tab close or target disconnect switches
-  away first, then evicts only the affected binding state and stored route.
+  that stale surface visible. Closing or disconnecting switches away first, then
+  evicts only the affected binding — but the two are **not** the same eviction:
+  - **Explicit tab close, and removing a machine**, are deliberate "forget this
+    surface" actions: `evictProjectState(bindingKey)` plus
+    `removeStoredProjectRoute(bindingKey)` wipe view state, data caches, and the
+    remembered route.
+  - **Disconnect** is temporary — the machine can come back — so it takes the
+    narrower `evictProjectDataCaches(bindingKey)` path: lane cache, lane
+    selection, and session cache are dropped (they can be stale against a remote
+    that changed while it was unreachable) while `workViewByProject` /
+    `laneWorkViewByScope` and the stored route survive, so reconnecting lands on
+    the chat or tile the user had open. Binding keys are deterministic
+    (`remote:<targetId>:<projectId>`), so the preserved view state re-attaches.
+    When the disconnected tab was the last one, `closeProject({
+    preserveRemoteViewState: true })` applies the same rule instead of wiping.
 - `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
   local or remote JSON-RPC actions based on the active project binding. Remote
   project usage/budget reads route through the remote runtime; local project

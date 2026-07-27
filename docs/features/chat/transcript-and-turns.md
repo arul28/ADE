@@ -357,18 +357,116 @@ flush helper first so reads always reflect the latest streamed content.
 
 ## Virtual scrolling and message-list layout
 
-`AgentChatMessageList.tsx` uses `@tanstack/react-virtual` to keep render
-cost proportional to the visible viewport rather than total message
-count. Notable rendering rules:
+`AgentChatMessageList.tsx` keeps render cost proportional to the visible
+viewport rather than total message count using its **own** virtualizer —
+not `@tanstack/react-virtual`. The pieces:
+
+- `measuredHeights`: a `Map` from stable row key to last measured DOM
+  height, with `ESTIMATED_ROW_HEIGHT` as the fallback for rows that have
+  never been rendered.
+- Spacer divs: a top spacer offsets the rendered window to its correct
+  scroll position and a bottom spacer fills the remaining scroll area,
+  both sized from that map.
+- `MeasuredEventRow`: wraps each rendered row and reports its real height
+  through a `ResizeObserver`; `handleMeasure` writes the map and calls
+  `reconcileMeasuredScrollTop`, which adjusts `scrollTop` when a row
+  above the viewport changed height so the visible content stays still.
+
+Below `VIRTUALIZATION_THRESHOLD` rows the list skips all of this and
+renders every row directly. Notable rendering rules:
 
 - Assistant message cards constrain to `max-w-[78ch]` for readability.
 - Turn dividers (`ChatTurnDivider`) separate consecutive turns.
 - Code blocks in assistant messages render through `HighlightedCode`.
-- User messages animate in with a `motion/react` spring transition.
+- User messages animate in with a `motion/react` spring transition, and
+  over-long ones (>600 chars or >8 lines) collapse behind a CSS gradient
+  mask with a **Show full message** toggle.
 - Tables use rounded borders and a subtle inset-shadow treatment.
 - System notices render compact inline rather than as pill badges.
 - Plan approval cards cap at `max-h-72` with pre-wrapped text so long
   multi-step plans scroll.
+
+## History snapshots, scroll-back, and misses
+
+A chat pane hydrates from `ade.agentChat.getEventHistory`
+(`AgentChatEventHistorySnapshot`) and pages backwards with
+`ade.agentChat.getEventHistoryPage` (`AgentChatEventHistoryPage`). Both DTOs
+live in `apps/desktop/src/shared/types/chat.ts`. Three fields carry the whole
+contract, and each exists because the obvious substitute is wrong.
+
+### `hasOlderHistory` — is there anything to scroll back to?
+
+`agentChatService` derives it from the **tail read** (`transcriptTruncated ||
+windowTruncated`), never from envelope object identity, so it stays correct when
+a snapshot was served entirely from the in-memory ring buffer or the envelopes
+were re-created by the coalescing/subagent pipeline (which loses identity).
+
+Clients must gate the "load earlier messages" head slot on this field, **not**
+on `tailStartOffset > 0`. `resolveSnapshotHistoryCursor` in `AgentChatPane`
+enforces that: a `hasOlderHistory === false` returns cursor `0` even when a
+non-zero `tailStartOffset` is reported, because otherwise the list offers a
+scroll-back affordance that can only ever fail — which is exactly what produced
+the false `couldn't load earlier messages` banner. The field is optional for
+compatibility; older runtimes that omit it fall back to the legacy offset-only
+rule.
+
+### `tailStartOffset` — the paging cursor, in three tiers
+
+`tailStartOffset` is the `beforeOffset` a client passes to
+`getChatEventHistoryPage`. It is resolved in strict precedence:
+
+1. **Exact.** The oldest returned event maps to a physical transcript line —
+   use that line's byte offset.
+2. **Identity lost, window complete.** Nothing was dropped from the head of the
+   merged window (`!windowTruncated`), so everything at or after the tail read's
+   `startOffset` is already in this response and paging from `startOffset` is
+   still exact. A tail that started at byte 0 yields a `null` cursor: there is
+   nothing older.
+3. **Degraded.** Identity was lost *and* the merged window dropped events, so
+   ADE cannot name the byte offset of the oldest returned event. It pages from
+   `endOffset` (the end of the transcript), gated on `hasOlderHistory`. Pages
+   then re-deliver events the client already shows — which the client dedupes —
+   but scroll-back still reaches the head. This fallback must survive: removing
+   it strands truncated transcripts whose snapshot came entirely from the ring
+   buffer with no way to scroll back at all.
+
+`advanceOlderHistoryCursor` requires `hasMore` **and** a strictly decreasing
+`startOffset` before it advances, which mirrors the service guarantee and makes
+client paging loops provably terminating.
+
+### `unavailable` — "could not reach the runtime", not "no such session"
+
+`sessionFound: false` is an authoritative answer: this project runtime has no
+such session. `unavailable: true` is not — it means the bound runtime could not
+be reached (remote hop down, machine asleep, project switch in flight), so no
+history could be read at all. Clients must never clear, tombstone, or blank a
+chat on it.
+
+It is produced at every boundary that can fail to reach a runtime:
+
+- **Preload** (`apps/desktop/src/preload/preload.ts`) returns it for
+  `getEventHistory` / `getEventHistoryPage` when the call was left unhandled
+  during a project transition **and** the window's runtime context is remote.
+  Falling through to the local main-process chat service there was the bug: the
+  local service has never heard of a remote session id, so it answers a *false*
+  `sessionFound: false` that the renderer treats as authoritative and uses to
+  wipe the transcript and its cache. Local bindings still fall through to IPC,
+  because there the local service **is** the right answer. The page variant also
+  echoes the caller's cursor back as `startOffset` so it does not additionally
+  claim the head of the transcript was reached. See
+  [Remote runtime internals](../remote-runtime/internal-architecture.md#local-runtime-routing).
+- **The web-client adapter** (`renderer/webclient/adapter/agentChat.ts`,
+  `personalChats.ts`) sets it on the fallback value used when the host command
+  could not be reached or dispatched.
+
+`resolveChatHistoryMissAction` in `AgentChatPane` turns a miss into one of three
+actions:
+
+| Result | Action | Meaning |
+|---|---|---|
+| `unavailable: true` | `sync-pending` | Keep everything, retry later, raise the catch-up hairline. |
+| `sessionFound: false`, events rendered | `keep-missing` | Authoritative miss, but blanking a transcript the user is reading is strictly worse than leaving a stale-but-real one on screen. Marked for a later "chat no longer exists" pass. |
+| `sessionFound: false`, nothing rendered | `clear` | Safe to drop the empty view. |
 
 ## Persisted transcript
 
@@ -471,3 +569,12 @@ regain duplicate visible failures after restart.
   caught by a compile-time exhaustiveness guard rather than by review; see
   [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
   Emitting later lifecycle rows can resurrect a stopped renderer state.
+- **A failed history read is not evidence that a chat is gone.** Never infer
+  `sessionFound: false` from a connection or dispatch failure — set
+  `unavailable: true` instead. Every new code path that can answer a chat
+  history read without reaching the bound runtime has to make that distinction,
+  or it will blank a healthy transcript. See
+  [History snapshots, scroll-back, and misses](#history-snapshots-scroll-back-and-misses).
+- **`tailStartOffset > 0` does not mean older history exists.** In the degraded
+  tier it is a conservative end-of-file cursor. Gate scroll-back UI on
+  `hasOlderHistory`.

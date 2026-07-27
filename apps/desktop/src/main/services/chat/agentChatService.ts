@@ -9378,7 +9378,7 @@ export function createAgentChatService(args: {
     responseMaxChars: number;
     transcriptHistory: Pick<
       TranscriptHistoryCacheEntry,
-      "envelopes" | "truncated" | "endOffset" | "envelopeStartOffsetByIdentity"
+      "envelopes" | "truncated" | "startOffset" | "endOffset" | "envelopeStartOffsetByIdentity"
     >;
   }): AgentChatEventHistorySnapshot => {
     const {
@@ -9412,6 +9412,13 @@ export function createAgentChatService(args: {
       || parentVisibleLength > maxEvents
       || windowed.length < countWindowed.length;
     const truncated = transcriptTruncated || windowTruncated;
+    // Authoritative "older content exists beyond this response" signal. Both
+    // inputs are computed at tail-read / merge-window time, never from envelope
+    // object identity, so they stay correct when the response was served from
+    // the in-memory ring buffer or the envelopes were re-created by the
+    // coalescing/subagent pipeline (which loses identity). Clients must gate
+    // the scroll-back head slot on this, not on `tailStartOffset > 0`.
+    const hasOlderHistory = transcriptTruncated || windowTruncated;
     let firstReturnedTranscriptOffset: number | null = null;
     let returnedTranscriptEvent = false;
     for (const envelope of windowed) {
@@ -9425,8 +9432,21 @@ export function createAgentChatService(args: {
     }
     let tailStartOffset: number | null = null;
     if (firstReturnedTranscriptOffset != null) {
+      // Exact: the oldest returned event is a physical transcript line.
       tailStartOffset = firstReturnedTranscriptOffset > 0 ? firstReturnedTranscriptOffset : null;
-    } else if (transcriptHistory.endOffset > 0 && (truncated || !returnedTranscriptEvent)) {
+    } else if (!windowTruncated) {
+      // Identity was lost, but nothing was dropped from the head of the merged
+      // window — so everything at/after the tail read's `startOffset` is already
+      // in this response and paging older from `startOffset` is exact. When the
+      // tail started at byte 0 there is nothing older, hence a null cursor.
+      tailStartOffset = transcriptHistory.startOffset > 0 ? transcriptHistory.startOffset : null;
+    } else if (hasOlderHistory && transcriptHistory.endOffset > 0) {
+      // Degraded: identity was lost AND the merged window dropped events, so we
+      // cannot name the byte offset of the oldest returned event. Page from the
+      // end of the transcript — pages re-deliver events already shown, which the
+      // client dedupes, but scroll-back still reaches the head. This fallback
+      // must survive: removing it strands truncated transcripts whose snapshot
+      // was served entirely from the ring buffer with no way to scroll back.
       tailStartOffset = transcriptHistory.endOffset;
     }
     return {
@@ -9435,6 +9455,7 @@ export function createAgentChatService(args: {
       truncated,
       transcriptTruncated,
       windowTruncated,
+      hasOlderHistory,
       sessionFound: true,
       tailStartOffset,
     };
@@ -9446,6 +9467,7 @@ export function createAgentChatService(args: {
     truncated: false,
     transcriptTruncated: false,
     windowTruncated: false,
+    hasOlderHistory: false,
     sessionFound: false,
   });
 

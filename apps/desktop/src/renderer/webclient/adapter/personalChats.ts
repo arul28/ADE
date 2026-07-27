@@ -14,7 +14,11 @@ function fallbackFor(action: PersonalChatAction): unknown {
   if (action === "list" || action === "models") return [];
   if (action === "modelCatalog") return { providers: [], models: [] };
   if (action === "getEventHistory") {
-    return { sessionId: "", events: [], truncated: false, sessionFound: false };
+    // Reached only when the host command is unreachable/undispatchable, so mark
+    // it `unavailable`: `sessionFound: false` alone reads as an authoritative
+    // "this session does not exist" and must never be inferred from a
+    // connection failure.
+    return { sessionId: "", events: [], truncated: false, sessionFound: false, unavailable: true };
   }
   if (action === "getEventHistoryPage") {
     return () => {

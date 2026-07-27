@@ -1817,5 +1817,114 @@ describe("appStore", () => {
       expect(useAppStore.getState().laneSelectionByProject["remote:target:project-b"]?.laneId).toBe("lane-b");
       expect(useAppStore.getState().sessionsCacheByProject["remote:target:project-b"]).toEqual([{ id: "session-b" }]);
     });
+
+    it("drops only the data caches on disconnect and keeps the view state", () => {
+      const stateA = useAppStore.getState().getWorkViewState("remote:target:project-a");
+      const stateB = useAppStore.getState().getWorkViewState("remote:target:project-b");
+      useAppStore.setState({
+        workViewByProject: {
+          "remote:target:project-a": { ...stateA, openItemIds: ["session-a"], activeItemId: "session-a" },
+          "remote:target:project-b": { ...stateB, openItemIds: ["session-b"] },
+        },
+        laneWorkViewByScope: {
+          "remote:target:project-a::lane-a": { ...stateA, openItemIds: ["session-a"] },
+          "remote:target:project-b::lane-b": { ...stateB, openItemIds: ["session-b"] },
+        },
+        laneSelectionByProject: {
+          "remote:target:project-a": { laneId: "lane-a", sessionId: "session-a" },
+          "remote:target:project-b": { laneId: "lane-b", sessionId: "session-b" },
+        },
+        laneCacheByProject: {
+          "remote:target:project-a": { lanes: [{ id: "lane-a", name: "Lane A" }], laneSnapshots: [] },
+          "remote:target:project-b": { lanes: [{ id: "lane-b", name: "Lane B" }], laneSnapshots: [] },
+        },
+        sessionsCacheByProject: {
+          "remote:target:project-a": [{ id: "session-a" }],
+          "remote:target:project-b": [{ id: "session-b" }],
+        },
+      } as any);
+
+      useAppStore.getState().evictProjectDataCaches("remote:target:project-a");
+
+      const state = useAppStore.getState();
+      // Stale-able snapshots are gone: a remote can change while unreachable.
+      expect(state.laneCacheByProject["remote:target:project-a"]).toBeUndefined();
+      expect(state.sessionsCacheByProject["remote:target:project-a"]).toBeUndefined();
+      expect(state.laneSelectionByProject["remote:target:project-a"]).toBeUndefined();
+      // View state survives so reconnecting restores the chat that was open.
+      expect(state.workViewByProject["remote:target:project-a"]?.openItemIds).toEqual(["session-a"]);
+      expect(state.workViewByProject["remote:target:project-a"]?.activeItemId).toBe("session-a");
+      expect(state.laneWorkViewByScope["remote:target:project-a::lane-a"]?.openItemIds).toEqual(["session-a"]);
+      // Other project keys are untouched.
+      expect(state.workViewByProject["remote:target:project-b"]?.openItemIds).toEqual(["session-b"]);
+      expect(state.laneWorkViewByScope["remote:target:project-b::lane-b"]?.openItemIds).toEqual(["session-b"]);
+      expect(state.laneSelectionByProject["remote:target:project-b"]?.laneId).toBe("lane-b");
+      expect(state.laneCacheByProject["remote:target:project-b"]?.lanes).toEqual([{ id: "lane-b", name: "Lane B" }]);
+      expect(state.sessionsCacheByProject["remote:target:project-b"]).toEqual([{ id: "session-b" }]);
+    });
+
+    it("still wipes lane-scoped view state when a tab is explicitly closed", () => {
+      const stateA = useAppStore.getState().getWorkViewState("remote:target:project-a");
+      const stateB = useAppStore.getState().getWorkViewState("remote:target:project-b");
+      useAppStore.setState({
+        workViewByProject: {
+          "remote:target:project-a": { ...stateA, openItemIds: ["session-a"] },
+          "remote:target:project-b": { ...stateB, openItemIds: ["session-b"] },
+        },
+        laneWorkViewByScope: {
+          "remote:target:project-a::lane-a": { ...stateA, openItemIds: ["session-a"] },
+          "remote:target:project-b::lane-b": { ...stateB, openItemIds: ["session-b"] },
+        },
+        laneCacheByProject: {
+          "remote:target:project-a": { lanes: [{ id: "lane-a", name: "Lane A" }], laneSnapshots: [] },
+          "remote:target:project-b": { lanes: [{ id: "lane-b", name: "Lane B" }], laneSnapshots: [] },
+        },
+      } as any);
+
+      useAppStore.getState().evictProjectState("remote:target:project-a");
+
+      const state = useAppStore.getState();
+      expect(state.workViewByProject["remote:target:project-a"]).toBeUndefined();
+      expect(state.laneWorkViewByScope["remote:target:project-a::lane-a"]).toBeUndefined();
+      expect(state.laneCacheByProject["remote:target:project-a"]).toBeUndefined();
+      expect(state.workViewByProject["remote:target:project-b"]?.openItemIds).toEqual(["session-b"]);
+      expect(state.laneWorkViewByScope["remote:target:project-b::lane-b"]?.openItemIds).toEqual(["session-b"]);
+      expect(state.laneCacheByProject["remote:target:project-b"]?.lanes).toEqual([{ id: "lane-b", name: "Lane B" }]);
+    });
+
+    it("keeps remote view state when the LAST tab closes because of a disconnect", async () => {
+      const stateA = useAppStore.getState().getWorkViewState("remote:target:project-a");
+      useAppStore.setState({
+        openRemoteProjectTabs: [{ key: "remote:target:project-a" }],
+        workViewByProject: {
+          "remote:target:project-a": { ...stateA, openItemIds: ["session-a"], activeItemId: "session-a" },
+        },
+        laneCacheByProject: {
+          "remote:target:project-a": { lanes: [{ id: "lane-a", name: "Lane A" }], laneSnapshots: [] },
+        },
+      } as any);
+
+      await useAppStore.getState().closeProject({ preserveRemoteViewState: true });
+
+      const state = useAppStore.getState();
+      // The stale-able snapshot still goes.
+      expect(state.laneCacheByProject["remote:target:project-a"]).toBeUndefined();
+      // But the open chat survives, so reconnecting lands where we left off.
+      expect(state.workViewByProject["remote:target:project-a"]?.activeItemId).toBe("session-a");
+    });
+
+    it("wipes remote view state when the last tab is closed outright", async () => {
+      const stateA = useAppStore.getState().getWorkViewState("remote:target:project-a");
+      useAppStore.setState({
+        openRemoteProjectTabs: [{ key: "remote:target:project-a" }],
+        workViewByProject: {
+          "remote:target:project-a": { ...stateA, openItemIds: ["session-a"] },
+        },
+      } as any);
+
+      await useAppStore.getState().closeProject();
+
+      expect(useAppStore.getState().workViewByProject["remote:target:project-a"]).toBeUndefined();
+    });
   });
 });

@@ -18,7 +18,15 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** Listeners registered through the mocked `prs.onEvent`, so tests can emit. */
+const prEventListeners = new Set<(event: any) => void>();
+
+function emitPrEvent(event: any) {
+  for (const listener of [...prEventListeners]) listener(event);
+}
+
 function installAdeMocks() {
+  prEventListeners.clear();
   globalThis.window.ade = {
     git: {
       listBranches: vi.fn().mockResolvedValue([]),
@@ -37,8 +45,12 @@ function installAdeMocks() {
     },
     prs: {
       getForLane: vi.fn().mockResolvedValue(null),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      onEvent: vi.fn().mockImplementation((listener: (event: any) => void) => {
+        prEventListeners.add(listener);
+        return () => prEventListeners.delete(listener);
+      }),
       refresh: vi.fn().mockResolvedValue([]),
+      syncLanePr: vi.fn().mockResolvedValue(null),
       getChecks: vi.fn().mockResolvedValue([]),
       openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
@@ -295,6 +307,64 @@ describe("ChatGitToolbar", () => {
       expect(window.ade.prs.getForLane).toHaveBeenCalledTimes(2);
     });
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
+  it("no longer renders a PR sync control in the chat header", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Linked PR",
+      state: "open",
+      checksStatus: "unknown",
+      githubPrNumber: 7,
+      githubUrl: "https://github.com/acme/ade/pull/7",
+      additions: 0,
+      deletions: 0,
+      updatedAt: null,
+    } as any);
+
+    renderToolbar();
+
+    // The ⟳ affordance moved into ChatPrPane's title bar.
+    expect(await screen.findByRole("button", { name: /PR #/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Sync PR status/i })).toBeNull();
+    expect(screen.queryByLabelText(/Sync PR status/i)).toBeNull();
+    expect((window.ade.prs as any).syncLanePr).not.toHaveBeenCalled();
+  });
+
+  it("still heals the header PR pill when a backend reconcile finishes", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Linked PR",
+      state: "open",
+      checksStatus: "unknown",
+      githubPrNumber: 7,
+      githubUrl: "https://github.com/acme/ade/pull/7",
+      additions: 0,
+      deletions: 0,
+      updatedAt: null,
+    } as any);
+
+    renderToolbar();
+
+    await screen.findByRole("button", { name: /PR #/ });
+    const readsBefore = vi.mocked(window.ade.prs.getForLane).mock.calls.length;
+
+    // A `running` reconcile must not trigger a re-read on its own…
+    act(() => {
+      emitPrEvent({ type: "pr-reconcile", state: "running", polledAt: "2026-07-27T00:00:00.000Z" });
+    });
+    expect(vi.mocked(window.ade.prs.getForLane).mock.calls.length).toBe(readsBefore);
+
+    // …but finishing one heals the pill.
+    act(() => {
+      emitPrEvent({ type: "pr-reconcile", state: "idle", polledAt: "2026-07-27T00:00:01.000Z" });
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(window.ade.prs.getForLane).mock.calls.length).toBeGreaterThan(readsBefore);
+    });
   });
 
   it("ignores stale toolbar live refresh results after switching lanes", async () => {

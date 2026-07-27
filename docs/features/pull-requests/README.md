@@ -858,7 +858,16 @@ best-effort — failures log a warning and do not abort the tick.
   throttle a targeted `prs.refresh({ prIds })` for the linked PR when the
   pane or compact menu opens. This keeps chat PR badges near-live without
   forcing a repo snapshot refresh or broad background sync on every Work
-  chat mount.
+  chat mount. The **manual** sync affordance is the ↻ in `ChatPrPane`'s title
+  bar (`prs.syncLanePr`, then a re-read of the pane's PR); `ChatGitToolbar` is
+  a status strip with no manual sync, so toolbar-only surfaces heal through
+  reconcile-on-focus plus `prs-updated`. The pane spins for either a manual
+  sync or a backend `pr-reconcile`, debounced 300 ms on the hide so a fast
+  reconcile does not flicker. Its open/closed state is persisted per chat
+  (see [Composer and chat UI](../chat/composer-and-ui.md#source-file-map)), and
+  when a lane has no PR the pane embeds `ChatPrInlineCreator`, whose title
+  defaults to the chat session title before falling back to the
+  `<lane> -> <target>` derivation.
 - `PrDetailPane` is where most rich behavior concentrates:
   issue resolver modal, rebase banner, check/review/comment sections
   with running indicators (`PrCiRunningIndicator`), merge readiness

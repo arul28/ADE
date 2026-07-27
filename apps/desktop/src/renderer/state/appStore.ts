@@ -901,6 +901,7 @@ export type AppState = {
         ) => Extract<OpenProjectBinding, { kind: "remote" }>[])
   ) => void;
   evictProjectState: (projectKey: string) => void;
+  evictProjectDataCaches: (projectKey: string) => void;
   setOpenProjectTabRoots: (
     next: string[] | ((prev: string[]) => string[])
   ) => void;
@@ -1004,7 +1005,11 @@ export type AppState = {
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
-  closeProject: () => Promise<void>;
+  /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
+  /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
+  /// when closing because a remote *disconnected*, not because the user closed
+  /// the tab — otherwise disconnecting the last tab loses the open chat.
+  closeProject: (options?: { preserveRemoteViewState?: boolean }) => Promise<void>;
 };
 
 export function selectActiveProjectRoot(state: Pick<AppState, "project" | "projectBinding">): string | null {
@@ -1279,6 +1284,31 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return {
         workViewByProject,
         laneWorkViewByScope,
+        laneSelectionByProject,
+        laneCacheByProject,
+        sessionsCacheByProject,
+      };
+    });
+  },
+  /// Disconnect-only sibling of `evictProjectState`: drops every data snapshot
+  /// that can go stale while a remote is unreachable (lanes, sessions, lane
+  /// selection) but keeps the pure view state (`workViewByProject`,
+  /// `laneWorkViewByScope`) so reconnecting restores the chat/tile the user had
+  /// open. Binding keys are deterministic (target + project), so the preserved
+  /// view state re-attaches on reconnect. Explicit tab close still uses
+  /// `evictProjectState` and wipes everything.
+  evictProjectDataCaches: (projectKey) => {
+    const key = normalizeProjectKey(projectKey);
+    if (!key) return;
+    removePersistedLaneCache(key);
+    set((prev) => {
+      const laneSelectionByProject = { ...prev.laneSelectionByProject };
+      const laneCacheByProject = { ...prev.laneCacheByProject };
+      const sessionsCacheByProject = { ...prev.sessionsCacheByProject };
+      delete laneSelectionByProject[key];
+      delete laneCacheByProject[key];
+      delete sessionsCacheByProject[key];
+      return {
         laneSelectionByProject,
         laneCacheByProject,
         sessionsCacheByProject,
@@ -2215,7 +2245,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  closeProject: async () => {
+  closeProject: async (options) => {
+    const preserveRemoteViewState = options?.preserveRemoteViewState === true;
     const closingProjectRoot = selectActiveProjectRoot(get());
     ++laneRefreshVersion;
     set({
@@ -2232,7 +2263,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       invalidateAiDiscoveryCache(closingProjectRoot);
       invalidateProjectConfigCache(closingProjectRoot);
       for (const binding of get().openRemoteProjectTabs) {
-        get().evictProjectState(binding.key);
+        // A disconnect is not a close: keep the view state so reconnecting to
+        // the same deterministic binding key restores the chat/tile that was
+        // open, and drop only the data snapshots that may have gone stale.
+        if (preserveRemoteViewState) get().evictProjectDataCaches(binding.key);
+        else get().evictProjectState(binding.key);
       }
       get().setProject(null);
       set({

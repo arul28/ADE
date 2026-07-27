@@ -12837,6 +12837,80 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(progressOnly?.lastToolName, "functions.Grep")
   }
 
+  // MARK: - Chat event history: authoritative hasOlderHistory
+
+  func testChatEventHistorySnapshotDecodesHasOlderHistoryAndDefaultsToNilOnLegacyHosts() throws {
+    let modern = """
+    {
+      "sessionId": "chat-1",
+      "events": [],
+      "truncated": false,
+      "hasOlderHistory": false,
+      "sessionFound": true,
+      "tailStartOffset": 4096
+    }
+    """
+    let decodedModern = try JSONDecoder().decode(
+      AgentChatEventHistorySnapshot.self,
+      from: Data(modern.utf8)
+    )
+    XCTAssertEqual(decodedModern.hasOlderHistory, false)
+    XCTAssertEqual(decodedModern.tailStartOffset, 4096)
+
+    // A host that predates the field must still decode; `nil` is "unknown",
+    // never "no older history".
+    let legacy = """
+    {
+      "sessionId": "chat-1",
+      "events": [],
+      "truncated": true,
+      "sessionFound": true,
+      "tailStartOffset": 4096
+    }
+    """
+    let decodedLegacy = try JSONDecoder().decode(
+      AgentChatEventHistorySnapshot.self,
+      from: Data(legacy.utf8)
+    )
+    XCTAssertNil(decodedLegacy.hasOlderHistory)
+    XCTAssertEqual(decodedLegacy.tailStartOffset, 4096)
+  }
+
+  func testSnapshotOlderHistoryCursorTreatsHasOlderHistoryAsAuthoritative() {
+    // The host says there is nothing older. The conservative end-of-file
+    // `tailStartOffset` that rides along must NOT resurrect the scroll-back
+    // affordance — paging from it can only ever return an empty page.
+    XCTAssertNil(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: false, tailStartOffset: 4096)
+    )
+
+    // Legacy host (field absent): fall back to the offset-only rule.
+    XCTAssertEqual(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: nil, tailStartOffset: 4096),
+      4096
+    )
+    XCTAssertNil(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: nil, tailStartOffset: 0)
+    )
+    XCTAssertNil(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: nil, tailStartOffset: nil)
+    )
+
+    // Older history exists and the host named the byte offset: page from it.
+    XCTAssertEqual(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: true, tailStartOffset: 2048),
+      2048
+    )
+
+    // Older history exists but no usable cursor came with the snapshot. The
+    // resolver reports "exhausted" here on purpose: the caller falls through to
+    // the tail-page probe, which is the only path that can produce a real
+    // cursor in this degraded case.
+    XCTAssertNil(
+      workChatSnapshotOlderHistoryCursor(hasOlderHistory: true, tailStartOffset: nil)
+    )
+  }
+
   func testWorkSubagentSnapshotsKeepHistoricalRemoteRosterAndMergeLocalDetails() {
     let remote = [
       WorkSubagentSnapshot(

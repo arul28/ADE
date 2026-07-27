@@ -22357,6 +22357,125 @@ describe("createAgentChatService", () => {
       expect(afterDelete.truncated).toBe(false);
       expect(afterDelete.sessionFound).toBe(false);
     });
+
+    describe("hasOlderHistory / tailStartOffset derivation", () => {
+      // The scroll-back cursor used to be derived purely from envelope OBJECT
+      // IDENTITY (a WeakMap on the parsed transcript envelopes). Whenever the
+      // returned events came from the in-memory ring buffer — or were re-created
+      // by the coalescing/subagent pipeline — every identity lookup missed and
+      // the snapshot fell back to an end-of-file cursor, which the renderer read
+      // as "older pages exist" and rendered a false "couldn't load earlier
+      // messages" head slot. `hasOlderHistory` is derived from the tail READ
+      // instead, so it survives identity loss.
+      const LINE_BYTES = 1_000;
+      const fixedWidthLine = (envelope: AgentChatEventEnvelope, exactBytes: number): string => {
+        const baseEvent = envelope.event as { type: "text"; text: string };
+        const padding = exactBytes - Buffer.byteLength(`${JSON.stringify(envelope)}\n`, "utf8");
+        if (padding < 0) throw new Error("fixture line too large");
+        const line = `${JSON.stringify({
+          ...envelope,
+          event: { ...baseEvent, text: baseEvent.text + "x".repeat(padding) },
+        })}\n`;
+        expect(Buffer.byteLength(line, "utf8")).toBe(exactBytes);
+        return line;
+      };
+      // 4 fixed-width lines: a 1_024-byte tail read lands exactly on the line-3
+      // boundary at byte 3_000, and the file ends at byte 4_000.
+      const fourLineTranscript = (sessionId: string): string =>
+        Array.from({ length: 4 }, (_, index) => fixedWidthLine({
+          sessionId,
+          timestamp: new Date(Date.UTC(2026, 3, 23, 10, 0, index)).toISOString(),
+          event: { type: "text", text: `line-${index}-` },
+          sequence: index,
+        }, LINE_BYTES)).join("");
+
+      // Seed the in-memory ring with envelope objects, then leave the parser
+      // returning nothing for any later read — the state where every identity
+      // lookup misses because the response is ring-buffer-only.
+      const seedRingThenLoseIdentity = async (
+        service: ReturnType<typeof createService>["service"],
+        sessionId: string,
+        transcriptFile: string,
+        seeded: AgentChatEventEnvelope[],
+      ): Promise<void> => {
+        fs.writeFileSync(transcriptFile, `${seeded.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+        vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+          raw.includes("ring-seed") ? seeded : []);
+        expect((await service.getChatEventHistory(sessionId)).events).toHaveLength(seeded.length);
+      };
+
+      const ringEnvelope = (sessionId: string, index: number): AgentChatEventEnvelope => ({
+        sessionId,
+        timestamp: new Date(Date.UTC(2026, 3, 23, 11, 0, index)).toISOString(),
+        event: { type: "text", text: `ring-seed-${index}` },
+        sequence: 100 + index,
+      });
+
+      it("reports no older history when the tail read started at byte 0 and identity was lost", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+        await seedRingThenLoseIdentity(service, session.id, transcriptFile, [ringEnvelope(session.id, 0)]);
+
+        // Non-empty transcript (endOffset > 0) that the parser yields nothing
+        // for, so the snapshot is served entirely from the ring buffer.
+        fs.writeFileSync(transcriptFile, '{"opaque":true}\n'.repeat(8), "utf8");
+
+        const history = await service.getChatEventHistory(session.id);
+
+        expect(history.events).toHaveLength(1);
+        expect(history.transcriptTruncated).toBe(false);
+        expect(history.windowTruncated).toBe(false);
+        expect(history.hasOlderHistory).toBe(false);
+        expect(history.tailStartOffset ?? null).toBeNull();
+      });
+
+      it("pages from the tail read's startOffset when identity was lost but nothing was windowed out", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+        const seeded = ringEnvelope(session.id, 0);
+        await seedRingThenLoseIdentity(service, session.id, transcriptFile, [seeded]);
+
+        fs.writeFileSync(transcriptFile, fourLineTranscript(session.id), "utf8");
+
+        const history = await service.getChatEventHistory(session.id, { maxBytes: 1_024 });
+
+        // Every merged event was returned, so everything at/after the tail
+        // read's startOffset is already in the response: paging older from
+        // startOffset is exact, not conservative.
+        expect(history.events).toEqual([seeded]);
+        expect(history.transcriptTruncated).toBe(true);
+        expect(history.windowTruncated).toBe(false);
+        expect(history.hasOlderHistory).toBe(true);
+        expect(history.tailStartOffset).toBe(3 * LINE_BYTES);
+      });
+
+      it("keeps the conservative end-of-file cursor when identity was lost AND the window dropped events", async () => {
+        const { service } = createService();
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+        const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+        const seeded = [0, 1, 2].map((index) => ringEnvelope(session.id, index));
+        await seedRingThenLoseIdentity(service, session.id, transcriptFile, seeded);
+
+        fs.writeFileSync(transcriptFile, fourLineTranscript(session.id), "utf8");
+
+        const history = await service.getChatEventHistory(session.id, { maxEvents: 1, maxBytes: 1_024 });
+
+        expect(history.events).toEqual([seeded[2]]);
+        expect(history.windowTruncated).toBe(true);
+        expect(history.hasOlderHistory).toBe(true);
+        // Degraded but recoverable: without this fallback a truncated transcript
+        // whose snapshot came from the ring buffer could never be scrolled back.
+        expect(history.tailStartOffset).toBe(4 * LINE_BYTES);
+      });
+
+      it("reports hasOlderHistory:false for an unknown session", async () => {
+        const { service } = createService();
+        const history = await service.getChatEventHistory("unknown-session");
+        expect(history.hasOlderHistory).toBe(false);
+      });
+    });
   });
 
   describe("getChatEventHistoryPage", () => {
@@ -22669,7 +22788,14 @@ describe("createAgentChatService", () => {
 
       const maxBytes = 128 * 1024;
       const history = await service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
-      expect(history.tailStartOffset).toBe(Buffer.byteLength(durableLines.join(""), "utf8"));
+      // The 128 KiB hydration probe returns no events for this session (its
+      // tail is all foreign rows), so no returned envelope can supply a cursor.
+      // Nothing was dropped from the merge window either, so the cursor is the
+      // tail read's own line-boundary start — everything for this session
+      // at/after it is already accounted for. The line width divides the probe
+      // exactly, so that start is `size - maxBytes`.
+      expect(history.tailStartOffset).toBe(Buffer.byteLength(durableLines.join(""), "utf8") - maxBytes);
+      expect(history.hasOlderHistory).toBe(true);
       expect(history.events.some((entry) =>
         entry.event.type === "text" && entry.event.text.startsWith("legacy-"),
       )).toBe(false);

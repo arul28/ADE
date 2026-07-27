@@ -148,7 +148,18 @@ import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawer
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { ChatPrPane } from "./ChatPrPane";
+import { ChatPrPaneInsetContext, usePrPaneInsetObserver } from "./chatPrPaneInset";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
+import {
+  patchChatCompanionUiState,
+  readChatCompanionUiState,
+} from "./chatCompanionUiState";
+import {
+  adoptRetainedSession,
+  configureChatSessionRetention,
+  releaseRetainedChatSession,
+  retainChatSession,
+} from "./chatSessionRetention";
 import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
@@ -720,15 +731,32 @@ function buildSubagentEventHistory(args: {
 }
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
+/**
+ * Backoff ladder for silent older-history paging retries. Only after the last
+ * rung fails does the message list get a latched, user-visible retry.
+ */
+const OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2_400];
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 const MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES = 32 * 1024 * 1024;
 const MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES = 2 * 1024 * 1024;
-const MAX_AGENT_CHAT_VIEW_CACHE_EVENTS = 1_000;
-const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION = 2 * 1024 * 1024;
-const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 16 * 1024 * 1024;
+// The view cache holds a reference to the SAME event array the pane already
+// keeps resident, so admitting anything the pane can hold costs no extra
+// memory while the chat is open and bounds the retained set once it closes.
+// Budgeting below the pane's own resident cap only guaranteed that real chats
+// were never cached at all (every switch paid a full transcript re-read).
+const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION = MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES;
+const MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL = 128 * 1024 * 1024;
+/**
+ * How often the active-turn loop re-reads a transcript when NOTHING is arriving.
+ * The live `agentChat.onEvent` subscription (kept alive across tab switches by
+ * `chatSessionRetention`) is the transport; this loop only exists to notice a
+ * silently wedged stream, so it ticks slowly and skips entirely whenever an
+ * event landed inside the last interval.
+ */
+const ACTIVE_TURN_RECOVERY_INTERVAL_MS = 10_000;
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 
 type DraftLaunchLaneTarget = {
@@ -1095,16 +1123,12 @@ type AgentChatSessionViewCache = {
   estimatedBytes: number;
 };
 
-const MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES = 32;
+const MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES = 8;
 const AGENT_CHAT_VIEW_CACHE_ENABLED = import.meta.env.MODE !== "test";
 const agentChatSessionViewCacheBySessionId = new Map<string, AgentChatSessionViewCache>();
-let agentChatSessionViewCacheBytes = 0;
 
 function removeAgentChatSessionViewCache(sessionId: string): void {
-  const cached = agentChatSessionViewCacheBySessionId.get(sessionId);
-  if (!cached) return;
   agentChatSessionViewCacheBySessionId.delete(sessionId);
-  agentChatSessionViewCacheBytes -= cached.estimatedBytes;
 }
 
 function estimateAgentChatSessionViewBytes(events: readonly AgentChatEventEnvelope[]): number {
@@ -1116,11 +1140,16 @@ function estimateAgentChatSessionViewBytes(events: readonly AgentChatEventEnvelo
   return estimatedBytes;
 }
 
-function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
+/** Read without touching LRU recency — safe to call during render. */
+function peekAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return null;
   if (!sessionId) return null;
-  const cached = agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
-  if (!cached) return null;
+  return agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
+}
+
+function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
+  const cached = peekAgentChatSessionViewCache(sessionId);
+  if (!cached || !sessionId) return null;
   agentChatSessionViewCacheBySessionId.delete(sessionId);
   agentChatSessionViewCacheBySessionId.set(sessionId, cached);
   return cached;
@@ -1132,9 +1161,17 @@ function writeAgentChatSessionViewCache(
   derived = deriveRuntimeState(events),
   historyCursor: number | null = null,
   maxEvents = MAX_SELECTED_CHAT_SESSION_EVENTS,
+  detached = false,
 ): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
-  if (!shouldCacheAgentChatSessionView(events.length, maxEvents, 0)) {
+  // A DETACHED view is skipped, never evicted: it is an older transcript
+  // prefix whose live tail was dropped to stay under the resident cap, so
+  // restoring it later would render an old slice of the transcript as if it
+  // were current. Any previously cached (attached) entry is still coherent and
+  // is left in place.
+  if (detached) return;
+  // Cheap count check first so an oversized list never pays for the byte walk.
+  if (events.length > maxEvents) {
     removeAgentChatSessionViewCache(sessionId);
     return;
   }
@@ -1153,29 +1190,106 @@ function writeAgentChatSessionViewCache(
     cachedAtMs: Date.now(),
     estimatedBytes,
   });
-  agentChatSessionViewCacheBytes += estimatedBytes;
-  while (
-    agentChatSessionViewCacheBySessionId.size > MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES
-    || agentChatSessionViewCacheBytes > MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL
-  ) {
-    const oldest = agentChatSessionViewCacheBySessionId.keys().next().value;
-    if (!oldest) break;
-    removeAgentChatSessionViewCache(oldest);
-  }
+  // Total bytes are recomputed from the live entries on each write (the map is
+  // capped at a handful of entries), so no running counter can drift.
+  const evictions = selectAgentChatSessionViewEvictions(
+    [...agentChatSessionViewCacheBySessionId].map(([id, entry]) => ({
+      sessionId: id,
+      estimatedBytes: entry.estimatedBytes,
+    })),
+  );
+  for (const evicted of evictions) removeAgentChatSessionViewCache(evicted);
 }
 
+/**
+ * Choose which cached views to drop so the cache stays under both the entry
+ * count and the total byte ceiling. The cache map is insertion-ordered by
+ * recency (see `readAgentChatSessionViewCache`), so `entriesOldestFirst` is
+ * simply its iteration order and eviction is oldest-first.
+ */
+export function selectAgentChatSessionViewEvictions(
+  entriesOldestFirst: readonly { sessionId: string; estimatedBytes: number }[],
+  maxEntries: number = MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES,
+  maxBytes: number = MAX_AGENT_CHAT_VIEW_CACHE_BYTES_TOTAL,
+): string[] {
+  let entryCount = entriesOldestFirst.length;
+  let totalBytes = entriesOldestFirst.reduce((sum, entry) => sum + entry.estimatedBytes, 0);
+  const evicted: string[] = [];
+  for (const entry of entriesOldestFirst) {
+    if (entryCount <= maxEntries && totalBytes <= maxBytes) break;
+    evicted.push(entry.sessionId);
+    entryCount -= 1;
+    totalBytes -= entry.estimatedBytes;
+  }
+  return evicted;
+}
+
+/**
+ * Admission test for the module-level chat view cache.
+ *
+ * The only event-count limit that matters is the caller's own resident limit
+ * (`maxEvents`): the cache stores a reference to the array the pane already
+ * holds, so anything the pane can render is cheap to remember. Bytes are still
+ * bounded per session. Detachment is not this predicate's business — the writer
+ * returns early for a detached view (see `writeAgentChatSessionViewCache`).
+ */
 export function shouldCacheAgentChatSessionView(
   eventCount: number,
   maxEvents: number,
   estimatedBytes: number,
 ): boolean {
-  return eventCount <= Math.min(maxEvents, MAX_AGENT_CHAT_VIEW_CACHE_EVENTS)
+  return eventCount <= maxEvents
     && estimatedBytes <= MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION;
 }
 
 function deleteAgentChatSessionViewCache(sessionId: string): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
   removeAgentChatSessionViewCache(sessionId);
+}
+
+/**
+ * Drop cached views for sessions that no longer exist for their owner (deleted,
+ * archived, or belonging to a project/lane that has gone away).
+ *
+ * The cache is module-level and outlives any single pane, so without this a
+ * closed project's transcripts sit resident until eight newer chats push them
+ * out. Deliberately explicit rather than tied to project teardown: the entries
+ * carry no project key, so the only honest signal is "this session is gone".
+ */
+export function clearAgentChatSessionViewCacheForSessions(
+  sessionIds: Iterable<string>,
+  keepSessionIds: readonly (string | null | undefined)[] = [],
+): string[] {
+  const cleared: string[] = [];
+  for (const sessionId of sessionIds) {
+    if (!sessionId) continue;
+    if (keepSessionIds.includes(sessionId)) continue;
+    if (agentChatSessionViewCacheBySessionId.delete(sessionId)) cleared.push(sessionId);
+  }
+  return cleared;
+}
+
+/**
+ * Which of a pane's previously-known sessions have left its roster.
+ *
+ * Pane-scoped on purpose: several panes share the module cache (Work tiles),
+ * so "not in MY roster" is not evidence a session is dead — only "was mine, is
+ * no longer mine" is. Anything still selected/locked is never reported, so a
+ * roster that is momentarily empty (a refresh in flight) cannot evict the chat
+ * the user is reading.
+ */
+export function selectDepartedChatSessionViewCacheSessions(
+  previousSessionIds: Iterable<string>,
+  liveSessionIds: ReadonlySet<string>,
+  keepSessionIds: readonly (string | null | undefined)[] = [],
+): string[] {
+  const departed: string[] = [];
+  for (const sessionId of previousSessionIds) {
+    if (!sessionId || liveSessionIds.has(sessionId)) continue;
+    if (keepSessionIds.includes(sessionId)) continue;
+    departed.push(sessionId);
+  }
+  return departed;
 }
 
 type LastLaunchConfig = {
@@ -1826,6 +1940,67 @@ function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
   return key;
 }
 
+/**
+ * Append a BATCH of live envelopes into the module-level view cache while no
+ * pane is mounted for the session (see `chatSessionRetention`).
+ *
+ * This is deliberately the SAME write path the pane's live flush uses — dedupe
+ * by `chatEventDedupKey`, trim by the selected-session resident caps, cache via
+ * `writeAgentChatSessionViewCache` — and it stores `deriveRuntimeState`'s raw
+ * scalars. It must not apply `resolveTurnActive`: that policy belongs to the
+ * pane's hydration (`applyCachedSessionView`), so terminal transcript evidence
+ * still beats a stale cached `turnActive: true` on adoption.
+ *
+ * Batched for the same reason the pane's own flush is: every one of the walks
+ * below is O(transcript), and the resident cap is tens of thousands of events.
+ * The dedupe `Set`, the trim, the derivation and the byte estimate are each
+ * paid ONCE per flush — per-envelope would make a hidden chat more expensive
+ * than the visible one.
+ *
+ * Detached views are skipped: their live tail was already dropped, so appending
+ * to them would splice a current event onto an old transcript window.
+ */
+function appendRetainedChatSessionEvents(
+  sessionId: string,
+  envelopes: readonly AgentChatEventEnvelope[],
+): void {
+  if (!envelopes.length) return;
+  const cached = peekAgentChatSessionViewCache(sessionId);
+  if (!cached) return;
+  const seen = new Set<string>();
+  for (const entry of cached.events) seen.add(chatEventDedupKey(entry));
+  const fresh: AgentChatEventEnvelope[] = [];
+  for (const envelope of envelopes) {
+    const key = chatEventDedupKey(envelope);
+    // Dedupes against the batch itself too — the bridge can redeliver.
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fresh.push(envelope);
+  }
+  if (!fresh.length) return;
+  const merged = trimChatEventHistory(
+    [...cached.events, ...fresh],
+    MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
+    MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
+  );
+  writeAgentChatSessionViewCache(
+    sessionId,
+    merged,
+    deriveRuntimeState(merged),
+    cached.historyCursor,
+    MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
+  );
+}
+
+configureChatSessionRetention({
+  subscribe: (listener) => {
+    const onEvent = window.ade?.agentChat?.onEvent;
+    if (typeof onEvent !== "function") return () => undefined;
+    return onEvent(listener);
+  },
+  appendEvents: appendRetainedChatSessionEvents,
+});
+
 function userMessageVisibleText(event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>): string {
   const displayText = event.displayText?.trim();
   return displayText?.length ? displayText : event.text.trim();
@@ -2015,6 +2190,78 @@ export function mergeOlderChatHistoryPageWithCap(args: {
     events,
     hitResidentCap: events.length < merged.length,
   };
+}
+
+/**
+ * Seed the older-history pagination cursor from a history snapshot.
+ *
+ * `hasOlderHistory` is authoritative when the runtime sends it: the main
+ * service derives it from the tail READ (transcript/window truncation), not
+ * from envelope identity. A `false` therefore means there is genuinely nothing
+ * older, and we must return 0 even when a non-zero `tailStartOffset` is
+ * reported — otherwise the message list offers a "load earlier messages"
+ * affordance that can only ever fail. Older remote runtimes omit the field;
+ * those fall back to the legacy offset-only rule.
+ */
+export function resolveSnapshotHistoryCursor(snapshot: {
+  hasOlderHistory?: boolean | null;
+  tailStartOffset?: number | null;
+}): number {
+  if (snapshot.hasOlderHistory === false) return 0;
+  return typeof snapshot.tailStartOffset === "number" && snapshot.tailStartOffset > 0
+    ? snapshot.tailStartOffset
+    : 0;
+}
+
+/**
+ * The session id whose transcript must be on screen RIGHT NOW.
+ *
+ * `selectedSessionId` is internal state synced from props in an effect, so it
+ * trails prop-driven selection by a render: rendering from it paints the
+ * OUTGOING chat's transcript for a frame after the pane is pointed somewhere
+ * else. The incoming prop wins whenever the two disagree — a locked pane
+ * always renders its locked chat, and an `initialSessionId` that the sync
+ * effect has not applied yet renders immediately. Once applied, in-pane
+ * selection (tabs, new chat) owns the value again.
+ */
+export function resolveRenderedChatSessionId(args: {
+  lockSessionId?: string | null;
+  initialSessionId?: string | null;
+  appliedInitialSessionId: string | null;
+  selectedSessionId: string | null;
+}): string | null {
+  if (args.lockSessionId) return args.lockSessionId;
+  if (args.initialSessionId && args.appliedInitialSessionId !== args.initialSessionId) {
+    return args.initialSessionId;
+  }
+  return args.selectedSessionId;
+}
+
+export type ChatHistoryMissAction =
+  /** Runtime unreachable: keep everything, retry later, show a catch-up hint. */
+  | "sync-pending"
+  /** Authoritative miss but the user is looking at rendered events: keep them. */
+  | "keep-missing"
+  /** Authoritative miss with nothing rendered: safe to drop the empty view. */
+  | "clear";
+
+/**
+ * Decide what to do when a history read does not return a session.
+ *
+ * A history miss is NOT automatically "this chat is gone". `unavailable` means
+ * the bound runtime could not be reached (remote hop down, machine asleep) and
+ * must never destroy rendered state — that is what made a tab or project
+ * switch blank an otherwise healthy chat. Even an authoritative
+ * `sessionFound: false` only earns a wipe when nothing is currently rendered;
+ * blanking a transcript the user is reading is strictly worse than leaving a
+ * stale-but-real one on screen.
+ */
+export function resolveChatHistoryMissAction(args: {
+  unavailable?: boolean;
+  hasRenderedEvents: boolean;
+}): ChatHistoryMissAction {
+  if (args.unavailable === true) return "sync-pending";
+  return args.hasRenderedEvents ? "keep-missing" : "clear";
 }
 
 /**
@@ -2888,72 +3135,41 @@ function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["compl
   }
 }
 
-type ChatCompanionUiState = {
-  chatActionsOpen: boolean;
-  chatActionsTab: ChatActionsTab;
-  iosSimulatorOpen: boolean;
-  appControlOpen: boolean;
-  terminalDrawerOpen: boolean;
-};
+/**
+ * The first boot model refresh per project root.
+ *
+ * A remount still calls `refreshAvailableModels()` to repopulate ITS OWN state,
+ * but it must not re-gate first paint on that round trip: the ai-status and
+ * model-discovery caches underneath are already warm, so `preferencesReady` can
+ * flip as soon as this (already settled) promise resolves instead of after a
+ * fresh IPC hop. Bounded because a session can only visit so many project roots.
+ */
+const chatBootModelRefreshByProjectRoot = new Map<string, Promise<unknown>>();
+const MAX_CHAT_BOOT_MODEL_REFRESH_ENTRIES = 8;
 
-const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
-  chatActionsOpen: false,
-  chatActionsTab: "agents",
-  iosSimulatorOpen: false,
-  appControlOpen: false,
-  terminalDrawerOpen: false,
-};
-
-function parseChatActionsTab(value: unknown): ChatActionsTab {
-  if (
-    value === "sources"
-    || value === "agents"
-    || value === "proof"
-    || value === "handoff"
-    || value === "missions"
-  ) return value;
-  return "agents";
+function hasWarmChatModelCatalog(projectRoot: string | null | undefined): boolean {
+  return chatBootModelRefreshByProjectRoot.has(projectRoot ?? "");
 }
 
-const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
-
-function chatCompanionUiStorageKey(key: string): string {
-  return `ade.chat.companionUiState.${key}`;
-}
-
-function readChatCompanionUiState(key: string): ChatCompanionUiState {
-  const cached = chatCompanionUiStateByKey.get(key);
-  if (cached) return cached;
-  try {
-    const raw = window.sessionStorage.getItem(chatCompanionUiStorageKey(key));
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<ChatCompanionUiState> & { proofDrawerOpen?: boolean };
-      const legacyProofOpen = parsed.proofDrawerOpen === true;
-      const state = {
-        chatActionsOpen: parsed.chatActionsOpen === true || legacyProofOpen,
-        chatActionsTab: legacyProofOpen && parsed.chatActionsTab == null
-          ? "proof"
-          : parseChatActionsTab(parsed.chatActionsTab),
-        iosSimulatorOpen: parsed.iosSimulatorOpen === true,
-        appControlOpen: parsed.appControlOpen === true,
-        terminalDrawerOpen: parsed.terminalDrawerOpen === true,
-      };
-      chatCompanionUiStateByKey.set(key, state);
-      return state;
-    }
-  } catch {
-    // Session storage is best-effort UI state only.
+function rememberChatBootModelRefresh(
+  projectRoot: string | null | undefined,
+  refresh: Promise<unknown>,
+): Promise<unknown> {
+  const key = projectRoot ?? "";
+  const existing = chatBootModelRefreshByProjectRoot.get(key);
+  if (existing) return existing;
+  while (chatBootModelRefreshByProjectRoot.size >= MAX_CHAT_BOOT_MODEL_REFRESH_ENTRIES) {
+    const oldest = chatBootModelRefreshByProjectRoot.keys().next().value;
+    if (typeof oldest !== "string") break;
+    chatBootModelRefreshByProjectRoot.delete(oldest);
   }
-  return DEFAULT_CHAT_COMPANION_UI_STATE;
+  chatBootModelRefreshByProjectRoot.set(key, refresh);
+  return refresh;
 }
 
-function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
-  chatCompanionUiStateByKey.set(key, state);
-  try {
-    window.sessionStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(state));
-  } catch {
-    // Session storage is best-effort UI state only.
-  }
+/** Test helper — module memo would otherwise leak warm state between cases. */
+export function resetChatBootModelRefreshMemoForTests(): void {
+  chatBootModelRefreshByProjectRoot.clear();
 }
 
 function isLikelyMacRenderer(): boolean {
@@ -3240,6 +3456,10 @@ export function AgentChatPane({
   const [olderHistoryCursorBySession, setOlderHistoryCursorBySession] = useState<Record<string, number>>({});
   const [olderHistoryLoadingBySession, setOlderHistoryLoadingBySession] = useState<Record<string, boolean>>({});
   const [olderHistoryErrorBySession, setOlderHistoryErrorBySession] = useState<Record<string, string | null>>({});
+  // Set when a history read could not reach the session's bound runtime. The
+  // rendered transcript is kept as-is (it is real, just possibly behind) and a
+  // later pass renders a catch-up hairline from this flag.
+  const [syncPendingBySession, setSyncPendingBySession] = useState<Record<string, boolean>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
@@ -3325,7 +3545,11 @@ export function AgentChatPane({
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [importBrowserOpen, setImportBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [preferencesReady, setPreferencesReady] = useState(false);
+  // Seeded warm: on a remount into a project whose model catalog was already
+  // fetched there is nothing left to wait for, and re-gating would stall the
+  // first paint of the composer chrome behind a memoized promise.
+  const [preferencesReady, setPreferencesReady] = useState(() => hasWarmChatModelCatalog(projectRoot));
+  const preferencesProjectRootRef = useRef<string | null | undefined>(projectRoot);
   const [error, setError] = useState<string | null>(null);
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
@@ -3347,9 +3571,6 @@ export function AgentChatPane({
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
-  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
-  // changes; shared with the CLI session surface via useChatPrAutoPop.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId);
   useEffect(() => () => {
     if (handoffErrorClearTimerRef.current != null) {
       window.clearTimeout(handoffErrorClearTimerRef.current);
@@ -3469,6 +3690,16 @@ export function AgentChatPane({
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
       : null;
+  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
+  // changes; shared with the CLI session surface via useChatPrAutoPop.
+  // `persistKey` makes open/closed per chat and durable across restarts —
+  // declared here because it needs `companionStateKey`.
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId, {
+    persistKey: companionStateKey,
+  });
+  // Measured height of the floating PR pane card, published to the minimap rail
+  // through ChatPrPaneInsetContext so it can re-centre in the band left below.
+  const prPaneInset = usePrPaneInsetObserver();
   const composerDraftStorageKeyValues = useMemo(() => {
     const primary = composerDraftStorageKeys({
       projectRoot,
@@ -3567,6 +3798,17 @@ export function AgentChatPane({
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
+  // Sessions an AUTHORITATIVE history read reported as absent while we still
+  // had events on screen. We keep rendering those events rather than blanking
+  // the pane; the marker is what a later pass surfaces as "chat no longer
+  // exists" instead of silently showing a transcript with no runtime behind it.
+  const missingHistorySessionsRef = useRef<Set<string>>(new Set());
+  /**
+   * When the live subscription last delivered anything. The active-turn
+   * recovery loop is a STALL DETECTOR, not the transport — if events are
+   * arriving there is nothing for a full transcript re-read to recover.
+   */
+  const lastEventReceivedAtMsRef = useRef(0);
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
@@ -3590,6 +3832,10 @@ export function AgentChatPane({
   const detachedLiveEventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const olderHistoryCursorRef = useRef<Record<string, number>>({});
   const olderHistoryInFlightRef = useRef<Set<string>>(new Set());
+  // Pending silent-retry waits for older-history paging. Tracked so a session
+  // switch or unmount can cancel them instead of stranding a timer that
+  // resumes work for a chat nobody is looking at.
+  const olderHistoryRetryWaitersRef = useRef<Set<{ handle: number; resolve: (proceed: boolean) => void }>>(new Set());
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
@@ -3693,7 +3939,9 @@ export function AgentChatPane({
       companionHydrationKeyRef.current = null;
       return;
     }
-    writeChatCompanionUiState(companionStateKey, {
+    // `prPaneOpen` is owned by useChatPrAutoPop's own persist effect; the patch
+    // helper does the read-merge-write, so a drawer toggle can't clobber it.
+    patchChatCompanionUiState(companionStateKey, {
       chatActionsOpen,
       chatActionsTab,
       iosSimulatorOpen,
@@ -3701,6 +3949,12 @@ export function AgentChatPane({
       terminalDrawerOpen,
     });
   }, [appControlOpen, chatActionsOpen, chatActionsTab, companionStateKey, iosSimulatorOpen, terminalDrawerOpen]);
+
+  // Companion state prunes itself on write (see `chatCompanionUiState`). This
+  // pane deliberately does NOT drive that: its roster only ever contains chat
+  // session ids, while the same localStorage namespace is also written with
+  // CLI terminal session ids by `WorkViewArea`, so a "keys I know about" list
+  // sourced from here would classify every terminal key as garbage.
 
   const removeIosElementContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
@@ -3758,12 +4012,41 @@ export function AgentChatPane({
     const lane = lanes.find((entry) => entry.id === scopedLaneId);
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
-  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? EMPTY_CHAT_EVENTS : EMPTY_CHAT_EVENTS;
+  // `selectedSessionId` is internal state synced from props in an effect, so it
+  // trails the incoming selection by one render. Deriving the transcript from
+  // it painted the OUTGOING chat's events for a beat after the pane was pointed
+  // at a different chat. Render against the incoming (prop-derived) id instead:
+  // the live event map when it already holds that chat, else its cached view,
+  // else nothing — never the previous chat's events.
+  const renderedSessionId = resolveRenderedChatSessionId({
+    lockSessionId,
+    initialSessionId,
+    appliedInitialSessionId: appliedInitialSessionIdRef.current,
+    selectedSessionId,
+  });
+  const selectedEvents = renderedSessionId
+    ? eventsBySession[renderedSessionId]
+      ?? peekAgentChatSessionViewCache(renderedSessionId)?.events
+      ?? EMPTY_CHAT_EVENTS
+    : EMPTY_CHAT_EVENTS;
+  const selectedSyncPending = renderedSessionId ? syncPendingBySession[renderedSessionId] === true : false;
+  /**
+   * Genuinely cold: a real session with neither a committed event list nor a
+   * cached view, i.e. its first transcript read is still in flight. A session
+   * that truly has no events commits `[]` and is therefore NOT cold — the
+   * difference is exactly "we have nothing yet" vs "there is nothing".
+   */
+  const selectedChatCold = Boolean(
+    renderedSessionId
+    && selectedEvents.length === 0
+    && !eventsBySession[renderedSessionId]
+    && !peekAgentChatSessionViewCache(renderedSessionId),
+  );
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
-      && optimisticOutgoingMessage.sessionId === selectedSessionId
+      && optimisticOutgoingMessage.sessionId === renderedSessionId
       && !hasMatchingCommittedUserMessage(selectedEvents, optimisticOutgoingMessage.envelope);
     const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
@@ -3819,7 +4102,7 @@ export function AgentChatPane({
     }
     const refEnvelope = displayEvents[insertAt] ?? displayEvents[displayEvents.length - 1];
     const synthetic: AgentChatEventEnvelope = {
-      sessionId: selectedSessionId ?? "",
+      sessionId: renderedSessionId ?? "",
       timestamp: refEnvelope?.timestamp ?? new Date().toISOString(),
       event: {
         type: "system_notice",
@@ -3830,7 +4113,7 @@ export function AgentChatPane({
       },
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
-  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  }, [optimisticOutgoingMessage, renderedSessionId, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -5450,6 +5733,10 @@ export function AgentChatPane({
     setOlderHistoryCursorBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     setOlderHistoryLoadingBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     setOlderHistoryErrorBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setSyncPendingBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    for (const sessionId of [...missingHistorySessionsRef.current]) {
+      if (!retainedSessionIds.has(sessionId)) missingHistorySessionsRef.current.delete(sessionId);
+    }
     setTurnActiveBySession((prev) => {
       const base = pruneSessionRecord(prev, retainedSessionIds);
       let next: Record<string, boolean> | null = base === prev ? null : base;
@@ -5598,8 +5885,15 @@ export function AgentChatPane({
   }, []);
 
   const clearSessionView = useCallback((sessionId: string) => {
+    // Drop the retention subscription first: it exists only to keep this
+    // session's cached view current, and the very next line throws that view
+    // away. Leaving it live would hold a subscription (up to the 5 minute TTL)
+    // for a chat that is being cleared or has just been deleted.
+    releaseRetainedChatSession(sessionId);
     deleteAgentChatSessionViewCache(sessionId);
     detachedHistorySessionsRef.current.delete(sessionId);
+    missingHistorySessionsRef.current.delete(sessionId);
+    setSyncPendingBySession((prev) => (sessionId in prev ? { ...prev, [sessionId]: false } : prev));
     delete detachedLiveEventsBySessionRef.current[sessionId];
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
     applyOlderHistoryCursor(sessionId, null);
@@ -5647,34 +5941,60 @@ export function AgentChatPane({
       let parsed: AgentChatEventEnvelope[] = [];
       let usedSnapshotPath = false;
       // Older-history cursor seeded from the snapshot: the byte offset where
-      // the hydrated transcript tail began (0 = whole transcript hydrated).
-      let snapshotTailStartOffset = 0;
+      // the hydrated transcript tail began (0 = whole transcript hydrated,
+      // or the snapshot authoritatively reports no older history).
+      let snapshotHistoryCursor = 0;
+      // A history miss must never destroy rendered state unless it is both
+      // authoritative AND nothing is on screen. `applyHistoryMiss` centralises
+      // that decision so every miss path below behaves identically.
+      const applyHistoryMiss = (miss: { unavailable?: boolean }): void => {
+        const action = resolveChatHistoryMissAction({
+          unavailable: miss.unavailable,
+          hasRenderedEvents: (eventsBySessionRef.current[sessionId]?.length ?? 0) > 0,
+        });
+        // Always clear the loaded flag: every miss is retryable, and leaving
+        // the flag set would strand the pane until a new event arrived.
+        loadedHistoryRef.current.delete(sessionId);
+        if (action === "sync-pending") {
+          // The runtime could not be reached. This says nothing about whether
+          // the session exists, so keep events, cursors and the view cache
+          // exactly as they are and let the next read catch up.
+          setSyncPendingBySession((prev) => (prev[sessionId] ? prev : { ...prev, [sessionId]: true }));
+          return;
+        }
+        if (action === "keep-missing") {
+          // Authoritative miss, but the user is looking at a real transcript.
+          // Mark it rather than blanking the screen.
+          missingHistorySessionsRef.current.add(sessionId);
+          return;
+        }
+        clearSessionView(sessionId);
+      };
       try {
         if (typeof window.ade.agentChat.getEventHistory === "function") {
           const snapshot: AgentChatEventHistorySnapshot = await window.ade.agentChat.getEventHistory({
             sessionId,
             maxEvents: MAX_SELECTED_CHAT_SESSION_EVENTS,
           });
+          if (snapshot?.sessionId === sessionId && snapshot.unavailable === true) {
+            applyHistoryMiss({ unavailable: true });
+            return;
+          }
           if (snapshot?.sessionId === sessionId && snapshot.sessionFound === false) {
-            clearSessionView(sessionId);
-            loadedHistoryRef.current.delete(sessionId);
+            applyHistoryMiss({ unavailable: false });
             return;
           }
           if (snapshot?.sessionId === sessionId && !snapshot.events?.length && snapshot.sessionFound !== true) {
             const summary = await window.ade.agentChat.getSummary({ sessionId }).catch(() => null);
             if (!summary) {
-              clearSessionView(sessionId);
-              loadedHistoryRef.current.delete(sessionId);
+              applyHistoryMiss({ unavailable: snapshot.unavailable });
               return;
             }
           }
           if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
             parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
             usedSnapshotPath = true;
-            snapshotTailStartOffset =
-              typeof snapshot.tailStartOffset === "number" && snapshot.tailStartOffset > 0
-                ? snapshot.tailStartOffset
-                : 0;
+            snapshotHistoryCursor = resolveSnapshotHistoryCursor(snapshot);
           }
         }
       } catch {
@@ -5718,10 +6038,21 @@ export function AgentChatPane({
       const derived = deriveRuntimeState(merged);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
-      const historyCursor = usedSnapshotPath ? snapshotTailStartOffset : null;
-      writeAgentChatSessionViewCache(sessionId, merged, derived, historyCursor);
+      const historyCursor = usedSnapshotPath ? snapshotHistoryCursor : null;
+      // A successful hydrate reattaches the view to the live tail, so drop the
+      // detached marker BEFORE caching — the merged window is cacheable again.
       detachedHistorySessionsRef.current.delete(sessionId);
+      missingHistorySessionsRef.current.delete(sessionId);
+      writeAgentChatSessionViewCache(
+        sessionId,
+        merged,
+        derived,
+        historyCursor,
+        MAX_SELECTED_CHAT_SESSION_EVENTS,
+        detachedHistorySessionsRef.current.has(sessionId),
+      );
       delete detachedLiveEventsBySessionRef.current[sessionId];
+      setSyncPendingBySession((prev) => (prev[sessionId] ? { ...prev, [sessionId]: false } : prev));
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       applyOlderHistoryCursor(sessionId, historyCursor);
       setOlderHistoryErrorBySession((prev) => (
@@ -5744,10 +6075,38 @@ export function AgentChatPane({
   }, [applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
 
   /**
+   * Resolves `true` once the backoff elapses, or `false` if the wait was
+   * cancelled — a cancelled wait always resolves, so the caller's `finally`
+   * still runs and the in-flight flag can never leak.
+   */
+  const waitBeforeOlderHistoryRetry = useCallback((delayMs: number) => (
+    new Promise<boolean>((resolve) => {
+      const waiter = { handle: 0, resolve };
+      waiter.handle = window.setTimeout(() => {
+        olderHistoryRetryWaitersRef.current.delete(waiter);
+        resolve(true);
+      }, delayMs);
+      olderHistoryRetryWaitersRef.current.add(waiter);
+    })
+  ), []);
+
+  const cancelOlderHistoryRetryWaits = useCallback(() => {
+    for (const waiter of [...olderHistoryRetryWaitersRef.current]) {
+      window.clearTimeout(waiter.handle);
+      olderHistoryRetryWaitersRef.current.delete(waiter);
+      waiter.resolve(false);
+    }
+  }, []);
+
+  /**
    * Fetch the next OLDER transcript page for a session and prepend it to the
    * in-memory event list. Triggered by the message list when the user scrolls
    * near the top. One in-flight request per session; the cursor only moves
    * toward 0 (head), so retriggers are naturally deduped by cursor value.
+   *
+   * Paging failures retry silently on a bounded ladder before anything is
+   * shown: a single blip on a remote hop should not make the user look at (and
+   * press) a retry affordance for something we can just do ourselves.
    */
   const loadOlderHistory = useCallback(async (sessionId: string) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
@@ -5757,7 +6116,7 @@ export function AgentChatPane({
     olderHistoryInFlightRef.current.add(sessionId);
     setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: true }));
     setOlderHistoryErrorBySession((prev) => ({ ...prev, [sessionId]: null }));
-    try {
+    const runOlderHistoryPage = async (): Promise<void> => {
       let beforeOffset = cursor;
       let nextCursor = cursor;
       let olderEvents: AgentChatEventEnvelope[] = [];
@@ -5770,6 +6129,15 @@ export function AgentChatPane({
           beforeOffset,
           maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
         });
+        // `unavailable` is "we could not reach the runtime", NOT "this chat is
+        // gone" — it arrives with `sessionFound: false` (preload synthesises
+        // exactly that shape), so it MUST be caught first. Treating it as a
+        // miss would zero the cursor and permanently unmount the "load older"
+        // sentinel. Throwing routes it into the retry ladder below and leaves
+        // the cursor untouched, which is what the ladder exists for.
+        if (page?.unavailable === true) {
+          throw new Error("Chat runtime is temporarily unavailable.");
+        }
         if (page?.sessionId !== sessionId || page.sessionFound === false) {
           nextCursor = 0;
           break;
@@ -5804,7 +6172,16 @@ export function AgentChatPane({
           eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
           setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
         }
-        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor, maxEvents);
+        // `hitResidentCap` above may have just detached this view; the cache
+        // write is skipped in that case (see writeAgentChatSessionViewCache).
+        writeAgentChatSessionViewCache(
+          sessionId,
+          merged,
+          undefined,
+          nextCursor,
+          maxEvents,
+          detachedHistorySessionsRef.current.has(sessionId),
+        );
       } else {
         writeAgentChatSessionViewCache(
           sessionId,
@@ -5812,27 +6189,54 @@ export function AgentChatPane({
           undefined,
           nextCursor,
           maxEvents,
+          detachedHistorySessionsRef.current.has(sessionId),
         );
       }
       applyOlderHistoryCursor(sessionId, nextCursor);
-    } catch (error) {
-      // Keep the current cursor so a later scroll can retry.
+    };
+
+    try {
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt <= OLDER_HISTORY_RETRY_DELAYS_MS.length; attempt += 1) {
+        if (attempt > 0) {
+          const proceed = await waitBeforeOlderHistoryRetry(OLDER_HISTORY_RETRY_DELAYS_MS[attempt - 1] ?? 0);
+          // Cancelled by a session switch or unmount — drop the ladder without
+          // latching an error nobody is looking at any more.
+          if (!proceed) return;
+          // Something else already moved this session's cursor; retrying the
+          // stale offset would fight it.
+          if (olderHistoryCursorRef.current[sessionId] !== cursor) return;
+        }
+        try {
+          await runOlderHistoryPage();
+          return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      // Retries exhausted: latch a visible error. Keep the current cursor so a
+      // later scroll can retry, and note that a latched error suppresses the
+      // message list's automatic retriggers until the user asks again.
       setOlderHistoryErrorBySession((prev) => ({
         ...prev,
-        [sessionId]: error instanceof Error && error.message.trim()
-          ? error.message
+        [sessionId]: lastError instanceof Error && lastError.message.trim()
+          ? lastError.message
           : "Couldn’t load earlier messages.",
       }));
     } finally {
       olderHistoryInFlightRef.current.delete(sessionId);
       setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
     }
-  }, [applyOlderHistoryCursor, lockSessionId]);
+  }, [applyOlderHistoryCursor, lockSessionId, waitBeforeOlderHistoryRetry]);
 
   const loadOlderHistoryForSelectedSession = useCallback(() => {
     const sessionId = selectedSessionIdRef.current;
     if (sessionId) void loadOlderHistory(sessionId);
   }, [loadOlderHistory]);
+
+  // Cancel pending paging retries when the selection moves or the pane
+  // unmounts, so no timer outlives the view that scheduled it.
+  useEffect(() => () => cancelOlderHistoryRetryWaits(), [cancelOlderHistoryRetryWaits, selectedSessionId]);
 
   useEffect(() => {
     if (lockSessionId) {
@@ -5968,20 +6372,34 @@ export function AgentChatPane({
     const boot = async () => {
       const hasRenderableSession = Boolean(selectedSessionIdRef.current || lockSessionId || initialSessionSummary);
       setLoading(!hasRenderableSession);
-      setPreferencesReady(false);
-      try {
-        const snapshot = await getProjectConfigCached({ projectRoot });
-        const chat = snapshot.effective.ai?.chat;
-        if (!cancelled) {
-          // Don't auto-restore model — user must pick one explicitly each session
-          setSendOnEnter(chat?.sendOnEnter ?? true);
-        }
-      } catch {
-        // fall back to defaults.
+      // Only re-gate preferences when there is genuinely something to wait for:
+      // a different project root, or a cold model catalog. Re-running this
+      // effect for the same project (a remount, or a `refreshSessions` identity
+      // change) used to blank `preferencesReady` and re-block the composer.
+      const projectRootChanged = preferencesProjectRootRef.current !== projectRoot;
+      preferencesProjectRootRef.current = projectRoot;
+      if (projectRootChanged || !hasWarmChatModelCatalog(projectRoot)) {
+        setPreferencesReady(false);
       }
+      // Fire-and-forget: this snapshot only feeds `sendOnEnter`, so awaiting it
+      // put a config round trip in front of the session list AND the model
+      // catalog on every single boot.
+      void getProjectConfigCached({ projectRoot })
+        .then((snapshot) => {
+          if (cancelled) return;
+          // Don't auto-restore model — user must pick one explicitly each session
+          setSendOnEnter(snapshot.effective.ai?.chat?.sendOnEnter ?? true);
+        })
+        .catch(() => {
+          // fall back to defaults.
+        });
 
       const sessionsRefresh = refreshSessions().catch(() => undefined);
       const modelsRefresh = refreshAvailableModels().catch(() => []);
+      // The readiness gate is the FIRST refresh for this project root; later
+      // mounts still run their own refresh for state, but wait on the settled
+      // one so they are ready in a microtask.
+      const modelsReadinessGate = rememberChatBootModelRefresh(projectRoot, modelsRefresh);
       try {
         await sessionsRefresh;
       } finally {
@@ -5990,7 +6408,7 @@ export function AgentChatPane({
         }
       }
       try {
-        await modelsRefresh;
+        await modelsReadinessGate;
       } finally {
         if (!cancelled) {
           setPreferencesReady(true);
@@ -6002,7 +6420,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [initialSessionSummary, lockSessionId, refreshAvailableModels, refreshSessions]);
+  }, [initialSessionSummary, lockSessionId, projectRoot, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
     const selectableModelIds = modelSelectionConstrained ? effectiveAvailableModelIds : availableModelIds;
@@ -6138,7 +6556,20 @@ export function AgentChatPane({
     if (lockSessionId) next.add(lockSessionId);
     if (initialSessionId) next.add(initialSessionId);
     for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
+    const previous = knownSessionIdsRef.current;
     knownSessionIdsRef.current = next;
+    // The view cache is module-level and outlives every pane, so a chat that
+    // leaves this pane's roster (deleted, archived, or its project/lane closed)
+    // would otherwise keep a whole transcript resident until eight newer chats
+    // pushed it out. Release its retention subscription too.
+    const departed = selectDepartedChatSessionViewCacheSessions(
+      previous,
+      next,
+      [selectedSessionId, lockSessionId, initialSessionId],
+    );
+    if (!departed.length) return;
+    for (const sessionId of departed) releaseRetainedChatSession(sessionId);
+    clearAgentChatSessionViewCacheForSessions(departed);
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
   useEffect(() => {
@@ -6227,8 +6658,16 @@ export function AgentChatPane({
   useEffect(() => {
     if (!isTileVisible) return;
     if (!selectedSessionId) return;
+    // Take the stream back from the retention module (see chatSessionRetention).
+    // `adopted` means the cached view already carries everything that arrived
+    // while this pane was hidden, so the reconcile below is gap insurance
+    // against the remote pump's epoch resets / `replay:false` rebinds rather
+    // than the primary catch-up — fire it immediately and only once.
+    const adopted = adoptRetainedSession(selectedSessionId);
     const restoredFromCache = applyCachedSessionView(selectedSessionId);
     const refreshOptions = { force: !restoredFromCache };
+    // `mergeChatHistorySnapshot` dedupes, so this can never blank the view.
+    const reconcileDelayMs = adopted ? 0 : 650;
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
       // chat can recover from any background event loss instead of relying
@@ -6237,7 +6676,7 @@ export function AgentChatPane({
       if (!restoredFromCache) return;
       const refreshHandle = window.setTimeout(() => {
         void loadHistory(selectedSessionId, { force: true });
-      }, 650);
+      }, reconcileDelayMs);
       return () => window.clearTimeout(refreshHandle);
     }
     // Locked-single-session mode (Work tab tile). Force-reload on every mount
@@ -6255,13 +6694,26 @@ export function AgentChatPane({
     if (restoredFromCache) {
       refreshHandle = window.setTimeout(() => {
         void loadHistory(selectedSessionId, { force: true });
-      }, Math.max(650, hydrateDelayMs + 650));
+      }, Math.max(reconcileDelayMs, hydrateDelayMs + reconcileDelayMs));
     }
     return () => {
       window.clearTimeout(handle);
       if (refreshHandle != null) window.clearTimeout(refreshHandle);
     };
   }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+
+  // Subscription handoff. While this pane is visible it owns the only
+  // `agentChat.onEvent` subscription; when it hides or unmounts the retention
+  // module opens its own so the remote event pump keeps polling and the
+  // transcript is current on return instead of stale by a whole tab visit.
+  // Deps are deliberately minimal — anything else would retain/release on
+  // unrelated re-renders.
+  useEffect(() => {
+    if (!isTileVisible || !selectedSessionId) return undefined;
+    return () => {
+      retainChatSession(selectedSessionId);
+    };
+  }, [isTileVisible, selectedSessionId]);
 
   useEffect(() => {
     if (!isTileVisible || !selectedSessionId) return undefined;
@@ -6272,8 +6724,15 @@ export function AgentChatPane({
     if (!shouldRecoverLiveTranscript && selectedEvents.length > 0) return undefined;
 
     let disposed = false;
-    const recover = () => {
+    const recover = (options?: { skipWhenLive?: boolean }) => {
       if (disposed) return;
+      // A live subscription plus retention already delivers the transcript, so
+      // re-reading it while events are flowing is pure cost.
+      if (
+        options?.skipWhenLive
+        && lastEventReceivedAtMsRef.current > 0
+        && Date.now() - lastEventReceivedAtMsRef.current < ACTIVE_TURN_RECOVERY_INTERVAL_MS
+      ) return;
       void loadHistory(selectedSessionId, { force: true });
     };
 
@@ -6282,7 +6741,7 @@ export function AgentChatPane({
     // session uses the normal live polling loop; an empty idle session gets
     // two bounded retries so a stale summary cannot strand a blank pane.
     if (!shouldRecoverLiveTranscript) {
-      const retryTimers = [900, 3_000].map((delayMs) => window.setTimeout(recover, delayMs));
+      const retryTimers = [900, 3_000].map((delayMs) => window.setTimeout(() => recover(), delayMs));
       return () => {
         disposed = true;
         retryTimers.forEach((timer) => window.clearTimeout(timer));
@@ -6291,9 +6750,12 @@ export function AgentChatPane({
 
     const offset = stableSessionDelayOffset(selectedSessionId);
     const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
-    const intervalMs = isTileActive ? 2200 : 2800 + (offset % 700);
-    const initialTimer = window.setTimeout(recover, initialDelayMs);
-    const intervalTimer = window.setInterval(recover, intervalMs);
+    // Jittered so a grid of tiles doesn't re-read every transcript on the same
+    // frame; the base is the stall-detector interval, not a polling rate.
+    const intervalMs = ACTIVE_TURN_RECOVERY_INTERVAL_MS + (isTileActive ? 0 : offset % 1_500);
+    const tick = () => recover({ skipWhenLive: true });
+    const initialTimer = window.setTimeout(tick, initialDelayMs);
+    const intervalTimer = window.setInterval(tick, intervalMs);
     return () => {
       disposed = true;
       window.clearTimeout(initialTimer);
@@ -6563,6 +7025,9 @@ export function AgentChatPane({
   useEffect(() => {
     if (!isTileVisible) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      // Liveness stamp for the active-turn stall detector — recorded before any
+      // filtering so an event for a sibling chat still proves the stream is up.
+      lastEventReceivedAtMsRef.current = Date.now();
       const optimistic = optimisticOutgoingMessageRef.current;
       if (
         optimistic?.sessionId === envelope.sessionId
@@ -8139,6 +8604,8 @@ export function AgentChatPane({
     localTouchBySessionRef.current.delete(session.id);
     optimisticSessionIdsRef.current.delete(session.id);
     knownSessionIdsRef.current.delete(session.id);
+    releaseRetainedChatSession(session.id);
+    clearAgentChatSessionViewCacheForSessions([session.id]);
     invalidateSessionListCache();
     invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
     if (targetLane.laneId === laneId && canRefreshPinnedProject(pin)) {
@@ -8683,6 +9150,10 @@ export function AgentChatPane({
         draftsPerSessionRef.current.delete(selectedSessionId);
         localTouchBySessionRef.current.delete(selectedSessionId);
         loadedHistoryRef.current.delete(selectedSessionId);
+        // The chat is gone: stop retaining its stream and drop its cached view
+        // rather than waiting for the retention TTL / cache pressure.
+        releaseRetainedChatSession(selectedSessionId);
+        clearAgentChatSessionViewCacheForSessions([selectedSessionId]);
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
@@ -11620,7 +12091,10 @@ export function AgentChatPane({
       exit={{ opacity: 0 }}
       transition={SIDE_PANE_FADE}
     >
-      <div className={FLOATING_PANE_CARD_CLASS}>
+      {/* The ref goes on the CARD, not the motion.div: the card is what the
+          rail has to clear, and the motion.div's opacity animation would
+          otherwise be the thing being observed. */}
+      <div ref={prPaneInset.ref} className={FLOATING_PANE_CARD_CLASS}>
         {content}
       </div>
     </motion.div>
@@ -11756,15 +12230,46 @@ export function AgentChatPane({
                   transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
-                  {/* Chat column */}
+                  {/* The chat surface — message list and the floating left PR
+                      pane are siblings here, so the measured pane height
+                      reaches the minimap rail by context, not by a prop through
+                      the memoized transcript.
+
+                      Gate the value on the OPEN FLAG, not on the pane element:
+                      AnimatePresence keeps the card mounted through its exit
+                      fade, so observing the element alone would hold the rail
+                      inset for a whole animation after the user already closed
+                      the pane. */}
+                  <ChatPrPaneInsetContext.Provider value={prFloating && laneId ? prPaneInset.bottomViewportPx : null}>
+                  {/* Chat column. `data-chat-sync-pending` is the seam for the
+                      catch-up affordance: the transcript below is real but may
+                      be behind because the bound runtime could not be reached
+                      on the last history read. */}
                   <div
                     data-chat-appearance-root
+                    data-chat-sync-pending={selectedSyncPending ? "true" : undefined}
                     style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
                       "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
+                    {/* Catch-up hairline. Sits directly under the chat header:
+                        the transcript below is real but may be behind because
+                        the bound runtime could not be reached on the last
+                        history read. Deliberately a static 2px rule that fades
+                        — never a continuous animation — and the fade itself is
+                        `motion-safe:` so `prefers-reduced-motion` gets an
+                        instant swap. It stays mounted at 2px so appearing and
+                        disappearing costs no layout shift. */}
+                    <div
+                      aria-hidden
+                      data-chat-sync-hairline={selectedSyncPending ? "true" : undefined}
+                      className={cn(
+                        "h-[2px] shrink-0 bg-[var(--color-accent)] motion-safe:transition-opacity motion-safe:duration-300",
+                        selectedSyncPending ? "opacity-70" : "opacity-0",
+                      )}
+                    />
                     {(orchestrationRole === "worker" || orchestrationRole === "validator") && orchestrationRunId ? (
                       <div
                         data-orchestration-role-banner={orchestrationRole}
@@ -11826,8 +12331,27 @@ export function AgentChatPane({
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
+                    {/* A cold chat should read as "loading", not as an empty
+                        void. AgentChatMessageList has no skeleton affordance of
+                        its own, so this is a minimal static one (no pulse —
+                        continuous animation is not allowed here). */}
+                    {selectedChatCold && !subagentView ? (
+                      <div
+                        aria-hidden
+                        data-chat-cold-skeleton
+                        className="shrink-0 space-y-3 px-4 pt-4"
+                      >
+                        {[72, 54, 38].map((widthPct) => (
+                          <div
+                            key={widthPct}
+                            className="h-3 rounded-full bg-white/[0.05]"
+                            style={{ width: `${widthPct}%` }}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                     <AgentChatMessageList
-                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
+                      key={subagentView ? `subagent-${subagentView.taskId}` : renderedSessionId ?? "chat-draft"}
                       events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
                       showStreamingIndicator={subagentView
                         ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
@@ -11840,25 +12364,25 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       hasOlderHistory={Boolean(
                         !subagentView
-                        && selectedSessionId
-                        && (olderHistoryCursorBySession[selectedSessionId] ?? 0) > 0,
+                        && renderedSessionId
+                        && (olderHistoryCursorBySession[renderedSessionId] ?? 0) > 0,
                       )}
                       loadingOlderHistory={Boolean(
                         !subagentView
-                        && selectedSessionId
-                        && olderHistoryLoadingBySession[selectedSessionId],
+                        && renderedSessionId
+                        && olderHistoryLoadingBySession[renderedSessionId],
                       )}
                       olderHistoryError={
-                        !subagentView && selectedSessionId
-                          ? olderHistoryErrorBySession[selectedSessionId] ?? null
+                        !subagentView && renderedSessionId
+                          ? olderHistoryErrorBySession[renderedSessionId] ?? null
                           : null
                       }
-                      onLoadOlderHistory={!subagentView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
+                      onLoadOlderHistory={!subagentView && renderedSessionId ? loadOlderHistoryForSelectedSession : undefined}
                       onReturnToLatest={!subagentView ? returnSelectedHistoryToLatest : undefined}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}
-                      sessionId={selectedSessionId}
+                      sessionId={renderedSessionId}
                       onInsertDraft={insertComposerDraft}
                       onRevealChatTerminal={revealChatTerminal}
                       turnDiffSummaries={selectedTurnDiffSummaries}
@@ -11905,6 +12429,7 @@ export function AgentChatPane({
                           <ChatPrPane
                             laneId={laneId}
                             branchName={laneGitBranch}
+                            sessionTitle={selectedSession?.title ?? null}
                             delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
                           />,
@@ -11916,6 +12441,7 @@ export function AgentChatPane({
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                   {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
                   {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
+                  </ChatPrPaneInsetContext.Provider>
                 </motion.div>
               ) : (
                 <motion.div

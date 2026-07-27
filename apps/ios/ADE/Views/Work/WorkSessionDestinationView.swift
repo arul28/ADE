@@ -330,6 +330,28 @@ func workChatTranscriptEntriesByIndexForRestoredPresentation(
   )
 }
 
+/// Resolve the scroll-back cursor a chat event history snapshot implies.
+///
+/// `hasOlderHistory` is authoritative when the host sends it: it is derived
+/// from the tail READ (transcript/window truncation), not from envelope
+/// identity, so it survives a snapshot served entirely from the in-memory ring
+/// buffer. An explicit `false` therefore means there is genuinely nothing
+/// older, and the cursor must be retired even when a non-zero
+/// `tailStartOffset` tags along — otherwise the timeline offers a "load earlier
+/// messages" affordance that can only ever come back empty. Older hosts omit
+/// the field and keep the legacy offset-only rule.
+///
+/// Returns `nil` for "exhausted"; `updateOlderChatEventHistoryCursor` maps that
+/// onto its explicit `0` sentinel.
+func workChatSnapshotOlderHistoryCursor(
+  hasOlderHistory: Bool?,
+  tailStartOffset: Int?
+) -> Int? {
+  if hasOlderHistory == false { return nil }
+  guard let tailStartOffset, tailStartOffset > 0 else { return nil }
+  return tailStartOffset
+}
+
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   guard !raw.isEmpty else { return nil }
@@ -1567,7 +1589,11 @@ struct WorkSessionDestinationView: View {
           if syncService.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: sessionId) {
             let snapshot = try await syncService.hydrateChatEventHistorySnapshot(sessionId: sessionId)
             seedOlderChatEventHistoryCursor(from: snapshot)
+            // A host that authoritatively reports no older history is believed:
+            // probing a tail page for a scroll-back cursor would be a wasted
+            // round trip that can only come back empty.
             if (snapshot.tailStartOffset ?? 0) <= 0,
+               snapshot.hasOlderHistory != false,
                (snapshot.windowTruncated == true || snapshot.truncated),
                syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId) {
               if let page = try? await syncService.hydrateChatEventHistoryTailPage(sessionId: sessionId) {
@@ -1773,7 +1799,12 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func seedOlderChatEventHistoryCursor(from snapshot: AgentChatEventHistorySnapshot) {
-    updateOlderChatEventHistoryCursor(snapshot.tailStartOffset)
+    updateOlderChatEventHistoryCursor(
+      workChatSnapshotOlderHistoryCursor(
+        hasOlderHistory: snapshot.hasOlderHistory,
+        tailStartOffset: snapshot.tailStartOffset
+      )
+    )
   }
 
   @MainActor

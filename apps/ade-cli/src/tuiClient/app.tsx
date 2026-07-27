@@ -262,7 +262,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
-import { advanceOlderHistoryCursor, prependOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP } from "./olderHistory";
+import { advanceOlderHistoryCursor, prependOlderTuiHistory, resolveSnapshotHistoryCursor, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP } from "./olderHistory";
 import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
 import {
   EMPTY_BRACKETED_PASTE_STATE,
@@ -1221,6 +1221,24 @@ export function defaultPrTitleForLane(sourceLane: LaneSummary | null | undefined
     : null;
   const targetName = targetLane?.name?.trim() || targetBranch || "target";
   return `${sourceName} -> ${targetName}`;
+}
+
+/**
+ * Seed title for the `/pr open` form, mirroring the desktop inline PR creator.
+ *
+ * The chat's own title describes the work; the lane -> target derivation never
+ * reads as a shippable PR title, so it is only the fallback. "New chat" is the
+ * placeholder a session carries until its background rename lands, so it never
+ * wins.
+ */
+export function defaultPrTitleForChat(args: {
+  sessionTitle?: string | null;
+  sourceLane: LaneSummary | null | undefined;
+  lanes: LaneSummary[];
+}): string {
+  const trimmed = args.sessionTitle?.trim() ?? "";
+  if (trimmed && trimmed !== "New chat") return trimmed;
+  return defaultPrTitleForLane(args.sourceLane, args.lanes);
 }
 
 function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSummary | null {
@@ -3503,8 +3521,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   /**
    * Seed (or reset) the scroll-back cursor for a freshly hydrated session.
-   * tailStartOffset > 0 means the snapshot's tail began mid-transcript and
-   * older history can be paged in; null/undefined/0 means nothing to page.
+   * A positive cursor means the snapshot's tail began mid-transcript and older
+   * history can be paged in; null/undefined/0 means nothing to page. Callers
+   * pass the cursor already resolved by `resolveSnapshotHistoryCursor`, which
+   * honours the host's authoritative `hasOlderHistory` signal.
    */
   const seedOlderHistoryCursor = useCallback((sessionId: string, tailStartOffset: number | null | undefined) => {
     const pageable = tailStartOffset != null && tailStartOffset > 0;
@@ -4640,7 +4660,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         } else {
           delete olderSnapshotBufferBySessionIdRef.current[sessionId];
         }
-        seedOlderHistoryCursor(sessionId, clearedAtValue ? null : history.tailStartOffset);
+        seedOlderHistoryCursor(sessionId, clearedAtValue ? null : resolveSnapshotHistoryCursor(history));
         setCurrentGoal(latestGoal(history.events));
         const fallbackContext = session.modelId ? getModelById(session.modelId)?.contextWindow ?? null : null;
         const stats = latestTokenStats(history.events, fallbackContext);
@@ -7208,7 +7228,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           } else {
             delete olderSnapshotBufferBySessionIdRef.current[nextSessionId];
           }
-          seedOlderHistoryCursor(nextSessionId, clearedAt ? null : history.tailStartOffset);
+          seedOlderHistoryCursor(nextSessionId, clearedAt ? null : resolveSnapshotHistoryCursor(history));
         }
       }
       setSessionStreaming(nextSessionId, selectedSessionFound && nextSession?.status === "active");
@@ -9858,7 +9878,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         if (!args) {
-          const defaultTitle = defaultPrTitleForLane(activeLane, lanes);
+          const defaultTitle = defaultPrTitleForChat({
+            sessionTitle: activeSession?.title ?? null,
+            sourceLane: activeLane,
+            lanes,
+          });
           openForm({
             kind: "form",
             title: "Open PR",

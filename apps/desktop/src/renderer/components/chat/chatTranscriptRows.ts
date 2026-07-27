@@ -393,6 +393,30 @@ export function summarizeInlineText(value: string, maxChars = 120): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
 
+/** A user bubble longer than this (chars or lines) renders clamped with a "show more" affordance. */
+export const COLLAPSE_USER_MESSAGE_MAX_CHARS = 600;
+export const COLLAPSE_USER_MESSAGE_MAX_LINES = 8;
+
+/** Long prompts render clamped so a single paste cannot dominate the transcript. */
+export function shouldCollapseUserMessageText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.length) return false;
+  if (trimmed.length > COLLAPSE_USER_MESSAGE_MAX_CHARS) return true;
+  return trimmed.split("\n").length > COLLAPSE_USER_MESSAGE_MAX_LINES;
+}
+
+/**
+ * How many rows were appended after `anchorKey`. Fails quiet (0) when the anchor
+ * is gone: the row set gets re-grouped, so a missing anchor is expected churn
+ * rather than an error worth surfacing.
+ */
+export function countRowsAppendedSince(rowKeys: readonly string[], anchorKey: string | null): number {
+  if (anchorKey === null) return 0;
+  const anchorIndex = rowKeys.indexOf(anchorKey);
+  if (anchorIndex < 0) return 0;
+  return rowKeys.length - anchorIndex - 1;
+}
+
 function isLowValueHookNotice(event: Extract<AgentChatEvent, { type: "system_notice" }>): boolean {
   if (event.noticeKind !== "hook") return false;
   const message = event.message.trim();
