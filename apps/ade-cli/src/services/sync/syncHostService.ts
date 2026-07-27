@@ -172,7 +172,7 @@ import {
   createMachineIdentitySigningStore,
   type MachineIdentitySigningStore,
 } from "./machineIdentitySigningStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, SYNC_HOST_MAX_PORT, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
@@ -263,6 +263,40 @@ const MAX_INBOUND_CHANGESET_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES * 40;
 
 function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
+}
+
+/**
+ * Ports still advertised through `tailscale serve` that ADE published on an
+ * earlier run and never tore down.
+ *
+ * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
+ * that happens to sit in that range — anything forwarding elsewhere — is left
+ * strictly alone.
+ */
+export function staleAdeTailnetServePorts(
+  serveStatusJson: string,
+  currentPort: number | null,
+): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return [];
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return [];
+  const stale: number[] = [];
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    if (!Number.isInteger(port)) continue;
+    if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
+    if (currentPort != null && port === currentPort) continue;
+    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
+    if (forward !== `127.0.0.1:${port}`) continue;
+    stale.push(port);
+  }
+  return stale.sort((left, right) => left - right);
 }
 
 export function isRuntimeHostPairingRecord(
@@ -3852,6 +3886,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           stdout: stdoutText || null,
           stderr: stderrText || null,
         });
+        // Best-effort and deliberately after publish: reclaiming old entries
+        // must never delay or endanger advertising the live port.
+        if (tailnetServeActivePublishToken === publishToken) {
+          void reclaimStaleTailnetServes(port).catch(() => {});
+        }
       })
       .catch((error: unknown) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
@@ -3892,6 +3931,42 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.logger.warn("sync_host.tailnet_discovery_failed", logPayload);
         }
       });
+  };
+
+  // `serve --bg` outlives the process that registered it, but the port ADE
+  // tracks is in-memory only, so every restart — and every force-kill that
+  // skips the teardown below — orphans the previous entry. Tailscale keeps it
+  // bound on the tailnet address, which makes ADE's own next wildcard bind fail
+  // EADDRINUSE against its own leftovers and walk one port higher, leaking
+  // another entry. It ratchets forever; one machine had 66 stranded ports and
+  // burned ~70 failed binds on every start. Reclaim them whenever we publish.
+  const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
+    const cli = resolveTailscaleCliPath();
+    let stale: number[];
+    try {
+      const { stdout } = await execFileAsync(cli, ["serve", "status", "--json"], { timeout: 10_000 });
+      stale = staleAdeTailnetServePorts(stdout, currentPort);
+    } catch {
+      // No Tailscale, no permission, unparseable output: publishing the current
+      // port matters more than tidying old ones.
+      return;
+    }
+    if (stale.length === 0) return;
+    let reclaimed = 0;
+    for (const port of stale) {
+      try {
+        await execFileAsync(cli, ["serve", `--tcp=${port}`, "off"], { timeout: 10_000 });
+        reclaimed += 1;
+      } catch {
+        // A single stubborn entry must not stop the rest.
+      }
+    }
+    args.logger.info("sync_host.tailnet_serve_reclaimed", {
+      currentPort,
+      staleCount: stale.length,
+      reclaimed,
+      ports: stale.slice(0, 20),
+    });
   };
 
   const unpublishTailnetDiscovery = async (): Promise<void> => {

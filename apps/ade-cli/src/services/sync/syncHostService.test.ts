@@ -58,6 +58,7 @@ import {
   recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
   selectChangesetBatchChunk,
+  staleAdeTailnetServePorts,
   syncConnectionTransportForOrigin,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
@@ -129,6 +130,51 @@ type BonjourPublishArgs = {
   txt: Record<string, string>;
   disableIPv6: boolean;
 };
+
+// Regression: `tailscale serve --bg` outlives the process that registered it,
+// but ADE tracked the served port in memory only. Every restart -- and every
+// force-kill that skipped teardown -- orphaned the previous entry, which stayed
+// bound on the tailnet address and made ADE's own next wildcard bind fail
+// EADDRINUSE against its own leftovers. It walked one port higher and leaked
+// another, ratcheting forever: 66 stranded ports and ~70 failed binds per start
+// on one machine.
+describe("staleAdeTailnetServePorts", () => {
+  const serveStatus = (ports: Record<string, string>) =>
+    JSON.stringify({
+      TCP: Object.fromEntries(
+        Object.entries(ports).map(([port, forward]) => [port, { TCPForward: forward }]),
+      ),
+    });
+
+  it("reclaims ADE's own stranded ports and keeps the live one", () => {
+    const json = serveStatus({
+      "8787": "127.0.0.1:8787",
+      "8788": "127.0.0.1:8788",
+      "8852": "127.0.0.1:8852",
+    });
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788]);
+  });
+
+  it("leaves a hand-rolled serve in the same range alone", () => {
+    const json = serveStatus({
+      // Same port range, but forwarding somewhere ADE never would.
+      "8790": "127.0.0.1:3000",
+      "8791": "192.168.1.5:8791",
+      "8792": "127.0.0.1:8792",
+    });
+    expect(staleAdeTailnetServePorts(json, null)).toEqual([8792]);
+  });
+
+  it("ignores ports outside ADE's sync range", () => {
+    const json = serveStatus({ "443": "127.0.0.1:443", "9100": "127.0.0.1:9100" });
+    expect(staleAdeTailnetServePorts(json, null)).toEqual([]);
+  });
+
+  it("returns nothing for unparseable or empty status", () => {
+    expect(staleAdeTailnetServePorts("not json", 8852)).toEqual([]);
+    expect(staleAdeTailnetServePorts(JSON.stringify({}), 8852)).toEqual([]);
+  });
+});
 
 describe("resolveSyncHostInboundProjectScope", () => {
   it("keeps runtime-scoped envelopes projectless", () => {
