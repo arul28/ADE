@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored per-chat scroll position and added a new-message jump control for conversations that are not pinned to the live edge.
 - Added an authoritative older-history signal across desktop, iOS, and `ade code`, removing false retry banners and protecting history during remote transitions.
 - Replaced the message minimap with an accessible tick rail and added gradient collapsing for long user messages.
+- Consolidated normalized tool-call telemetry into active and completed activity disclosures while preserving narration, chronological file changes, timestamps, and run duration.
+- Aligned activity grouping and access across desktop, hosted web, iOS, and `ade code`, including turns with missing or mixed identifiers.
+
+### Handoffs and imports
+
+- Made disabled cross-machine handoffs list concrete blockers, report behind or diverged branches, and offer a destination-validated fast-forward repair.
+- Displayed the model, reasoning, fast mode, and permissions that will actually be applied on the destination machine.
+- Cleaned imported-session previews by removing provider wrappers and duplicate Codex mirror records, preserving started/latest anchors, and keeping bounded transcripts keyboard-scrollable.
+- Hid cross-machine fork actions for providers that cannot complete them.
 
 ### Pull requests and lanes
 

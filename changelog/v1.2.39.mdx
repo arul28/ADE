@@ -3,7 +3,7 @@ title: "v1.2.39"
 description: "Release notes for ADE v1.2.39 - July 27, 2026"
 ---
 
-v1.2.39 adds cross-device snooze and settle controls for work sessions, makes switching between large chats feel immediate, and replaces the old message minimap with a compact tick rail. It also detects lane branch drift, improves PR matching and creation, and closes several reliability gaps across desktop, iOS, the hosted client, `ade code`, and the CLI.
+v1.2.39 adds cross-device snooze and settle controls for work sessions, makes switching between large chats feel immediate, and replaces the old message minimap with a compact tick rail. It also consolidates tool activity, makes cross-machine handoff blockers actionable, improves imported-session previews, detects lane branch drift, and closes reliability gaps across desktop, iOS, the hosted client, `ade code`, and the CLI.
 
 ---
 
@@ -26,6 +26,19 @@ v1.2.39 adds cross-device snooze and settle controls for work sessions, makes sw
 - **The minimap is now a tick rail.** Turn markers compress to fit, preview safely near screen edges, expose interrupted and failed outcomes accessibly, and leave message-text selection unobstructed.
 - **PR controls have their own title bar.** Refresh and create actions move into the pane, source and target branches read as one flow, ahead/behind state is visible, and the chat title becomes the default PR title.
 - **Pane state follows the chat.** Open state persists per conversation, including through temporary remote disconnects.
+
+## Tool activity is easier to scan
+
+- **Telemetry no longer floods the transcript.** Normalized tool-call detail moves into active and completed activity disclosures while narration and chronological file-change cards remain in the conversation.
+- **Turn boundaries stay accurate.** Activity grouping handles missing and mixed turn identifiers, preserves timestamps, and reports how long completed work ran.
+- **The same model reaches every client.** Desktop, hosted web, iOS, and `ade code` expose equivalent activity detail with presentation adapted to each surface.
+
+## Handoffs and imports explain themselves
+
+- **Blocked handoffs say why.** Disabled actions now list concrete blockers, distinguish behind and diverged branches, and offer a safe fast-forward repair when the destination can update with `--ff-only`.
+- **Destination settings are visible.** The handoff screen shows the model, reasoning, fast mode, and permissions that will actually travel with the session.
+- **Imported sessions read like conversations.** Provider wrappers and duplicated Codex mirror records are removed, previews retain started and latest anchors, and bounded transcript previews stay keyboard-scrollable.
+- **Unsupported actions are gated.** Cross-machine fork controls no longer appear for providers that cannot complete them.
 
 ## Safer lanes and runtimes
 
