@@ -3617,6 +3617,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The machine sent unreadable sync data. Reconnect and try again.")
   }
 
+  /// The host owns the wording of `hello_error.message` and reworded it — a
+  /// paired-device rejection and an account-owner mismatch now carry their own
+  /// prose instead of a generic "authentication failed". iOS must key on
+  /// `ADEErrorCode`, never on that prose, so a host reword can never silently
+  /// drop these back to the raw server string.
+  func testSyncUserFacingAuthFailureIgnoresHostSuppliedWording() {
+    let rewordedPairingRejection = NSError(
+      domain: "ADE",
+      code: 5,
+      userInfo: [
+        NSLocalizedDescriptionKey: "This device is not paired with this machine, or its saved pairing is no longer valid. Pair it again.",
+        "ADEErrorCode": "auth_failed",
+      ]
+    )
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: rewordedPairingRejection),
+      "This phone is no longer paired with this machine. Pair again from Settings."
+    )
+
+    let accountOwnerMismatch = NSError(
+      domain: "ADE",
+      code: 5,
+      userInfo: [
+        NSLocalizedDescriptionKey: "This machine is signed in to a different ADE account than the one that paired this device.",
+        "ADEErrorCode": "auth_failed",
+      ]
+    )
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: accountOwnerMismatch),
+      "This phone is no longer paired with this machine. Pair again from Settings."
+    )
+
+    // Attribution still wins over the code, whatever the host wrote.
+    let unattributedReword = NSError(
+      domain: "ADE",
+      code: 5,
+      userInfo: [
+        NSLocalizedDescriptionKey: "This device is not paired with this machine, or its saved pairing is no longer valid. Pair it again.",
+        "ADEErrorCode": "auth_failed",
+        "ADEAmbiguousRouteAuthFailure": true,
+      ]
+    )
+    XCTAssertEqual(
+      SyncUserFacingError.message(for: unattributedReword),
+      "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
+    )
+  }
+
   @MainActor
   func testSyncServiceMigratesLegacyConnectionDraftProfile() throws {
     let legacyDraftKey = "ade.sync.connectionDraft"

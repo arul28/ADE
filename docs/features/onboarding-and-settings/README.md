@@ -519,8 +519,8 @@ Auto-update (top-bar control, not a settings tab):
   electron-updater wrapper that owns the renderer-visible
   `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"
   | "ready" | "installing" | "error"`, version, progress, recently
-  installed notice, plus the `parked` / `autoApplyPending` /
-  `autoApplySuppressedUntil` fields and `currentVersion` /
+  installed notice, plus the `parked` / `lastInstallFailed` /
+  `autoApplyPending` / `autoApplySuppressedUntil` fields and `currentVersion` /
   `latestKnownVersion` for the truthful-version surfaces). Tracks superseded
   downloads against the current ready version via `compareUpdateVersions`
   (the SemVer-aware comparator in `autoUpdateVersions.ts` that handles
@@ -543,6 +543,13 @@ Auto-update (top-bar control, not a settings tab):
   `snapshot.parked` with a typed `AutoUpdateInstallAbortReason`
   (`refresh_failed`, `install_preflight_failed`, `prepare_failed`,
   `prepare_timeout`, `handoff_failed`) so the shell banner can offer a retry.
+  Once the native handoff starts, a staged quit deadline bounds it: a
+  never-fatal slow mark, then either the post-staging bound (armed when
+  Electron's own `autoUpdater` reports the OS installer finished staging) or the
+  hard bound. Escalation logs `autoUpdate.quit_escalated` with its
+  `hard_deadline` / `post_staging` reason, drains the log with
+  `logger.flushSync()`, and force-quits. See
+  [desktop-auto-update.md](./desktop-auto-update.md) for the numbers.
   When the runtime reports `RuntimeActivitySummary.idle` (no active agent turns
   or work sessions), a staged update is auto-applied after an idle grace period
   plus a renderer-visible countdown (`autoApplyPending`); an explicit cancel
@@ -553,14 +560,23 @@ Auto-update (top-bar control, not a settings tab):
   the same SemVer comparator (so `>=` target counts as installed,
   even if the running build is one ahead), populates
   `recentlyInstalledUpdate` with the actual running version, and
-  cleans up the updater cache directory. On packaged launches with a
+  cleans up the updater cache directory. A launch that comes back on the *old*
+  version instead records `failedInstallAttempts` (target version + consecutive
+  count), logs `autoUpdate.install_did_not_land`, captures
+  `ade_update_install_did_not_land`, and surfaces `lastInstallFailed`. The
+  first such failure keeps the verified download so the retry is a click, not
+  another full release download; a second consecutive failure on the same
+  version clears the cache. On packaged launches with a
   recently installed update, the desktop refreshes the per-user runtime
   service so `ade serve` re-execs the updated bundled CLI and clients
   do not fall back to an isolated build-mismatch runtime.
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the small badge in the app shell top bar. Shows "Checking for
   updates" / "Downloading vX.Y.Z (NN%)" / "Install update vX.Y.Z" /
-  "ADE will quit and reopen" depending on the snapshot. Clicking the
+  "ADE will quit and reopen" depending on the snapshot. When
+  `lastInstallFailed` names the staged version, the ready label reads "Retry
+  install vX.Y.Z" and the tooltip says whether the download is still on the
+  machine. Clicking the
   install affordance prompts the user, sets a local
   `installRequested` flag, and calls
   `window.ade.updateQuitAndInstall()`; if the IPC returns `false`

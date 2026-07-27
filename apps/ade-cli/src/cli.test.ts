@@ -1328,6 +1328,68 @@ describe("ADE CLI", () => {
     expect(output).not.toContain("no PIN set");
   });
 
+  it("surfaces a prior install that did not land in update status --text", () => {
+    const plan = expectExecutePlan(buildCliPlan(["update", "status"]));
+    expect(inferFormatter(plan)).toBe("update-status");
+
+    const output = formatOutput(
+      {
+        status: "ready",
+        currentVersion: "1.2.37",
+        latestKnownVersion: "1.2.38",
+        version: "1.2.38",
+        progressPercent: null,
+        bytesPerSecond: null,
+        transferredBytes: null,
+        totalBytes: null,
+        releaseNotesUrl: null,
+        error: null,
+        errorDetails: null,
+        recentlyInstalled: null,
+        parked: null,
+        lastInstallFailed: { targetVersion: "1.2.38", attempt: 2 },
+        autoApplyPending: null,
+        autoApplySuppressedUntil: null,
+      },
+      { text: true } as any,
+      inferFormatter(plan),
+    );
+
+    expect(output).toContain("status");
+    expect(output).toContain("1.2.38 did not land");
+    expect(output).toContain("attempt 2");
+    expect(output).toContain("ade update install");
+  });
+
+  it("omits install-failure and progress rows from a clean update snapshot", () => {
+    const plan = expectExecutePlan(buildCliPlan(["update", "status"]));
+    const output = formatOutput(
+      {
+        status: "downloading",
+        currentVersion: "1.2.37",
+        latestKnownVersion: "1.2.38",
+        version: "1.2.38",
+        progressPercent: 42.4,
+        bytesPerSecond: 1_048_576,
+        transferredBytes: 1_048_576,
+        totalBytes: 4_194_304,
+        releaseNotesUrl: null,
+        error: null,
+        errorDetails: null,
+        recentlyInstalled: null,
+        parked: null,
+        lastInstallFailed: null,
+        autoApplyPending: null,
+        autoApplySuppressedUntil: null,
+      },
+      { text: true } as any,
+      inferFormatter(plan),
+    );
+
+    expect(output).toContain("42% · 1 MB of 4 MB · 1 MB/s");
+    expect(output).not.toContain("last install failed");
+  });
+
   it("applies sync web clipboard and open flags only when a link exists", () => {
     const options = {
       ...baseResolveOpts(),

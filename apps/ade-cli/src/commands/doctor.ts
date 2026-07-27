@@ -563,6 +563,12 @@ function syncPortRow(input: DoctorInput): DoctorRow {
         : " · no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
           + " and `netstat -an -p tcp`)"
+    }${
+      // The usual cause is ADE's own stranded `tailscale serve` entries from
+      // earlier runs. The host now reclaims those on its next publish, so the
+      // fix is a brain restart, not 60-odd manual `serve --tcp=N off` calls.
+      holders.length ? "" : " · ADE reclaims its own stale serve entries on the"
+        + " next publish; `ade brain restart` should return it to 8787"
     }`,
   };
 }

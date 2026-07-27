@@ -77,25 +77,40 @@ So the deadline is staged rather than a single hard bound:
 | Soft mark | 10s | Logs `autoUpdate.quit_staging_slow`. Never fatal. |
 | Native staging complete | — | Electron's own `autoUpdater` emits `update-downloaded`; logs `autoUpdate.native_staging_complete` and re-arms the short bound below. |
 | Post-staging bound | 15s | ShipIt is already running, so a process still alive here is genuinely wedged: escalate. |
-| Hard bound | 5min | Staging never signalled at all: escalate. |
+| Hard bound | 5min (macOS) / 60s elsewhere | Staging never signalled at all: escalate. |
 
-Escalation logs `autoUpdate.quit_escalated` and calls `logger.flushSync()`
+The staging signal comes from Electron's own `autoUpdater` — the Squirrel.Mac
+binding `electron-updater`'s `MacUpdater` drives underneath — resolved through
+`require("electron")` at construction and only on darwin, degrading to "no
+staging signal" if it is absent rather than throwing. Everywhere else the
+installer is an external process (NSIS, AppImage) that never emits that event,
+so nothing stages in-process, the long bound could only hang the app in
+`installing` for five minutes, and the shorter 60-second bound applies from the
+start.
+
+Escalation logs `autoUpdate.quit_escalated` with its `hard_deadline` /
+`post_staging` reason and whether staging had completed, captures the matching
+`ade_update_quit_escalated` analytics event, and calls `logger.flushSync()`
 before `forceQuit`, because `forceQuit` ends the process and ordinary log writes
 are batched onto an async stream — without the sync drain the escalation record
 dies with the process and the failure leaves no trace.
 
-A single hard 10-second bound is what this replaced. It force-quit the process
-mid-staging and lost that race most of the time, so the app quit, nothing
-installed, and it relaunched on the old version with no log line explaining it.
+A single hard bound around ten seconds cannot work: it force-quits the process
+mid-staging and loses that race most of the time, so the app quits, nothing
+installs, and it relaunches on the old version.
 
 ## When an install does not land
 
 Relaunching on the old version while a `pendingInstallUpdate` marker exists
-means the handoff never completed. The service records this in
-`failedInstallAttempts` (target version + consecutive count), logs
-`autoUpdate.install_did_not_land`, and exposes `lastInstallFailed` on the
-snapshot so the top-bar pill reads "Retry install vX" instead of silently
-offering the same update again.
+means the handoff never completed. `reconcilePersistedUpdateState` records this
+in the `failedInstallAttempts` global-state row (target version + consecutive
+count + timestamp), logs `autoUpdate.install_did_not_land`, captures the
+internal-only `ade_update_install_did_not_land` event with just the bounded
+`attempt` counter, and exposes `lastInstallFailed` on the snapshot so the
+top-bar pill reads "Retry install vX" instead of silently offering the same
+update again. Requesting another install clears `lastInstallFailed` (the new
+attempt supersedes the notice); a launch that does land on the target version
+clears `failedInstallAttempts` entirely.
 
 The first such failure **keeps** the cached archive. It was checksum-verified
 before the update was ever offered, so a lost quit race says nothing about the

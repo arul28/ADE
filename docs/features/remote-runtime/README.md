@@ -68,6 +68,24 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   security model). The published machine name is channel-suffixed (`<name> ·
   Beta` / `<name> · Alpha`, stable left bare) so two channels on one Mac are
   distinguishable rows.
+- `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
+  `apps/ade-cli/src/bootstrap.ts` — the relay side of a paired route. The tunnel
+  client is shared one-per-machine (`getSharedSyncTunnelClientService`, keyed by
+  `sync-cloud-relay.json`); bootstrap hands the shared listener to
+  `attachHostListener()` outside the construction factory so the runtime that
+  owns the listener supplies the port, loopback nonce, and bridge proof
+  regardless of which runtime created the instance. See *Relay tunnel and the
+  sync port* below.
+- `apps/ade-cli/src/services/sync/syncHostService.ts` — the host end: paired
+  hello authentication (with the `sync_host.paired_device_rejected` /
+  `sync_host.paired_account_owner_mismatch` rejection logs and the
+  frame-count-aware peer-close logs) and tailnet publication, including
+  `staleAdeTailnetServePorts` / `reclaimStaleTailnetServes`, which retire
+  ADE's own leftover `tailscale serve` entries after each successful publish.
+- `apps/ade-cli/src/commands/doctor.ts` — the `Sync port` row names a drifted
+  port and its base-port holders, and says explicitly that a root-owned holder
+  such as `tailscaled` is invisible to this probe rather than reporting the
+  ports as free.
 - `apps/ade-cli/src/tuiClient/remoteLauncher.ts`,
   `pairedRemoteConnector.ts`, `remoteLaunchBudget.ts`, and `remoteBridge.ts` —
   `ade code remote` target resolution, legacy account-target migration,
@@ -477,7 +495,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
   destination lane/chat rather than automatically replaying the mutation.
 - "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
-- `lan <host>:<port>: authentication` in the route list — the host was reached and it *rejected* this desktop, so the other routes' `timeout`/`unreachable` entries are noise. The host now names the reason instead of a bare "Sync authentication failed.": either the pairing was removed on that machine, the saved secret no longer matches, or the two machines are signed in to different ADE accounts. Only the last one is fixed by signing in; the others need a re-pair.
+- `lan <host>:<port>: authentication` in the route list — the host was reached and it *rejected* this desktop, so the other routes' `timeout`/`unreachable` entries are noise. The host's `hello_error` message names which of three causes it was: the pairing was removed on that machine, the saved secret no longer matches, or the two machines are signed in to different ADE accounts. The first two are reported identically (an unauthenticated caller must not be told whether a device id exists on that host) and both need a re-pair; only the account mismatch is fixed by signing in.
 
 ## Pairing identity and paired-secret lifetime
 
@@ -486,36 +504,44 @@ the machine's stable id, but each entry in `desktop-paired-machines.json`
 carries its own `deviceId` that the host uses as the key for its pairing
 record. Re-pairing the same machine therefore **must** present the same
 `deviceId` — the host upserts on that key. `pairWithMachine` recovers the prior
-identity before it sends the pairing request, preferring the caller-supplied
-`hostDeviceId` (a QR/link payload carries it), then the relay machine key, then
-a saved record already holding this endpoint. The endpoint fallback matters
-because `machineKeyFromEndpoint` only parses a relay `/connect/<key>` path and
-returns null for a LAN address.
+identity (and its `siteId`) before it sends the pairing request, because the
+`hello` that reports the host identity only arrives afterwards. It looks the
+saved record up by two things that both identify a *host*: the caller-supplied
+`hostDeviceId` (a QR/link payload and account-directory adoption both carry it),
+then the relay machine key parsed out of a `/connect/<key>` endpoint. A bare LAN
+address is not a host identity — DHCP handing `192.168.1.240` to a different Mac
+would hand that Mac the identity this desktop uses with the first one — so
+matching on a saved endpoint is deliberately not an option, and a LAN pairing
+with no `hostDeviceId` mints a fresh identity.
 
-Minting a fresh id instead is not merely untidy: the host keeps the old record
-forever, secret still valid, with no way to ever match it again. One machine was
-observed holding six orphaned records for the same laptop.
+Minting a fresh id when one already exists is not merely untidy: the host keeps
+the old record forever, secret still valid, with no way to ever match it again,
+accumulating one orphaned credential per re-pair.
 
-Two logs make a lost pairing diagnosable, both of which were previously silent:
+Three logs make a lost pairing diagnosable:
 
 - Host: `sync_host.paired_device_rejected` (`unknown_device` vs
-  `secret_mismatch`) and `sync_host.paired_account_owner_mismatch`.
+  `secret_mismatch`) and `sync_host.paired_account_owner_mismatch`, both at
+  warn. The host distinguishes those two rejection causes for itself but tells
+  the unauthenticated caller the same thing either way, so the close reason is
+  not an existence oracle for device ids.
 - Host, for peers that never spoke: `sync_host.peer_closed_without_frames` at
   **debug**. The relay readiness self-probe bridges in over loopback and
   disconnects without sending a frame on every poll, and so does a port scan.
-  Those used to land on `sync_host.peer_closed` at info, where routine probe
-  traffic was indistinguishable at a glance from a peer that tried to
-  authenticate and was rejected. Anything that sent at least one frame —
-  including every authentication failure — still logs `sync_host.peer_closed`
-  at info.
-- Desktop: `account.local_machines_removed`, written to
-  `<machine ade dir>/runtime/account-trust.jsonl`. Deliberately **not** the
-  project logger — dropping a paired secret is a machine-level credential
-  mutation, and the project logger follows the active project, which on a
-  remote-bound project ships the record to the other machine and leaves nothing
-  on the machine that actually lost its trust. It records the previous and
-  current owner per removed credential, so an intended account switch is
-  distinguishable from an identity glitch that silently cost trust.
+  Keeping that routine traffic out of `sync_host.peer_closed` is what makes a
+  rejected peer visible at a glance. Anything that sent at least one frame —
+  including every authentication failure — logs `sync_host.peer_closed` at
+  info.
+- Desktop: `account.local_machines_removed`, written at **warn** to the
+  machine-scoped `<machine ade dir>/runtime/account-trust.jsonl` (and mirrored
+  at info to the project logger). The machine-scoped sink is the load-bearing
+  one: dropping a paired secret is a machine-level credential mutation, and the
+  project logger follows the active project, which on a remote-bound project
+  ships the record to the other machine and leaves nothing on the machine that
+  actually lost its trust. Each removed credential records its host device id,
+  host name, previous owner, and whether the owner actually changed, so an
+  intended account switch is distinguishable from an identity glitch that
+  silently cost trust. The sink is resolved lazily and never fails account auth.
 
 ## Relay tunnel and the sync port
 
