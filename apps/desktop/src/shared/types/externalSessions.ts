@@ -8,12 +8,29 @@ export interface ExternalSessionCapabilities {
   importToChat: boolean;
 }
 
+/** One human/assistant turn sampled from a provider transcript for preview purposes. */
+export interface ExternalSessionMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: number | null;
+}
+
 export interface ExternalSessionSummary {
   provider: ExternalSessionProvider;
   id: string;
   cwd: string | null;
   title: string | null;
   preview: string | null;
+  /**
+   * Recent user/assistant exchanges, oldest to newest, so a row can show where the thread
+   * left off and a detail view can render a readable slice of it. `preview` already
+   * carries the opening prompt, so there is no separate first-prompt field.
+   *
+   * Additive and optional on purpose: the iOS mirror decodes every field with
+   * `decodeIfPresent`, and a decode failure drops the whole row silently. Never re-type an
+   * existing field here — only add new nullable ones.
+   */
+  messages?: ExternalSessionMessage[] | null;
   createdAt: number | null;
   updatedAt: number | null;
   messageCount: number | null;

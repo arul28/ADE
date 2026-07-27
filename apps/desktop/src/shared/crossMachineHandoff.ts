@@ -117,6 +117,18 @@ export function decodeCrossMachineDestinationPreflightResult(
         : {}),
     };
   }
+  // Also absent on older destinations, and absent whenever a fast-forward would
+  // not be safe there. Its presence is the destination's own assertion that the
+  // lane is clean and a strict ancestor — the source never infers it.
+  let laneFastForward: AgentChatCrossMachineDestinationPreflightResult["laneFastForward"];
+  if (record.laneFastForward != null) {
+    const candidate = requireRecord(record.laneFastForward, "Destination lane fast-forward");
+    laneFastForward = {
+      laneId: requireString(candidate.laneId, "Destination fast-forward lane identifier"),
+      laneName: requireString(candidate.laneName, "Destination fast-forward lane name"),
+      behindBy: requirePositiveInteger(candidate.behindBy, "Destination fast-forward distance"),
+    };
+  }
   return {
     providerAuthorized: requireBoolean(record.providerAuthorized, "Destination provider authorization"),
     modelAvailable: requireBoolean(record.modelAvailable, "Destination model availability"),
@@ -125,7 +137,18 @@ export function decodeCrossMachineDestinationPreflightResult(
     blockingErrors: requireStringList(record.blockingErrors, "Destination handoff errors"),
     warnings: requireStringList(record.warnings, "Destination handoff warnings"),
     ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
+    ...(laneFastForward ? { laneFastForward } : {}),
   };
+}
+
+// A zero-distance fast-forward is not a thing the destination can honor — it
+// refuses "already at the expected source commit" — so reject it at the door
+// rather than rendering an offer that cannot succeed.
+function requirePositiveInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+  return value;
 }
 
 export function decodeAcceptCrossMachineHandoffResult(

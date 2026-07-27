@@ -9,6 +9,7 @@ import {
   normalizeExternalSessionLimit,
   readFileSuffix,
   readJsonlRecords,
+  recentExternalSessionMessagesFromRecords,
   recordWithFile,
   resolveHomeDir,
   safeReadDir,
@@ -59,16 +60,20 @@ function explicitClaudeTitleFromRecords(records: unknown[]): string | null {
   return null;
 }
 
-function claudeScanRecords(filePath: string): unknown[] {
+function claudeScanRecords(filePath: string): {
+  prefix: unknown[];
+  suffix: unknown[];
+  combined: unknown[];
+} {
   const prefix = readJsonlRecords(filePath);
   const suffixText = readFileSuffix(filePath);
-  if (!suffixText) return prefix;
+  if (!suffixText) return { prefix, suffix: [], combined: prefix };
   const suffixLines = suffixText.split(/\r?\n/u);
   if (suffixText.length > 0 && !suffixText.startsWith("{")) suffixLines.shift();
   const suffix = suffixLines
     .map((line) => safeParseJson(line))
     .filter((record): record is Record<string, unknown> => record != null);
-  return [...prefix, ...suffix];
+  return { prefix, suffix, combined: [...prefix, ...suffix] };
 }
 
 function latestClaudeCwd(records: unknown[]): string | null {
@@ -121,7 +126,8 @@ export async function discoverClaudeSessions(
 
   const records: ExternalSessionDiscoveryRecord[] = [];
   for (const candidate of newestById.values()) {
-    const jsonl = claudeScanRecords(candidate.filePath);
+    const scan = claudeScanRecords(candidate.filePath);
+    const jsonl = scan.combined;
     if (!isClaudeCliTranscript(jsonl)) continue;
     const cwd = latestClaudeCwd(jsonl);
     let createdAt: number | null = null;
@@ -132,13 +138,14 @@ export async function discoverClaudeSessions(
       if (createdAt) break;
     }
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
-    const firstUserText = firstUserTextFromRecords(jsonl);
+    const firstUserText = firstUserTextFromRecords(scan.prefix);
     records.push(recordWithFile({
       provider: "claude",
       id: candidate.id,
       cwd,
       title: explicitClaudeTitleFromRecords(jsonl),
       preview: firstUserText,
+      messages: recentExternalSessionMessagesFromRecords(scan.suffix),
       createdAt,
       messageCount: countJsonlUserMessagesCheap(candidate.filePath, "claude"),
       filePath: candidate.filePath,

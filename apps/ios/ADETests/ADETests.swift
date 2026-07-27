@@ -199,6 +199,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(summary.alreadyImported)
     XCTAssertFalse(summary.possiblyActive)
     XCTAssertEqual(summary.capabilities, ExternalSessionCapabilities())
+    XCTAssertNil(summary.messages)
 
     let resultJson = #"{"kind":"cli","sessionId":"ade-session-1","ptyId":"pty-1","laneId":"lane-1"}"#
     let result = try JSONDecoder().decode(ExternalSessionImportResult.self, from: Data(resultJson.utf8))
@@ -207,6 +208,55 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(result.sessionId, "ade-session-1")
     XCTAssertNil(result.session)
     XCTAssertNil(result.chatSummary)
+  }
+
+  func testExternalSessionSummaryDecodesFirstPromptAndMessages() throws {
+    let json = """
+    {
+      "provider": "codex",
+      "id": "external-2",
+      "messages": [
+        {"role": "user", "text": "Bring the import screen to parity", "at": 1785142800000},
+        {"role": "assistant", "text": "I will inspect the DTO first.", "at": null}
+      ]
+    }
+    """
+
+    let summary = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(json.utf8))
+
+    XCTAssertEqual(summary.messages, [
+      ExternalSessionMessage(
+        role: "user",
+        text: "Bring the import screen to parity",
+        at: 1_785_142_800_000
+      ),
+      ExternalSessionMessage(
+        role: "assistant",
+        text: "I will inspect the DTO first.",
+        at: nil
+      ),
+    ])
+  }
+
+  func testExternalSessionSummaryDropsMalformedMessageWithoutDroppingSummary() throws {
+    let json = """
+    {
+      "provider": "claude",
+      "id": "external-lossy",
+      "title": "Still decodes",
+      "messages": [
+        {"role": "user", "text": "Keep me", "at": 1785142800000},
+        {"role": "assistant", "text": 42, "at": 1785142860000},
+        {"role": "assistant", "text": "Keep me too", "at": 1785142920000}
+      ]
+    }
+    """
+
+    let summary = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(json.utf8))
+
+    XCTAssertEqual(summary.id, "external-lossy")
+    XCTAssertEqual(summary.title, "Still decodes")
+    XCTAssertEqual(summary.messages?.map(\.text), ["Keep me", "Keep me too"])
   }
 
   func testExternalSessionActionsHonorCrossFolderCapabilities() {
@@ -252,6 +302,43 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(actions.map(\.id), ["open-existing", "fork-as-chat", "fork-into-lane"])
     XCTAssertEqual(actions.first?.importedSessionRef, ExternalSessionImportedRef(kind: "chat", sessionId: "chat-1"))
     XCTAssertFalse(actions.contains(where: { $0.mode == "resume" }))
+  }
+
+  func testExternalSessionActionsKeepProviderAndTakeoverSafetyContext() {
+    let sameFolder = ExternalSessionSummary(
+      provider: "codex",
+      id: "external-same-folder",
+      cwdMatchesRequestedLane: true,
+      capabilities: ExternalSessionCapabilities(resumeInPlace: true)
+    )
+    let continueAction = workExternalSessionActions(for: sameFolder)
+      .first(where: { $0.id == "resume-here" })
+    XCTAssertTrue(continueAction?.detail.contains("takes over the session") == true)
+    XCTAssertTrue(continueAction?.detail.contains("don't run it elsewhere") == true)
+
+    let crossFolder = ExternalSessionSummary(
+      provider: "claude",
+      id: "external-cross-folder",
+      cwd: "/Users/dev/Projects/client/feature/repository",
+      cwdMatchesRequestedLane: false,
+      capabilities: ExternalSessionCapabilities(resumeInPlace: true)
+    )
+    let crossFolderActions = workExternalSessionActions(for: crossFolder)
+    XCTAssertTrue(
+      crossFolderActions.first(where: { $0.id == "resume-in-place" })?.detail
+        .contains("…/client/feature/repository") == true
+    )
+
+    let disabled = ExternalSessionSummary(
+      provider: "claude",
+      id: "external-disabled",
+      cwd: "/tmp/elsewhere",
+      cwdMatchesRequestedLane: false
+    )
+    XCTAssertTrue(
+      workExternalSessionActions(for: disabled).first?.detail
+        .contains("Claude can't resume across folders") == true
+    )
   }
 
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {

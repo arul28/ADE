@@ -56,6 +56,8 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
   var result: [WorkExternalSessionAction] = []
   let caps = session.capabilities
   let cwdMatchesLane = session.cwdMatchesRequestedLane == true
+  let provider = workExternalSessionProviderName(session.provider)
+  let continueCliDetail = "Continue the same CLI session in this lane. This takes over the session — don't run it elsewhere at the same time."
 
   if caps.importToChat {
     if cwdMatchesLane || caps.resumeInDifferentCwd {
@@ -88,7 +90,7 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
       result.append(WorkExternalSessionAction(
         id: "resume-here",
         title: "Continue as CLI",
-        detail: "Continue the same CLI session in this lane.",
+        detail: continueCliDetail,
         systemImage: "terminal.fill",
         tint: ADEColor.textPrimary,
         target: "cli",
@@ -110,7 +112,7 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
     result.append(WorkExternalSessionAction(
       id: "resume-here",
       title: "Continue as CLI",
-      detail: "Continue the same CLI session in this lane.",
+      detail: continueCliDetail,
       systemImage: "terminal.fill",
       tint: ADEColor.textPrimary,
       target: "cli",
@@ -140,12 +142,10 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
       ))
     }
     if caps.resumeInPlace {
-      let folder = session.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let displayFolder = folder.isEmpty ? "its original folder" : folder
       result.append(WorkExternalSessionAction(
         id: "resume-in-place",
         title: "Continue in original folder",
-        detail: "Continue in \(displayFolder), not the selected lane.",
+        detail: "Continue in \(session.cwdDisplayName), not the selected lane.",
         systemImage: "terminal.fill",
         tint: ADEColor.textPrimary,
         target: "cli",
@@ -157,8 +157,8 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
         id: "resume-here",
         title: "Continue as CLI",
         detail: session.cwd == nil
-          ? "The original folder could not be recovered, so this session cannot be continued safely."
-          : "This provider cannot continue a session across folders.",
+          ? "The original folder could not be recovered, so \(provider) cannot safely continue this session."
+          : "This session lives in another folder, and \(provider) can't resume across folders.",
         systemImage: "terminal.fill",
         tint: ADEColor.textMuted,
         target: "cli",
@@ -188,4 +188,20 @@ func workExternalSessionActions(for session: ExternalSessionSummary) -> [WorkExt
     result[index].isPrimary = true
   }
   return result
+}
+
+/// One provider-label map for the import feature. This file and
+/// `WorkImportSessionScreen` each had their own, five identical cases apart —
+/// and iOS already carries two more elsewhere. Consumers use this one.
+func workExternalSessionProviderName(_ provider: String) -> String {
+  switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude": return "Claude"
+  case "codex": return "Codex"
+  case "cursor": return "Cursor"
+  case "droid", "factory": return "Droid"
+  case "opencode": return "OpenCode"
+  default:
+    let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Unknown" : trimmed
+  }
 }

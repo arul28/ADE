@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ExternalSessionSummary } from "../../../../desktop/src/shared/types/externalSessions";
 import {
   clampExternalSessionBrowserContent,
+  externalSessionAnchors,
   externalSessionBrowserActions,
+  externalSessionRowTitle,
   normalizeExternalSessionListResult,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
@@ -49,6 +51,60 @@ describe("externalSessionBrowser helpers", () => {
       .toEqual(["newest"]);
     expect(visibleExternalSessions([older, newest, otherProvider], "all", "release").map((row) => row.id))
       .toEqual(["cursor", "newest"]);
+  });
+
+  it("searches the sampled conversation, not just the title", () => {
+    const rows = [
+      session({ id: "titled", title: "Release plan", updatedAt: 50 }),
+      session({
+        id: "sampled",
+        title: null,
+        preview: "look at the checkout flow",
+        updatedAt: 40,
+        messages: [
+          { role: "user", text: "look at the checkout flow", at: 1 },
+          { role: "assistant", text: "The regression is in the coupon validator.", at: 2 },
+        ],
+      }),
+    ];
+
+    expect(visibleExternalSessions(rows, "all", "coupon").map((row) => row.id)).toEqual(["sampled"]);
+    // Rows without a message sample still match on the legacy fields only.
+    expect(visibleExternalSessions(rows, "all", "release").map((row) => row.id)).toEqual(["titled"]);
+  });
+
+  it("names titleless rows by their opening prompt and never repeats it as an anchor", () => {
+    const titleless = session({
+      title: null,
+      preview: "look at\n  the checkout flow",
+      messages: [
+        { role: "user", text: "look at the checkout flow", at: 1 },
+        { role: "assistant", text: "Found it:\nthe coupon validator", at: 2 },
+      ],
+    });
+
+    expect(externalSessionRowTitle(titleless)).toBe("look at the checkout flow");
+    expect(externalSessionAnchors(titleless)).toEqual({
+      started: null,
+      latest: "Found it: the coupon validator",
+    });
+
+    const titled = session({ title: "Checkout", preview: "look at the checkout flow" });
+    // Older hosts send no `messages`; the opening prompt is then the only anchor.
+    expect(externalSessionAnchors(titled)).toEqual({
+      started: "look at the checkout flow",
+      latest: null,
+    });
+
+    const singleTurn = session({
+      title: "Checkout",
+      preview: "look at the checkout flow",
+      messages: [{ role: "user", text: "look at the checkout flow", at: 1 }],
+    });
+    expect(externalSessionAnchors(singleTurn)).toEqual({
+      started: "look at the checkout flow",
+      latest: null,
+    });
   });
 
   it("clamps selection and action indexes after filter changes", () => {

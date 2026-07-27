@@ -7979,7 +7979,8 @@ final class SyncService: ObservableObject {
     laneId: String? = nil,
     cwd: String? = nil,
     scope: String = "project",
-    limit: Int? = nil
+    limit: Int? = nil,
+    sessionId: String? = nil
   ) async throws -> [ExternalSessionSummary] {
     var args: [String: Any] = ["scope": scope]
     if let providers, !providers.isEmpty {
@@ -7993,6 +7994,9 @@ final class SyncService: ObservableObject {
     }
     if let limit, limit > 0 {
       args["limit"] = limit
+    }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
     }
     let result = try await sendDecodableCommand(
       action: "work.listExternalSessions",
@@ -8009,7 +8013,9 @@ final class SyncService: ObservableObject {
     target: String,
     mode: String,
     model: String? = nil,
-    permissionMode: String? = nil
+    permissionMode: String? = nil,
+    reasoningEffort: String? = nil,
+    fastMode: Bool? = nil
   ) async throws -> ExternalSessionImportResult {
     var args: [String: Any] = [
       "provider": provider,
@@ -8023,6 +8029,12 @@ final class SyncService: ObservableObject {
     }
     if let permissionMode, !permissionMode.isEmpty {
       args["permissionMode"] = permissionMode
+    }
+    if let reasoningEffort, !reasoningEffort.isEmpty {
+      args["reasoningEffort"] = reasoningEffort
+    }
+    if let fastMode {
+      args["fastMode"] = fastMode
     }
     return try await sendDecodableCommand(
       action: "work.importExternalSession",

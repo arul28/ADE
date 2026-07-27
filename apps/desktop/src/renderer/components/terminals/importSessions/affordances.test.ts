@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { importAffordancesFor, shortenCwd } from "./affordances";
-import { sessionHeading } from "./sessionPresentation";
+import { sessionAnchors, sessionHeading } from "./sessionPresentation";
 import type { ExternalSessionCapabilities, ExternalSessionSummary } from "./contract";
 
 const NO_CAPS: ExternalSessionCapabilities = {
@@ -246,12 +246,75 @@ describe("shortenCwd", () => {
 });
 
 describe("sessionHeading", () => {
-  it("keeps an untitled session's prompt as preview instead of duplicating it as the title", () => {
+  /**
+   * Behavior change: this used to fall back to the folder name so the prompt was
+   * not printed twice. Folder + time turned out to say nothing about the thread
+   * ("ADE · 9m ago"), so the heading now leads with the opening prompt and the
+   * duplicate is prevented by suppression instead — `sessionAnchors` drops
+   * `started` when it matches the heading, and the row hides a preview equal to
+   * it. The no-duplication invariant is preserved; the heading is just useful now.
+   */
+  it("uses an untitled session's opening prompt as the heading", () => {
     expect(sessionHeading(session({
       title: null,
       preview: "this is a test message",
       cwd: "/Users/dev/ADE",
       updatedAt: null,
+    }))).toBe("this is a test message");
+  });
+
+  it("still falls back to the folder when there is no prompt to show", () => {
+    expect(sessionHeading(session({
+      title: null,
+      preview: null,
+      cwd: "/Users/dev/ADE",
+      updatedAt: null,
     }))).toBe("ADE");
+  });
+
+  it("prefers a real provider title over the prompt", () => {
+    expect(sessionHeading(session({ title: "Ship the relay fix", preview: "anything" })))
+      .toBe("Ship the relay fix");
+  });
+
+  it("collapses whitespace and clips a very long opening prompt", () => {
+    const heading = sessionHeading(session({ title: null, preview: `${"word ".repeat(60)}end` }));
+    expect(heading.length).toBeLessThanOrEqual(72);
+    expect(heading.endsWith("\u2026")).toBe(true);
+    expect(heading).not.toMatch(/\s{2,}/);
+  });
+});
+
+describe("sessionAnchors", () => {
+  it("returns the opening ask and the latest message", () => {
+    const anchors = sessionAnchors(session({
+      title: "Mobile chat truncation",
+      preview: "text is cut mid-word",
+      messages: [
+        { role: "user", text: "text is cut mid-word", at: 1 },
+        { role: "assistant", text: "Found it \u2014 byte-offset split.", at: 2 },
+        { role: "user", text: "now shrink the logo", at: 3 },
+      ],
+    }));
+    expect(anchors.started).toBe("text is cut mid-word");
+    expect(anchors.latest?.text).toBe("now shrink the logo");
+  });
+
+  it("suppresses an anchor that would repeat the heading", () => {
+    // Untitled single-message thread: heading === preview === that message, so
+    // printing it again below reads as a rendering bug.
+    const anchors = sessionAnchors(session({
+      title: null,
+      preview: "only one thing was ever said",
+      messages: [{ role: "user", text: "only one thing was ever said", at: 1 }],
+    }));
+    expect(anchors.started).toBeNull();
+    expect(anchors.latest).toBeNull();
+  });
+
+  it("has no latest anchor on an older host that sends no messages", () => {
+    const anchors = sessionAnchors(session({ title: "Something", preview: "a preview" }));
+    expect(anchors.started).toBe("a preview");
+    expect(anchors.latest).toBeNull();
   });
 });

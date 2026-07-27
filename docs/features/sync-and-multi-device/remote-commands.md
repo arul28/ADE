@@ -276,7 +276,8 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
 - `launch`, `getSlashCommands`, `resolveSmartLinkPreview`, `getContextUsage`, `warmupModel`,
   `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`,
-  `preflightCrossMachineDestination`, `acceptCrossMachineHandoff`,
+  `preflightCrossMachineDestination`,
+  `fastForwardCrossMachineHandoffLane`, `acceptCrossMachineHandoff`,
   `markCrossMachineHandoff`,
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
 

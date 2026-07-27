@@ -127,6 +127,8 @@ describe("externalSessionsService", () => {
       provider: "claude",
       id,
       cwd: laneCwd,
+      preview: "import me",
+      messages: [{ role: "user", text: "import me", at: Date.parse("2026-07-06T10:00:00.000Z") }],
       alreadyImported: true,
       importedSessionRef: { kind: "cli", sessionId: "ade-session" },
       possiblyActive: true,
@@ -139,6 +141,18 @@ describe("externalSessionsService", () => {
         importToChat: true,
       },
     });
+  });
+
+  it("copies optional preview fields through both summary construction paths", () => {
+    // The exact-lookup summary is private and the fields are optional, so a
+    // structural assertion pins both DTO boundaries without widening the API.
+    const source = fs.readFileSync(
+      path.join(__dirname, "externalSessionsService.ts"),
+      "utf8",
+    );
+
+    expect(source.match(/messages: session\.messages/gu)).toHaveLength(2);
+    expect(source.match(/preview: session\.preview/gu)).toHaveLength(2);
   });
 
   it("checks a repeated session cwd only once per list call", async () => {

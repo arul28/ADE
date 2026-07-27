@@ -555,6 +555,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "prepareCrossMachineHandoff",
     "validateCrossMachineSource",
     "preflightCrossMachineDestination",
+    "fastForwardCrossMachineHandoffLane",
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
     "respondToInput",

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   inferAttachmentType,
   mergeAttachments,
+  providerSupportsCrossMachineHandoffFork,
+  providerSupportsHandoffFork,
   type AgentChatFileRef,
   type AgentChatModelsArgs,
 } from "./chat";
@@ -10,6 +12,18 @@ describe("AgentChatModelsArgs", () => {
   it("allows typed callers to request the aggregated model catalog", () => {
     const args: AgentChatModelsArgs = {};
     expect(args).toEqual({});
+  });
+});
+
+describe("handoff fork provider support", () => {
+  it("keeps local Droid forks enabled while refusing cross-machine Droid forks", () => {
+    expect(providerSupportsHandoffFork("droid")).toBe(true);
+    expect(providerSupportsCrossMachineHandoffFork("droid")).toBe(false);
+    expect(providerSupportsCrossMachineHandoffFork("claude")).toBe(true);
+    expect(providerSupportsCrossMachineHandoffFork("codex")).toBe(true);
+    expect(providerSupportsCrossMachineHandoffFork("opencode")).toBe(true);
+    expect(providerSupportsCrossMachineHandoffFork("cursor")).toBe(false);
+    expect(providerSupportsCrossMachineHandoffFork("unknown-provider")).toBe(false);
   });
 });
 

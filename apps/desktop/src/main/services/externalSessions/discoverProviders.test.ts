@@ -136,9 +136,107 @@ describe("external session provider discovery", () => {
       cwd,
       title: "Test message",
       preview: "this is a test message",
+      messages: [
+        { role: "user", text: "/model", at: null },
+        {
+          role: "user",
+          text: "this is a test message",
+          at: Date.parse("2026-07-06T10:01:00.000Z"),
+        },
+        { role: "assistant", text: "Understood.", at: null },
+        {
+          role: "user",
+          text: "this is a test message",
+          at: Date.parse("2026-07-06T10:02:00.000Z"),
+        },
+      ],
       createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
     });
     expect(sessions[0]?.messageCount).toBe(2);
+  });
+
+  it("never sources a Claude first prompt or preview from suffix-only records", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "12121212-1212-4212-8212-121212121212";
+    const rows = [
+      { type: "system", sessionId: id, cwd, entrypoint: "cli" },
+      ...Array.from({ length: 79 }, (_, index) => ({
+        type: "user",
+        sessionId: id,
+        cwd,
+        isMeta: true,
+        message: { role: "user", content: `metadata ${index}` },
+      })),
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        timestamp: "2026-07-06T10:01:00.000Z",
+        message: { role: "user", content: "tail-only background completion" },
+      },
+    ];
+    writeJsonl(
+      path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`),
+      rows,
+    );
+
+    const [session] = await discoverClaudeSessions({ homeDir, limit: 1 });
+
+    expect(session).toMatchObject({
+      id,
+      preview: null,
+      messages: [{
+        role: "user",
+        text: "tail-only background completion",
+        at: Date.parse("2026-07-06T10:01:00.000Z"),
+      }],
+      messageCount: 1,
+    });
+  });
+
+  it("keeps recoverable assistant context when the semantic prompt count is zero", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "13131313-1313-4313-8313-131313131313";
+    writeJsonl(
+      path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`),
+      [
+        { type: "system", sessionId: id, cwd, entrypoint: "cli" },
+        {
+          type: "user",
+          sessionId: id,
+          cwd,
+          message: {
+            role: "user",
+            content: "<command-name>/model</command-name><command-args>opus</command-args>",
+          },
+        },
+        {
+          type: "assistant",
+          sessionId: id,
+          cwd,
+          timestamp: "2026-07-06T10:02:00.000Z",
+          message: { role: "assistant", content: "The model is now Opus." },
+        },
+      ],
+    );
+
+    const [session] = await discoverClaudeSessions({ homeDir, limit: 1 });
+
+    expect(session).toMatchObject({
+      id,
+      preview: null,
+      messageCount: 0,
+      messages: [
+        { role: "user", text: "/model", at: null },
+        {
+          role: "assistant",
+          text: "The model is now Opus.",
+          at: Date.parse("2026-07-06T10:02:00.000Z"),
+        },
+      ],
+    });
   });
 
   it("excludes Claude SDK sessions without starving older resumable CLI results", async () => {
@@ -238,6 +336,11 @@ describe("external session provider discovery", () => {
       cwd,
       title: "Investigate flaky test",
       preview: "please fix flakes",
+      messages: [{
+        role: "user",
+        text: "please fix flakes",
+        at: Date.parse("2026-07-06T10:01:00.000Z"),
+      }],
       updatedAt: Date.parse("2026-07-06T11:00:00.000Z"),
       messageCount: 1,
       launch: {

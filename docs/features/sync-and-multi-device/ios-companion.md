@@ -1342,6 +1342,24 @@ run on the paired host through `work.listExternalSessions` and
 results include the persisted chat or terminal summary, which Work caches before
 navigating so replication latency cannot produce a blank destination screen.
 
+Rows are identified by two anchors rather than one snippet: **started**, the
+thread's opening prompt (`preview`), and **latest**, the last of the bounded
+`messages` sample the host attaches. Either may be missing — an older host
+predates `messages`, and a thread whose only human text was a slash command has
+no recoverable prompt — so the screen falls back to the single preview, and it
+suppresses an anchor the row heading is already showing. `ExternalSessionSummary`
+decodes `messages` through `ADELossyArray`, and `ExternalSessionMessage` rejects
+an unknown `role`, so one malformed element costs that element rather than the
+whole summary; the surrounding `try?` would otherwise turn a decode failure into
+a silent empty "No sessions found".
+
+Chat imports also choose how the resulting ADE chat starts — model, reasoning
+effort, fast mode where the model supports it, and permission mode — seeded from
+and written back to `WorkComposerPreferences` so the phone's composer and its
+imports stay consistent. Those arguments are sent only for `target: "chat"`; a
+CLI import sends none of them so the resumed session keeps its provider state.
+See [External session import](../terminals-and-sessions/external-session-import.md).
+
 ### Settled lifecycle and attention parity
 
 iOS mirrors `apps/desktop/src/shared/sessionCanonicalState.ts` in

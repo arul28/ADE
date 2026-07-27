@@ -30,6 +30,11 @@ struct WorkImportSessionScreen: View {
   @State private var selectedSession: ExternalSessionSummary?
   @State private var selectedLaneId: String
   @State private var pendingActiveResume: WorkPendingExternalSessionImport?
+  @State private var importProvider: String
+  @State private var importModelId: String
+  @State private var importReasoningEffort: String
+  @State private var importFastMode: Bool
+  @State private var importRuntimeMode: String
 
   init(
     lane: LaneSummary,
@@ -42,6 +47,28 @@ struct WorkImportSessionScreen: View {
     self.onCliImported = onCliImported
     self.onChatImported = onChatImported
     _selectedLaneId = State(initialValue: lane.id)
+
+    let saved = WorkComposerPreferences.load()
+    var initialProvider = saved?.provider ?? "claude"
+    var initialModelId = saved?.modelId ?? ""
+    if initialModelId.isEmpty,
+       let fallback = workDefaultModelIdForAvailabilityMode(
+         preferredProvider: initialProvider,
+         mode: .chat
+       ) {
+      initialProvider = fallback.provider
+      initialModelId = fallback.modelId
+    }
+    let savedRuntimeMode = saved?.runtimeMode.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    _importProvider = State(initialValue: initialProvider)
+    _importModelId = State(initialValue: initialModelId)
+    _importReasoningEffort = State(initialValue: saved?.reasoningEffort ?? "")
+    _importFastMode = State(initialValue: saved?.codexFastMode ?? false)
+    _importRuntimeMode = State(
+      initialValue: savedRuntimeMode.isEmpty
+        ? workDefaultRuntimeMode(provider: initialProvider)
+        : savedRuntimeMode
+    )
   }
 
   private var selectedLane: LaneSummary {
@@ -175,6 +202,11 @@ struct WorkImportSessionScreen: View {
           actions: workExternalSessionActions(for: selectedSession),
           importing: importingSessionId == selectedSession.importIdentity,
           importDisabled: importingSessionId != nil || loading,
+          importProvider: $importProvider,
+          importModelId: $importModelId,
+          importReasoningEffort: $importReasoningEffort,
+          importFastMode: $importFastMode,
+          importRuntimeMode: $importRuntimeMode,
           onSelectAction: { action in
             selectAction(action, for: selectedSession)
           }
@@ -278,12 +310,32 @@ struct WorkImportSessionScreen: View {
       return
     }
     do {
+      let configuresChat = action.target == "chat"
+      let wire = workRuntimeWireFields(provider: importProvider, mode: importRuntimeMode)
+      let normalizedReasoning = importReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+      let supportsFastMode = workComposerSupportsFastMode(
+        modelId: importModelId,
+        provider: importProvider
+      )
+      if configuresChat {
+        WorkComposerPreferences.save(
+          provider: importProvider,
+          modelId: importModelId,
+          runtimeMode: importRuntimeMode,
+          reasoningEffort: importReasoningEffort,
+          codexFastMode: supportsFastMode && importFastMode
+        )
+      }
       let result = try await syncService.importExternalSession(
         provider: session.provider,
         sessionId: session.id,
         laneId: selectedLane.id,
         target: action.target,
-        mode: action.mode
+        mode: action.mode,
+        model: configuresChat ? importModelId : nil,
+        permissionMode: configuresChat ? wire.permissionMode : nil,
+        reasoningEffort: configuresChat && !normalizedReasoning.isEmpty ? normalizedReasoning : nil,
+        fastMode: configuresChat && supportsFastMode ? importFastMode : nil
       )
       if result.kind == "chat", let chatSessionId = result.chatSessionId {
         let chatSummary: AgentChatSessionSummary
@@ -446,13 +498,6 @@ private struct WorkImportSessionSummaryRow: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
 
-        if let preview = session.previewSnippet {
-          Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-
         HStack(spacing: 5) {
           Text(providerDisplayName(session.provider))
           if let count = session.messageCount {
@@ -465,6 +510,22 @@ private struct WorkImportSessionSummaryRow: View {
         }
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
+
+        if let started = session.startedAnchorSnippet,
+           let latest = session.latestAnchorMessage {
+          WorkImportSessionAnchorBlock(started: started, latest: latest.text)
+        } else if let started = session.startedAnchorSnippet {
+          WorkImportSessionAnchorBlock(started: started, latest: nil)
+        } else if let latest = session.latestAnchorMessage {
+          WorkImportSessionAnchorBlock(started: nil, latest: latest.text)
+        } else if !session.hasConversationAnchorData,
+                  let preview = session.previewSnippet,
+                  !session.previewDuplicatesHeading {
+          Text(preview)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
       }
 
       Spacer(minLength: 4)
@@ -482,14 +543,56 @@ private struct WorkImportSessionSummaryRow: View {
   }
 }
 
+private struct WorkImportSessionAnchorBlock: View {
+  let started: String?
+  let latest: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      if let started {
+        anchor(label: "started", text: started, lineLimit: 1)
+      }
+      if let latest {
+        anchor(label: "latest", text: latest, lineLimit: 2)
+      }
+    }
+    .padding(.leading, 9)
+    .overlay(alignment: .leading) {
+      Rectangle()
+        .fill(ADEColor.glassBorder)
+        .frame(width: 1)
+    }
+    .padding(.top, 2)
+  }
+
+  private func anchor(label: String, text: String, lineLimit: Int) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(label)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(text)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(lineLimit)
+    }
+  }
+}
+
 private struct WorkImportSessionRow: View {
   let session: ExternalSessionSummary
   let actions: [WorkExternalSessionAction]
   let importing: Bool
   let importDisabled: Bool
+  @Binding var importProvider: String
+  @Binding var importModelId: String
+  @Binding var importReasoningEffort: String
+  @Binding var importFastMode: Bool
+  @Binding var importRuntimeMode: String
   let onSelectAction: (WorkExternalSessionAction) -> Void
 
   @State private var previewExpanded = true
+  @State private var modelPickerPresented = false
+  @State private var selectedModelOption: WorkModelOption?
 
   private var actionColumns: [GridItem] {
     [GridItem(.flexible(), spacing: 8)]
@@ -505,6 +608,34 @@ private struct WorkImportSessionRow: View {
 
   private var cliActions: [WorkExternalSessionAction] {
     actions.filter { $0.importedSessionRef == nil && $0.target == "cli" }
+  }
+
+  private var importModelDisplayName: String {
+    if let selectedModelOption,
+       workModelIdsEquivalent(selectedModelOption.id, importModelId) {
+      return selectedModelOption.displayName
+    }
+    for group in workModelCatalogGroups(
+      currentModelId: importModelId,
+      currentProvider: importProvider
+    ) {
+      for provider in group.providers {
+        if let match = provider.models.first(where: {
+          workModelIdsEquivalent($0.id, importModelId)
+        }) {
+          return match.displayName
+        }
+      }
+    }
+    return importModelId.isEmpty ? "Choose model" : importModelId
+  }
+
+  private var importSupportsFastMode: Bool {
+    if let selectedModelOption,
+       workModelIdsEquivalent(selectedModelOption.id, importModelId) {
+      return selectedModelOption.supportsCodexFastMode
+    }
+    return workComposerSupportsFastMode(modelId: importModelId, provider: importProvider)
   }
 
   var body: some View {
@@ -532,6 +663,9 @@ private struct WorkImportSessionRow: View {
 
       if !actions.isEmpty {
         VStack(spacing: 8) {
+          if !chatActions.isEmpty {
+            chatImportControls
+          }
           actionGrid(existingActions)
           if !existingActions.isEmpty && (!chatActions.isEmpty || !cliActions.isEmpty) {
             Divider()
@@ -553,6 +687,114 @@ private struct WorkImportSessionRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.6)
     }
     .contentShape(Rectangle())
+    .sheet(isPresented: $modelPickerPresented) {
+      WorkModelPickerSheet(
+        currentModelId: importModelId,
+        currentProvider: importProvider,
+        currentReasoningEffort: importReasoningEffort,
+        currentCodexFastMode: importFastMode,
+        cursorAvailabilityMode: .chat,
+        isBusy: importDisabled,
+        onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
+          selectedModelOption = option
+          importModelId = option.id
+          importProvider = runtimeProvider
+          importReasoningEffort = pickedReasoning ?? ""
+          importRuntimeMode = workDefaultRuntimeMode(provider: runtimeProvider)
+          importFastMode = option.supportsCodexFastMode ? pickedFastMode : false
+          saveImportSelection()
+        }
+      )
+    }
+  }
+
+  private var chatImportControls: some View {
+    HStack(spacing: 8) {
+      Button {
+        modelPickerPresented = true
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "cpu")
+            .font(.system(size: 11, weight: .semibold))
+          VStack(alignment: .leading, spacing: 1) {
+            Text("Model")
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+            HStack(spacing: 4) {
+              Text(importModelDisplayName)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+              if !importReasoningEffort.isEmpty {
+                Text("· \(importReasoningEffort.capitalized)")
+                  .font(.caption2)
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+              if importSupportsFastMode && importFastMode {
+                Image(systemName: "bolt.fill")
+                  .font(.system(size: 9, weight: .semibold))
+                  .foregroundStyle(ADEColor.warning)
+              }
+            }
+          }
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADEColor.textPrimary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(ADEColor.glassBorder.opacity(0.7), lineWidth: 0.6)
+        }
+      }
+      .buttonStyle(.plain)
+      .disabled(importDisabled)
+
+      Menu {
+        ForEach(workRuntimeModeOptions(provider: importProvider)) { option in
+          Button {
+            importRuntimeMode = option.id
+            saveImportSelection()
+          } label: {
+            Label(option.title, systemImage: importRuntimeMode == option.id ? "checkmark" : "")
+          }
+        }
+      } label: {
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Access")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+          Text(workRuntimeModeLabel(provider: importProvider, mode: importRuntimeMode))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(minWidth: 104, alignment: .leading)
+        .background(ADEColor.textPrimary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(ADEColor.glassBorder.opacity(0.7), lineWidth: 0.6)
+        }
+      }
+      .disabled(importDisabled)
+    }
+    .accessibilityElement(children: .contain)
+  }
+
+  private func saveImportSelection() {
+    WorkComposerPreferences.save(
+      provider: importProvider,
+      modelId: importModelId,
+      runtimeMode: importRuntimeMode,
+      reasoningEffort: importReasoningEffort,
+      codexFastMode: importSupportsFastMode && importFastMode
+    )
   }
 
   @ViewBuilder
@@ -602,26 +844,52 @@ private struct WorkImportSessionRow: View {
 
   @ViewBuilder
   private var previewDisclosure: some View {
-    if let preview = session.previewSnippet {
-      VStack(alignment: .leading, spacing: 6) {
-        Button {
-          withAnimation(.easeInOut(duration: 0.18)) {
-            previewExpanded.toggle()
-          }
-        } label: {
-          HStack(spacing: 4) {
-            Image(systemName: "chevron.right")
-              .font(.system(size: 10, weight: .bold))
-              .rotationEffect(.degrees(previewExpanded ? 90 : 0))
-            Text("Preview")
-              .font(.caption.weight(.semibold))
-          }
-          .foregroundStyle(ADEColor.textMuted)
-          .contentShape(Rectangle())
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) {
+          previewExpanded.toggle()
         }
-        .buttonStyle(.plain)
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .bold))
+            .rotationEffect(.degrees(previewExpanded ? 90 : 0))
+          Text(session.conversationMessages.isEmpty
+            ? "Preview"
+            : "Last \(session.conversationMessages.count) \(session.conversationMessages.count == 1 ? "message" : "messages")")
+            .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
 
-        if previewExpanded {
+      if previewExpanded {
+        if !session.conversationMessages.isEmpty {
+          ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+              ForEach(Array(session.conversationMessages.enumerated()), id: \.offset) { index, message in
+                WorkImportConversationMessageRow(message: message)
+                if index < session.conversationMessages.count - 1 {
+                  Divider()
+                    .overlay(ADEColor.glassBorder.opacity(0.45))
+                }
+              }
+            }
+          }
+          .frame(
+            height: min(
+              260,
+              max(92, CGFloat(session.conversationMessages.count) * 72)
+            )
+          )
+          .background(ADEColor.textPrimary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
+          }
+        } else if let preview = session.previewSnippet,
+                  !session.previewDuplicatesHeading {
           Text(preview)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
@@ -634,6 +902,11 @@ private struct WorkImportSessionRow: View {
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
             }
+        } else {
+          Text("No conversational preview was recoverable for this session.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
     }
@@ -666,6 +939,33 @@ private struct WorkImportSessionRow: View {
         }
       }
     }
+  }
+}
+
+private struct WorkImportConversationMessageRow: View {
+  let message: ExternalSessionMessage
+
+  private var isUser: Bool {
+    message.role == "user"
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Text(isUser ? "YOU" : "ADE")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(isUser ? ADEColor.purpleAccent : ADEColor.success)
+        .frame(width: 30, alignment: .leading)
+        .padding(.top, 2)
+
+      Text(message.text)
+        .font(.caption)
+        .foregroundStyle(isUser ? ADEColor.textPrimary : ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .background(isUser ? ADEColor.purpleAccent.opacity(0.025) : Color.clear)
   }
 }
 
@@ -758,13 +1058,14 @@ private struct WorkImportActionButton: View {
   }
 }
 
-private extension ExternalSessionSummary {
+extension ExternalSessionSummary {
   var importIdentity: String {
     "\(provider):\(id)"
   }
 
   var rowHeading: String {
     if let realTitle { return realTitle }
+    if let openingPromptHeading { return openingPromptHeading }
     let whereText = cwdLastPathSegment ?? cwdDisplayName
     guard !relativeUpdatedAt.isEmpty else { return whereText }
     return "\(whereText) · \(relativeUpdatedAt)"
@@ -779,9 +1080,45 @@ private extension ExternalSessionSummary {
     return trimmedTitle.isEmpty ? nil : trimmedTitle
   }
 
+  /// The opening ask, used as a heading when the provider persisted no title.
+  var openingPromptHeading: String? {
+    workImportHeadingText(previewSnippet)
+  }
+
+  var startedAnchorSnippet: String? {
+    guard let openingPromptHeading,
+          workImportHeadingText(openingPromptHeading) != workImportHeadingText(rowHeading) else {
+      return nil
+    }
+    return openingPromptHeading
+  }
+
+  var latestAnchorMessage: ExternalSessionMessage? {
+    guard let latest = conversationMessages.last else { return nil }
+    guard workImportHeadingText(latest.text) != rowHeading else { return nil }
+    return latest
+  }
+
+  var hasConversationAnchorData: Bool {
+    openingPromptHeading != nil || !conversationMessages.isEmpty
+  }
+
+  var conversationMessages: [ExternalSessionMessage] {
+    (messages ?? []).compactMap { message in
+      let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { return nil }
+      return ExternalSessionMessage(role: message.role, text: text, at: message.at)
+    }
+  }
+
   var previewSnippet: String? {
     let trimmedPreview = preview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmedPreview.isEmpty ? nil : trimmedPreview
+  }
+
+  var previewDuplicatesHeading: Bool {
+    guard let previewSnippet else { return false }
+    return workImportHeadingText(previewSnippet) == workImportHeadingText(rowHeading)
   }
 
   var trimmedCwd: String? {
@@ -806,7 +1143,7 @@ private extension ExternalSessionSummary {
     }
     let segments = display.split(separator: "/").map(String.init)
     guard segments.count > 3 else { return display }
-    return ".../" + segments.suffix(3).joined(separator: "/")
+    return "…/" + segments.suffix(3).joined(separator: "/")
   }
 
   var relativeUpdatedAt: String {
@@ -814,6 +1151,15 @@ private extension ExternalSessionSummary {
     let seconds = timestamp > 10_000_000_000 ? timestamp / 1000 : timestamp
     return WorkImportSessionFormatters.relative.localizedString(for: Date(timeIntervalSince1970: seconds), relativeTo: Date())
   }
+}
+
+private func workImportHeadingText(_ value: String?) -> String? {
+  let collapsed = value?
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !collapsed.isEmpty else { return nil }
+  guard collapsed.count > 72 else { return collapsed }
+  return String(collapsed.prefix(71)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
 }
 
 private enum WorkImportSessionFormatters {
@@ -825,16 +1171,7 @@ private enum WorkImportSessionFormatters {
 }
 
 private func providerDisplayName(_ provider: String) -> String {
-  switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "claude": return "Claude"
-  case "codex": return "Codex"
-  case "cursor": return "Cursor"
-  case "droid": return "Droid"
-  case "opencode": return "OpenCode"
-  default:
-    let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "Unknown" : trimmed
-  }
+  workExternalSessionProviderName(provider)
 }
 
 private func workImportToolType(provider: String) -> String {

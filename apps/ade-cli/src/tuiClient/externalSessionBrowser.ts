@@ -75,6 +75,42 @@ export function externalSessionProviderLabel(provider: ExternalSessionProvider |
   return provider === "all" ? "All" : PROVIDER_LABELS[provider] ?? provider;
 }
 
+/** Collapses provider text to one line so a TUI row can print it without wrapping. */
+function collapseLine(value: string | null | undefined): string | null {
+  const collapsed = value?.replace(/\s+/gu, " ").trim();
+  return collapsed ? collapsed : null;
+}
+
+/**
+ * Row heading, mirroring the desktop browser's `sessionHeading`: a provider-persisted
+ * title when there is one, otherwise the opening prompt, otherwise the raw id. Most
+ * Claude CLI transcripts carry no title, so without the prompt fallback the row would
+ * name itself with a uuid.
+ */
+export function externalSessionRowTitle(session: ExternalSessionSummary): string {
+  return collapseLine(session.title) ?? collapseLine(session.preview) ?? session.id;
+}
+
+/**
+ * The two anchors the selected row prints: what the thread started as, and where it left
+ * off. Either can be absent — an older host sends no `messages` at all, and neither
+ * anchor may repeat text the row is already showing. The TUI gives each anchor a single
+ * truncated line, so a duplicate reads as a rendering bug rather than as emphasis.
+ */
+export function externalSessionAnchors(session: ExternalSessionSummary): {
+  started: string | null;
+  latest: string | null;
+} {
+  const heading = externalSessionRowTitle(session);
+  const started = collapseLine(session.preview);
+  const messages = session.messages ?? [];
+  const latest = collapseLine(messages[messages.length - 1]?.text);
+  return {
+    started: started && started !== heading ? started : null,
+    latest: latest && latest !== heading && latest !== started ? latest : null,
+  };
+}
+
 export function normalizeExternalSessionListResult(result: unknown): ExternalSessionSummary[] {
   if (Array.isArray(result)) return result as ExternalSessionSummary[];
   if (!result || typeof result !== "object") return [];
@@ -97,6 +133,10 @@ export function visibleExternalSessions(
         session.preview,
         session.cwd,
         session.id,
+        // Search the whole thread sample, not just the title: the words you remember
+        // from a conversation are usually in the conversation, and provider titles are
+        // frequently absent entirely. Matches the desktop browser's corpus.
+        ...(session.messages ?? []).map((message) => message.text),
       ]
         .filter((value): value is string => typeof value === "string" && value.length > 0)
         .some((value) => value.toLowerCase().includes(needle));
