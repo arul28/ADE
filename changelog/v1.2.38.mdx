@@ -1,0 +1,30 @@
+---
+title: "v1.2.38"
+description: "Release notes for ADE v1.2.38 - July 27, 2026"
+---
+
+v1.2.38 simplifies ADE around lanes and agent sessions by retiring the Run tab and its managed-process subsystem. It also makes chat transcripts safer to resume, improves question-and-draft handling on iPhone, and keeps the new-chat screen usable in short windows.
+
+---
+
+## Run is retired
+
+- **One less subsystem to configure.** The Run tab, managed processes, stack buttons, and their desktop, web, mobile, CLI, and `ade code` surfaces are gone. Terminals and lane-scoped agent sessions remain the operational path.
+- **Clean upgrades.** ADE removes retired process tables, CRDT metadata, and legacy run-shell sessions during upgrade, and filters old peer data so the removed subsystem cannot reappear after synchronization.
+- **A focused project welcome.** The reusable project welcome surface now lives with project navigation instead of the retired Run area.
+
+## Chat text stays intact
+
+- **Verbatim streamed text.** Transcript reconstruction now preserves text fragments across interleaved activity, progress, and usage events, including whitespace-only fragments and Markdown hard breaks.
+- **No repeated mobile replies.** Whole-message renditions replace or yield to matching live fragments instead of being appended as a second copy, fixing assistant responses that appeared cut mid-word and then repeated on iPhone.
+- **Stable transcript identity.** Message and provider item identities are handled separately so adjacent streamed blocks retain the right paragraph boundaries without corrupting words.
+
+## Better mobile questions and drafts
+
+- **Drafts survive navigation.** Unsent chat text and pending-question answers persist per session and clear only after the host accepts the submission.
+- **Question cards fit the screen.** Pending inputs are bounded, scroll internally, can be minimized, and include keyboard-dismiss controls.
+- **Reliable pending events.** Durable event sequencing and stable pending-input identities prevent question cards from being dropped or duplicated after reconnects and restarts.
+
+## New chat adapts to short windows
+
+- **The ADE mark shrinks instead of clipping.** The new-chat hero keeps the composer and activity module visible as the window gets shorter, while preserving the roomy layout at normal sizes.

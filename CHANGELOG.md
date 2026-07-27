@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.38] - 2026-07-27
+
+### Workspace
+
+- Removed the Run tab and managed-process subsystem across desktop, hosted web, iOS, ADE CLI, and `ade code`.
+- Added upgrade cleanup for retired process tables, CRDT metadata, and legacy run-shell sessions so older peers cannot restore removed state.
+- Moved the reusable project welcome surface into project navigation.
+
+### Chats
+
+- Preserved streamed assistant text verbatim across interleaved non-content events and whitespace-only fragments.
+- Prevented whole-message transcript renditions from duplicating matching live fragments on mobile.
+- Kept transcript event sequences monotonic after restart so pending chat events hydrate reliably.
+
+### Mobile
+
+- Persisted per-session chat and question drafts and clear them only after host acceptance.
+- Bounded, scrollable, minimizable pending-input cards with keyboard dismissal controls.
+- Stabilized pending-input identity to prevent dropped or duplicate question cards.
+
+### Desktop
+
+- Made the new-chat hero logo shrink in short windows instead of clipping the logo and activity content.
+
 ## [1.2.37] - 2026-07-25
 
 ### Chat delivery and recovery
@@ -1011,7 +1035,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.37...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.38...HEAD
+[1.2.38]: https://github.com/arul28/ADE/compare/v1.2.37...v1.2.38
 [1.2.37]: https://github.com/arul28/ADE/compare/v1.2.36...v1.2.37
 [1.2.36]: https://github.com/arul28/ADE/compare/v1.2.35...v1.2.36
 [1.2.35]: https://github.com/arul28/ADE/compare/v1.2.34...v1.2.35
