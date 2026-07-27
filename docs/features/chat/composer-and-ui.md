@@ -982,6 +982,15 @@ These modules are pure and unit-testable:
   immediately re-persist with a new timestamp. Normalization
   (`normalizeStoredComposerDraft`) validates every field defensively
   so corrupt stored data degrades gracefully instead of crashing.
+- **Empty-state hero column.** The new-chat hero column in
+  `AgentChatPane` lives in an `overflow-hidden` wrapper and caps itself
+  with `max-h-full`, so exactly one row — the ADE logo — may be
+  flexible; every sibling (heading, lane pill, inline composer, extras)
+  must be `shrink-0`, and the logo keeps a `min-h` floor so it shrinks
+  instead of the column overflowing and clipping top and bottom in a
+  short window. The optical lift is wrapper padding, not a negative
+  margin on the column: a negative margin escapes the `max-h-full` cap
+  and reintroduces the clipping.
 - **Session creation and first turn race.** When a new session is
   created from the composer, the pane awaits the `onSessionCreated`
   callback and the session-list refresh before sending the first agent

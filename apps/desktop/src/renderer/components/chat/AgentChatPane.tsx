@@ -11934,15 +11934,22 @@ export function AgentChatPane({
                   >
                     <div className={cn(
                       "flex min-h-0 flex-1 items-center justify-center overflow-hidden",
-                      appPanelOpen ? "px-3" : "px-6 pb-24",
+                      // The optical lift lives in the padding rather than a negative margin on the
+                      // column, so `max-h-full` below can cap the column without clipping its top.
+                      // 136px = the previous pb-24 (96px) + the removed -mt-10 lift (40px), which
+                      // keeps the resting position pixel-identical whenever there is room to spare.
+                      appPanelOpen ? "px-3" : "px-6 pb-[136px]",
                     )}>
                       <div className={cn(
-                        "flex w-full flex-col items-center gap-3 text-center",
-                        appPanelOpen ? null : "-mt-10 max-w-[820px]",
+                        "flex max-h-full w-full flex-col items-center gap-3 text-center",
+                        appPanelOpen ? null : "max-w-[820px]",
                       )}>
                         <motion.div
                           className={cn(
-                            "relative flex w-full min-w-0 items-center justify-center",
+                            // The logo is the only flexible row: in a short window it absorbs the
+                            // overflow down to a legible floor, so the composer stays visible far
+                            // longer than it did when the whole column was rigid.
+                            "relative flex min-h-[56px] w-full min-w-0 shrink items-center justify-center",
                             appPanelOpen ? "max-w-[360px]" : "max-w-[520px]",
                           )}
                           style={{ aspectRatio: "560 / 300" }}
@@ -11955,14 +11962,14 @@ export function AgentChatPane({
                           />
                         </motion.div>
 
-                        <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
+                        <h2 className="shrink-0 font-sans text-[18px] font-semibold tracking-tight text-fg/80">
                           {isOrchestratorDraft ? "Orchestrate a swarm of agents" : "Start a new conversation"}
                         </h2>
 
                         {/* Lane selector pill */}
                         {showWorkspaceChrome && draftLaneSelectorLanes.length > 0 && onLaneChange ? (
                           <motion.div
-                            className="flex justify-center"
+                            className="flex shrink-0 justify-center"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
                             <div className="flex flex-col items-center gap-2">
@@ -12023,7 +12030,7 @@ export function AgentChatPane({
                           </motion.div>
                         ) : showWorkspaceChrome && laneDisplayLabel ? (
                           <motion.div
-                            className="flex items-center gap-2 rounded-full px-4 py-1.5"
+                            className="flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5"
                             style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
@@ -12043,14 +12050,14 @@ export function AgentChatPane({
 
                         {/* Inline composer for empty state (only when sim drawer closed) */}
                         {!appPanelOpen ? (
-                          <div className="w-full max-w-[820px]">
+                          <div className="w-full shrink-0">
                             {composerWithTypographyRoot}
                           </div>
                         ) : null}
 
                         {isWorkDraftComposer && !appPanelOpen ? (
                           <motion.div
-                            className="flex w-full justify-center"
+                            className="flex w-full shrink-0 justify-center"
                             initial={{ opacity: 0, y: 8 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: 6 }}
