@@ -4572,6 +4572,260 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testRapidFullChatSnapshotRequestsAreCoalesced() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "chatStreaming": true,
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer { service.endOutboundEnvelopeCaptureForTesting() }
+
+    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
+    XCTAssertEqual(service.localStateRevision, 1)
+  }
+
+  func testOpeningSnapshotRequestDoesNotRepeatAfterDispatch() {
+    XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
+      alreadySubscribed: false,
+      openingSnapshotRequestedAt: nil,
+      forceFreshTranscriptOnOpen: false,
+      initialTranscriptTailHydrated: false,
+      hasVisiblePresentation: false,
+      hasCachedEventHistory: false
+    ))
+    XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
+      alreadySubscribed: true,
+      openingSnapshotRequestedAt: nil,
+      forceFreshTranscriptOnOpen: true,
+      initialTranscriptTailHydrated: false,
+      hasVisiblePresentation: true,
+      hasCachedEventHistory: true
+    ))
+    XCTAssertFalse(workChatShouldRequestOpeningSnapshot(
+      alreadySubscribed: true,
+      openingSnapshotRequestedAt: Date(timeIntervalSince1970: 100),
+      forceFreshTranscriptOnOpen: true,
+      initialTranscriptTailHydrated: false,
+      hasVisiblePresentation: true,
+      hasCachedEventHistory: true,
+      now: Date(timeIntervalSince1970: 120)
+    ))
+    XCTAssertFalse(workChatShouldRequestOpeningSnapshot(
+      alreadySubscribed: true,
+      openingSnapshotRequestedAt: nil,
+      forceFreshTranscriptOnOpen: false,
+      initialTranscriptTailHydrated: false,
+      hasVisiblePresentation: true,
+      hasCachedEventHistory: false
+    ))
+    XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
+      alreadySubscribed: true,
+      openingSnapshotRequestedAt: Date(timeIntervalSince1970: 100),
+      forceFreshTranscriptOnOpen: true,
+      initialTranscriptTailHydrated: false,
+      hasVisiblePresentation: true,
+      hasCachedEventHistory: true,
+      now: Date(timeIntervalSince1970: 131)
+    ))
+  }
+
+  func testContextUsageViewModelCacheInvalidatesOnlyForRelevantInputs() throws {
+    let firstUsage = WorkUsageSummary(
+      turnCount: 1,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 120,
+      contextWindow: 1_000,
+      costUsd: 0
+    )
+    let secondUsage = WorkUsageSummary(
+      turnCount: 1,
+      inputTokens: 500,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 520,
+      contextWindow: 1_000,
+      costUsd: 0
+    )
+    let firstTranscript = [
+      WorkChatEnvelope(
+        sessionId: "session-1",
+        timestamp: "2026-07-27T12:00:00.000Z",
+        sequence: 1,
+        event: .tokens(usage: firstUsage, turnId: "turn-1", itemId: nil)
+      ),
+    ]
+    let secondTranscript = [
+      WorkChatEnvelope(
+        sessionId: "session-1",
+        timestamp: "2026-07-27T12:00:01.000Z",
+        sequence: 2,
+        event: .tokens(usage: secondUsage, turnId: "turn-1", itemId: nil)
+      ),
+    ]
+    let cache = WorkContextUsageViewModelCache()
+
+    let first = try XCTUnwrap(cache.value(
+      transcript: firstTranscript,
+      transcriptRenderSignature: 1,
+      provider: "codex",
+      fallbackContextWindow: nil
+    ))
+    let cached = try XCTUnwrap(cache.value(
+      transcript: secondTranscript,
+      transcriptRenderSignature: 1,
+      provider: "codex",
+      fallbackContextWindow: nil
+    ))
+    let refreshed = try XCTUnwrap(cache.value(
+      transcript: secondTranscript,
+      transcriptRenderSignature: 2,
+      provider: "codex",
+      fallbackContextWindow: nil
+    ))
+
+    XCTAssertEqual(cached.usedTokens, first.usedTokens)
+    XCTAssertNotEqual(refreshed.usedTokens, first.usedTokens)
+  }
+
+  @MainActor
+  func testReopeningChatOfflineCancelsDelayedUnsubscribe() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "chatStreaming": true,
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer { service.endOutboundEnvelopeCaptureForTesting() }
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    service.resetOutboundEnvelopeCaptureForTesting()
+    service.scheduleChatEventUnsubscribe(
+      sessionId: "session-1",
+      delayNanoseconds: 2_000_000
+    )
+    service.disconnect(clearCredentials: false)
+    service.retainChatEventSubscription(sessionId: "session-1")
+    try await Task.sleep(nanoseconds: 10_000_000)
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_unsubscribe"), 0)
+
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+  }
+
+  @MainActor
+  func testReopeningChatAfterWarmEvictionResubscribesRemotely() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "chatStreaming": true,
+      ],
+    ])
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer { service.endOutboundEnvelopeCaptureForTesting() }
+
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+    service.resetOutboundEnvelopeCaptureForTesting()
+    service.scheduleChatEventUnsubscribe(
+      sessionId: "session-1",
+      delayNanoseconds: 2_000_000
+    )
+    let evictionDeadline = Date().addingTimeInterval(1)
+    while !service.subscribedChatSessionIds.isEmpty, Date() < evictionDeadline {
+      try await Task.sleep(nanoseconds: 1_000_000)
+    }
+
+    XCTAssertTrue(service.subscribedChatSessionIds.isEmpty)
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_unsubscribe"), 1)
+
+    service.resetOutboundEnvelopeCaptureForTesting()
+    service.retainChatEventSubscription(sessionId: "session-1")
+    try await service.subscribeToChatEvents(sessionId: "session-1")
+
+    XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
+
+    try await service.unsubscribeFromChatEvents(sessionId: "session-1")
+  }
+
+  func testLiveTranscriptCacheAppendsAcrossCappedRingSlides() {
+    func envelope(_ sequence: Int) -> AgentChatEventEnvelope {
+      AgentChatEventEnvelope(
+        sessionId: "session-1",
+        timestamp: String(format: "2026-07-27T00:00:%02d.%03dZ", (sequence / 1_000) % 60, sequence % 1_000),
+        event: .text(
+          text: "chunk-\(sequence)",
+          messageId: "message-1",
+          turnId: "turn-1",
+          itemId: "item-1"
+        ),
+        sequence: sequence,
+        provenance: nil
+      )
+    }
+
+    var cache = WorkLiveTranscriptCache()
+    let initialEvents = (1...1_000).map(envelope)
+    _ = cache.transcript(for: "session-1", events: initialEvents)
+
+    let slidEvents = (2...1_001).map(envelope)
+    _ = cache.transcript(for: "session-1", events: slidEvents)
+
+    XCTAssertFalse(cache.recentTranscriptWasRebuilt)
+    XCTAssertEqual(cache.recentDeltaTranscript.count, 1)
+    guard case .assistantText(let text, _, _) = cache.recentDeltaTranscript.first?.event else {
+      return XCTFail("Expected the new ring-tail event to map to one assistant delta.")
+    }
+    XCTAssertEqual(text, "chunk-1001")
+  }
+
+  func testLiveTranscriptCacheRebuildsWhenPreviousTailFallsOutOfWindow() {
+    func envelope(_ sequence: Int) -> AgentChatEventEnvelope {
+      AgentChatEventEnvelope(
+        sessionId: "session-1",
+        timestamp: String(format: "2026-07-27T00:01:%02d.%03dZ", (sequence / 1_000) % 60, sequence % 1_000),
+        event: .activity(activity: .thinking, detail: "event-\(sequence)", turnId: "turn-1"),
+        sequence: sequence,
+        provenance: nil
+      )
+    }
+
+    var cache = WorkLiveTranscriptCache()
+    _ = cache.transcript(for: "session-1", events: (1...1_000).map(envelope))
+    _ = cache.transcript(for: "session-1", events: (2_000...2_999).map(envelope))
+
+    XCTAssertTrue(cache.recentTranscriptWasRebuilt)
+    XCTAssertTrue(cache.recentDeltaTranscript.isEmpty)
+  }
+
+  @MainActor
   func testCredentialClearingRemovesHostBoundTerminalHistoryAndDeliveryState() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
@@ -17796,9 +18050,10 @@ final class ADETests: XCTestCase {
           command: "npm test",
           cwd: "/repo",
           output: "",
+          status: .completed,
           itemId: "command-1",
-          status: "completed",
           exitCode: 0,
+          durationMs: nil,
           turnId: nil
         )
       ),

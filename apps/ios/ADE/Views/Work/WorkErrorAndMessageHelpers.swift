@@ -1795,7 +1795,18 @@ func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String>
 }
 
 func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
-  transcript.sorted { lhs, rhs in
+  guard transcript.count > 1 else { return transcript }
+  let isAlreadySorted = transcript.indices.dropFirst().allSatisfy { index in
+    let lhs = transcript[transcript.index(before: index)]
+    let rhs = transcript[index]
+    if lhs.timestamp == rhs.timestamp {
+      return (lhs.sequence ?? 0) <= (rhs.sequence ?? 0)
+    }
+    return lhs.timestamp <= rhs.timestamp
+  }
+  guard !isAlreadySorted else { return transcript }
+
+  return transcript.sorted { lhs, rhs in
     if lhs.timestamp == rhs.timestamp {
       return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
     }
