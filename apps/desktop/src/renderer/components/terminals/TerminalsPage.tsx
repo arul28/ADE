@@ -8,7 +8,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, OpenProjectBinding, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -129,6 +129,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
@@ -239,6 +240,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (opened?.wokeAt) clearSessionWokeMarker(id);
     },
     [selectableSessions, selectionAnchorId, work],
+  );
+
+  const handleSelectForeignRuntimeSession = useCallback(
+    (
+      session: TerminalSessionSummary,
+      binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+      event: React.MouseEvent,
+      visibleSessionIds: string[],
+    ) => {
+      void switchRemoteProject(binding.targetId, binding.projectId)
+        .then(() => handleSelectSession(session.id, event, visibleSessionIds))
+        .catch((reason: unknown) => {
+          // A shell/CLI has no per-session runtime pin. If its owning project
+          // cannot be selected, leaving it closed is safer than opening its id
+          // against whichever runtime the tab currently owns.
+          console.error("work.foreign_session_switch_failed", reason);
+        });
+    },
+    [handleSelectSession, switchRemoteProject],
   );
 
   const handleInfoClick = useCallback(
@@ -1121,6 +1141,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
             onSelectSession={handleSelectSession}
+            onSelectForeignRuntimeSession={handleSelectForeignRuntimeSession}
             onClearSelection={() => {
               setSelectedSessionIds(new Set());
               setSelectionAnchorId(null);

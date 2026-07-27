@@ -42,6 +42,60 @@ describe("resolveThisMachineProjectRoot", () => {
     ).toEqual({ ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE });
   });
 
+  it("accepts an open local checkout with the same verified git origin", () => {
+    expect(
+      resolveThisMachineProjectRoot({
+        projectBinding: remoteBinding,
+        openProjectTabRoots: ["/Users/admin/Projects/ADE"],
+        localProjectRootPath: null,
+        boundRepoOriginUrl: "git@github.com:acme/ADE.git",
+        recentProjects: [{
+          rootPath: "/Users/admin/Projects/ADE",
+          displayName: "ADE",
+          exists: true,
+          lastOpenedAt: "2026-07-27T00:00:00.000Z",
+          gitOriginUrl: "https://github.com/acme/ADE.git",
+        }],
+      }),
+    ).toEqual({ ok: true, rootPath: "/Users/admin/Projects/ADE" });
+  });
+
+  it("rejects an open same-name checkout whose verified origin differs", () => {
+    expect(
+      resolveThisMachineProjectRoot({
+        projectBinding: remoteBinding,
+        openProjectTabRoots: ["/Users/admin/Projects/ADE"],
+        localProjectRootPath: null,
+        boundRepoOriginUrl: "git@github.com:acme/ADE.git",
+        recentProjects: [{
+          rootPath: "/Users/admin/Projects/ADE",
+          displayName: "ADE",
+          exists: true,
+          lastOpenedAt: "2026-07-27T00:00:00.000Z",
+          gitOriginUrl: "git@github.com:other/ADE.git",
+        }],
+      }),
+    ).toEqual({ ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE });
+  });
+
+  it("rejects a missing recent checkout even when its verified origin matches", () => {
+    expect(
+      resolveThisMachineProjectRoot({
+        projectBinding: remoteBinding,
+        openProjectTabRoots: ["/Users/admin/Projects/ADE"],
+        localProjectRootPath: null,
+        boundRepoOriginUrl: "git@github.com:acme/ADE.git",
+        recentProjects: [{
+          rootPath: "/Users/admin/Projects/ADE",
+          displayName: "ADE",
+          exists: false,
+          lastOpenedAt: "2026-07-27T00:00:00.000Z",
+          gitOriginUrl: "https://github.com/acme/ADE.git",
+        }],
+      }),
+    ).toEqual({ ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE });
+  });
+
   it("refuses to switch when no local checkout of this repo is open", () => {
     expect(
       resolveThisMachineProjectRoot({

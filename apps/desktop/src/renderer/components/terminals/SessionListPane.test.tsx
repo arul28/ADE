@@ -840,6 +840,35 @@ describe("SessionListPane", () => {
       );
     });
 
+    it("routes foreign shell rows through the owning-runtime selector", () => {
+      seedForeignMachine({
+        sessions: [
+          makeSession({
+            id: "shell-elsewhere",
+            laneId: "lane-elsewhere",
+            title: "Shell on the other machine",
+            toolType: "shell",
+          }),
+        ],
+      });
+      const onSelectSession = vi.fn();
+      const onSelectForeignRuntimeSession = vi.fn();
+      renderPane({ onSelectSession, onSelectForeignRuntimeSession });
+
+      fireEvent.click(screen.getByRole("button", { name: /Shell on the other machine/ }));
+
+      expect(onSelectSession).not.toHaveBeenCalled();
+      expect(onSelectForeignRuntimeSession).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "shell-elsewhere" }),
+        expect.objectContaining({
+          targetId: "target-studio",
+          projectId: "project-a",
+        }),
+        expect.anything(),
+        ["shell-elsewhere"],
+      );
+    });
+
     it("shows a bare glyph for one online foreign machine and the name when it drops", () => {
       seedForeignMachine();
       const view = renderPane();

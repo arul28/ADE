@@ -14,18 +14,14 @@
  * repo. This resolves the local counterpart by repo identity instead, and
  * refuses to switch when there isn't one.
  *
- * The matching itself is `deriveLaneMachineOptions`' "This Mac" rule, reused
- * rather than re-implemented: the bound checkout is the repo by definition, and
- * a local root only counts when its folder name lines up with it.
+ * A local counterpart is accepted only when its recent-project git origin
+ * matches the bound remote project's origin. Folder names are display data,
+ * never repository identity.
  */
 
-import {
-  deriveLaneMachineOptions,
-  THIS_MACHINE_ID,
-  THIS_MACHINE_NAME,
-  type LaneMachineProjectRef,
-} from "../lanes/laneMachines";
-import type { OpenProjectBinding } from "../../../shared/types";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import type { OpenProjectBinding, RecentProjectSummary } from "../../../shared/types";
 
 export type ThisMachineProjectRootResult =
   | { ok: true; rootPath: string }
@@ -45,8 +41,18 @@ export function resolveThisMachineProjectRoot(input: {
   openProjectTabRoots: readonly string[];
   /** `project.rootPath` from the store — only a local path when unbound. */
   localProjectRootPath: string | null;
+  /** Verified origin reported by the bound remote runtime. */
+  boundRepoOriginUrl?: string | null;
+  /** Local recent-project rows include host-read git origin metadata. */
+  recentProjects?: readonly RecentProjectSummary[];
 }): ThisMachineProjectRootResult {
-  const { projectBinding, openProjectTabRoots, localProjectRootPath } = input;
+  const {
+    projectBinding,
+    openProjectTabRoots,
+    localProjectRootPath,
+    boundRepoOriginUrl,
+    recentProjects = [],
+  } = input;
 
   // Already on this Mac: the bound root IS the answer.
   if (projectBinding?.kind === "local") {
@@ -59,29 +65,19 @@ export function resolveThisMachineProjectRoot(input: {
       : { ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE };
   }
 
-  const boundProject: LaneMachineProjectRef = {
-    // The active binding is this repo by definition — nothing is inferred.
-    matchedBy: "origin",
-    projectId: projectBinding.projectId,
-    rootPath: projectBinding.rootPath,
-    displayName: projectBinding.displayName,
-  };
-  // The bound machine's root path can appear in the local tab roots; it is not
-  // a path on this Mac, so it can never be the local counterpart.
-  const localRoots = openProjectTabRoots.filter(
-    (rootPath) => rootPath !== projectBinding.rootPath,
-  );
-  const thisMachine = deriveLaneMachineOptions({
-    connections: [],
-    boundTargetId: projectBinding.targetId,
-    boundProject,
-    repoDisplayName: projectBinding.displayName,
-    localProjectRoots: localRoots,
-  }).find((option) => option.id === THIS_MACHINE_ID);
-
-  const rootPath = thisMachine?.project?.rootPath ?? null;
-  return rootPath && thisMachine?.project?.matchedBy === "origin"
-    ? { ok: true, rootPath }
+  const boundIdentity = normalizeGitRemoteIdentity(boundRepoOriginUrl);
+  if (!boundIdentity) {
+    return { ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE };
+  }
+  const openRoots = new Set(openProjectTabRoots);
+  const matched = recentProjects.find((recent) =>
+    recent.kind !== "remote"
+    && recent.exists
+    && openRoots.has(recent.rootPath)
+    && recent.rootPath !== projectBinding.rootPath
+    && normalizeGitRemoteIdentity(recent.gitOriginUrl) === boundIdentity);
+  return matched
+    ? { ok: true, rootPath: matched.rootPath }
     : { ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE };
 }
 
@@ -91,7 +87,31 @@ export async function switchToThisMachineProject(input: {
   localProjectRootPath: string | null;
   switchProjectToPath: (rootPath: string) => Promise<unknown>;
 }): Promise<string | null> {
-  const resolved = resolveThisMachineProjectRoot(input);
+  let identityInput: Pick<
+    Parameters<typeof resolveThisMachineProjectRoot>[0],
+    "boundRepoOriginUrl" | "recentProjects"
+  > = {};
+  if (input.projectBinding?.kind === "remote") {
+    try {
+      const [snapshot, recentProjects] = await Promise.all([
+        window.ade.remoteRuntime.getConnectionSnapshot(),
+        window.ade.project.listRecent(),
+      ]);
+      const connection = snapshot.connections.find(
+        (candidate) => candidate.target.id === input.projectBinding?.targetId,
+      );
+      const project = connection?.projects.find(
+        (candidate) => candidate.projectId === input.projectBinding?.projectId,
+      );
+      identityInput = {
+        boundRepoOriginUrl: project?.gitOriginUrl ?? null,
+        recentProjects,
+      };
+    } catch {
+      return THIS_MACHINE_PROJECT_MISSING_MESSAGE;
+    }
+  }
+  const resolved = resolveThisMachineProjectRoot({ ...input, ...identityInput });
   if (!resolved.ok) return resolved.message;
   try {
     await input.switchProjectToPath(resolved.rootPath);

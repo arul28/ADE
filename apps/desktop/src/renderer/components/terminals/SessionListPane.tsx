@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
 import {
@@ -29,7 +29,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
-import { canBulkDeleteSession, canBulkStopSession, primarySessionLabel } from "../../lib/sessions";
+import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
@@ -453,11 +453,9 @@ function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
 }
 
 /**
- * A chat that lives on another machine. Read-only here on purpose: opening it
- * means moving the tab's execution context, which is what clicking does — it
- * switches the tab to that machine, after which the normal local path owns the
- * session. Offline machines render inert rather than lying about what a click
- * will do.
+ * A session that lives on another machine. Chats carry their own runtime pin
+ * and open without rebinding the tab. Shell/CLI sessions do not, so their
+ * caller switches to the owning project before selecting them.
  */
 function CrossMachineSessionRow({
   session,
@@ -513,6 +511,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   showingDraft: _showingDraft,
   onShowDraftKind,
   onSelectSession,
+  onSelectForeignRuntimeSession,
   onClearSelection,
   onBulkClose,
   onBulkDelete,
@@ -556,6 +555,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   showingDraft: boolean;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
+  onSelectForeignRuntimeSession?: (
+    session: TerminalSessionSummary,
+    binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+    event: React.MouseEvent,
+    visibleSessionIds: string[],
+  ) => void;
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
@@ -1274,8 +1279,20 @@ export const SessionListPane = React.memo(function SessionListPane({
                 session={session}
                 online={row.online}
                 machineName={row.machineName}
-                onOpen={(event) =>
-                  onSelectSession(session.id, event, row.sessions.map((candidate) => candidate.id))}
+                onOpen={
+                  isChatToolType(session.toolType)
+                    ? (event) =>
+                        onSelectSession(session.id, event, row.sessions.map((candidate) => candidate.id))
+                    : row.binding && onSelectForeignRuntimeSession
+                      ? (event) =>
+                          onSelectForeignRuntimeSession(
+                            session,
+                            row.binding as Extract<OpenProjectBinding, { kind: "remote" }>,
+                            event,
+                            row.sessions.map((candidate) => candidate.id),
+                          )
+                      : null
+                }
               />
             ))}
           </StickyGroupHeader>

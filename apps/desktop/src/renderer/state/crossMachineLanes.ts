@@ -76,6 +76,7 @@ export type CrossMachineLaneRow = {
   /** Remote-runtime target id + project id, for "open this on that machine". */
   targetId: string | null;
   projectId: string | null;
+  binding: Extract<OpenProjectBinding, { kind: "remote" }> | null;
 };
 
 export type CrossMachineUnion = {
@@ -155,6 +156,7 @@ export function buildCrossMachineLaneRows(input: {
       sessions: [],
       targetId: null,
       projectId: null,
+      binding: null,
     });
   }
   for (const entry of Object.values(input.machines)) {
@@ -177,6 +179,7 @@ export function buildCrossMachineLaneRows(input: {
         sessions: sessionsByLaneId.get(lane.id) ?? [],
         targetId: entry.targetId,
         projectId: entry.projectId,
+        binding: entry.binding ?? null,
       });
     }
   }
@@ -368,7 +371,9 @@ type SyncRuntime = {
   generation: number;
   disposers: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
-  refreshTimer: ReturnType<typeof setInterval> | null;
+  refreshTimer: ReturnType<typeof setTimeout> | null;
+  refreshInFlight: boolean;
+  refreshQueued: boolean;
 };
 
 const runtime: SyncRuntime = {
@@ -385,6 +390,8 @@ const runtime: SyncRuntime = {
   disposers: [],
   timer: null,
   refreshTimer: null,
+  refreshInFlight: false,
+  refreshQueued: false,
 };
 
 function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean {
@@ -583,10 +590,33 @@ async function runRefresh(): Promise<void> {
 }
 
 function scheduleRefresh(): void {
+  if (runtime.refreshTimer) {
+    clearTimeout(runtime.refreshTimer);
+    runtime.refreshTimer = null;
+  }
+  if (runtime.refreshInFlight) {
+    runtime.refreshQueued = true;
+    return;
+  }
   if (runtime.timer) return;
   runtime.timer = setTimeout(() => {
     runtime.timer = null;
-    void runRefresh().catch(() => {});
+    runtime.refreshInFlight = true;
+    void runRefresh()
+      .catch(() => {})
+      .finally(() => {
+        runtime.refreshInFlight = false;
+        if (runtime.refCount === 0) return;
+        if (runtime.refreshQueued) {
+          runtime.refreshQueued = false;
+          scheduleRefresh();
+          return;
+        }
+        runtime.refreshTimer = setTimeout(() => {
+          runtime.refreshTimer = null;
+          scheduleRefresh();
+        }, FOREIGN_MACHINE_REFRESH_MS);
+      });
   }, REFRESH_COALESCE_MS);
 }
 
@@ -617,7 +647,6 @@ function attach(): void {
   // The preload event pump follows the active binding only. A bounded refresh
   // is therefore required for every other connected machine; without it their
   // lane/session rows remain stale indefinitely.
-  runtime.refreshTimer = setInterval(scheduleRefresh, FOREIGN_MACHINE_REFRESH_MS);
 }
 
 function detach(): void {
@@ -627,9 +656,10 @@ function detach(): void {
     runtime.timer = null;
   }
   if (runtime.refreshTimer) {
-    clearInterval(runtime.refreshTimer);
+    clearTimeout(runtime.refreshTimer);
     runtime.refreshTimer = null;
   }
+  runtime.refreshQueued = false;
   for (const dispose of runtime.disposers.splice(0)) {
     try {
       dispose();

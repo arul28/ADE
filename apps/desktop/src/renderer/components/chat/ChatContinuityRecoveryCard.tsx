@@ -10,6 +10,7 @@ import {
 import type {
   AgentChatContinuityRecoveryResult,
   AgentChatNoticeDetail,
+  AgentChatRecoverContinuityArgs,
   AgentChatResumeFailureKind,
 } from "../../../shared/types";
 
@@ -165,10 +166,14 @@ export function ChatContinuityRecoveryCard({
   detail,
   sessionId,
   turnActive,
+  onRecoverContinuity,
 }: {
   detail: AgentChatNoticeDetail;
   sessionId: string | null;
   turnActive: boolean;
+  onRecoverContinuity?: (
+    args: AgentChatRecoverContinuityArgs,
+  ) => Promise<AgentChatContinuityRecoveryResult>;
 }) {
   // Which action, if any, is currently awaiting recoverContinuity.
   const [pendingMode, setPendingMode] = useState<RecoverMode | null>(null);
@@ -184,7 +189,10 @@ export function ChatContinuityRecoveryCard({
       setPendingMode(mode);
       setFailure(null);
       try {
-        const res = await window.ade.agentChat.recoverContinuity({ sessionId, mode });
+        const res = await (onRecoverContinuity ?? window.ade.agentChat.recoverContinuity)({
+          sessionId,
+          mode,
+        });
         if (!res.ok) {
           setFailure(failureCopy(res.reason));
           return;
@@ -200,7 +208,7 @@ export function ChatContinuityRecoveryCard({
         setPendingMode(null);
       }
     },
-    [sessionId, pendingMode, detail.spawnedSession?.laneId],
+    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity],
   );
 
   // ── Resolved states after an action taken in this card ───────────────────

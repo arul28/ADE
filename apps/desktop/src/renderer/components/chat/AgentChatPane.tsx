@@ -12,6 +12,7 @@ import {
   type AgentChatCodexConfigSource,
   type AgentChatCodexSandbox,
   type AgentChatRecoverCodexTurnArgs,
+  type AgentChatRecoverContinuityArgs,
   type AgentChatCursorConfigValue,
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
@@ -4360,9 +4361,20 @@ export function AgentChatPane({
   const cancelQueuedMessageFromReceipt = useCallback((steerId: string) => {
     if (!selectedSessionId) return;
     void window.ade.agentChat
-      .cancelDispatchedSteer({ sessionId: selectedSessionId, steerId })
+      .cancelDispatchedSteer(
+        { sessionId: selectedSessionId, steerId },
+        ...chatPinArgsFor(chatRuntimePinRef),
+      )
       .catch(() => { /* best-effort: already delivered or unknown steer */ });
   }, [selectedSessionId]);
+  const recoverContinuity = useCallback(
+    (args: AgentChatRecoverContinuityArgs) =>
+      window.ade.agentChat.recoverContinuity(
+        args,
+        ...chatPinArgsFor(chatRuntimePinRef),
+      ),
+    [],
+  );
   const restoreCancelledQueue = useCallback(async (recoveryId: string): Promise<boolean> => {
     if (!selectedSessionId) return false;
     try {
@@ -4428,7 +4440,10 @@ export function AgentChatPane({
         next.add(workerSessionId);
         return next;
       });
-      void killWorker({ sessionId: selectedSessionId, workerSessionId })
+      void killWorker(
+        { sessionId: selectedSessionId, workerSessionId },
+        ...chatPinArgsFor(chatRuntimePinRef),
+      )
         .catch((killError) => {
           // eslint-disable-next-line no-console
           console.error("agentChat.killDroidWorker failed", killError);
@@ -12684,6 +12699,7 @@ export function AgentChatPane({
                       onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
                       onApproval={handleListApproval}
                       onCodexRecovery={handleListCodexRecovery}
+                      onRecoverContinuity={recoverContinuity}
                       onRunUnprocessedMessage={handleRunUnprocessedMessage}
                       onEditUnprocessedMessage={handleEditUnprocessedMessage}
                       onDismissUnprocessedMessage={handleDismissUnprocessedMessage}

@@ -1511,6 +1511,7 @@ declare global {
         ) => Promise<AgentChatDispatchSteerResult>;
         cancelDispatchedSteer: (
           args: AgentChatCancelDispatchedSteerArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (
           args: AgentChatInterruptArgs,
@@ -1534,6 +1535,7 @@ declare global {
         ) => Promise<AgentChatResolveUnprocessedMessageResult>;
         recoverContinuity: (
           args: AgentChatRecoverContinuityArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContinuityRecoveryResult>;
         approve: (
           args: AgentChatApproveArgs,
@@ -1636,6 +1638,7 @@ declare global {
         ) => Promise<AgentChatSubagentSnapshot[]>;
         killDroidWorker: (
           args: AgentChatKillDroidWorkerArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         getSessionCapabilities: (
           args: AgentChatSessionCapabilitiesArgs,

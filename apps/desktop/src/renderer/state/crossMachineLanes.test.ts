@@ -12,6 +12,7 @@ import {
   resolveCrossMachineLaneMarkers,
   resetCrossMachineLaneSyncForTest,
   selectOtherMachineBranchStates,
+  startCrossMachineLaneSync,
 } from "./crossMachineLanes";
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -432,5 +433,66 @@ describe("foreign payload decoding", () => {
     expect(decodeForeignLanes({ lanes: [{ id: "a", name: "A", branchRef: "b" }] })).toHaveLength(1);
     expect(decodeForeignSessions([{ id: "s", laneId: "l" }, { id: "s2" }])).toHaveLength(1);
     expect(decodeForeignSessions("nope")).toEqual([]);
+  });
+});
+
+describe("cross-machine refresh scheduling", () => {
+  it("waits for a slow refresh to settle before scheduling the next poll", async () => {
+    vi.useFakeTimers();
+    const pending: Array<(value: { result: unknown }) => void> = [];
+    const callAction = vi.fn(
+      () => new Promise<{ result: unknown }>((resolve) => pending.push(resolve)),
+    );
+    const originalAde = window.ade;
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(callAction).toHaveBeenCalledTimes(2);
+
+    // The old setInterval path started another generation after five seconds,
+    // invalidating this still-live eight-second read. A settled-chain poll must
+    // leave it alone no matter how much wall time passes while it is in flight.
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(callAction).toHaveBeenCalledTimes(2);
+
+    pending.splice(0).forEach((resolve, index) => resolve({
+      result: index === 0 ? { lanes: [] } : { sessions: [] },
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(callAction).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(401);
+    expect(callAction).toHaveBeenCalledTimes(4);
+
+    stop();
+    window.ade = originalAde;
+    vi.useRealTimers();
   });
 });

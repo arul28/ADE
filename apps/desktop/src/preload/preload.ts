@@ -5749,9 +5749,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     cancelDispatchedSteer: async (
       args: AgentChatCancelDispatchedSteerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCancelDispatchedSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "cancelDispatchedSteer",
         { args },
@@ -5837,9 +5839,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverContinuity: async (
       args: AgentChatRecoverContinuityArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatContinuityRecoveryResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+        pin,
         "chat",
         "recoverContinuity",
         { args },
@@ -6161,8 +6165,9 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     killDroidWorker: async (
       args: AgentChatKillDroidWorkerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "killDroidWorker", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "killDroidWorker", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatKillDroidWorker, args),
       ),
     getSessionCapabilities: async (
