@@ -6759,14 +6759,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
           }
-          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) return true;
+          // This rejection used to be silent on both ends: the host logged
+          // nothing and the client showed a bare "authentication". Name it,
+          // and tell the client the one thing that actually resolves it.
+          const knownRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) {
+            authFailureMessage = knownRecord
+              ? "This device's saved pairing is no longer valid on this machine. Pair it again."
+              : "This device is not paired with this machine, or the pairing was removed. Pair it again.";
+            args.logger.warn("sync_host.paired_device_rejected", {
+              deviceId: pairedAuth.deviceId,
+              reason: knownRecord ? "secret_mismatch" : "unknown_device",
+            });
+            return true;
+          }
           authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
           if (!authenticatedPairingRecord) return true;
           const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
           if (pairingAccountOwner) {
             const currentOwner = await refreshAccountLease();
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-            if (currentOwner !== pairingAccountOwner) return true;
+            if (currentOwner !== pairingAccountOwner) {
+              // A LAN client rejected here sees only "authentication"; the
+              // account mismatch is the actionable part.
+              authFailureMessage = "This machine is signed in to a different ADE account than the one that paired this device.";
+              args.logger.warn("sync_host.paired_account_owner_mismatch", {
+                deviceId: pairedAuth.deviceId,
+                hasCurrentOwner: Boolean(currentOwner),
+                ownerMatches: false,
+              });
+              return true;
+            }
           }
           const dpopFailure = evaluatePairedHelloDpop({
             storedPublicKey: authenticatedPairingRecord.dpopPublicKey,

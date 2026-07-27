@@ -458,6 +458,8 @@ describe("desktop account machine lifecycle", () => {
     const reconcileAccountOwnership = vi.fn(() => ({
       removedTargetIds: [],
       removedCredentialHostIds: [],
+      removedCredentials: [],
+      currentOwnerUserId: null,
     }));
     const { createAccountBridge } = await import("./accountBridge");
     const bridge = createAccountBridge({
@@ -600,6 +602,8 @@ describe("desktop account machine lifecycle", () => {
     const reconcileAccountOwnership = vi.fn(() => ({
       removedTargetIds: [],
       removedCredentialHostIds: [],
+      removedCredentials: [],
+      currentOwnerUserId: null,
     }));
     const { createAccountBridge } = await import("./accountBridge");
     const bridge = createAccountBridge({

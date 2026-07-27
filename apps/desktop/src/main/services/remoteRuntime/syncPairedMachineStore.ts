@@ -63,6 +63,13 @@ export type PairWithMachineOptions = Omit<
   pairingTimeoutMs?: number;
   relayAccountToken?: string | null;
   runtimeHostGrant?: string | null;
+  /**
+   * Host this pairing is aimed at, when the caller already knows it (a QR or
+   * link payload carries it). Lets re-pairing reuse this desktop's existing
+   * pairing identity for that host instead of minting a new one, which the
+   * host would store as a second, permanently unmatchable record.
+   */
+  hostDeviceId?: string | null;
 };
 
 export type PairWithAccountMachineOptions = Omit<
@@ -578,8 +585,24 @@ export class DesktopPairedMachineStore {
     if (!deviceName) throw new Error("Desktop device name is required.");
 
     const keys = generateDesktopDpopKeyPair();
-    const localDeviceId = randomUUID();
-    const siteId = randomUUID();
+    // Re-pairing the same machine must reuse this desktop's existing pairing
+    // identity, exactly as the account-adoption path already does. The host
+    // keys its pairing records by this device id and upserts on re-pair, so
+    // minting a fresh one instead leaves behind a record the host can never
+    // match again — one orphaned, still-valid secret per re-pair, forever.
+    // The hello that reports the host identity comes after the pairing request
+    // that carries this id, so recover the prior record up front: by the host
+    // the caller is aiming at, else the relay machine key, else the endpoint
+    // already recorded against a known machine.
+    const endpointMachineKey = machineKeyFromEndpoint(endpoint);
+    const existing = (options.hostDeviceId?.trim()
+      ? this.get(options.hostDeviceId.trim())
+      : null)
+      ?? (endpointMachineKey ? this.get(endpointMachineKey) : null)
+      ?? this.list().find((machine) => machine.endpoints.includes(endpoint))
+      ?? null;
+    const localDeviceId = existing?.deviceId ?? randomUUID();
+    const siteId = existing?.siteId ?? randomUUID();
     const createdAt = nowIso();
     const connection = await openSyncEnvelopeConnection({
       endpoint,

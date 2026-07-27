@@ -86,6 +86,18 @@ type RemoteConnectionServiceOptions = {
 export type AccountMachineReconciliationResult = {
   removedTargetIds: string[];
   removedCredentialHostIds: string[];
+  /**
+   * Detail for the removed pairings. Dropping a paired secret forces the user
+   * to re-pair that machine by hand, so the reason has to be reconstructable
+   * afterwards from a log — counts alone are not enough to tell an intended
+   * account switch from an identity glitch that silently cost trust.
+   */
+  removedCredentials: Array<{
+    hostDeviceId: string;
+    hostName: string | null;
+    previousOwnerUserId: string | null;
+  }>;
+  currentOwnerUserId: string | null;
 };
 
 type RemoteConnectionDisconnectOptions = {
@@ -321,12 +333,23 @@ export class RemoteConnectionService {
       removedCredentialHostIds: removedCredentials.map(
         (credentials) => credentials.hostIdentity.deviceId,
       ),
+      removedCredentials: removedCredentials.map((credentials) => ({
+        hostDeviceId: credentials.hostIdentity.deviceId,
+        hostName: credentials.hostIdentity.name ?? null,
+        previousOwnerUserId: credentials.accountOwnerUserId ?? null,
+      })),
+      currentOwnerUserId,
     };
   }
 
   async reconcileAuthorizedAccountOwnership(): Promise<AccountMachineReconciliationResult> {
     if (!this.options.getAuthorizedAccountOwnerId) {
-      return { removedTargetIds: [], removedCredentialHostIds: [] };
+      return {
+        removedTargetIds: [],
+        removedCredentialHostIds: [],
+        removedCredentials: [],
+        currentOwnerUserId: null,
+      };
     }
     const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
       .catch(() => null);
@@ -433,6 +456,10 @@ export class RemoteConnectionService {
             appVersion: this.options.appVersion,
             relayAccountToken,
             runtimeHostGrant: parsed.runtimeHostGrant ?? null,
+            // Known from the pairing payload; lets the store reuse this
+            // desktop's existing identity for the host instead of orphaning
+            // a record there on every re-pair.
+            hostDeviceId: parsed.hostIdentity.deviceId,
           },
         );
         if (paired.hostIdentity.deviceId !== parsed.hostIdentity.deviceId) {

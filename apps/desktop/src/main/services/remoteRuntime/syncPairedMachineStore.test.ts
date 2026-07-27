@@ -329,6 +329,77 @@ describe("DesktopPairedMachineStore", () => {
     });
   });
 
+  // Regression: re-pairing used to mint a fresh local device id every time.
+  // The host keys pairing records by that id, so each re-pair left it holding
+  // another record it could never match again — an unbounded pile of orphaned,
+  // still-valid secrets, and one observed machine had accumulated six.
+  it("reuses this desktop's pairing identity when re-pairing the same machine", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-repair-"));
+    process.env.ADE_HOME = adeHome;
+    const presentedDeviceIds: string[] = [];
+
+    const createWebSocket = () => new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      if (envelope.type === "pairing_request") {
+        const payload = envelope.payload as { peer: { deviceId: string } };
+        presentedDeviceIds.push(payload.peer.deviceId);
+        ws.receive(encodeSyncEnvelope({
+          type: "pairing_result",
+          requestId: envelope.requestId,
+          payload: {
+            ok: true,
+            deviceId: payload.peer.deviceId,
+            secret: "host-issued-secret",
+          },
+        }));
+        return;
+      }
+      if (envelope.type !== "hello") return;
+      const payload = envelope.payload as { peer: unknown };
+      ws.receive(encodeSyncEnvelope({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          peer: payload.peer,
+          brain: {
+            deviceId: "mac-studio-host",
+            deviceName: "Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+            siteId: "mac-studio-site",
+            dbVersion: 0,
+          },
+          serverDbVersion: 0,
+          heartbeatIntervalMs: 5_000,
+          pollIntervalMs: 1_500,
+          // Deliberately no relay URL: a LAN endpoint yields no machine key,
+          // which is the exact case the first fix attempt would have missed.
+          features: { rpcChannel: true, portForward: true },
+        },
+      }));
+    }) as unknown as WebSocket;
+
+    const store = new DesktopPairedMachineStore();
+    const first = await store.pairWithMachine(
+      "ws://192.168.1.240:8806",
+      "123456",
+      "Desktop client",
+      { pairingTimeoutMs: 2_000, createWebSocket, hostDeviceId: "mac-studio-host" },
+    );
+    const second = await store.pairWithMachine(
+      "ws://192.168.1.240:8806",
+      "123456",
+      "Desktop client",
+      { pairingTimeoutMs: 2_000, createWebSocket, hostDeviceId: "mac-studio-host" },
+    );
+
+    expect(presentedDeviceIds).toHaveLength(2);
+    expect(presentedDeviceIds[1]).toBe(presentedDeviceIds[0]);
+    expect(second.deviceId).toBe(first.deviceId);
+    expect(second.siteId).toBe(first.siteId);
+    expect(new DesktopPairedMachineStore().list()).toHaveLength(1);
+  });
+
   it("replaces stale relay connection metadata only when explicitly requested", () => {
     const filePath = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-pairing-store-")),

@@ -477,6 +477,37 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
   destination lane/chat rather than automatically replaying the mutation.
 - "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
+- `lan <host>:<port>: authentication` in the route list — the host was reached and it *rejected* this desktop, so the other routes' `timeout`/`unreachable` entries are noise. The host now names the reason instead of a bare "Sync authentication failed.": either the pairing was removed on that machine, the saved secret no longer matches, or the two machines are signed in to different ADE accounts. Only the last one is fixed by signing in; the others need a re-pair.
+
+## Pairing identity and paired-secret lifetime
+
+A desktop's pairing identity is per-host, not per-machine: `sync-device-id` is
+the machine's stable id, but each entry in `desktop-paired-machines.json`
+carries its own `deviceId` that the host uses as the key for its pairing
+record. Re-pairing the same machine therefore **must** present the same
+`deviceId` — the host upserts on that key. `pairWithMachine` recovers the prior
+identity before it sends the pairing request, preferring the caller-supplied
+`hostDeviceId` (a QR/link payload carries it), then the relay machine key, then
+a saved record already holding this endpoint. The endpoint fallback matters
+because `machineKeyFromEndpoint` only parses a relay `/connect/<key>` path and
+returns null for a LAN address.
+
+Minting a fresh id instead is not merely untidy: the host keeps the old record
+forever, secret still valid, with no way to ever match it again. One machine was
+observed holding six orphaned records for the same laptop.
+
+Two logs make a lost pairing diagnosable, both of which were previously silent:
+
+- Host: `sync_host.paired_device_rejected` (`unknown_device` vs
+  `secret_mismatch`) and `sync_host.paired_account_owner_mismatch`.
+- Desktop: `account.local_machines_removed`, written to
+  `<machine ade dir>/runtime/account-trust.jsonl`. Deliberately **not** the
+  project logger — dropping a paired secret is a machine-level credential
+  mutation, and the project logger follows the active project, which on a
+  remote-bound project ships the record to the other machine and leaves nothing
+  on the machine that actually lost its trust. It records the previous and
+  current owner per removed credential, so an intended account switch is
+  distinguishable from an identity glitch that silently cost trust.
 
 ## Related docs
 
