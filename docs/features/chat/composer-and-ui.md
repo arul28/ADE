@@ -46,6 +46,8 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatPrPane.tsx` | Left floating PR pane for Work chat. Shows cached lane PR details immediately, then refreshes the linked PR row with the same targeted refresh path so pane toggles surface current merged/closed/check state without a broad PR sync. An unmapped lane PR (projection-derived, `pr.unmapped`) skips the refresh and checks/reviews enrichment — there is no DB row behind its synthetic `gh:` id. |
 | `ChatProposedPlanCard.tsx` | Composer-level plan approval card shown while input is locked. Renders the plan description or question text as rich markdown (`ChatMarkdown`) inside a scrollable container (capped at `min(34vh, 360px)`). Transcript plan events render through `AgentChatMessageList` / `CodexPlanCard`. |
 | `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS composer-level plan approval strip. The live `plan_approval` gate renders as a compact full-width strip above the prompt box, opens a large markdown sheet for review, and sends Approve/Reject decisions through `chat.approve` with optional rejection feedback as `responseText`. It is one body of the consolidated pending-input strip (see [Cross-surface parity](#cross-surface-parity)) — the strip in `WorkChatSessionView+Timeline.swift` renders the current request (plan / approval / permission / question / model-selection), a "Request 1 of N" header, and an "Accept all" sweep when more than one gate is queued. |
+| `apps/ios/ADE/Views/Work/WorkChatComposerAndInputViews.swift` | iOS prompt box, icon-only staged-steer strip, and `WorkStructuredQuestionCard` — the mobile question card. The card pins only a provider row (plus the question tab strip when paged) above its internal scroll region and the freeform field plus Send/Decline footer below it; the question text, request body, meta rows, and option list all scroll. `WorkPendingInputHeightBoundedCard` in the same file is the generic wrapper that caps the non-question gates. Both budget against `maxCardHeight` (see [Cross-surface parity](#cross-surface-parity)) and enable `.scrollDismissesKeyboard(.interactively)` so a long typed answer can never trap the user away from the footer. |
+| `apps/ios/ADE/Views/Work/WorkDraftPersistence.swift` | iOS draft persistence. `WorkComposerDraftStore` keeps unsent composer text per chat (`chat:<sessionId>`) plus fixed keys for the Hub and New Chat composers; `WorkQuestionDraftStore` keeps in-progress question selections/freeform per request id. Both are versioned JSON dictionaries in App Group `UserDefaults` via `WorkDefaultsJSONMap`, LRU-evicted by `updatedAt` (60 composer entries, 30 question entries), with a 400 ms `workDraftAutosaveDebounce`. The `workPersistedDraft(_:key:)` view modifier packages the three legs a plain `String` binding needs: restore-if-empty on appear, debounced autosave, flush on disappear. |
 | `ChatModelSelectionPendingCard.tsx` | Full agent-briefing model picker for orchestration pending inputs. Shows description, touched files, run-after dependencies, provider/model controls, and submitting/cancel states without a recommended default model. |
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
@@ -872,6 +874,66 @@ surfaces an "Awaiting you" badge on the Lanes row and the Work grid tile
 (derived from exact pending-input counts, not idle CLI attention heuristics),
 and iOS fires a light haptic when a new blocking gate arrives.
 
+**Height budget (iOS).** The strip is capped so a gate can never claim the
+whole page. `workPendingInputMaxHeight(chatSurfaceHeight:)` (in
+`WorkChatSessionView.swift`) returns
+`max(160, min(available * 0.82, chatSurfaceHeight * 0.62))` where `available`
+subtracts a fixed 110pt composer reserve. The input is `chatSurfaceHeight =
+max(240, scrollViewportHeight + composerLayoutHeight)`, **not** the transcript
+viewport: the transcript and the composer inset split the same surface, so
+their sum is invariant to how the two divide it, while the viewport alone
+shrinks as the card grows — feeding that back in was a runaway loop where the
+card ate the screen. The composer reserve is a constant for the same reason;
+`composerLayoutHeight` already includes the strip being sized, so measuring it
+would be circular. Inline-in-transcript question cards use the separate
+`workInlinePendingInputMaxHeight(transcriptViewportHeight:)` rule
+(`max(240, viewport * 0.62)`) because the composer sits below that viewport
+either way and there is nothing to reserve for.
+
+The card's own arithmetic subtracts its measured top/bottom chrome plus named
+`cardPadding` / `cardStackSpacing` constants from that budget and floors the
+scroll region at 64pt — roughly one option row. On a small phone with the
+keyboard up the irreducible chrome can still exceed the budget; the overflow is
+absorbed by the transcript, not the composer, because the composer inset is
+`fixedSize(vertical:)` and the transcript scroll view is the flexible sibling.
+That view ordering is the actual guarantee that Send/Decline stay on screen;
+the number only keeps the common case from getting there.
+
+**Minimize (iOS).** The strip header carries a chevron that collapses the card
+to a one-line pill showing the provider mark, a content-derived summary
+(`workPendingInputCollapsedSummary` — the question header, plan title, or
+`Permission: <tool>`, never a generic "1 request"), the queued count, and an
+expand chevron. The gate stays open and the composer stays locked; only the
+card is swapped out, so the user can scroll the conversation for the context
+the question needs. State is a `collapsedPendingInputId`, with the boolean
+derived from it — a minimize applies to the gate the user chose to defer, so it
+must expire the moment a different gate becomes primary, and deriving makes
+that impossible to get wrong. A keyboard `Done` toolbar item (gated on the
+freeform field actually holding focus, because a toolbar declared
+unconditionally would surface over the main composer's keyboard and silently do
+nothing), a footer dismiss button, and interactive scroll-to-dismiss are the
+three ways back out of the keyboard.
+
+**Draft persistence (iOS).** Mobile keeps unsent text the way desktop does.
+`WorkComposerDraftStore` persists each chat's composer draft under
+`chat:<sessionId>`, plus fixed keys for the Hub inline composer and the Work
+New Chat composer; `WorkQuestionDraftStore` persists a still-open question's
+selections, per-question freeform, shared freeform, and page index under the
+request id, so backing out of the chat to check the transcript — the exact
+reason a user minimizes the card — no longer discards what they picked. Both
+autosave on a 400 ms debounce and flush on disappear, because a cancelled
+`.task` throws out of its sleep before the write and a navigation pop is
+precisely the case the debounce misses. Send clears the stored draft
+**synchronously** rather than waiting out the debounce: a jetsam inside that
+window would otherwise restore an already-sent message into the composer, where
+it reads as unsent and invites sending it twice. Two deliberate exclusions:
+answers to `isSecret` questions are never written (the backing store is App
+Group `UserDefaults`, shared with the widget extension, so that would put a
+credential on disk in plaintext), and unpair does not clear the stores (its only
+production trigger fires automatically on an attributed auth failure, and the
+stores are keyed by session, not by host, so clearing would destroy unsent text
+for every other paired machine).
+
 ### Per-runtime question richness (ceilings)
 
 Each runtime populates as much of the schema as its SDK exposes; the card
@@ -1020,10 +1082,48 @@ These modules are pure and unit-testable:
   `data-composer-chip-text` and in the controlled draft; reconciliation must
   never replace sent text with a compact label. Metadata failures are expected
   and must degrade to the deterministic provider label or complete URL.
+- **Chat event identity is never the sequence number alone.**
+  `eventSequence` is a runtime counter, but the transcript it numbers is
+  durable and appended across desktop restarts, so a rehydrated session
+  that restarts at 0 mints sequence numbers the file already contains —
+  one transcript can hold two events numbered 67, hours apart. Any
+  consumer keying identity on `sessionId + sequence` then mistakes the
+  newer event for a replay of the older one and drops it. Both halves of
+  the fix are load-bearing. Host side,
+  `readTranscriptHydrationState` (`agentChatService.ts`) seeds
+  `managed.eventSequence` from the transcript's max sequence in the same
+  pass that recovers todo items — one pass, because the transcript is
+  not cached — so sequences stay strictly increasing for the life of the
+  file. Client side, iOS's `AgentChatEventEnvelope.id` includes the
+  timestamp (`sessionId:timestamp:sequence`), so a genuine redelivery
+  (same timestamp *and* sequence) still collapses while cross-epoch
+  collisions do not. On a real 425-event transcript the old key destroyed
+  103 events, including two `approval_request` envelopes carrying whole
+  AskUserQuestion cards and 31 short text chunks (short text has no
+  content dedupe key of its own — that requires >= 24 characters — so it
+  fell through to the sequence-derived id). Blocking gates additionally
+  get itemId-based content dedupe keys in
+  `SyncService.chatEventContentDedupeKey` (`approval_request`,
+  `structured_question`, `pending_input_resolved`): a dropped gate is a
+  question the user never sees and can never answer, so it must not
+  depend on sequence uniqueness at all.
+- **`isAskUserToolName` deliberately does not match `AskUserQuestion`.**
+  For Claude's own ask-user tool the host emits *both* a `tool_call` (keyed
+  by the SDK tool-use id) and a separate `approval_request` (keyed by a
+  fresh `randomUUID`). iOS's `derivePendingWorkInputs` dedupes by item id,
+  so adding `askuserquestion` to that name list produces two cards for one
+  question — and the `tool_call`-derived one is unanswerable, because the
+  host has no approval registered under that id and discards the response
+  silently. The `tool_call` branch exists only as a fallback for hosts that
+  emit a bare ask-user call with no wrapping approval.
 - **Question drafts persistence.** Question answer state (selected
-  options + freeform drafts) is local to `InlineQuestionRequestCard`. If
-  the user navigates away and back, drafts reset. This is intentional to
-  avoid stale answers leaking across sessions. The card's one-time focus
+  options + freeform drafts) is local to `InlineQuestionRequestCard` on
+  desktop. If the user navigates away and back, drafts reset. This is
+  intentional to avoid stale answers leaking across sessions. iOS makes
+  the opposite call for the same surface — see
+  [Cross-surface parity](#cross-surface-parity) — because minimizing the
+  card to read the transcript is a normal step in answering it there, not
+  a session change. The card's one-time focus
   and entrance animation are guarded by module-level sets
   (`focusedQuestionCardKeys` / `enteredQuestionCardKeys`) so the
   virtualized list re-mounting the row mid-scroll doesn't re-steal focus

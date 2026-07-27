@@ -315,8 +315,18 @@ apps/ios/
 │   │   │                            # WorkChatAttachmentTray,
 │   │   │                            # WorkChatComposerAndInputViews (compacted
 │   │   │                            #   icon-only staged-steer strip + the
-│   │   │                            #   structured-question card: chip tab strip
-│   │   │                            #   over a viewport-capped internal scroll),
+│   │   │                            #   structured-question card: pinned provider
+│   │   │                            #   row / tab strip above and freeform +
+│   │   │                            #   Send/Decline footer below a
+│   │   │                            #   budget-capped internal scroll, plus
+│   │   │                            #   WorkPendingInputHeightBoundedCard for the
+│   │   │                            #   non-question gates),
+│   │   │                            # WorkDraftPersistence (WorkComposerDraftStore
+│   │   │                            #   per-chat/Hub/New-Chat composer text +
+│   │   │                            #   WorkQuestionDraftStore per-request
+│   │   │                            #   selections, over App Group UserDefaults;
+│   │   │                            #   debounced autosave + workPersistedDraft
+│   │   │                            #   view modifier),
 │   │   │                            # WorkArtifactTerminalViews (in-thread
 │   │   │                            #   artifact card with a friendly
 │   │   │                            #   "Preview isn't available" fallback when
@@ -1844,6 +1854,29 @@ different machine's cached limits.
   `chat_event` sends as delivered only when the socket accepts them; on
   backpressure it leaves the transcript offset unchanged and retries in
   order. Events without `seq` (older hosts) bypass the watermark entirely.
+- **`seq` is a resume cursor, not an event identity.** The counter is
+  per-runtime, but the transcript it numbers is durable and keeps being
+  appended across desktop restarts, so the same transcript can contain two
+  events numbered 67 hours apart. The phone's dedupe is first-key-wins over
+  file order, so keying `AgentChatEventEnvelope.id` on `sessionId:sequence`
+  made the newer event look like a replay of the older one and silently
+  discarded it — on a real 425-event transcript that destroyed 103 events,
+  including the `approval_request` envelopes carrying AskUserQuestion cards
+  (the phone showed no question at all) and 31 short text chunks (short text
+  has no content dedupe key, which needs >= 24 characters, so it fell through
+  to the sequence-derived id and a reply rendered mid-word). The envelope id
+  now includes the timestamp, so a genuine redelivery — identical timestamp
+  *and* sequence — still collapses while cross-epoch collisions are broken
+  apart. Blocking gates go further and dedupe on their host-assigned
+  session-unique `itemId` in `SyncService.chatEventContentDedupeKey`
+  (`approval_request`, `structured_question`, `pending_input_resolved`),
+  because a dropped gate is not a cosmetic loss — it is a card the user never
+  sees and can never answer. Host-side, `readTranscriptHydrationState`
+  (`agentChatService.ts`) now seeds a rehydrated session's `eventSequence`
+  from the transcript's maximum instead of restarting at 0, so sequences stay
+  strictly increasing for the life of the file. Any new phone-side identity or
+  cache key must follow the same rule: sequence numbers are unique within a
+  runtime lifetime only.
 - **Transcript history pages through an opaque cursor.**
   `chat.getTranscript` responses carry `nextCursor`; the phone's
   `fetchChatTranscriptPage` requests strictly-older history with it.
@@ -2053,7 +2086,46 @@ different machine's cached limits.
   only for approval/permission gates — never question, plan-approval, or
   model-selection — and flips `acceptForSession` on the current gate then
   accepts each remaining sweepable gate sequentially (stale itemIds no-op
-  on the host, so re-sends after auto-resolution are safe).
+  on the host, so re-sends after auto-resolution are safe). The strip can
+  also be minimized to a one-line pill (`collapsedPendingInputId`) that names
+  what is being asked; the gate stays open and the composer stays locked, and
+  the collapse expires on its own as soon as a different gate becomes primary
+  because the boolean is derived from the stored id rather than synchronized
+  alongside it.
+- **Size a pending-input card from the chat surface, never from the
+  transcript viewport.** The transcript and the composer inset split the same
+  surface, so the viewport shrinks exactly as the card grows — budgeting off
+  it is self-referential and the card walks itself up to full screen. The
+  budget input is `chatSurfaceHeight = max(240, scrollViewportHeight +
+  composerLayoutHeight)`, whose sum does not move when the card resizes, and
+  `workPendingInputMaxHeight(chatSurfaceHeight:)` derives the cap from it.
+  The composer reserve inside that helper is a constant for the same reason:
+  `composerLayoutHeight` already includes the strip being sized. The card's
+  own chrome (provider row, tab strip, freeform field, Send/Decline footer)
+  is measured and subtracted so the scroll region absorbs overflow; when the
+  irreducible chrome still exceeds the budget on a small phone with the
+  keyboard up, the overflow lands on the transcript rather than the footer,
+  because the composer inset is `fixedSize(vertical:)` and the transcript is
+  the flexible sibling. That view ordering — not the number — is what
+  guarantees Send stays reachable.
+- **Mobile keeps unsent text; it is a store, not view state.**
+  `WorkDraftPersistence.swift` holds `WorkComposerDraftStore` (composer text
+  per chat plus fixed Hub / New Chat keys) and `WorkQuestionDraftStore`
+  (in-progress question selections, freeform, and page per request id), both
+  versioned JSON dictionaries in App Group `UserDefaults`, LRU-capped, saved
+  on a 400 ms debounce and flushed on disappear because a cancelled `.task`
+  throws out of its sleep before the write. Three rules are load-bearing:
+  restore only into an empty field (a failed send that put its text back, or
+  a card already mid-edit, is fresher than disk); clear synchronously on send
+  rather than letting the debounce get there, or a jetsam inside that window
+  resurrects an already-sent message and invites a duplicate; and never write
+  an `isSecret` answer, because that defaults suite is shared with the widget
+  extension and would hold a credential in plaintext. Clearing a host profile
+  deliberately does **not** touch these stores — `forgetHost()` has no UI
+  caller and fires automatically from `handleReconnectFailure` on an
+  attributed auth failure, and the stores are keyed by session id rather than
+  by host, so wiping them would destroy unsent text for every other paired
+  machine plus the machine-independent Hub and New Chat drafts.
 - **Optimistic steers reconcile on the active-to-idle turn boundary.**
   A message the phone sends mid-turn is echoed as an optimistic "Sends
   after turn" row (`WorkQueuedSteerRow`) using the host-assigned steer id
