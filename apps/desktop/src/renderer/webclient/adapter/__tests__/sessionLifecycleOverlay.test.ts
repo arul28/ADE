@@ -30,12 +30,49 @@ describe("SessionLifecycleOverlay", () => {
     const overlay = new SessionLifecycleOverlay();
     overlay.begin("s1", { snoozedUntil: "2026-07-26T10:00:00.000Z", snoozedAt: "2026-07-26T09:00:00.000Z" });
 
+    // The deadline is echoed back verbatim; only `snoozedAt` is the host's own
+    // clock, and that one is reconciled by presence.
     const report = overlay.reconcile([
-      row({ id: "s1", snoozedUntil: "2026-07-26T10:00:03.000Z", snoozedAt: "2026-07-26T09:00:01.000Z" }),
+      row({ id: "s1", snoozedUntil: "2026-07-26T10:00:00.000Z", snoozedAt: "2026-07-26T09:00:01.000Z" }),
     ]);
 
     expect(report).toEqual({ reconciled: ["s1"], rolledBack: [] });
     expect(overlay.size).toBe(0);
+  });
+
+  it("does not let a re-snooze reconcile against the row's OLD deadline", () => {
+    const overlay = new SessionLifecycleOverlay();
+    // Row is already snoozed until 10:00; the user snoozes again, to 18:00.
+    overlay.begin("s1", {
+      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedAt: "2026-07-26T09:30:00.000Z",
+      wokeAt: null,
+      wokeReason: null,
+    });
+
+    const stale = row({
+      id: "s1",
+      snoozedUntil: "2026-07-26T10:00:00.000Z",
+      snoozedAt: "2026-07-26T09:00:00.000Z",
+    });
+    expect(overlay.reconcile([stale])).toEqual({ reconciled: [], rolledBack: [] });
+    expect(overlay.decorate(stale).snoozedUntil).toBe("2026-07-26T18:00:00.000Z");
+
+    const fresh = row({
+      id: "s1",
+      snoozedUntil: "2026-07-26T18:00:00.000Z",
+      snoozedAt: "2026-07-26T09:30:01.000Z",
+    });
+    expect(overlay.reconcile([fresh])).toEqual({ reconciled: ["s1"], rolledBack: [] });
+    expect(overlay.size).toBe(0);
+  });
+
+  it("treats an equivalently spelled deadline as agreement", () => {
+    const overlay = new SessionLifecycleOverlay();
+    overlay.begin("s1", { snoozedUntil: "2026-07-26T18:00:00+00:00" });
+
+    expect(overlay.reconcile([row({ id: "s1", snoozedUntil: "2026-07-26T18:00:00.000Z" })]))
+      .toEqual({ reconciled: ["s1"], rolledBack: [] });
   });
 
   it("keeps a patch pending while the host row still disagrees", () => {

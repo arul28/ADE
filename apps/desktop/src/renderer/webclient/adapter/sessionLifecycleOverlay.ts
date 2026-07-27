@@ -35,12 +35,27 @@ export type SessionLifecyclePatch = Partial<
 >;
 
 /**
- * Instant columns the HOST owns. We optimistically stamp our own clock into
+ * Instant columns the HOST stamps. We optimistically stamp our own clock into
  * them, which will never equal the machine's, so reconciliation compares
  * presence (set vs cleared) — the only part of a timestamp the write actually
  * intended.
  */
-const TIMESTAMP_KEYS = ["settledAt", "snoozedUntil", "snoozedAt", "wokeAt"] as const satisfies
+const HOST_STAMPED_KEYS = ["settledAt", "snoozedAt", "wokeAt"] as const satisfies
+  readonly (keyof SessionLifecyclePatch)[];
+
+/**
+ * Instants the CLIENT computes and sends, which the host echoes back verbatim
+ * (`session.snoozeSession` normalizes the deadline and writes exactly that), so
+ * these compare by value.
+ *
+ * Presence-matching a client-chosen deadline is wrong for the re-snooze case:
+ * snoozing an already-snoozed row leaves the OLD deadline present on the host
+ * row, so the very next list read would count that stale row as agreement, drop
+ * the patch, and flash the previous deadline back into the UI until the real
+ * changeset lands. Comparing the instant keeps the patch pending until the
+ * machine actually reports the new deadline.
+ */
+const CLIENT_INSTANT_KEYS = ["snoozedUntil"] as const satisfies
   readonly (keyof SessionLifecyclePatch)[];
 
 /** Enum columns the client fully determines, so these compare exactly. */
@@ -178,21 +193,42 @@ export class SessionLifecycleOverlay {
 /**
  * An authoritative row satisfies a patch when every field the patch wrote
  * already reads that way on the host row — presence for host-stamped instants,
- * exact value for the enums the client decides.
+ * exact value for the enums and the deadline the client decides.
  */
 export function patchSatisfiedBy(
   patch: SessionLifecyclePatch,
   row: TerminalSessionSummary,
 ): boolean {
-  for (const key of TIMESTAMP_KEYS) {
+  for (const key of HOST_STAMPED_KEYS) {
     if (!(key in patch)) continue;
     if ((normalizeNullish(patch[key]) != null) !== (normalizeNullish(row[key]) != null)) return false;
+  }
+  for (const key of CLIENT_INSTANT_KEYS) {
+    if (!(key in patch)) continue;
+    if (!sameInstant(patch[key], row[key])) return false;
   }
   for (const key of ENUM_KEYS) {
     if (!(key in patch)) continue;
     if (normalizeNullish(patch[key]) !== normalizeNullish(row[key])) return false;
   }
   return true;
+}
+
+/**
+ * Two ISO strings agree when they name the same instant. String equality is the
+ * common case (the host echoes the deadline we sent), but the host re-serializes
+ * it, so `+00:00` vs `Z` or a dropped `.000` must not read as disagreement — a
+ * false disagreement holds the patch until its grace window instead of retiring
+ * it on the first authoritative row.
+ */
+function sameInstant(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = normalizeNullish(left);
+  const b = normalizeNullish(right);
+  if (a === null || b === null) return a === b;
+  if (a === b) return true;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  return Number.isFinite(aMs) && Number.isFinite(bMs) && aMs === bMs;
 }
 
 function normalizeNullish<T>(value: T | null | undefined): T | null {

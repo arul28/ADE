@@ -1697,11 +1697,12 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
     await adapter.ade.sessions.list();
 
-    await adapter.ade.sessions.snoozeSession("session-1", new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    const hostUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await adapter.ade.sessions.snoozeSession("session-1", hostUntil);
 
-    // The machine stamps its OWN deadline. Reconciliation compares presence,
-    // not the value, so the host's instant must win as soon as it lands.
-    const hostUntil = new Date(Date.now() + 61 * 60 * 1000).toISOString();
+    // The machine echoes back the deadline we sent but stamps its OWN
+    // `snoozed_at`. That instant is reconciled by presence, so the host's row
+    // must win outright as soon as it lands.
     fake.commandResults.set("work.listSessions", [
       { id: "session-1", ptyId: "pty-1", snoozedUntil: hostUntil, snoozedAt: "2026-07-20T00:00:00.000Z" },
     ]);

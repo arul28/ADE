@@ -560,9 +560,10 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
 /**
  * The optimistic column writes, mirroring exactly what the host's
- * `sessionService` does for each command. Instants are stamped with the browser
- * clock and reconciled by PRESENCE, never by value — the machine's instant is
- * the real one.
+ * `sessionService` does for each command. Instants the HOST stamps are filled in
+ * with the browser clock and reconciled by PRESENCE, never by value — the
+ * machine's instant is the real one. The snooze deadline is the exception: the
+ * client computes it and the host echoes it back, so it reconciles by value.
  */
 
 /** Host: `settled_at = coalesce(settled_at, now)`, `settle_override = null`. */

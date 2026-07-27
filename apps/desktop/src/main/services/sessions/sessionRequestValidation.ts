@@ -17,7 +17,15 @@ import {
  * argument", so anything unvalidated here degrades into a success-shaped no-op.
  */
 
-const SNOOZE_EXAMPLE = "2026-07-26T18:00:00.000Z";
+/**
+ * A format hint, not a sample instant. A dated example goes stale the moment it
+ * passes, at which point copying it straight out of the error message trips the
+ * "already past" rejection below.
+ */
+const SNOOZE_FORMAT_HINT = "YYYY-MM-DDTHH:mm:ss.sssZ";
+
+/** Callers can be agents or `ade actions` JSON, so echo a bounded slice back. */
+const MAX_ECHOED_CHARS = 64;
 
 /**
  * A snooze deadline must be a parseable ISO-8601 timestamp *in the future*.
@@ -28,20 +36,30 @@ const SNOOZE_EXAMPLE = "2026-07-26T18:00:00.000Z";
 export function parseSnoozeDeadline(value: unknown, field = "'untilIso'"): string {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) {
-    throw new Error(`Expected ${field} to be an ISO-8601 timestamp (for example ${SNOOZE_EXAMPLE}).`);
+    throw new Error(
+      `Expected ${field} to be a future ISO-8601 timestamp in the format ${SNOOZE_FORMAT_HINT}.`,
+    );
   }
   const parsed = new Date(raw);
   const parsedMs = parsed.getTime();
   if (Number.isNaN(parsedMs)) {
-    throw new Error(`Expected ${field} to be an ISO-8601 timestamp; received '${raw}'.`);
+    throw new Error(
+      `Expected ${field} to be an ISO-8601 timestamp in the format ${SNOOZE_FORMAT_HINT}; `
+      + `received '${echoable(raw)}'.`,
+    );
   }
   if (parsedMs <= Date.now()) {
     throw new Error(
-      `Expected ${field} to be in the future; received '${raw}', which is already past. `
+      `Expected ${field} to be in the future; received '${echoable(raw)}', which is already past. `
       + "Snoozing to a past deadline would hide nothing.",
     );
   }
   return parsed.toISOString();
+}
+
+/** Keeps a rejected value readable in the message without pasting a whole blob into it. */
+function echoable(raw: string): string {
+  return raw.length > MAX_ECHOED_CHARS ? `${raw.slice(0, MAX_ECHOED_CHARS)}…` : raw;
 }
 
 /** Wake reasons are a closed union persisted on the row; anything else is a bug upstream. */
