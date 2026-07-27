@@ -3632,6 +3632,8 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var lastSyncedAt: String?
   var createdAt: String
   var updatedAt: String
+  /// GitHub merge timestamp. Optional because legacy hosts omit it.
+  var mergedAt: String? = nil
   /// "pr_target" or "lane_base". Optional because legacy hosts / non-lane PRs omit it.
   var creationStrategy: String? = nil
 }

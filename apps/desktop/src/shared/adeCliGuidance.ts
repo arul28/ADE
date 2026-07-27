@@ -16,9 +16,13 @@ export const adeBundledAgentSkills = [
 
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "Session status protocol (keeps the Work sidebar truthful):",
-  '- While working, keep a short status line current: `ade chat note "running e2e shard 2/4"` (a few words; update when the activity changes).',
-  '- At turn end, if you need ANY user input to proceed and did not use a structured ask tool, escalate: `ade chat ask "<the exact question>"`. Escalate only when genuinely blocked — not for FYIs or optional follow-ups.',
-  '- When the session\'s goal is fully complete and nothing is pending, declare it: `ade chat settle --outcome "<one-line outcome, e.g. \'opened PR #841, CI green\'>"`. New user activity automatically un-settles.',
+  '- Working: `ade chat note "running e2e shard 2/4"`; keep it current.',
+  '- Blocked on user input without a structured ask: `ade chat ask "<the exact question>"`.',
+  "- Settlement means the entire session is terminal, not just the current turn. Otherwise leave it in Your move.",
+  "- Settle only when ALL are true: the task is delivered and verified; no work, check, approval, question, subagent, job, schedule, goal, plan item, or follow-up remains; the final response is closed; the next reply would be new scope.",
+  "- Do NOT settle during discussion, planning, review, monitoring, or waiting. “let’s discuss”, “for now”, “don’t change yet”, open questions, and feedback invitations are non-terminal.",
+  '- Only then run `ade chat settle --outcome "<one-line delivered result>"`. The runtime rejects settlement while structured work remains. New user activity un-settles.',
+  "- If uncertain, do not settle; update `ade chat note` and leave it in Your move.",
 ].join("\n");
 
 /**

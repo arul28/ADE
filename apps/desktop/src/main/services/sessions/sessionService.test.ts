@@ -1321,6 +1321,20 @@ describe("sessionService resume metadata", () => {
     expect(service.get("session-settled")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
     expect(service.get("session-new")?.settledAt).not.toBeNull();
     expect(service.get("session-other")?.settledAt).toBeNull();
+
+    expect(service.settleSessionsWithOutcome(
+      ["session-settled", "session-other"],
+      "PR #841 merged",
+      "2026-03-17T03:00:00.000Z",
+    )).toEqual(["session-other"]);
+    expect(service.get("session-settled")).toEqual(expect.objectContaining({
+      settledAt: "2026-03-17T01:00:00.000Z",
+      statusNote: null,
+    }));
+    expect(service.get("session-other")).toEqual(expect.objectContaining({
+      settledAt: "2026-03-17T03:00:00.000Z",
+      statusNote: "PR #841 merged",
+    }));
   });
 
   it("normalizes status and attention text and clears turn-start markers", async () => {

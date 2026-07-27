@@ -495,6 +495,7 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
+      getSettlementBlockers: vi.fn(async () => []),
       createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt, recurring = true }: {
         sessionId: string;
         cron?: string;
@@ -1278,6 +1279,12 @@ describe("adeRpcServer", () => {
       const names = (listed.actions ?? []).map((tool: any) => tool.name);
       expect(names).not.toContain("get_cto_state");
       expect(names).not.toContain("getLinearSyncDashboard");
+      runtime.sessionService.get.mockReturnValue({
+        id: "chat-1",
+        toolType: "codex-chat",
+        attentionRequestedAt: null,
+        lastTurnFailedAt: null,
+      } as any);
 
       const lifecycleCalls = [
         {
@@ -1330,6 +1337,13 @@ describe("adeRpcServer", () => {
         "chat-2",
         "Cross-session write",
       );
+
+      const manualSettleDenied = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "settleSession",
+        args: { sessionId: "chat-1", outcome: "Bypass blockers" },
+      });
+      expect(manualSettleDenied.isError).toBe(true);
     });
   });
 

@@ -644,6 +644,47 @@ export function createSessionService({ db }: { db: AdeDb }) {
     return rows.map(mapRow) as TerminalSessionSummary[];
   };
 
+  const settleMany = (
+    sessionIds: string[],
+    options: { outcome?: string; settledAt?: string } = {},
+  ): string[] => {
+    const ids = normalizeSessionIds(sessionIds);
+    if (!ids.length) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    const newlySettled = db.all<{ id: string }>(
+      `
+        select id from terminal_sessions
+        where (settled_at is null or settle_override is not null)
+          and id in (${placeholders})
+      `,
+      ids,
+    ).map((row) => row.id);
+    if (!newlySettled.length) return [];
+    const updatePlaceholders = newlySettled.map(() => "?").join(", ");
+    const hasOutcome = Object.prototype.hasOwnProperty.call(options, "outcome");
+    db.run(
+      `
+        update terminal_sessions
+        set settled_at = coalesce(settled_at, ?),
+            settle_override = null,
+            ${hasOutcome ? "status_note = ?," : ""}
+            attention_requested_at = null,
+            attention_message = null
+        where (settled_at is null or settle_override is not null)
+          and id in (${updatePlaceholders})
+      `,
+      [
+        normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
+        ...(hasOutcome ? [normalizeOptionalText(options.outcome, 200)] : []),
+        ...newlySettled,
+      ],
+    );
+    for (const id of newlySettled) {
+      emitChanged({ sessionId: id, reason: "meta-updated" });
+    }
+    return newlySettled;
+  };
+
   return {
     list,
 
@@ -1434,40 +1475,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     settleSessions(sessionIds: string[]): string[] {
-      const ids = normalizeSessionIds(sessionIds);
-      if (!ids.length) return [];
-      const placeholders = ids.map(() => "?").join(", ");
-      // A row can carry BOTH a declared `settled_at` and an `active` pin (settle
-      // first, Keep-active after). `canonicalSessionState` consults the override
-      // first, so that row reads as NOT settled — filtering on `settled_at is
-      // null` alone skipped it and bulk settle became a silent no-op on exactly
-      // the rows the user could see needed settling. Match the single-row
-      // `settleSession`, which drops a stale pin unconditionally.
-      const newlySettled = db.all<{ id: string }>(
-        `
-          select id from terminal_sessions
-          where (settled_at is null or settle_override is not null)
-            and id in (${placeholders})
-        `,
-        ids,
-      ).map((row) => row.id);
-      if (!newlySettled.length) return [];
-      const updatePlaceholders = newlySettled.map(() => "?").join(", ");
-      db.run(
-        `
-          update terminal_sessions
-          set settled_at = coalesce(settled_at, ?),
-              settle_override = null,
-              attention_requested_at = null,
-              attention_message = null
-          where id in (${updatePlaceholders})
-        `,
-        [new Date().toISOString(), ...newlySettled],
-      );
-      for (const id of newlySettled) {
-        emitChanged({ sessionId: id, reason: "meta-updated" });
-      }
-      return newlySettled;
+      return settleMany(sessionIds);
+    },
+
+    settleSessionsWithOutcome(
+      sessionIds: string[],
+      outcome: string,
+      settledAt: string = new Date().toISOString(),
+    ): string[] {
+      return settleMany(sessionIds, { outcome, settledAt });
     },
 
     unsettleSessions(sessionIds: string[]): void {

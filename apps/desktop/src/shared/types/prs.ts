@@ -78,6 +78,8 @@ export type PrSummary = {
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** GitHub merge timestamp. Null for open/closed-unmerged PRs and older rows. */
+  mergedAt?: string | null;
   /** "pr_target" (default): PR tracks upstream base; "lane_base": PR carries immutable lane base. */
   creationStrategy?: PrCreationStrategy | null;
 };
@@ -258,6 +260,16 @@ export type PrEventPayload =
       type: "prs-updated";
       polledAt: string;
       prs: PrSummary[];
+    }
+  | {
+      type: "pr-sessions-auto-settled";
+      timestamp: string;
+      laneId: string;
+      prId: string;
+      prNumber: number;
+      githubUrl: string;
+      settledSessionIds: string[];
+      settledCount: number;
     }
   | {
       type: "pr-notification";

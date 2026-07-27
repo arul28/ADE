@@ -411,7 +411,8 @@ ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
 ade chat note "running e2e shard 2/4"                       # update the caller's Work sidebar status; add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
-ade chat settle --outcome "opened PR #841, CI green"       # mark the caller settled; add --session <id> to target explicitly
+ade chat settle --outcome "opened PR #841, CI green"       # settle only when runtime lifecycle checks pass; exits 1 with exact blockers otherwise
+ade chat unsettle                                           # return the caller to the active lifecycle; add --session <id> to target explicitly
 ade session show session-id --text                          # settle/snooze state, and why a snoozed row came back
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d
 ade session snooze session-id --until 2026-07-26T18:00:00Z  # explicit ISO-8601 deadline (must be in the future)

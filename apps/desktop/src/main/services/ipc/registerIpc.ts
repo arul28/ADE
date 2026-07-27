@@ -41,6 +41,10 @@ import {
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
+  getSessionLifecycleSettings,
+  setSessionLifecycleSettings,
+} from "../sessions/sessionLifecycleSettings";
+import {
   getSessionWithChatProjection,
   listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
@@ -464,6 +468,7 @@ import type {
   CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  SessionLifecycleSettings,
   SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
@@ -6525,6 +6530,15 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.sessionsLifecycleSettingsGet,
+    (): SessionLifecycleSettings => {
+      const ctx = getCtx();
+      const db = requireAppContextValue(ctx, "db");
+      return getSessionLifecycleSettings(db);
+    },
+  );
+
+  ipcMain.handle(
     IPC.sessionsWake,
     async (_event, arg: { sessionId?: unknown; reason?: unknown }): Promise<boolean> => {
       const ctx = ensureSessionContext();
@@ -6579,6 +6593,27 @@ export function registerIpc({
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
       return ctx.sessionService.clearWokeMarker(sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsLifecycleSettingsUpdate,
+    (_event, settings: unknown): SessionLifecycleSettings => {
+      if (
+        !settings
+        || typeof settings !== "object"
+        || Array.isArray(settings)
+        || typeof (settings as Partial<SessionLifecycleSettings>).autoSettleLaneSessionsOnPrMerge !== "boolean"
+      ) {
+        throw new Error("A boolean autoSettleLaneSessionsOnPrMerge setting is required.");
+      }
+      const ctx = getCtx();
+      const db = requireAppContextValue(ctx, "db");
+      return setSessionLifecycleSettings({
+        db,
+        settings: settings as SessionLifecycleSettings,
+        currentPrs: ctx.prService?.listAll() ?? [],
+      });
     },
   );
 

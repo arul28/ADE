@@ -454,6 +454,7 @@ create table if not exists pull_requests (
       last_synced_at text,
       created_at text not null,
       updated_at text not null,
+      merged_at text,
       foreign key(project_id) references projects(id),
       foreign key(lane_id) references lanes(id)
     );
@@ -467,6 +468,7 @@ alter table pull_requests add column last_polled_at text;
 alter table pull_requests add column head_sha text;
 
 alter table pull_requests add column creation_strategy text;
+alter table pull_requests add column merged_at text;
 
 drop table if exists github_pr_cache;
 

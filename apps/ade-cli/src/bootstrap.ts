@@ -58,6 +58,7 @@ import { createAgentChatService } from "../../desktop/src/main/services/chat/age
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
+import { createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -143,7 +144,8 @@ import {
   ADE_ACTION_ALLOWLIST,
   type AdeActionDomain,
   getAdeActionDomainServices,
-  isAllowedAdeAction,
+  isAutomationAllowedAdeAction,
+  isCtoOnlyAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
@@ -1328,6 +1330,14 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     aiIntegrationService,
   });
+  const prMergeAutoSettlementService = agentChatService
+    ? createPrMergeAutoSettlementService({
+        db,
+        sessionService,
+        agentChatService,
+        emitEvent: emitPrEvent,
+      })
+    : null;
 
   // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
   // this daemon instead of the desktop main process, so the daemon must own
@@ -1339,6 +1349,8 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     db,
     onEvent: emitPrEvent,
+    onPullRequestsSnapshot: (snapshot) =>
+      prMergeAutoSettlementService?.processSnapshot(snapshot),
     onPullRequestsChanged: async ({ changedPrs, changes }) => {
       if (changedPrs.length > 0) {
         headlessLinearServices.prService.markHotRefresh(changedPrs.map((pr) => pr.id));
@@ -1812,7 +1824,7 @@ export async function createAdeRuntime(args: {
 
   const adeActionLookup: AutomationAdeActionRegistry = {
     isAllowed(domain: string, action: string): boolean {
-      return isAllowedAdeAction(domain as AdeActionDomain, action);
+      return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
     },
     getService(domain: string): Record<string, unknown> | null {
       const services = getAdeActionDomainServices(runtime);
@@ -1822,7 +1834,8 @@ export async function createAdeRuntime(args: {
       return Object.keys(ADE_ACTION_ALLOWLIST);
     },
     listActions(domain: string): string[] {
-      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])];
+      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+        .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
     },
   };
   automationService?.bindAdeActionRegistry(adeActionLookup);

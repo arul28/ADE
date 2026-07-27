@@ -492,6 +492,7 @@ import type {
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
   SessionDeltaSummary,
+  SessionLifecycleSettings,
   SessionLinearIssueLink,
   SessionSettleOverride,
   SessionWakeReason,
@@ -1423,9 +1424,9 @@ declare global {
           opts?: { outcome?: string; dismissPendingInput?: boolean },
         ) => Promise<void>;
         unsettle: (sessionId: string) => Promise<void>;
-        settleMany: (sessionIds: string[]) => Promise<string[]>;
-        unsettleMany: (sessionIds: string[]) => Promise<void>;
-        snoozeSession: (
+         settleMany: (sessionIds: string[]) => Promise<string[]>;
+         unsettleMany: (sessionIds: string[]) => Promise<void>;
+         snoozeSession: (
           sessionId: string,
           untilIso: string,
         ) => Promise<boolean>;
@@ -1444,9 +1445,13 @@ declare global {
         setSettleOverride: (
           sessionId: string,
           override: SessionSettleOverride | null,
-        ) => Promise<boolean>;
-        clearWokeMarker: (sessionId: string) => Promise<boolean>;
-        readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
+         ) => Promise<boolean>;
+         clearWokeMarker: (sessionId: string) => Promise<boolean>;
+         getLifecycleSettings: () => Promise<SessionLifecycleSettings>;
+         updateLifecycleSettings: (
+           settings: SessionLifecycleSettings,
+         ) => Promise<SessionLifecycleSettings>;
+         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,

@@ -214,6 +214,8 @@ export const IPC = {
   sessionsWakeMany: "ade.sessions.wakeMany",
   sessionsSetSettleOverride: "ade.sessions.setSettleOverride",
   sessionsClearWokeMarker: "ade.sessions.clearWokeMarker",
+  sessionsLifecycleSettingsGet: "ade.sessions.lifecycleSettings.get",
+  sessionsLifecycleSettingsUpdate: "ade.sessions.lifecycleSettings.update",
   sessionsChanged: "ade.sessions.changed",
   sessionsReadTranscriptTail: "ade.sessions.readTranscriptTail",
   agentChatList: "ade.agentChat.list",

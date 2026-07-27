@@ -25,6 +25,7 @@ import type {
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
+import type { AgentSessionSettlementResult } from "../../../shared/types/sessions";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import type {
   AgentChatFileSearchArgs,
@@ -96,6 +97,10 @@ import {
   parseWakeReason,
 } from "../sessions/sessionRequestValidation";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
+import {
+  getSessionLifecycleSettings,
+  setSessionLifecycleSettings,
+} from "../sessions/sessionLifecycleSettings";
 import {
   getSessionWithChatProjection,
   listSessionsWithChatProjection,
@@ -202,6 +207,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   storage: ["cleanup", "runMaintenanceNow"],
   search: ["rebuildIndex"],
   project_secret: ["exportEnv"],
+  session: ["settleSession", "settleSessions", "unsettleSessions", "updateLifecycleSettings"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -633,15 +639,18 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteSession",
     "get",
     "getDelta",
+    "getLifecycleSettings",
     "list",
     "readTranscriptTail",
     "requestSessionAttention",
     "setSessionStatusNote",
     "setSettleOverride",
-    "settleSelfSession",
-    "settleSessions",
     "snoozeSession",
     "snoozeSessions",
+    "settleSession",
+    "settleSelfSession",
+    "settleSessions",
+    "updateLifecycleSettings",
     "unsettleSelfSession",
     "unsettleSessions",
     "updateMeta",
@@ -1680,6 +1689,20 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = readStringActionArg(arg, "sessionId");
       return getSessionWithChatProjection(runtime, sessionId);
     },
+    getLifecycleSettings: () => getSessionLifecycleSettings(runtime.db),
+    updateLifecycleSettings: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.updateLifecycleSettings");
+      if (typeof record.autoSettleLaneSessionsOnPrMerge !== "boolean") {
+        throw new Error("autoSettleLaneSessionsOnPrMerge must be a boolean.");
+      }
+      return setSessionLifecycleSettings({
+        db: runtime.db,
+        settings: {
+          autoSettleLaneSessionsOnPrMerge: record.autoSettleLaneSessionsOnPrMerge,
+        },
+        currentPrs: runtime.prService?.listAll() ?? [],
+      });
+    },
     requestSessionAttention: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.requestSessionAttention");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
@@ -1722,6 +1745,43 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     settleSelfSession: async (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSelfSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const outcome = typeof record.outcome === "string" ? record.outcome.trim() : "";
+      if (!outcome) {
+        throw new Error("Agent settlement requires a concrete non-empty outcome.");
+      }
+      const session = sessionService.get(sessionId);
+      if (!session) throw new Error(`Session '${sessionId}' was not found.`);
+      const blockers = runtime.agentChatService
+        ? await runtime.agentChatService.getSettlementBlockers(sessionId)
+        : [
+            ...(session.attentionRequestedAt || session.runtimeState === "waiting-input"
+              ? [{ code: "pending_input", message: "Resolve the pending input before settling." } as const]
+              : []),
+            ...(session.lastTurnFailedAt
+              ? [{ code: "turn_failed", message: "The latest turn failed; complete or recover it before settling." } as const]
+              : []),
+          ];
+      if (blockers.length > 0) {
+        return {
+          ok: false,
+          sessionId,
+          blockers,
+        } satisfies AgentSessionSettlementResult;
+      }
+      if (!await settleTerminalSession({
+        sessionId,
+        opts: { outcome },
+        sessionService,
+        agentChatService: runtime.agentChatService,
+        ptyService: runtime.ptyService,
+      })) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId } satisfies AgentSessionSettlementResult;
+    },
+    settleSession: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.settleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const outcome = typeof record.outcome === "string" && record.outcome.trim()
         ? record.outcome
@@ -3595,4 +3655,11 @@ export function listAllowedAdeActionNames(
 
 export function isAllowedAdeAction(domain: AdeActionDomain, action: string): boolean {
   return (ADE_ACTION_ALLOWLIST[domain] ?? []).includes(action);
+}
+
+export function isAutomationAllowedAdeAction(
+  domain: AdeActionDomain,
+  action: string,
+): boolean {
+  return isAllowedAdeAction(domain, action) && !isCtoOnlyAdeAction(domain, action);
 }

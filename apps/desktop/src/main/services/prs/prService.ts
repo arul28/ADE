@@ -210,6 +210,7 @@ type PullRequestRow = {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  merged_at: string | null;
   creation_strategy: string | null;
 };
 
@@ -1034,6 +1035,7 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     lastSyncedAt: row.last_synced_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    mergedAt: row.merged_at,
     creationStrategy
   };
 }
@@ -1411,7 +1413,7 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by, head_sha`;
+    created_at, updated_at, merged_at, creation_strategy, merge_conflicts, behind_base_by, head_sha`;
   const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
     github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
     head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
@@ -2389,6 +2391,7 @@ export function createPrService({
     const mergeConflictsValue = normalizeMergeConflictsValue(summary.mergeConflicts);
     const hasBehindBaseBy = Object.prototype.hasOwnProperty.call(summary, "behindBaseBy");
     const behindBaseByValue = normalizeBehindBaseBy(summary.behindBaseBy);
+    const hasMergedAt = Object.prototype.hasOwnProperty.call(summary, "mergedAt");
     // By default we only adopt an existing row that is already associated with
     // this lane. Callers like `linkToLane`/`refreshOne` must not silently
     // reassign an existing PR row from another lane just because the repo/PR
@@ -2427,6 +2430,7 @@ export function createPrService({
                  last_synced_at = ?,
                  created_at = ?,
                  updated_at = ?,
+                 merged_at = case when ? then ? else merged_at end,
                  creation_strategy = coalesce(?, creation_strategy),
                  merge_conflicts = case when ? then ? else merge_conflicts end,
                  behind_base_by = case when ? then ? else behind_base_by end
@@ -2450,6 +2454,8 @@ export function createPrService({
           summary.lastSyncedAt,
           summary.createdAt ?? existing.created_at,
           summary.updatedAt ?? now,
+          hasMergedAt ? 1 : 0,
+          summary.mergedAt ?? null,
           summary.creationStrategy ?? null,
           hasMergeConflicts ? 1 : 0,
           mergeConflictsValue,
@@ -2484,10 +2490,11 @@ export function createPrService({
           last_synced_at,
           created_at,
           updated_at,
+          merged_at,
           creation_strategy,
           merge_conflicts,
           behind_base_by
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         summary.id,
@@ -2509,6 +2516,7 @@ export function createPrService({
         summary.lastSyncedAt,
         summary.createdAt ?? now,
         summary.updatedAt ?? now,
+        summary.mergedAt ?? null,
         summary.creationStrategy ?? null,
         mergeConflictsValue,
         behindBaseByValue
@@ -2908,6 +2916,7 @@ export function createPrService({
         lastSyncedAt: nowIso(),
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
+        mergedAt: asString(rawPr?.merged_at) || null,
         creationStrategy: "pr_target",
       };
       const prId = upsertRow(summary, { allowRepoPrAdoption: true });
@@ -4629,6 +4638,7 @@ export function createPrService({
       lastSyncedAt: nowIso(),
       createdAt: asString(pr?.created_at).trim() || row.created_at,
       updatedAt: asString(pr?.updated_at) || row.updated_at || nowIso(),
+      mergedAt: asString(pr?.merged_at) || null,
       creationStrategy: normalizePrCreationStrategy(row.creation_strategy)
     };
     if (compare.behindBy != null) {
@@ -4904,7 +4914,8 @@ export function createPrService({
       mergeConflicts: mergeConflictsRaw,
       behindBaseBy: status.behindBaseBy,
       lastSyncedAt: nowIso(),
-      updatedAt: nowIso()
+      updatedAt: nowIso(),
+      mergedAt: asString(pr?.merged_at) || null,
     };
     upsertRow(refreshed);
 
@@ -5805,6 +5816,7 @@ export function createPrService({
       lastSyncedAt: null,
       createdAt,
       updatedAt: createdAt,
+      mergedAt: asString(pr?.merged_at) || null,
       creationStrategy: strategy
     };
 
@@ -5938,6 +5950,7 @@ export function createPrService({
       lastSyncedAt: null,
       createdAt,
       updatedAt: linkedAt,
+      mergedAt: asString(pr?.merged_at) || null,
       creationStrategy
     };
 

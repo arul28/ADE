@@ -2408,6 +2408,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table pull_requests add column creation_strategy text");
   safeAddColumn(db, "alter table pull_requests add column merge_conflicts integer");
   safeAddColumn(db, "alter table pull_requests add column behind_base_by integer");
+  safeAddColumn(db, "alter table pull_requests add column merged_at text");
 
   db.run("drop table if exists github_pr_cache");
 

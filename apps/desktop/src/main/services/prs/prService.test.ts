@@ -124,6 +124,7 @@ function makePrRow(overrides?: Partial<Record<string, unknown>>) {
     last_synced_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
+    merged_at: null,
     creation_strategy: "pr_target",
     ...overrides,
   };
@@ -433,9 +434,10 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
       last_synced_at: params[16],
       created_at: params[17],
       updated_at: params[18],
-      creation_strategy: params[19] ?? null,
-      merge_conflicts: params[20] ?? null,
-      behind_base_by: params[21] ?? null,
+      merged_at: params[19] ?? null,
+      creation_strategy: params[20] ?? null,
+      merge_conflicts: params[21] ?? null,
+      behind_base_by: params[22] ?? null,
     });
     return undefined;
   });
@@ -496,6 +498,26 @@ describe("prService.getForLane", () => {
     });
     return buildService({ db, laneService: makeLaneService(lanes) }).service;
   }
+
+  it("selects and projects the persisted merge timestamp in list snapshots", () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (!String(sql).includes("from pull_requests")) return [];
+      expect(String(sql)).toContain("merged_at");
+      return [makePrRow({
+        state: "merged",
+        merged_at: "2026-07-15T00:00:00Z",
+      })];
+    });
+    const { service } = buildService({ db });
+
+    expect(service.listAll()).toEqual([
+      expect.objectContaining({
+        state: "merged",
+        mergedAt: "2026-07-15T00:00:00Z",
+      }),
+    ]);
+  });
 
   it("does not surface a PR for primary when primary is on its base branch", () => {
     const lane = makeFakeLane({
