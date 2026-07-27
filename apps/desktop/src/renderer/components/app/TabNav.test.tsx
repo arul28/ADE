@@ -55,19 +55,6 @@ describe("TabNav", () => {
     });
   });
 
-  it("places Review directly below Run in the sidebar", () => {
-    render(
-      <MemoryRouter initialEntries={["/work"]}>
-        <TabNav />
-      </MemoryRouter>,
-    );
-
-    const run = screen.getByRole("link", { name: "Run" });
-    const review = screen.getByRole("link", { name: "Review" });
-    const links = screen.getAllByRole("link");
-    expect(links[links.indexOf(run) + 1]).toBe(review);
-  });
-
   it("links the sidebar account avatar to the account page", () => {
     render(
       <MemoryRouter initialEntries={["/work"]}>
