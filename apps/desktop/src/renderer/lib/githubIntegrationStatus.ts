@@ -186,6 +186,10 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       action: "Connect GitHub",
     };
   }
+  const authFailure = describeGithubAuthFailure(status);
+  if (authFailure) {
+    return authFailure;
+  }
   if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
     const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
     return {
@@ -201,4 +205,71 @@ export function describeGithubCliBanner(status: GitHubStatus): {
     detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
     action: "Fix GitHub auth",
   };
+}
+
+export function describeGithubAuthFailure(status: GitHubStatus): {
+  subState: string;
+  statusLabel: string;
+  title: string;
+  detail: string;
+  settingsDetail: string;
+  action: string;
+} | null {
+  if (status.authFailure?.kind === "rate_limited") {
+    const retryAt = formatGithubRetryAt(status.authFailure.retryAt);
+    return {
+      subState: `rate-limited:${status.authFailure.retryAt ?? "unknown"}`,
+      statusLabel: "Rate limited",
+      title: "GitHub API rate limit reached",
+      detail: retryAt
+        ? `ADE is signed in, but GitHub paused API requests until ${retryAt}. No authentication command is needed.`
+        : "ADE is signed in, but GitHub temporarily paused API requests. No authentication command is needed.",
+      settingsDetail: retryAt
+        ? `ADE is signed in, but GitHub paused API requests until ${retryAt}. No authentication command is needed.`
+        : "ADE is signed in, but GitHub temporarily paused API requests. No authentication command is needed.",
+      action: "View GitHub status",
+    };
+  }
+  if (status.authFailure?.kind === "invalid_token") {
+    return {
+      subState: "invalid-token",
+      statusLabel: "Reconnect",
+      title: "GitHub authentication was rejected",
+      detail: "The saved GitHub credential is no longer valid. Reconnect GitHub to replace it.",
+      settingsDetail: status.authFailure.message,
+      action: "Reconnect GitHub",
+    };
+  }
+  if (status.authFailure?.kind === "network") {
+    return {
+      subState: "network",
+      statusLabel: "Check failed",
+      title: "GitHub status is unavailable",
+      detail: "ADE found your credential but could not reach GitHub to verify it. Check the connection and retry.",
+      settingsDetail: status.authFailure.message,
+      action: "View GitHub status",
+    };
+  }
+  if (status.authFailure) {
+    return {
+      subState: "validation-failed",
+      statusLabel: "Check failed",
+      title: "GitHub authentication check failed",
+      detail: "ADE found your credential, but GitHub did not complete the validation request. Open Settings for the exact error.",
+      settingsDetail: status.authFailure.message,
+      action: "View GitHub status",
+    };
+  }
+  return null;
+}
+
+function formatGithubRetryAt(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return parsed.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }

@@ -18,6 +18,12 @@ function jitterMs(value: number): number {
   return Math.max(1000, Math.round(value + rand));
 }
 
+function readRateLimitResetAtMs(error: unknown): number | null {
+  if (!(error instanceof Error) || !("rateLimitResetAtMs" in error)) return null;
+  const value = error.rateLimitResetAtMs;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
     case "opened":
@@ -164,6 +170,7 @@ export function createPrPollingService({
   let rateLimitResumeAtMs = 0;
   let lastPrFingerprint = "";
   const lastFingerprintByPrId = new Map<string, string>();
+  const pendingTargetedPrIds = new Set<string>();
 
   const lastByPrId = new Map<
     string,
@@ -187,14 +194,22 @@ export function createPrPollingService({
     return clampMs(base * Math.pow(2, factor), base, MAX_INTERVAL_MS);
   };
 
-  const poke = () => {
-    if (stopped) return;
-    if (running) return;
-    if (rateLimitResumeAtMs > Date.now()) return;
-    if (!started) {
-      start();
-    }
+  const scheduleImmediatePoll = () => {
+    if (stopped || running || rateLimitResumeAtMs > Date.now()) return;
+    if (!started) start();
     schedule(0);
+  };
+
+  const poke = () => {
+    scheduleImmediatePoll();
+  };
+
+  const reconcilePrs = (prIds: string[]) => {
+    for (const prId of prIds) {
+      const normalized = String(prId ?? "").trim();
+      if (normalized) pendingTargetedPrIds.add(normalized);
+    }
+    scheduleImmediatePoll();
   };
 
   const tick = async () => {
@@ -207,6 +222,8 @@ export function createPrPollingService({
 
     const polledAt = nowIso();
     try {
+      const targetedPrIds = Array.from(pendingTargetedPrIds);
+      pendingTargetedPrIds.clear();
       let existing = prService.listAll();
       if (existing.length === 0) {
         // Discovery force-refreshes the whole repo snapshot, which is far
@@ -237,7 +254,9 @@ export function createPrPollingService({
       }
 
       const hotPrIds = prService.getHotRefreshPrIds();
-      if (hotPrIds.length > 0) {
+      if (targetedPrIds.length > 0) {
+        await prService.refresh({ prIds: targetedPrIds });
+      } else if (hotPrIds.length > 0) {
         await prService.refresh({ prIds: hotPrIds });
       } else {
         await prService.refresh();
@@ -385,8 +404,8 @@ export function createPrPollingService({
       consecutiveFailures += 1;
       logger.warn("prs.poll_failed", { error: error instanceof Error ? error.message : String(error) });
 
-      const resetAtMs = (error as any)?.rateLimitResetAtMs;
-      if (typeof resetAtMs === "number" && Number.isFinite(resetAtMs)) {
+      const resetAtMs = readRateLimitResetAtMs(error);
+      if (resetAtMs != null) {
         // Wait until the rate limit actually resets (+ buffer). Don't clamp to MAX_INTERVAL_MS
         // because rate limits can take up to 60 minutes to reset.
         const untilReset = Math.max(10_000, resetAtMs - Date.now() + 5_000);
@@ -395,14 +414,18 @@ export function createPrPollingService({
       }
     } finally {
       running = false;
-      const hotDelay = prService.getHotRefreshDelayMs();
-      const base = hotDelay ?? computeBackoffMs();
-      const delay = jitterMs(Math.max(base, nextDelayOverrideMs ?? 0));
-      nextDelayOverrideMs = null;
-      if (rateLimitResumeAtMs > 0 && Date.now() >= rateLimitResumeAtMs) {
-        rateLimitResumeAtMs = 0;
+      if (pendingTargetedPrIds.size > 0 && rateLimitResumeAtMs <= Date.now()) {
+        schedule(0);
+      } else {
+        const hotDelay = prService.getHotRefreshDelayMs();
+        const base = hotDelay ?? computeBackoffMs();
+        const delay = jitterMs(Math.max(base, nextDelayOverrideMs ?? 0));
+        nextDelayOverrideMs = null;
+        if (rateLimitResumeAtMs > 0 && Date.now() >= rateLimitResumeAtMs) {
+          rateLimitResumeAtMs = 0;
+        }
+        schedule(delay);
       }
-      schedule(delay);
     }
   };
 
@@ -417,6 +440,7 @@ export function createPrPollingService({
   return {
     start,
     poke,
+    reconcilePrs,
     getLastPolledAt,
     dispose() {
       stopped = true;

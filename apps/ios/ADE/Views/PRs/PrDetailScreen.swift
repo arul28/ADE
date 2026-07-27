@@ -649,8 +649,8 @@ struct PrDetailView: View {
       // network calls) and only refreshes the cheap local projection. Once the
       // window lapses, the next projection bump re-fetches the sidecars too.
       // That is what keeps review threads / activity / checks runs live while
-      // the screen is open: GitHub webhooks land on the host, the host's hot
-      // poll rewrites the replicated snapshot rows, the changeset pump bumps
+      // the screen is open: GitHub webhooks land on the host, the host performs
+      // one targeted reconciliation for the linked PRs, the changeset pump bumps
       // `prsProjectionRevision` here, and this gate turns that into a throttled
       // sidecar refresh instead of a one-shot load.
       let needLiveSidecars = shouldFetchPrDetailLiveSidecars(

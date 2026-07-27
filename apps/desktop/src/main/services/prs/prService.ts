@@ -2025,10 +2025,17 @@ export function createPrService({
     options: { invalidateGithubSnapshot?: boolean } = {},
   ): void => {
     const nowMs = Date.now();
+    pruneExpiredHotRefreshes(nowMs);
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return;
     for (const prId of uniquePrIds) {
-      hotRefreshStartedAtByPrId.set(prId, nowMs);
+      // A poll result can itself report the PR as changed. Treating that as a
+      // brand-new hot window re-armed the 5-second loop indefinitely while CI
+      // was active and could exhaust the user's shared GitHub REST quota.
+      // Keep the original start time so every hot period is strictly bounded.
+      if (!hotRefreshStartedAtByPrId.has(prId)) {
+        hotRefreshStartedAtByPrId.set(prId, nowMs);
+      }
     }
     if (options.invalidateGithubSnapshot !== false) {
       invalidateGithubSnapshotCache();
@@ -8628,15 +8635,14 @@ export function createPrService({
     });
   };
 
-  const markWebhookRelatedPrsHot = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
+  const findWebhookRelatedPrIds = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
     const linkedPrIds: string[] = [];
     for (const ref of refs) {
       const row = getRowForRepoPr(ref.repoOwner, ref.repoName, ref.githubPrNumber);
       if (row) linkedPrIds.push(row.id);
     }
     const unique = [...new Set(linkedPrIds)];
-    if (unique.length > 0) markHotRefresh(unique);
-    else invalidateGithubSnapshotCache();
+    if (unique.length === 0) invalidateGithubSnapshotCache();
     return unique;
   };
 
@@ -8839,7 +8845,6 @@ export function createPrService({
           if (adoptedRow) linkedPrIds.push(adoptedRow.id);
         }
         linkedPrIds = [...new Set(linkedPrIds)];
-        if (linkedPrIds.length > 0) markHotRefresh(linkedPrIds, { invalidateGithubSnapshot: false });
         invalidateGithubSnapshotCache();
         emitPrsUpdated();
         db.run(
@@ -8878,7 +8883,7 @@ export function createPrService({
       }
 
       const refs = webhookPrRefsFromPayload(eventName, payload);
-      linkedPrIds = markWebhookRelatedPrsHot(refs);
+      linkedPrIds = findWebhookRelatedPrIds(refs);
       if (linkedPrIds.length > 0) emitPrsUpdated();
       const firstRef = refs[0] ?? null;
       const processed = refs.length > 0;

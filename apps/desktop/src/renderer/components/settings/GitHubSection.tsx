@@ -18,6 +18,7 @@ import {
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
+import { describeGithubAuthFailure } from "../../lib/githubIntegrationStatus";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -180,15 +181,20 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
   const isConnected = Boolean(githubStatus?.connected);
   const isFineGrainedToken = githubStatus?.tokenType === "fine-grained";
+  const authFailure = githubStatus?.authFailure ?? null;
+  const authFailurePresentation = githubStatus ? describeGithubAuthFailure(githubStatus) : null;
   const hasInspectableScopes = !isFineGrainedToken || (githubStatus?.scopes?.length ?? 0) > 0;
   const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
   const repoProbeFailed = tokenAuthenticated && githubStatus?.repoAccessOk === false;
-  const hasMissingScopes = tokenAuthenticated && hasInspectableScopes && !accessState.hasRequiredAccess;
+  const hasMissingScopes = !authFailure && tokenAuthenticated && hasInspectableScopes && !accessState.hasRequiredAccess;
   let statusColor: string;
   let statusLabel: string;
   if (isConnected) {
     statusColor = COLORS.success;
     statusLabel = "Connected";
+  } else if (authFailurePresentation) {
+    statusColor = COLORS.warning;
+    statusLabel = authFailurePresentation.statusLabel;
   } else if (tokenAuthenticated) {
     statusColor = COLORS.warning;
     statusLabel = "Needs permission";
@@ -196,9 +202,25 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     statusColor = COLORS.textMuted;
     statusLabel = "Not connected";
   }
+  const ghAuthAlreadyConfigured =
+    githubStatus?.tokenStored === true
+    && githubStatus.authSource === "gh"
+    && authFailure?.kind !== "invalid_token";
   const ghCommand = transcriptGistsEnabled
-    ? tokenAuthenticated && githubStatus?.authSource === "gh" ? GH_AUTH_REFRESH_WITH_GIST_COMMAND : GH_AUTH_LOGIN_WITH_GIST_COMMAND
-    : tokenAuthenticated && githubStatus?.authSource === "gh" ? GH_AUTH_REFRESH_COMMAND : GH_AUTH_LOGIN_COMMAND;
+    ? ghAuthAlreadyConfigured ? GH_AUTH_REFRESH_WITH_GIST_COMMAND : GH_AUTH_LOGIN_WITH_GIST_COMMAND
+    : ghAuthAlreadyConfigured ? GH_AUTH_REFRESH_COMMAND : GH_AUTH_LOGIN_COMMAND;
+  const shouldShowGhAuthInstructions =
+    githubStatus != null
+    && !isConnected
+    && githubStatus.authSource !== "pat"
+    && (
+      !githubStatus.tokenStored
+      || authFailure?.kind === "invalid_token"
+      || hasMissingScopes
+    );
+  const rateLimitLabel = githubStatus?.rateLimit
+    ? `${githubStatus.rateLimit.remaining ?? "?"} / ${githubStatus.rateLimit.limit ?? "?"} remaining`
+    : null;
   const classicTokenUrl = transcriptGistsEnabled ? GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL : GITHUB_CLASSIC_TOKEN_NEW_URL;
   const openExternal = (url: string) => {
     void window.ade.app.openExternal(url);
@@ -343,13 +365,26 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             {summaryCell("REPOSITORY", githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
             {summaryCell("AUTH METHOD", authSourceLabel(githubStatus))}
             {summaryCell("TOKEN TYPE", tokenTypeLabel(githubStatus))}
+            {githubStatus?.rateLimit ? summaryCell("API QUOTA", rateLimitLabel) : null}
           </div>
 
           <div>
             <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
-              {isFineGrainedToken && !hasInspectableScopes ? "TOKEN PERMISSIONS" : "DETECTED SCOPES"}
+              {authFailure ? "AUTHENTICATION CHECK" : isFineGrainedToken && !hasInspectableScopes ? "TOKEN PERMISSIONS" : "DETECTED SCOPES"}
             </div>
-            {isFineGrainedToken && !hasInspectableScopes ? (
+            {authFailure ? (
+              <div style={{
+                ...infoBoxStyle,
+                borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                color: COLORS.textPrimary,
+              }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                  {authFailurePresentation?.title}
+                </div>
+                <div>{authFailurePresentation?.settingsDetail}</div>
+              </div>
+            ) : isFineGrainedToken && !hasInspectableScopes ? (
               <div style={{ display: "grid", gap: 6 }}>
                 {REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS.map((permission) => (
                   <div key={permission} style={{ ...scopeRowStyle(false), color: COLORS.textSecondary }}>
@@ -416,7 +451,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             </div>
           ) : null}
 
-          {githubStatus && !isConnected && githubStatus.authSource !== "pat" ? (
+          {shouldShowGhAuthInstructions ? (
             <div style={{
               padding: 14,
               border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",

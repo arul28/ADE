@@ -45,10 +45,10 @@ type AutomationIngressServiceArgs = {
   automationService: ReturnType<typeof createAutomationService> | null;
   prService?: ReturnType<typeof createPrService> | null;
   /**
-   * Fired when a polled webhook event changed PR state — wired to the PR
-   * poller's poke() so freshness rides the webhook, not the next poll tick.
+   * Fired when a webhook event changed PR state — wired to the PR poller's
+   * targeted reconciliation so freshness rides the webhook, not the next tick.
    */
-  onPrStateIngested?: () => void;
+  onPrStateIngested?: (prIds: string[]) => void;
   secretService: AutomationSecretService;
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
@@ -407,7 +407,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     // poller's next scheduled tick — throwing away the webhook's speed
     // advantage. Notify the poller so it re-reads and emits `prs-updated` now.
     if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
-      args.onPrStateIngested?.();
+      args.onPrStateIngested?.(ingested.linkedPrIds);
     }
 
     if (!args.automationService) return null;
@@ -738,6 +738,20 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       disableRelaySubscription();
       return;
     }
+    const committedIngestedPrIds = new Set<string>();
+    const flushCommittedPrReconciliation = (): void => {
+      if (committedIngestedPrIds.size === 0) return;
+      const prIds = Array.from(committedIngestedPrIds);
+      committedIngestedPrIds.clear();
+      try {
+        args.onPrStateIngested?.(prIds);
+      } catch (error) {
+        args.logger.warn("automations.github_relay_reconcile_schedule_failed", {
+          prIds,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
     try {
       const initialCursor = getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
@@ -842,6 +856,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       let lastSeenCursor = initialCursor;
       let lastDeliveryAt: string | null = null;
       while (true) {
+        const pageIngestedPrIds = new Set<string>();
         const pageUrl = new URL(eventsUrl);
         if (pageCursor) pageUrl.searchParams.set("after", pageCursor);
         else pageUrl.searchParams.delete("after");
@@ -897,8 +912,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           });
           // Same as the local-webhook path: a relay-delivered PR change should
           // refresh the poller immediately instead of waiting for its next tick.
+          // Batch every delivery in this drain into one targeted reconciliation
+          // so a burst of check-run webhooks cannot fan out into repeated REST reads.
           if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
-            args.onPrStateIngested?.();
+            for (const prId of ingested.linkedPrIds) pageIngestedPrIds.add(prId);
           }
           try {
             await args.automationService?.dispatchIngressTrigger({
@@ -928,6 +945,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         // page is replayed from its previous durable cursor on the next drain.
         if (pageLastCursor && pageLastCursor !== pageCursor) {
           setIngressCursor({ source: "github-relay", cursor: pageLastCursor });
+          for (const prId of pageIngestedPrIds) committedIngestedPrIds.add(prId);
         }
         lastSeenCursor = pageLastCursor;
         if (useLegacyProjectRoute || payload.hasMore !== true) break;
@@ -936,6 +954,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         }
         pageCursor = pageLastCursor;
       }
+      flushCommittedPrReconciliation();
       updateGithubRelayStatus({
         healthy: true,
         status: "ready",
@@ -945,6 +964,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         lastError: null,
       });
     } catch (error) {
+      flushCommittedPrReconciliation();
       if (stopped && error instanceof Error && error.name === "AbortError") return;
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),

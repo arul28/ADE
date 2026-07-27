@@ -123,6 +123,43 @@ describe("prPollingService", () => {
     expect(events.filter((event) => event.type === "prs-updated")).toHaveLength(1);
   });
 
+  it("reconciles webhook PRs once without starting a hot-poll window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const summary = createSummary();
+    const refresh = vi.fn(async () => [summary]);
+    const prService = {
+      listAll: () => [summary],
+      refresh,
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: vi.fn(),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(refresh).toHaveBeenLastCalledWith();
+
+    service.reconcilePrs(["pr-1"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refresh).toHaveBeenLastCalledWith({ prIds: ["pr-1"] });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(55_000);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenLastCalledWith();
+  });
+
   it("discovers lane PRs when the local PR cache starts empty", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

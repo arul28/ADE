@@ -299,6 +299,20 @@ export type GitHubRepoRef = {
   name: string;
 };
 
+export type GitHubRateLimitState = {
+  limit: number | null;
+  remaining: number | null;
+  used: number | null;
+  resetAt: string | null;
+  resource: string | null;
+};
+
+export type GitHubAuthFailure = {
+  kind: "rate_limited" | "invalid_token" | "network" | "unknown";
+  message: string;
+  retryAt: string | null;
+};
+
 export type GitHubStatus = {
   tokenStored: boolean;
   patTokenStored: boolean;
@@ -316,6 +330,11 @@ export type GitHubStatus = {
   ghCliPath: string | null;
   ghAuthError: string | null;
   checkedAt: string | null;
+  // Optional for compatibility with older remote runtimes. A present failure
+  // means ADE found a token but could not finish validating it; it must not be
+  // flattened into "missing scopes" by clients.
+  authFailure?: GitHubAuthFailure | null;
+  rateLimit?: GitHubRateLimitState | null;
   // null = no repo to probe / probe not run; true/false = result of GET /repos/{owner}/{repo}.
   // Required because fine-grained tokens pass /user validation even when the user forgot to
   // grant the active repo, which then 403s every PR-tab call.

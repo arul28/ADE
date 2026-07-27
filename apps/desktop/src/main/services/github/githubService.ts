@@ -8,11 +8,13 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import type {
+  GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
+  GitHubRateLimitState,
   GitHubRepoRef,
   GitHubStatus,
 } from "../../../shared/types";
@@ -23,6 +25,13 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
+import {
+  classifyGitHubAuthFailure,
+  GitHubRateLimitError,
+  githubRateLimitRetryAtMs,
+  isTransientGithubProbeFailure,
+  readGitHubRateLimitState,
+} from "./githubRateLimit";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -62,14 +71,24 @@ type GitHubCliAuthResult = {
 type GitHubCliAuthProvider = () => GitHubCliAuthResult | Promise<GitHubCliAuthResult>;
 
 type SharedGithubStatusProbe = {
-  validated: { userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] };
+  validated: {
+    userLogin: string | null;
+    scopes: string[];
+    tokenType: GitHubStatus["tokenType"];
+    rateLimit: GitHubRateLimitState | null;
+  };
   repoAccessOk: boolean | null;
   repoAccessError: string | null;
 };
 
 type SharedGithubStatusProbeResult =
   | { ok: true; value: SharedGithubStatusProbe }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      authFailure: GitHubAuthFailure;
+      rateLimit: GitHubRateLimitState | null;
+    };
 
 type ProcessGithubAuthState = {
   authCache: (GitHubCliAuthResult & { expiresAt: number }) | null;
@@ -80,9 +99,15 @@ type ProcessGithubAuthState = {
 
 const processGithubAuthStates = new WeakMap<GitHubCliAuthProvider, ProcessGithubAuthState>();
 
-function isTransientGithubProbeFailure(error: string | null): boolean {
-  return /timed out|timeout|network|fetch failed|aborted|econn(?:reset|refused|aborted)|enotfound|eai_again|socket|tls|temporarily unavailable/i
-    .test(error ?? "");
+class GitHubTokenValidationError extends Error {
+  constructor(
+    message: string,
+    readonly authFailure: GitHubAuthFailure,
+    readonly rateLimit: GitHubRateLimitState | null,
+  ) {
+    super(message);
+    this.name = "GitHubTokenValidationError";
+  }
 }
 
 function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubAuthState {
@@ -765,7 +790,12 @@ export function createGithubService({
     return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
   };
 
-  const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] }> => {
+  const validateToken = async (token: string): Promise<{
+    userLogin: string | null;
+    scopes: string[];
+    tokenType: GitHubStatus["tokenType"];
+    rateLimit: GitHubRateLimitState | null;
+  }> => {
     const response = await fetchGitHub("https://api.github.com/user", {
       method: "GET",
       headers: {
@@ -776,17 +806,24 @@ export function createGithubService({
     });
 
     const scopes = parseGitHubScopeHeaders(response.headers);
+    const rateLimit = readGitHubRateLimitState(response.headers);
 
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
       const msg = asString(payload.message) || `GitHub token validation failed (HTTP ${response.status})`;
-      throw new Error(msg);
+      const failure = classifyGitHubAuthFailure({
+        status: response.status,
+        message: msg,
+        headers: response.headers,
+      });
+      throw new GitHubTokenValidationError(msg, failure.authFailure, failure.rateLimit);
     }
 
     return {
       userLogin: asString(payload.login) || null,
       scopes,
       tokenType: detectGitHubTokenType(token),
+      rateLimit,
     };
   };
 
@@ -798,7 +835,12 @@ export function createGithubService({
   const probeRepoAccess = async (
     token: string,
     repo: GitHubRepoRef,
-  ): Promise<{ ok: boolean; error: string | null }> => {
+  ): Promise<{
+    ok: boolean;
+    error: string | null;
+    authFailure: GitHubAuthFailure | null;
+    rateLimit: GitHubRateLimitState | null;
+  }> => {
     try {
       const response = await fetchGitHub(
         `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
@@ -813,13 +855,35 @@ export function createGithubService({
       );
       if (response.ok) {
         releaseGitHubResponse(response);
-        return { ok: true, error: null };
+        return {
+          ok: true,
+          error: null,
+          authFailure: null,
+          rateLimit: readGitHubRateLimitState(response.headers),
+        };
       }
       const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       const message = asString(payload.message) || `HTTP ${response.status}`;
-      return { ok: false, error: `${response.status}: ${message}` };
+      const failure = classifyGitHubAuthFailure({
+        status: response.status,
+        message,
+        headers: response.headers,
+      });
+      return {
+        ok: false,
+        error: `${response.status}: ${message}`,
+        authFailure: failure.authFailure.kind === "unknown" ? null : failure.authFailure,
+        rateLimit: failure.rateLimit,
+      };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      const message = error instanceof Error ? error.message : String(error);
+      const failure = classifyGitHubAuthFailure({ message });
+      return {
+        ok: false,
+        error: message,
+        authFailure: failure.authFailure.kind === "unknown" ? null : failure.authFailure,
+        rateLimit: failure.rateLimit,
+      };
     }
   };
 
@@ -833,12 +897,36 @@ export function createGithubService({
       let repoAccessError: string | null = null;
       if (repo && validated.tokenType === "fine-grained") {
         const probe = await probeRepoAccess(token, repo);
+        validated.rateLimit = probe.rateLimit ?? validated.rateLimit;
+        if (probe.authFailure) {
+          return {
+            ok: false,
+            error: probe.error ?? probe.authFailure.message,
+            authFailure: probe.authFailure,
+            rateLimit: probe.rateLimit,
+          };
+        }
         repoAccessOk = probe.ok;
         repoAccessError = probe.error;
       }
       return { ok: true, value: { validated, repoAccessOk, repoAccessError } };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof GitHubTokenValidationError) {
+        return {
+          ok: false,
+          error: message,
+          authFailure: error.authFailure,
+          rateLimit: error.rateLimit,
+        };
+      }
+      const failure = classifyGitHubAuthFailure({ message });
+      return {
+        ok: false,
+        error: message,
+        authFailure: failure.authFailure,
+        rateLimit: failure.rateLimit,
+      };
     }
   };
 
@@ -997,15 +1085,20 @@ export function createGithubService({
           detail = ": " + errorMessages.join("; ");
         }
       }
-      const rateRemaining = response.headers.get("x-ratelimit-remaining");
-      const rateReset = response.headers.get("x-ratelimit-reset");
-      if (rateRemaining === "0" && rateReset) {
-        const resetAtMs = Number(rateReset) * 1000;
-        const err = new Error(
-          `${message}${detail} (rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()})`
+      const failure = classifyGitHubAuthFailure({
+        status: response.status,
+        message,
+        headers: response.headers,
+      });
+      if (failure.authFailure.kind === "rate_limited") {
+        const resetAtMs = githubRateLimitRetryAtMs(failure.authFailure, failure.rateLimit);
+        const resetDetail = resetAtMs == null
+          ? "rate limit exceeded"
+          : `rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()}`;
+        throw new GitHubRateLimitError(
+          `${message}${detail} (${resetDetail})`,
+          resetAtMs,
         );
-        (err as any).rateLimitResetAtMs = resetAtMs;
-        throw err;
       }
       throw new Error(message + detail);
     }
@@ -1106,6 +1199,8 @@ export function createGithubService({
         ghCliPath: tokenLookup.ghCliPath,
         ghAuthError: tokenLookup.ghAuthError,
         checkedAt: null,
+        authFailure: null,
+        rateLimit: null,
         repoAccessOk: null,
         repoAccessError: null,
         connected: false,
@@ -1154,20 +1249,24 @@ export function createGithubService({
       }
     }
 
+    let probeFailure: Extract<SharedGithubStatusProbeResult, { ok: false }> | null = null;
     try {
       const statusProbe = tokenLookup.source === "gh"
         ? await readSharedGithubStatusProbe(token, repo, opts.forceRefresh === true)
         : await computeGithubStatusProbe(token, repo);
-      if (!statusProbe.ok) throw new Error(statusProbe.error);
+      if (!statusProbe.ok) {
+        probeFailure = statusProbe;
+        throw new Error(statusProbe.error);
+      }
       const { validated, repoAccessOk, repoAccessError } = statusProbe.value;
       // Classic PATs and gh OAuth tokens expose scopes in the /user response.
       // Fine-grained tokens do not expose selected repos and need a repo probe.
       if (repo && validated.tokenType === "fine-grained" && repoAccessOk === false) {
-          logger.warn("github.repo_probe_failed", {
-            repo: `${repo.owner}/${repo.name}`,
-            tokenType: validated.tokenType,
-            error: repoAccessError,
-          });
+        logger.warn("github.repo_probe_failed", {
+          repo: `${repo.owner}/${repo.name}`,
+          tokenType: validated.tokenType,
+          error: repoAccessError,
+        });
       }
       const connected = computeConnected({
         tokenStored: true,
@@ -1191,6 +1290,8 @@ export function createGithubService({
         ghCliPath: tokenLookup.ghCliPath,
         ghAuthError: tokenLookup.ghAuthError,
         checkedAt: nowIso(),
+        authFailure: null,
+        rateLimit: validated.rateLimit,
         repoAccessOk,
         repoAccessError,
         connected,
@@ -1199,7 +1300,15 @@ export function createGithubService({
       cachedStatusTokenDigest = tokenDigest;
       return cachedStatus;
     } catch (error) {
-      logger.warn("github.token_validation_failed", { error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const fallbackFailure = classifyGitHubAuthFailure({ message });
+      const authFailure = probeFailure?.authFailure ?? fallbackFailure.authFailure;
+      const rateLimit = probeFailure?.rateLimit ?? fallbackFailure.rateLimit;
+      logger.warn("github.token_validation_failed", {
+        error: message,
+        kind: authFailure.kind,
+        retryAt: authFailure.retryAt,
+      });
       cachedStatus = {
         tokenStored: true,
         patTokenStored: tokenLookup.patTokenStored,
@@ -1214,6 +1323,8 @@ export function createGithubService({
         ghCliPath: tokenLookup.ghCliPath,
         ghAuthError: tokenLookup.ghAuthError,
         checkedAt: nowIso(),
+        authFailure,
+        rateLimit,
         repoAccessOk: null,
         repoAccessError: null,
         connected: false,

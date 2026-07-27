@@ -65,6 +65,12 @@ Main process:
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
   config generation for `.ade/ade.yaml`.
+- `apps/desktop/src/main/services/github/githubService.ts` and
+  `githubRateLimit.ts` — GitHub CLI/PAT credential discovery, `/user` and
+  fine-grained repo probes, structured auth-failure classification, and REST
+  quota parsing. `GitHubStatus.authFailure` distinguishes rate limiting,
+  invalid credentials, network failures, and unknown validation errors so
+  clients do not flatten every failed probe into missing permissions.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~3,150 lines, the largest service.
@@ -83,6 +89,10 @@ Shared types and IPC:
   templates, port allocation, proxy, OAuth, integrations, AI).
 - `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
   value, dotenv preview/import, and export request/result contracts.
+- `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
+  `GitHubAuthFailure`, and `GitHubRateLimitState`. The failure/quota fields are
+  optional so a newer client can remain compatible with an older remote
+  runtime.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
     applySuggestedConfig, complete, setDismissed)
@@ -204,7 +214,14 @@ Renderer — settings:
   own affirmative client choices; see [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
-  and permission guidance. Embedded inside General. Also hosts the
+  permission guidance, structured validation failures, and the latest GitHub
+  REST quota. Embedded inside General. A rate-limited credential renders
+  **Rate limited**, the reset time/quota, and no auth command; only a missing,
+  invalid, or genuinely under-scoped credential shows login/refresh
+  instructions. Raw network/unknown validation errors stay in Settings rather
+  than the global banner. The shared
+  `renderer/lib/githubIntegrationStatus.ts` presentation helper keeps banner
+  and Settings classification aligned. This section also hosts the
   `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
 - `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx`
   — install / status card for the hosted ADE GitHub App that backs
