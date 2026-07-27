@@ -276,7 +276,7 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
  */
 export function staleAdeTailnetServePorts(
   serveStatusJson: string,
-  currentPort: number | null,
+  currentPort: number,
 ): number[] {
   let parsed: unknown;
   try {
@@ -291,7 +291,7 @@ export function staleAdeTailnetServePorts(
     const port = Number.parseInt(key, 10);
     if (!Number.isInteger(port)) continue;
     if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
-    if (currentPort != null && port === currentPort) continue;
+    if (port === currentPort) continue;
     const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
     if (forward !== `127.0.0.1:${port}`) continue;
     stale.push(port);
@@ -3954,6 +3954,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (stale.length === 0) return;
     let reclaimed = 0;
     for (const port of stale) {
+      // The snapshot is stale the moment reclaiming starts: turning off a low
+      // port frees it, and a host restarting mid-loop prefers exactly those low
+      // ports. Without re-checking, this loop can turn off the serve entry a
+      // newer host just published and leave the machine with no tailnet route
+      // at all, while status still reports "published".
+      if (disposed) return;
+      if (tailnetServePort != null && port === tailnetServePort) continue;
       try {
         await execFileAsync(cli, ["serve", `--tcp=${port}`, "off"], { timeout: 10_000 });
         reclaimed += 1;
@@ -6858,9 +6865,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // and tell the client the one thing that actually resolves it.
           const knownRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
           if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) {
-            authFailureMessage = knownRecord
-              ? "This device's saved pairing is no longer valid on this machine. Pair it again."
-              : "This device is not paired with this machine, or the pairing was removed. Pair it again.";
+            // Deliberately identical for both cases. The host knows which it
+            // is and logs it below, but telling an UNAUTHENTICATED caller
+            // whether a device id exists here turns this into an existence
+            // oracle, and the user's next step is the same either way.
+            authFailureMessage = "This device is not paired with this machine, or its saved"
+              + " pairing is no longer valid. Pair it again.";
             args.logger.warn("sync_host.paired_device_rejected", {
               deviceId: pairedAuth.deviceId,
               reason: knownRecord ? "secret_mismatch" : "unknown_device",

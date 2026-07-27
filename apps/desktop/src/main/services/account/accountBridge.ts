@@ -179,9 +179,9 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   const getMachineLogger = (): Logger | null => {
     if (machineLogger !== undefined) return machineLogger;
     try {
-      const adeDir = resolveMachineAdeLayout().adeDir;
-      machineLogger = adeDir
-        ? createFileLogger(path.join(adeDir, "runtime", "account-trust.jsonl"))
+      const { runtimeDir } = resolveMachineAdeLayout();
+      machineLogger = runtimeDir
+        ? createFileLogger(path.join(runtimeDir, "account-trust.jsonl"))
         : null;
     } catch {
       machineLogger = null;
@@ -211,9 +211,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           ownerChanged: credentials.previousOwnerUserId !== result.currentOwnerUserId,
         })),
       };
-      const sink = getMachineLogger();
-      sink?.warn("account.local_machines_removed", detail);
-      sink?.flushSync?.();
+      getMachineLogger()?.warn("account.local_machines_removed", detail);
       options.logger?.info("account.local_machines_removed", detail);
     }
   };

@@ -162,12 +162,12 @@ describe("staleAdeTailnetServePorts", () => {
       "8791": "192.168.1.5:8791",
       "8792": "127.0.0.1:8792",
     });
-    expect(staleAdeTailnetServePorts(json, null)).toEqual([8792]);
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8792]);
   });
 
   it("ignores ports outside ADE's sync range", () => {
     const json = serveStatus({ "443": "127.0.0.1:443", "9100": "127.0.0.1:9100" });
-    expect(staleAdeTailnetServePorts(json, null)).toEqual([]);
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([]);
   });
 
   it("returns nothing for unparseable or empty status", () => {

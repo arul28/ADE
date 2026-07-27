@@ -29,10 +29,12 @@ export type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
   warn: (event: string, meta?: Record<string, unknown>) => void;
   error: (event: string, meta?: Record<string, unknown>) => void;
-  // Writes anything still queued straight to disk. Normal logging batches
-  // through an async stream, so a caller that is about to end the process
-  // (app.exit, force quit) must call this or its last records are lost —
-  // exactly the records that explain why the process died.
+  // Writes still-queued lines straight to disk. Normal logging batches through
+  // an async stream, so a caller about to end the process (app.exit, force
+  // quit) must call this or its last records are lost — exactly the records
+  // that explain why the process died. Note it cannot recover a batch already
+  // handed to an in-flight async flush, so call it immediately after the write
+  // that matters, while that line is still queued.
   flushSync?: () => void;
 };
 

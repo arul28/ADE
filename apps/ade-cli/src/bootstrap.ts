@@ -1547,11 +1547,6 @@ export async function createAdeRuntime(args: {
     const service = createSyncTunnelClientService({
       logger,
       configStore: cloudRelayStore,
-      getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
-      getExpectedLoopbackNonce: () =>
-        resolvedArgs.syncRuntime?.sharedSyncListener?.getExpectedLoopbackNonce() ?? null,
-      getRelayBridgeProof: () =>
-        resolvedArgs.syncRuntime?.sharedSyncListener?.getRelayBridgeProof() ?? null,
       isAccountSignedIn: () => {
         const status = accountAuthService.getStatus();
         return status.signedIn && Boolean(status.userId?.trim());

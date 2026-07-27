@@ -81,16 +81,19 @@ export type TunnelHostListener = {
 
 type SyncTunnelClientArgs = {
   logger?: Logger;
-  /** Local ADE sync WebSocket server port, or null when the host isn't up. */
-  getSyncPort: () => number | null;
-  /** Expected identity of the active in-process sync listener. */
-  getExpectedLoopbackNonce?: () => string | null;
-  /** Private proof accepted only by the active in-process sync listener. */
-  getRelayBridgeProof: () => string | null;
   /** Relay is usable only while the host has a current ADE account session. */
   isAccountSignedIn?: () => boolean;
   /** Refresh-aware lease; the account token is validated upstream and never retained here. */
   getAccountLease?: () => Promise<{ userId: string; expiresAt?: string | null } | null>;
+  /**
+   * Test seam only. Production passes none of these — bootstrap hands the
+   * listener to attachHostListener instead, so the attached listener is the
+   * single source of truth there. Wiring them from a per-runtime closure is
+   * what caused the cached-client bug this replaced.
+   */
+  getSyncPort?: () => number | null;
+  getExpectedLoopbackNonce?: () => string | null;
+  getRelayBridgeProof?: () => string | null;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
@@ -479,17 +482,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
-  // An attached host listener always wins over the constructor accessors: the
-  // constructor's closure belongs to whichever runtime bootstrapped first,
-  // which is often not the one that owns the listener.
+  // An attached listener wins. Production never supplies the arg accessors, so
+  // there the listener is the only source — which is the point: the client is
+  // cached one-per-machine, and a closure captured by the first runtime to
+  // bootstrap outlived it and silently answered null forever.
   const syncPort = (): number | null =>
-    hostListener ? hostListener.getPort() : args.getSyncPort();
+    hostListener ? hostListener.getPort() : args.getSyncPort?.() ?? null;
   const expectedLoopbackNonce = (): string | null =>
     hostListener
       ? hostListener.getExpectedLoopbackNonce()
       : args.getExpectedLoopbackNonce?.() ?? null;
   const relayBridgeProofValue = (): string | null =>
-    hostListener ? hostListener.getRelayBridgeProof() : args.getRelayBridgeProof();
+    hostListener ? hostListener.getRelayBridgeProof() : args.getRelayBridgeProof?.() ?? null;
 
   const bridgeValidationIdentity = (): BridgeValidationIdentity => {
     const eligible = accountSignedIn();
@@ -1678,8 +1682,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         });
       });
       // The listener may already be bound and validated by the time the host
-      // attaches, in which case no future event is coming.
-      if (!stopped) {
+      // attaches, in which case no future event is coming. Skip while it is
+      // still unbound: attach happens during runtime construction, before
+      // ensureListening, and validating there only records a "listener is not
+      // bound" failure that doctor and Settings surface until the subscription
+      // above clears it.
+      if (!stopped && listener.getPort() != null) {
         void validateCurrentBridge().catch(() => {});
       }
     },
@@ -1687,6 +1695,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     async stop(): Promise<void> {
       stopped = true;
       started = false;
+      detachHostListener?.();
+      detachHostListener = null;
+      hostListener = null;
       clearReconnect();
       if (accountStatusTimer) {
         clearInterval(accountStatusTimer);

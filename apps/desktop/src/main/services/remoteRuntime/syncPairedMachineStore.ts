@@ -586,20 +586,23 @@ export class DesktopPairedMachineStore {
 
     const keys = generateDesktopDpopKeyPair();
     // Re-pairing the same machine must reuse this desktop's existing pairing
-    // identity, exactly as the account-adoption path already does. The host
-    // keys its pairing records by this device id and upserts on re-pair, so
-    // minting a fresh one instead leaves behind a record the host can never
-    // match again — one orphaned, still-valid secret per re-pair, forever.
-    // The hello that reports the host identity comes after the pairing request
-    // that carries this id, so recover the prior record up front: by the host
-    // the caller is aiming at, else the relay machine key, else the endpoint
-    // already recorded against a known machine.
+    // identity. The host keys its pairing records by this device id and upserts
+    // on re-pair, so minting a fresh one instead leaves behind a record the host
+    // can never match again — one orphaned, still-valid secret per re-pair,
+    // forever.
+    //
+    // The hello that reports the host identity arrives after the pairing request
+    // that carries this id, so the prior record has to be recovered up front:
+    // by the host the caller is aiming at, else the relay machine key. Both
+    // identify a HOST. Matching on a saved endpoint deliberately is not an
+    // option — a bare LAN address is not a host identity, so DHCP handing
+    // 192.168.1.240 to a different Mac would hand that Mac the identity this
+    // desktop uses with the first one.
     const endpointMachineKey = machineKeyFromEndpoint(endpoint);
     const existing = (options.hostDeviceId?.trim()
       ? this.get(options.hostDeviceId.trim())
       : null)
       ?? (endpointMachineKey ? this.get(endpointMachineKey) : null)
-      ?? this.list().find((machine) => machine.endpoints.includes(endpoint))
       ?? null;
     const localDeviceId = existing?.deviceId ?? randomUUID();
     const siteId = existing?.siteId ?? randomUUID();

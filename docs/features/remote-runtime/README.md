@@ -517,6 +517,39 @@ Two logs make a lost pairing diagnosable, both of which were previously silent:
   current owner per removed credential, so an intended account switch is
   distinguishable from an identity glitch that silently cost trust.
 
+## Relay tunnel and the sync port
+
+The relay tunnel client is cached **one per machine**, keyed by the cloud-relay
+config file, and is built by whichever runtime bootstraps first — regularly a
+scope that owns no shared listener (a headless one-shot, an embedded fallback).
+So it must not capture per-runtime state at construction. The runtime that owns
+the listener calls `attachHostListener()`, which supplies the port, loopback
+nonce, and bridge proof, registers the `onLoopbackValidated` retry hook, and
+validates once the listener is bound. Symptom when this is wrong:
+`routeHealth.listener` reports bound and loopback-validated on a real port while
+`relayBridgeValidated` is false and `lastBridgeValidationAt` has never been set —
+relay silently never works, and a LAN auth failure becomes a total outage
+because no fallback route exists.
+
+ADE advertises its sync port with `tailscale serve --bg --tcp=<port>`. That
+outlives the process that registered it, so the served port is reclaimed after
+each successful publish (`staleAdeTailnetServePorts` +
+`reclaimStaleTailnetServes`). Without it every restart — and every force-kill
+that skips teardown — orphans an entry that Tailscale keeps bound on the tailnet
+address; ADE's own next wildcard bind then fails `EADDRINUSE` against its own
+leftover and walks one port higher, leaking another. It ratchets forever: one
+machine reached 66 stranded ports and ~70 failed binds per start, drifting from
+8787 to 8852.
+
+Only ADE's exact signature is reclaimed — a port inside ADE's sync range
+forwarding to `127.0.0.1` on the **same** port — so a hand-rolled
+`tailscale serve` is left alone, and the live port is re-checked inside the loop
+because reclaiming frees exactly the low ports a restarting host prefers.
+
+Diagnosing this needs `netstat -an -p tcp` or `tailscale serve status`, **not**
+`lsof`: tailscaled runs as root, so a user-level probe reports the ports as
+having no holder, which reads as "free" and is the opposite of the truth.
+
 ## Related docs
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.

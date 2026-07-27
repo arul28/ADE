@@ -29,15 +29,19 @@ import {
 } from "./autoUpdateVersions";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
-// Soft mark only. After `quitAndInstall` the OS installer (Squirrel.Mac) still
-// has to pull the archive over its loopback server, expand it, and code-sign
-// verify the expanded bundle before it can spawn ShipIt and replace us. For an
-// ~750 MB archive that runs right around ten seconds, so treating this as a
-// deadline to kill the process loses a coin flip against a healthy install.
-const DEFAULT_QUIT_DEADLINE_MS = 10_000;
+// Warn only, never fatal. Squirrel.Mac needs roughly this long just to expand
+// and code-sign verify the archive, so killing here loses a coin flip against a
+// healthy install — which is exactly the bug this replaced.
+const DEFAULT_QUIT_STAGING_SLOW_WARN_MS = 10_000;
 // Hard bound while the OS installer may still be staging. Only a genuinely
-// wedged handoff should reach this.
+// wedged handoff should reach this. macOS only: it is long because Squirrel.Mac
+// stages in-process and signals when it is done.
 const DEFAULT_QUIT_HARD_DEADLINE_MS = 5 * 60_000;
+// Everywhere else the installer is an external process (NSIS, AppImage) that
+// never emits the staging signal, so the long bound would just hang the app in
+// "installing" for five minutes. Nothing stages in-process there, so a short
+// bound is correct — and still far more generous than the 10s that broke macOS.
+const DEFAULT_QUIT_HARD_DEADLINE_NO_STAGING_MS = 60_000;
 // Once staging is done the installer is already running and about to replace
 // the bundle, so a process that still has not exited is a real wedge and a
 // short bound is safe again.
@@ -74,6 +78,11 @@ type NativeUpdaterLike = {
 };
 
 function resolveNativeUpdater(): NativeUpdaterLike | null {
+  // Resolved through require, NOT a static import, and this is load-bearing:
+  // tests mock "electron" as `{ app }`, and a static `import { autoUpdater }`
+  // makes vitest throw "No 'autoUpdater' export is defined on the electron
+  // mock" before any test body runs. A missing native updater must degrade to
+  // "no staging signal", never to a crash.
   try {
     if (typeof require !== "function") return null;
     const electron = require("electron") as { autoUpdater?: NativeUpdaterLike };
@@ -103,7 +112,7 @@ type CreateAutoUpdateServiceArgs = {
   installTargetPath?: string;
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   installWatchdogMs?: number;
-  quitDeadlineMs?: number;
+  quitStagingSlowWarnMs?: number;
   quitHardDeadlineMs?: number;
   quitPostStagingDeadlineMs?: number;
   nativeUpdater?: NativeUpdaterLike | null;
@@ -190,6 +199,7 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
     ...snapshot,
     recentlyInstalled: cloneRecentlyInstalledUpdate(snapshot.recentlyInstalled),
     parked: snapshot.parked ? { ...snapshot.parked } : null,
+    lastInstallFailed: snapshot.lastInstallFailed ? { ...snapshot.lastInstallFailed } : null,
     autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
   };
 }
@@ -339,10 +349,15 @@ export function createAutoUpdateService({
   installTargetPath = process.execPath,
   getDiskSpace = readDiskSpace,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
-  quitDeadlineMs = DEFAULT_QUIT_DEADLINE_MS,
-  quitHardDeadlineMs = DEFAULT_QUIT_HARD_DEADLINE_MS,
+  quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
+  // Only Squirrel.Mac reports staging progress; electron-updater's other
+  // backends never touch the native updater, so arming the long bound off a
+  // signal that cannot arrive would strand the app in "installing".
+  nativeUpdater = process.platform === "darwin" ? resolveNativeUpdater() : null,
+  quitHardDeadlineMs = nativeUpdater
+    ? DEFAULT_QUIT_HARD_DEADLINE_MS
+    : DEFAULT_QUIT_HARD_DEADLINE_NO_STAGING_MS,
   quitPostStagingDeadlineMs = DEFAULT_QUIT_POST_STAGING_DEADLINE_MS,
-  nativeUpdater = resolveNativeUpdater(),
   autoApplyIdleMs = DEFAULT_AUTO_APPLY_IDLE_MS,
   autoApplyCountdownMs = DEFAULT_AUTO_APPLY_COUNTDOWN_MS,
   autoApplySuppressionMs = DEFAULT_AUTO_APPLY_SUPPRESSION_MS,
@@ -434,8 +449,8 @@ export function createAutoUpdateService({
   let compressedUpdateBytes: number | null = null;
   let compressedUpdateVersion: string | null = null;
   let preservedDownloadRetry: PreservedDownloadRetry | null = null;
-  let quitDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
-  let quitSoftDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let escalationTimer: ReturnType<typeof setTimeout> | null = null;
+  let stagingSlowWarnTimer: ReturnType<typeof setTimeout> | null = null;
   let quitArmedAtMs: number | null = null;
   let nativeStagingCompleted = false;
   let detachNativeStagingListener: (() => void) | null = null;
@@ -478,13 +493,13 @@ export function createAutoUpdateService({
   }
 
   function clearQuitDeadline(): void {
-    if (quitDeadlineTimer) {
-      clearTimeout(quitDeadlineTimer);
-      quitDeadlineTimer = null;
+    if (escalationTimer) {
+      clearTimeout(escalationTimer);
+      escalationTimer = null;
     }
-    if (quitSoftDeadlineTimer) {
-      clearTimeout(quitSoftDeadlineTimer);
-      quitSoftDeadlineTimer = null;
+    if (stagingSlowWarnTimer) {
+      clearTimeout(stagingSlowWarnTimer);
+      stagingSlowWarnTimer = null;
     }
     detachNativeStagingListener?.();
     detachNativeStagingListener = null;
@@ -1171,7 +1186,7 @@ export function createAutoUpdateService({
 
   function escalateQuit(reason: "hard_deadline" | "post_staging"): void {
     if (!installQuitArmed) return;
-    const blockedMs = Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs()));
+    const blockedMs = quitBlockedMs();
     const blockedPhase = "app_quit";
     logger.error("autoUpdate.quit_escalated", {
       blockedPhase,
@@ -1195,23 +1210,27 @@ export function createAutoUpdateService({
     forceQuit?.({ blockedPhase, blockedMs });
   }
 
+  const quitBlockedMs = (): number => Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs()));
+
+  // One escalation timer, re-armed. Before staging completes it carries the
+  // long bound; after, the short one. Two variables would imply two ways to get
+  // force-quit, and there is only ever one armed at a time.
+  function armEscalation(delayMs: number, reason: "hard_deadline" | "post_staging"): void {
+    if (escalationTimer) clearTimeout(escalationTimer);
+    escalationTimer = setTimeout(() => {
+      escalationTimer = null;
+      escalateQuit(reason);
+    }, delayMs);
+    escalationTimer.unref?.();
+  }
+
   // Squirrel finished expanding and verifying the new bundle and is handing off
   // to its installer, so the remaining window is short and bounded.
   function onNativeStagingComplete(): void {
     if (!installQuitArmed || nativeStagingCompleted) return;
     nativeStagingCompleted = true;
-    logger.info("autoUpdate.native_staging_complete", {
-      elapsedMs: Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs())),
-    });
-    if (quitDeadlineTimer) {
-      clearTimeout(quitDeadlineTimer);
-      quitDeadlineTimer = null;
-    }
-    quitDeadlineTimer = setTimeout(() => {
-      quitDeadlineTimer = null;
-      escalateQuit("post_staging");
-    }, quitPostStagingDeadlineMs);
-    quitDeadlineTimer.unref?.();
+    logger.info("autoUpdate.native_staging_complete", { elapsedMs: quitBlockedMs() });
+    armEscalation(quitPostStagingDeadlineMs, "post_staging");
   }
 
   function armQuitDeadline(): void {
@@ -1234,20 +1253,14 @@ export function createAutoUpdateService({
 
     // Observation, not enforcement: staging legitimately runs past this on a
     // large bundle or a busy disk. Killing here is what broke installs before.
-    quitSoftDeadlineTimer = setTimeout(() => {
-      quitSoftDeadlineTimer = null;
+    stagingSlowWarnTimer = setTimeout(() => {
+      stagingSlowWarnTimer = null;
       if (!installQuitArmed || nativeStagingCompleted) return;
-      logger.warn("autoUpdate.quit_staging_slow", {
-        blockedMs: Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs())),
-      });
-    }, quitDeadlineMs);
-    quitSoftDeadlineTimer.unref?.();
+      logger.warn("autoUpdate.quit_staging_slow", { blockedMs: quitBlockedMs() });
+    }, quitStagingSlowWarnMs);
+    stagingSlowWarnTimer.unref?.();
 
-    quitDeadlineTimer = setTimeout(() => {
-      quitDeadlineTimer = null;
-      escalateQuit("hard_deadline");
-    }, quitHardDeadlineMs);
-    quitDeadlineTimer.unref?.();
+    armEscalation(quitHardDeadlineMs, "hard_deadline");
   }
 
   function dismissInstalledNotice(): void {

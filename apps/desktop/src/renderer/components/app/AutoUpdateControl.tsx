@@ -208,6 +208,9 @@ export function AutoUpdateControl() {
     && snapshot.version
     && snapshot.lastInstallFailed.targetVersion === snapshot.version,
   );
+  // A second consecutive failure stops trusting the archive and clears the
+  // cache, so only the first retry can promise the bytes are still local.
+  const downloadStillLocal = (snapshot.lastInstallFailed?.attempt ?? 0) < 2;
 
   function indicatorTitle(): string {
     switch (effectiveStatus) {
@@ -220,7 +223,9 @@ export function AutoUpdateControl() {
       default:
         return retryAfterFailedInstall
           ? `The last attempt to install ${versionLabel(snapshot.version)} quit without finishing. `
-            + "Try again — the download is already on this machine."
+            + (downloadStillLocal
+              ? "Try again — the download is already on this machine."
+              : "Try again — ADE will download it again first.")
           : `Install ${versionLabel(snapshot.version)}. ADE will quit and reopen automatically.`;
     }
   }
