@@ -21,6 +21,7 @@ const idleSnapshot: AutoUpdateSnapshot = {
   errorDetails: null,
   recentlyInstalled: null,
   parked: null,
+  lastInstallFailed: null,
   autoApplyPending: null,
   autoApplySuppressedUntil: null,
 };

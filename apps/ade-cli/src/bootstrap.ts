@@ -1509,11 +1509,6 @@ export async function createAdeRuntime(args: {
     const service = createSyncTunnelClientService({
       logger,
       configStore: cloudRelayStore,
-      getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
-      getExpectedLoopbackNonce: () =>
-        resolvedArgs.syncRuntime?.sharedSyncListener?.getExpectedLoopbackNonce() ?? null,
-      getRelayBridgeProof: () =>
-        resolvedArgs.syncRuntime?.sharedSyncListener?.getRelayBridgeProof() ?? null,
       isAccountSignedIn: () => {
         const status = accountAuthService.getStatus();
         return status.signedIn && Boolean(status.userId?.trim());
@@ -1530,15 +1525,19 @@ export async function createAdeRuntime(args: {
       },
       onPublicationStateChanged: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
     });
-    resolvedArgs.syncRuntime?.sharedSyncListener?.onLoopbackValidated(() => {
-      void service.validateCurrentBridge().catch((error) => {
-        logger.warn("sync.tunnel_bridge_validation_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    });
     return service;
   });
+  // Bind the listener OUTSIDE the factory. The client is cached one-per-machine
+  // and built by whichever runtime bootstrapped first, which is regularly a
+  // scope with no listener (headless one-shot, embedded fallback). Everything
+  // captured in that factory — the port accessor and the loopback retry hook —
+  // then pointed at null for the life of the process, so the bridge could never
+  // validate and Relay stayed fail-closed even though the listener was up.
+  // Attaching here means the runtime that actually owns the listener wins,
+  // whether or not it was the one that created the instance.
+  if (resolvedArgs.syncRuntime?.sharedSyncListener) {
+    syncTunnelClientService.attachHostListener(resolvedArgs.syncRuntime.sharedSyncListener);
+  }
   // Only the runtime that actually hosts phone sync (owns the brain-level
   // shared listener) may register the relay tunnel. The relay DO keeps ONE
   // host socket per machineKey (last wins), so a headless one-shot CLI

@@ -76,8 +76,8 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
 
   const ingestedVolume = findInsight("monthly-analytics-volume");
   assert.equal(ingestedVolume.name, "30-day ingested analytics volume");
-  assert.equal(ingestedVolume.query.source.series.length, 25);
-  assert.equal(ingestedVolume.query.source.trendsFilter.formula, "A+B+C+D+E+F+G+H+I+J+K+L+M+N+O+P+Q+R+S+T+U+V+W+X+Y");
+  assert.equal(ingestedVolume.query.source.series.length, 26);
+  assert.equal(ingestedVolume.query.source.trendsFilter.formula, "A+B+C+D+E+F+G+H+I+J+K+L+M+N+O+P+Q+R+S+T+U+V+W+X+Y+Z");
 });
 
 test("config requires HTTPS and a numeric project ID", () => {

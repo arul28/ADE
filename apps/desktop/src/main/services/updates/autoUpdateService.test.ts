@@ -30,6 +30,7 @@ function makeLogger(): Logger {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    flushSync: vi.fn(),
   };
 }
 
@@ -251,7 +252,10 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("cleans cached downloads when a requested install relaunches on the old version", () => {
+  // The archive is checksum-verified before the update is offered, so one
+  // failed handoff does not make it suspect. Re-downloading the whole release
+  // on every retry is what made a flaky install cost gigabytes.
+  it("keeps the verified download when a requested install relaunches on the old version", () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
     const logger = makeLogger();
@@ -275,11 +279,63 @@ describe("createAutoUpdateService", () => {
       updater: new FakeAutoUpdater(),
     });
 
-    expect(readState(globalStatePath)).toEqual({});
+    expect(readState(globalStatePath)).toEqual({
+      failedInstallAttempts: {
+        targetVersion: "1.2.3",
+        count: 1,
+        lastFailedAt: "2026-04-06T15:21:00.000Z",
+      },
+    });
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(logger.error).toHaveBeenCalledWith(
+      "autoUpdate.install_did_not_land",
+      expect.objectContaining({
+        targetVersion: "1.2.3",
+        attempt: 1,
+        downloadPreserved: true,
+      }),
+    );
+
+    service.dispose();
+  });
+
+  it("clears the cached download after a second failed install of the same version", () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    fs.writeFileSync(globalStatePath, JSON.stringify({
+      pendingInstallUpdate: {
+        fromVersion: "1.2.2",
+        targetVersion: "1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        requestedAt: "2026-04-06T15:20:00.000Z",
+      },
+      failedInstallAttempts: {
+        targetVersion: "1.2.3",
+        count: 1,
+        lastFailedAt: "2026-04-06T15:10:00.000Z",
+      },
+    }), "utf8");
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater: new FakeAutoUpdater(),
+    });
+
     expectCacheEmpty(updaterCacheDir);
     expect(logger.info).toHaveBeenCalledWith(
       "autoUpdate.cache_cleaned",
       expect.objectContaining({ reason: "failed_install", entriesRemoved: 2 }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "autoUpdate.install_did_not_land",
+      expect.objectContaining({ attempt: 2, downloadPreserved: false }),
     );
 
     service.dispose();
@@ -1323,11 +1379,15 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("force-quits when the native handoff does not reach will-quit by the hard deadline", async () => {
+  // Regression: the soft deadline used to force-quit, which killed the process
+  // mid-staging. Squirrel needs ~10s to expand and code-sign verify a ~750 MB
+  // bundle, so that raced — and usually beat — a healthy install.
+  it("does not force-quit while the native installer is still staging", async () => {
     vi.useFakeTimers();
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
     const updater = new FakeAutoUpdater();
+    const nativeUpdater = new EventEmitter();
     const logger = makeLogger();
     const forceQuit = vi.fn();
     const service = createAutoUpdateService({
@@ -1336,7 +1396,9 @@ describe("createAutoUpdateService", () => {
       globalStatePath,
       updaterCacheDir,
       installWatchdogMs: 1_000,
-      quitDeadlineMs: 5_000,
+      quitStagingSlowWarnMs: 5_000,
+      quitHardDeadlineMs: 300_000,
+      nativeUpdater,
       forceQuit,
       getDiskSpace: () => ({
         availableBytes: 20 * 1024 * 1024 * 1024,
@@ -1350,21 +1412,11 @@ describe("createAutoUpdateService", () => {
     await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(service.getSnapshot().status).toBe("installing");
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    // Well past the soft deadline: noted, never fatal.
+    await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(service.getSnapshot().status).toBe("installing");
-    expect(readState(globalStatePath)).toMatchObject({
-      pendingInstallUpdate: { targetVersion: "1.2.3" },
-    });
-
-    await vi.advanceTimersByTimeAsync(4_000);
-
-    expect(forceQuit).toHaveBeenCalledWith({
-      blockedPhase: "app_quit",
-      blockedMs: 5_000,
-    });
-    expect(logger.error).toHaveBeenCalledWith("autoUpdate.quit_escalated", {
-      blockedPhase: "app_quit",
+    expect(forceQuit).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith("autoUpdate.quit_staging_slow", {
       blockedMs: 5_000,
     });
     expect(service.getSnapshot().status).toBe("installing");
@@ -1372,6 +1424,150 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: { targetVersion: "1.2.3" },
     });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+
+    service.dispose();
+  });
+
+  it("force-quits once staging finished but the process never exited", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const nativeUpdater = new EventEmitter();
+    const logger = makeLogger();
+    const forceQuit = vi.fn();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      installWatchdogMs: 1_000,
+      quitStagingSlowWarnMs: 5_000,
+      quitHardDeadlineMs: 300_000,
+      quitPostStagingDeadlineMs: 15_000,
+      nativeUpdater,
+      forceQuit,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    nativeUpdater.emit("update-downloaded");
+    expect(forceQuit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(forceQuit).toHaveBeenCalledWith({
+      blockedPhase: "app_quit",
+      blockedMs: 35_000,
+    });
+    expect(logger.error).toHaveBeenCalledWith("autoUpdate.quit_escalated", {
+      blockedPhase: "app_quit",
+      blockedMs: 35_000,
+      reason: "post_staging",
+      nativeStagingCompleted: true,
+    });
+    // The escalation record has to survive the app.exit() that follows.
+    expect(logger.flushSync).toHaveBeenCalled();
+
+    service.dispose();
+  });
+
+  // Regression: the staged deadline is Squirrel.Mac-specific. Only MacUpdater
+  // drives the native updater, so on Windows/Linux the staging signal can never
+  // arrive — the long bound would strand the app in "installing" for five
+  // minutes where the previous code force-quit in ten seconds.
+  it("falls back to the short hard bound when no staging signal can arrive", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const logger = makeLogger();
+    const forceQuit = vi.fn();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      installWatchdogMs: 1_000,
+      // No hard bound supplied: the default must come from whether a staging
+      // signal is possible at all, not from the macOS-only five-minute value.
+      nativeUpdater: null,
+      forceQuit,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(forceQuit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(forceQuit).toHaveBeenCalledWith({
+      blockedPhase: "app_quit",
+      blockedMs: 60_000,
+    });
+
+    service.dispose();
+  });
+
+  it("force-quits a handoff that never stages at all, at the hard deadline", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const logger = makeLogger();
+    const forceQuit = vi.fn();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      installWatchdogMs: 1_000,
+      quitStagingSlowWarnMs: 5_000,
+      quitHardDeadlineMs: 300_000,
+      nativeUpdater: null,
+      forceQuit,
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300_000);
+
+    expect(forceQuit).toHaveBeenCalledWith({
+      blockedPhase: "app_quit",
+      blockedMs: 300_000,
+    });
+    expect(logger.error).toHaveBeenCalledWith("autoUpdate.quit_escalated", {
+      blockedPhase: "app_quit",
+      blockedMs: 300_000,
+      reason: "hard_deadline",
+      nativeStagingCompleted: false,
+    });
+    expect(service.getSnapshot().status).toBe("installing");
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: { targetVersion: "1.2.3" },
+    });
 
     service.dispose();
   });

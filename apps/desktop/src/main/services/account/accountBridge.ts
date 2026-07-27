@@ -16,7 +16,9 @@ import {
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { createFileLogger, type Logger } from "../logging/logger";
 import os from "node:os";
+import path from "node:path";
 import type {
   AccountAuthStatus,
   AccountLoginStartResult,
@@ -167,6 +169,26 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
     deviceName: () => `ADE Desktop on ${os.hostname()}`,
   });
+  // Machine-scoped, deliberately not the project logger. Dropping a paired
+  // secret is a machine-level credential mutation, and the project logger
+  // follows the active project — which, on a remote-bound project, ships these
+  // records to the other machine and leaves nothing behind on the machine that
+  // actually lost its trust. Resolved lazily and defensively: a log sink is
+  // never worth failing account auth over.
+  let machineLogger: Logger | null | undefined;
+  const getMachineLogger = (): Logger | null => {
+    if (machineLogger !== undefined) return machineLogger;
+    try {
+      const { runtimeDir } = resolveMachineAdeLayout();
+      machineLogger = runtimeDir
+        ? createFileLogger(path.join(runtimeDir, "account-trust.jsonl"))
+        : null;
+    } catch {
+      machineLogger = null;
+    }
+    return machineLogger;
+  };
+
   const reconcileLocalMachines = (currentOwnerUserId: string | null): void => {
     const result = options.reconcileAccountOwnership?.(currentOwnerUserId);
     if (
@@ -174,10 +196,32 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       && (result.removedTargetIds.length > 0
         || result.removedCredentialHostIds.length > 0)
     ) {
-      options.logger?.info("account.local_machines_removed", {
+      const counts = {
         targetCount: result.removedTargetIds.length,
         credentialCount: result.removedCredentialHostIds.length,
+      };
+      // Warn, not info: each removed credential costs the user a manual
+      // re-pair of that machine, so this is never routine.
+      //
+      // Account and host identifiers go ONLY to the machine-local sink. The
+      // project logger is the reason this split exists — on a remote-bound
+      // project it ships records to the other machine, so putting owner ids in
+      // it would re-introduce exactly the cross-machine identifier exposure the
+      // split was added to prevent. It gets counts, nothing more.
+      getMachineLogger()?.warn("account.local_machines_removed", {
+        ...counts,
+        currentOwnerUserId: result.currentOwnerUserId,
+        removed: result.removedCredentials.map((credentials) => ({
+          hostDeviceId: credentials.hostDeviceId,
+          hostName: credentials.hostName,
+          previousOwnerUserId: credentials.previousOwnerUserId,
+        })),
       });
+      // Dropping a paired secret is the forensic record for "why did my
+      // pairing vanish". The file logger batches on a 500 ms timer, so a quit
+      // that follows the prune closely would lose exactly that line.
+      getMachineLogger()?.flushSync?.();
+      options.logger?.info("account.local_machines_removed", counts);
     }
   };
 

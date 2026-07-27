@@ -22,7 +22,11 @@ Only closed event names, closed property keys, and coarse allowlisted values may
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
-The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
+The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics.
+
+Writes are batched onto an async stream, so a caller that is about to end the process (`app.exit`, a force quit, an install handoff escalation) must call `logger.flushSync()` immediately after the line that matters — while it is still queued — or the records explaining the exit die with the process. `flushSync` drains only what is still queued (a batch already handed to an in-flight async flush is not duplicated), skips rotation deliberately, and, like every other log write, never throws.
+
+Not every operational log belongs to the active project. `createFileLogger` also backs machine-scoped sinks for facts that outlive or fall outside a project: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
 
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
@@ -80,12 +84,13 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_analytics_budget`
 - `ade_update_install_aborted`
 - `ade_update_quit_escalated`
+- `ade_update_install_did_not_land`
 - `ade_update_auto_applied`
 - `ade_update_auto_apply_cancelled`
 - `ade_brain_recovered`
 - `ade_publish_failing`
 
-The update and reliability events are low-frequency by construction: the four `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6); `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
+The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `escalation_reason` to `hard_deadline` / `post_staging`, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
@@ -145,7 +150,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 - ADE · Marketing acquisition
 - ADE · Reliability and analytics budget
 
-When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
+The 30-day volume insight sums the whole ingested catalog through a formula that addresses each series by its PostHog letter (`A`…`Z`), so the catalog cannot exceed 26 events; the spec throws at load time rather than emitting a formula PostHog would reject. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
 
 ## How to instrument new code
 

@@ -16,6 +16,7 @@ export const EMPTY_AUTO_UPDATE_SNAPSHOT: AutoUpdateSnapshot = {
   errorDetails: null,
   recentlyInstalled: null,
   parked: null,
+  lastInstallFailed: null,
   autoApplyPending: null,
   autoApplySuppressedUntil: null,
 };

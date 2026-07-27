@@ -64,4 +64,52 @@ describe("createFileLogger", () => {
 
     expect(consoleSpy).not.toHaveBeenCalled();
   });
+
+  // Callers on their way to app.exit() rely on this: the normal batched write
+  // never lands, so without a synchronous drain the records that explain the
+  // exit are lost.
+  it("writes queued lines to disk synchronously on flushSync", () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-")), "test.log");
+    const logger = createFileLogger(logPath);
+
+    logger.error("autoUpdate.quit_escalated", { blockedMs: 300_000 });
+    logger.flushSync?.();
+
+    const written = fs.readFileSync(logPath, "utf8").trim().split("\n");
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0])).toMatchObject({
+      level: "error",
+      event: "autoUpdate.quit_escalated",
+      meta: { blockedMs: 300_000 },
+    });
+  });
+
+  // Regression: a line landing exactly on the batch limit makes scheduleFlush
+  // call flush() synchronously, which splices the batch out before its first
+  // await. Draining only the queue would then write nothing and the app.exit()
+  // that follows would lose the record flushSync exists to preserve.
+  it("drains a batch already handed to an in-flight flush", () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-")), "test.log");
+    const logger = createFileLogger(logPath, { flushBatchSize: 2 });
+
+    logger.info("first.event");
+    // Hits flushBatchSize, so flush() runs synchronously up to its first await
+    // and the batch is no longer in queuedLines.
+    logger.error("autoUpdate.quit_escalated", { blockedMs: 300_000 });
+    logger.flushSync?.();
+
+    const written = fs.readFileSync(logPath, "utf8");
+    expect(written).toContain("autoUpdate.quit_escalated");
+    expect(written).toContain("first.event");
+  });
+
+  it("is a no-op on flushSync with nothing queued", () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-logger-")), "test.log");
+    const logger = createFileLogger(logPath);
+
+    logger.flushSync?.();
+    logger.flushSync?.();
+
+    expect(fs.existsSync(logPath)).toBe(false);
+  });
 });

@@ -63,6 +63,13 @@ export type PairWithMachineOptions = Omit<
   pairingTimeoutMs?: number;
   relayAccountToken?: string | null;
   runtimeHostGrant?: string | null;
+  /**
+   * Host this pairing is aimed at, when the caller already knows it (a QR or
+   * link payload carries it). Lets re-pairing reuse this desktop's existing
+   * pairing identity for that host instead of minting a new one, which the
+   * host would store as a second, permanently unmatchable record.
+   */
+  hostDeviceId?: string | null;
 };
 
 export type PairWithAccountMachineOptions = Omit<
@@ -578,8 +585,37 @@ export class DesktopPairedMachineStore {
     if (!deviceName) throw new Error("Desktop device name is required.");
 
     const keys = generateDesktopDpopKeyPair();
-    const localDeviceId = randomUUID();
-    const siteId = randomUUID();
+    // Re-pairing the same machine must reuse this desktop's existing pairing
+    // identity. The host keys its pairing records by this device id and upserts
+    // on re-pair, so minting a fresh one instead leaves behind a record the host
+    // can never match again — one orphaned, still-valid secret per re-pair,
+    // forever.
+    //
+    // Known tradeoff: because the host upserts on this id, `pairPeer` rotates
+    // the secret and DPoP binding for an EXISTING record before it answers, and
+    // this client only persists the replacement after `hello_ok`. A drop in
+    // between leaves the host holding credentials the desktop never saved, so a
+    // previously working pairing needs one more manual re-pair. Minting a fresh
+    // id instead would avoid that window at the cost of the unbounded orphaned-
+    // record leak this reuse exists to stop — strictly worse. Closing it
+    // properly needs an atomic commit/ack in the pairing protocol, which is a
+    // host-side change and not something to land in a merge loop.
+    //
+    // The hello that reports the host identity arrives after the pairing request
+    // that carries this id, so the prior record has to be recovered up front:
+    // by the host the caller is aiming at, else the relay machine key. Both
+    // identify a HOST. Matching on a saved endpoint deliberately is not an
+    // option — a bare LAN address is not a host identity, so DHCP handing
+    // 192.168.1.240 to a different Mac would hand that Mac the identity this
+    // desktop uses with the first one.
+    const endpointMachineKey = machineKeyFromEndpoint(endpoint);
+    const existing = (options.hostDeviceId?.trim()
+      ? this.get(options.hostDeviceId.trim())
+      : null)
+      ?? (endpointMachineKey ? this.get(endpointMachineKey) : null)
+      ?? null;
+    const localDeviceId = existing?.deviceId ?? randomUUID();
+    const siteId = existing?.siteId ?? randomUUID();
     const createdAt = nowIso();
     const connection = await openSyncEnvelopeConnection({
       endpoint,

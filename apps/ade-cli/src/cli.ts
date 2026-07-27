@@ -262,7 +262,8 @@ type FormatterId =
   | "storage-compress"
   | "storage-maintenance"
   | "sync-status"
-  | "sync-web";
+  | "sync-web"
+  | "update-status";
 
 type ChatWaitTarget =
   | "idle"
@@ -2325,16 +2326,27 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   the post-install notice. quitAndInstall relaunches the desktop app and only
   succeeds when status is "ready".
 
-    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress)
+    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress, last failed install)
     $ ade --socket update check --text              Trigger a background update check
     $ ade --socket update install --text            Refresh latest, then quit and install when ready
     $ ade --socket update dismiss --text            Clear the recently-installed banner
     $ ade --socket update actions --text            List callable update actions
 
   Snapshot status values: idle, checking, downloading, ready, installing, error.
-  "installing" appears between quitAndInstall and the desktop relaunch; if the
-  install fails, status falls back to error and the pending-install record is
-  cleared automatically.
+  "installing" appears between quitAndInstall and the desktop relaunch. That
+  window is deliberately long — the OS installer stages the new bundle in
+  process on macOS, so the app is only force-quit after a hard bound of several
+  minutes (about a minute on Windows/Linux, where staging is external). Do NOT
+  read a few slow minutes in "installing" as a hang, and do not kill the desktop
+  app to "unstick" it: that is exactly what makes an install fail to land.
+
+  If quitAndInstall fails before the native handoff, status falls back to error
+  and the pending-install record is cleared. If the app quits but relaunches on
+  the OLD version, the install did not land: the next snapshot carries
+  "lastInstallFailed": { targetVersion, attempt }, which survives the restart.
+  Check that field before re-offering the same update — the first failure keeps
+  the downloaded archive so a retry is just another install, and only a second
+  failure discards the download and forces a fresh one.
 `,
 };
 
@@ -16974,6 +16986,91 @@ function formatStorageMaintenance(value: unknown): string {
   return `${header}\n\n${table}`;
 }
 
+function formatEpochTimestamp(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  // Finite and positive still admits epochs past 8.64e15, where toISOString
+  // throws RangeError. Every other field here degrades to a missing row rather
+  // than taking down `ade update status --text`; this one must too.
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const iso = date.toISOString();
+  return `${iso} (${relativeTime(iso)})`;
+}
+
+function formatUpdateStatus(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const errorDetails = isRecord(value.errorDetails) ? value.errorDetails : null;
+  const recentlyInstalled = isRecord(value.recentlyInstalled) ? value.recentlyInstalled : null;
+  const parked = isRecord(value.parked) ? value.parked : null;
+  // A previous install quit and the app came back on the old version. The
+  // snapshot deliberately keeps this across the restart, so an agent reading
+  // status must see it — otherwise the same update is silently offered again
+  // and the failure reads as "the update did nothing".
+  const lastInstallFailed = isRecord(value.lastInstallFailed) ? value.lastInstallFailed : null;
+  const autoApplyPending = isRecord(value.autoApplyPending) ? value.autoApplyPending : null;
+
+  const progressParts: string[] = [];
+  if (typeof value.progressPercent === "number" && Number.isFinite(value.progressPercent)) {
+    progressParts.push(`${Math.round(value.progressPercent)}%`);
+  }
+  if (typeof value.transferredBytes === "number" && typeof value.totalBytes === "number") {
+    progressParts.push(
+      `${formatBytes(value.transferredBytes)} of ${formatBytes(value.totalBytes)}`,
+    );
+  }
+  if (typeof value.bytesPerSecond === "number" && value.bytesPerSecond > 0) {
+    progressParts.push(`${formatBytes(value.bytesPerSecond)}/s`);
+  }
+
+  const failedAttempt = typeof lastInstallFailed?.attempt === "number"
+    ? lastInstallFailed.attempt
+    : null;
+  const lastInstallFailedLine = lastInstallFailed
+    // renderKeyValues truncates each value at 96 columns, so this has to stay
+    // short enough that the retry hint survives a long version string.
+    ? `${asString(lastInstallFailed.targetVersion) ?? "unknown"} did not land`
+      + `${failedAttempt != null ? ` · attempt ${failedAttempt}` : ""}`
+      + " · relaunched on old version — retry: ade update install"
+    : null;
+
+  const parkedLine = parked
+    ? `${asString(parked.reason) ?? "unknown reason"}${
+      formatEpochTimestamp(parked.at) ? ` at ${formatEpochTimestamp(parked.at)}` : ""
+    }`
+    : null;
+
+  const recentlyInstalledLine = recentlyInstalled
+    ? `${asString(recentlyInstalled.version) ?? "unknown version"}${
+      asString(recentlyInstalled.installedAt)
+        ? ` · ${relativeTime(asString(recentlyInstalled.installedAt)!)}`
+        : ""
+    }`
+    : null;
+
+  const errorLine = asString(value.error);
+  const errorDetailLine = errorDetails
+    ? `${asString(errorDetails.kind) ?? "error"} during ${
+      asString(errorDetails.phase) ?? "unknown phase"
+    }${errorDetails.preservesDownload === true ? " · download preserved" : ""}`
+    : null;
+
+  return renderKeyValues("ADE update", [
+    ["status", value.status],
+    ["current version", value.currentVersion],
+    ["latest known", value.latestKnownVersion],
+    ["update version", value.version],
+    ["progress", progressParts.length ? progressParts.join(" · ") : null],
+    ["release notes", value.releaseNotesUrl],
+    ["last install failed", lastInstallFailedLine],
+    ["parked", parkedLine],
+    ["recently installed", recentlyInstalledLine],
+    ["auto-apply at", formatEpochTimestamp(autoApplyPending?.deadlineAt)],
+    ["auto-apply suppressed until", formatEpochTimestamp(value.autoApplySuppressedUntil)],
+    ["error", errorLine],
+    ["error detail", errorDetailLine],
+  ]);
+}
+
 function formatLastFailureLine(report: AdeLastFailureReport): string {
   const repeat = report.count > 1 ? ` x${report.count}` : "";
   const scope = report.projectRoot ? ` [${report.projectRoot}]` : "";
@@ -18631,6 +18728,8 @@ function formatTextOutput(
       return formatStorageCompression(value);
     case "storage-maintenance":
       return formatStorageMaintenance(value);
+    case "update-status":
+      return formatUpdateStatus(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -18747,6 +18846,7 @@ function inferFormatter(
   if (label === "history commits") return "history-commits";
   if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
+  if (label === "update status") return "update-status";
   if (label.endsWith("actions")) return "actions-list";
   const firstStep = plan.steps[0];
   const params = typeof firstStep?.params === "object" && firstStep.params != null

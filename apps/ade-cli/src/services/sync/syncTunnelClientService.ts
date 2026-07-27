@@ -50,6 +50,17 @@ export type SyncTunnelClientStatus = {
 export type SyncTunnelClientService = {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Hand this client the shared listener it must bridge into.
+   *
+   * The client is cached one-per-machine and built by whichever runtime
+   * bootstrapped first — which is frequently NOT the runtime that owns the
+   * listener. Accessors captured at construction therefore read a listener
+   * that stays null forever, so the bridge can never validate and Relay dies
+   * fail-closed. The runtime that actually owns the listener calls this, and
+   * it wins regardless of who created the instance.
+   */
+  attachHostListener(listener: TunnelHostListener | null): void;
   /** Re-probe the active shared listener without opening a Relay pipe. */
   validateCurrentBridge(): Promise<boolean>;
   /** Dial Relay exactly like a ready-v2 controller and verify bridge readiness. */
@@ -60,18 +71,29 @@ export type SyncTunnelClientService = {
 
 type MachineIdentity = { machineKey: string; secret: string };
 
+/** The slice of the shared sync listener the relay bridge needs. */
+export type TunnelHostListener = {
+  getPort(): number | null;
+  getExpectedLoopbackNonce(): string;
+  getRelayBridgeProof(): string;
+  onLoopbackValidated(handler: () => void): () => void;
+};
+
 type SyncTunnelClientArgs = {
   logger?: Logger;
-  /** Local ADE sync WebSocket server port, or null when the host isn't up. */
-  getSyncPort: () => number | null;
-  /** Expected identity of the active in-process sync listener. */
-  getExpectedLoopbackNonce?: () => string | null;
-  /** Private proof accepted only by the active in-process sync listener. */
-  getRelayBridgeProof: () => string | null;
   /** Relay is usable only while the host has a current ADE account session. */
   isAccountSignedIn?: () => boolean;
   /** Refresh-aware lease; the account token is validated upstream and never retained here. */
   getAccountLease?: () => Promise<{ userId: string; expiresAt?: string | null } | null>;
+  /**
+   * Test seam only. Production passes none of these — bootstrap hands the
+   * listener to attachHostListener instead, so the attached listener is the
+   * single source of truth there. Wiring them from a per-runtime closure is
+   * what caused the cached-client bug this replaced.
+   */
+  getSyncPort?: () => number | null;
+  getExpectedLoopbackNonce?: () => string | null;
+  getRelayBridgeProof?: () => string | null;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
@@ -273,6 +295,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let started = false;
   let stopped = false;
   let connected = false;
+  let hostListener: TunnelHostListener | null = null;
+  let detachHostListener: (() => void) | null = null;
   let lastError: string | null = null;
   let lastControlError: string | null = null;
   let bridgeOpenFailure: {
@@ -458,10 +482,23 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
+  // An attached listener wins. Production never supplies the arg accessors, so
+  // there the listener is the only source — which is the point: the client is
+  // cached one-per-machine, and a closure captured by the first runtime to
+  // bootstrap outlived it and silently answered null forever.
+  const syncPort = (): number | null =>
+    hostListener ? hostListener.getPort() : args.getSyncPort?.() ?? null;
+  const expectedLoopbackNonce = (): string | null =>
+    hostListener
+      ? hostListener.getExpectedLoopbackNonce()
+      : args.getExpectedLoopbackNonce?.() ?? null;
+  const relayBridgeProofValue = (): string | null =>
+    hostListener ? hostListener.getRelayBridgeProof() : args.getRelayBridgeProof?.() ?? null;
+
   const bridgeValidationIdentity = (): BridgeValidationIdentity => {
     const eligible = accountSignedIn();
-    const port = args.getSyncPort();
-    const nonce = args.getExpectedLoopbackNonce?.() ?? null;
+    const port = syncPort();
+    const nonce = expectedLoopbackNonce();
     return {
       key: JSON.stringify([
         port,
@@ -1312,10 +1349,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
     if (!await validateCurrentBridge()) {
       rejectOpen(
-        args.getSyncPort() == null || !accountSignedIn()
+        syncPort() == null || !accountSignedIn()
           ? RELAY_CLOSE_HOST_UNAVAILABLE
           : RELAY_CLOSE_BRIDGE_REJECTED,
-        args.getSyncPort() == null ? "host sync listener unavailable" : "bridge validation failed",
+        syncPort() == null ? "host sync listener unavailable" : "bridge validation failed",
       );
       return;
     }
@@ -1337,7 +1374,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
       return;
     }
-    const relayBridgeProof = args.getRelayBridgeProof();
+    const relayBridgeProof = relayBridgeProofValue();
     if (!relayBridgeProof) {
       clearBridgeValidation();
       recordFailure("Relay bridge refused because the local bridge credential is unavailable.");
@@ -1626,9 +1663,52 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       await refreshAccountLease();
     },
 
+    attachHostListener(listener: TunnelHostListener | null): void {
+      if (hostListener === listener) return;
+      const hadListener = hostListener != null;
+      detachHostListener?.();
+      detachHostListener = null;
+      hostListener = listener;
+      // Swapping owners has to invalidate what the previous owner proved.
+      // Ready tunnels keep forwarding into the OLD listener's local socket, so
+      // leaving them up means "new owner wins" is only true for validation
+      // inputs while live traffic still reaches the machine that no longer
+      // owns the bridge. Drop the validation and the pipes together; the next
+      // tunnel re-opens against the new listener.
+      if (hadListener) {
+        clearBridgeValidation();
+        closeRelayConnections("host listener replaced");
+      }
+      if (!listener) return;
+      // Re-run validation whenever the listener re-validates loopback. This
+      // subscription used to be registered in the construction closure, so
+      // when the creating runtime had no listener it silently bound to
+      // nothing and the one retry path that could repair a startup-ordering
+      // failure never fired.
+      detachHostListener = listener.onLoopbackValidated(() => {
+        void validateCurrentBridge().catch((error) => {
+          log.warn?.("sync_tunnel.bridge_validation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
+      // The listener may already be bound and validated by the time the host
+      // attaches, in which case no future event is coming. Skip while it is
+      // still unbound: attach happens during runtime construction, before
+      // ensureListening, and validating there only records a "listener is not
+      // bound" failure that doctor and Settings surface until the subscription
+      // above clears it.
+      if (!stopped && listener.getPort() != null) {
+        void validateCurrentBridge().catch(() => {});
+      }
+    },
+
     async stop(): Promise<void> {
       stopped = true;
       started = false;
+      detachHostListener?.();
+      detachHostListener = null;
+      hostListener = null;
       clearReconnect();
       if (accountStatusTimer) {
         clearInterval(accountStatusTimer);

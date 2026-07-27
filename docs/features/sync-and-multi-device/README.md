@@ -628,7 +628,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   that holder, logs `sync_listener.zombie_reaped`, and retries the freed port
   once — so a dead-but-port-holding sibling brain cannot force the new brain
   onto a drifted port that phones never saved. The same diagnosis feeds the
-  `ade doctor` Sync-port row. The listener is
+  `ade doctor` Sync-port row, which is explicit that it cannot see a root-owned
+  holder: a stranded `tailscale serve` entry from an earlier run holds the port
+  through `tailscaled`, so a user-level probe reports no holders even though the
+  port is taken (`tailscale serve status` and `netstat -an -p tcp` show it).
+  Those leftovers are reclaimed on the next tailnet publish. The listener is
   handed between hosts on project switch: the new host adopts
   the open sockets — peer metadata carried over, pairing auth
   re-validated against the pairing store, changeset cursors recomputed
@@ -862,9 +866,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   validation is **proactive**: `validateCurrentBridge()` re-probes the
   loopback sync listener (matching port + identity nonce) whenever the control
   socket opens and whenever the shared listener reports a fresh loopback
-  validation (`sharedSyncListener.onLoopbackValidated`, wired in
-  `bootstrap.ts`), serializing probes through the same validation queue used by
-  inbound opens. This flips `relayBridgeValidated` — and therefore directory relay
+  validation, serializing probes through the same validation queue used by
+  inbound opens. The listener itself arrives through `attachHostListener()`,
+  which `bootstrap.ts` calls from the runtime that owns the shared listener —
+  not from the construction factory. The client is shared one-per-machine
+  (`getSharedSyncTunnelClientService`, keyed by `sync-cloud-relay.json`) and is
+  built by whichever runtime bootstraps first, which is regularly a scope with
+  no listener at all (a headless one-shot, an embedded fallback), so anything
+  captured at construction would answer `null` for the life of the process and
+  the bridge could never validate. Attaching supplies the port, loopback nonce,
+  and relay bridge proof, subscribes the `onLoopbackValidated` retry hook
+  (whose failures log `sync_tunnel.bridge_validation_failed`), and validates
+  immediately if the listener is already bound; `stop()` detaches it. This flips `relayBridgeValidated` — and therefore directory relay
   publication — true as soon as the listener is confirmed, so the earlier
   "bridge not validated against the sync port" state self-heals instead of
   waiting for an inbound client to open the first tunnel. `openTunnel` still
@@ -1299,7 +1312,19 @@ grace. Older peers close exactly when their initial token expires.
   (`SyncTailnetDiscoveryStatus`: `disabled | publishing | published |
   pending_approval | unavailable | failed`) plus `error` / `stderr`
   tails. The runtime tracks a `tailnetServeSignature` (`serve:<port>`)
-  so re-publishing is a no-op while the port hasn't changed.
+  so re-publishing is a no-op while the port hasn't changed. Because
+  `serve --bg` outlives the process that registered it, each successful publish
+  is followed by a best-effort reclaim (`staleAdeTailnetServePorts` +
+  `reclaimStaleTailnetServes`, logged as `sync_host.tailnet_serve_reclaimed`):
+  `tailscale serve status --json` is scanned for ADE's exact signature — a port
+  in the sync range forwarding to `127.0.0.1` on the **same** port — and every
+  match other than the live one is turned off. Without it, a restart or
+  force-kill strands an entry that Tailscale keeps bound on the tailnet address,
+  ADE's next wildcard bind fails `EADDRINUSE` against its own leftover and walks
+  one port higher, and the port ratchets upward on every start. A hand-rolled
+  `tailscale serve` forwarding anywhere else is never touched, and the live port
+  is re-checked inside the loop because reclaiming frees exactly the low ports a
+  concurrently restarting host prefers.
 
 ## Sync protocol (summary)
 

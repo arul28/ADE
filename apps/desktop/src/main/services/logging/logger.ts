@@ -29,6 +29,13 @@ export type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
   warn: (event: string, meta?: Record<string, unknown>) => void;
   error: (event: string, meta?: Record<string, unknown>) => void;
+  // Writes still-queued lines straight to disk. Normal logging batches through
+  // an async stream, so a caller about to end the process (app.exit, force
+  // quit) must call this or its last records are lost — exactly the records
+  // that explain why the process died. Note it cannot recover a batch already
+  // handed to an in-flight async flush, so call it immediately after the write
+  // that matters, while that line is still queued.
+  flushSync?: () => void;
 };
 
 function resolveMinLevel(): number {
@@ -79,6 +86,9 @@ export function createFileLogger(
   let queuedLines: string[] = [];
   let flushTimer: NodeJS.Timeout | null = null;
   let flushInProgress = false;
+  // The batch a running flush() spliced out of queuedLines but has not yet
+  // written. flushSync must be able to reach it.
+  let inFlightPayload: string | null = null;
   let flushRequested = false;
   let logDirReady = false;
   let logStream: fs.WriteStream | null = null;
@@ -194,6 +204,7 @@ export function createFileLogger(
     const payload = lines.join("");
     const bytes = Buffer.byteLength(payload, "utf8");
     flushInProgress = true;
+    inFlightPayload = payload;
 
     try {
       if (!ensureLogDir()) return;
@@ -203,6 +214,7 @@ export function createFileLogger(
     } catch {
       // Last ditch: avoid crashing the app on log write failures.
     } finally {
+      inFlightPayload = null;
       flushInProgress = false;
       if (flushRequested || queuedLines.length > 0) {
         flushRequested = false;
@@ -222,6 +234,31 @@ export function createFileLogger(
       void flush();
     }, flushIntervalMs);
     flushTimer.unref?.();
+  };
+
+  // Drains the in-flight batch as well as the queue. A line that lands exactly
+  // on the batch limit triggers flush() synchronously, which splices it out
+  // before its first await — so draining only queuedLines would return having
+  // written nothing, and the app.exit() that follows would kill the pending
+  // write and lose precisely the record this API exists to preserve. Rotation
+  // is skipped deliberately: on the way out, a slightly oversized log beats a
+  // lost one, and a duplicated line beats a missing one if the async write also
+  // lands.
+  const flushSync = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    const pending = inFlightPayload ?? "";
+    if (pending.length === 0 && queuedLines.length === 0) return;
+    const payload = pending + queuedLines.splice(0, queuedLines.length).join("");
+    try {
+      if (!ensureLogDir()) return;
+      fs.appendFileSync(logFilePath, payload);
+      estimatedFileSize = (estimatedFileSize ?? 0) + Buffer.byteLength(payload, "utf8");
+    } catch {
+      // Same contract as flush(): never crash the app over a log write.
+    }
   };
 
   const writeLine = (level: LogLevel, event: string, meta?: Record<string, unknown>) => {
@@ -245,6 +282,7 @@ export function createFileLogger(
     debug: (event, meta) => writeLine("debug", event, meta),
     info: (event, meta) => writeLine("info", event, meta),
     warn: (event, meta) => writeLine("warn", event, meta),
-    error: (event, meta) => writeLine("error", event, meta)
+    error: (event, meta) => writeLine("error", event, meta),
+    flushSync
   };
 }

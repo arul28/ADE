@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { runWithAbortSignal } from "./abortSignal";
@@ -171,7 +172,7 @@ import {
   createMachineIdentitySigningStore,
   type MachineIdentitySigningStore,
 } from "./machineIdentitySigningStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, SYNC_HOST_MAX_PORT, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
@@ -262,6 +263,40 @@ const MAX_INBOUND_CHANGESET_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES * 40;
 
 function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
+}
+
+/**
+ * Ports still advertised through `tailscale serve` that ADE published on an
+ * earlier run and never tore down.
+ *
+ * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
+ * that happens to sit in that range — anything forwarding elsewhere — is left
+ * strictly alone.
+ */
+export function staleAdeTailnetServePorts(
+  serveStatusJson: string,
+  currentPort: number,
+): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return [];
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return [];
+  const stale: number[] = [];
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    if (!Number.isInteger(port)) continue;
+    if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
+    if (port === currentPort) continue;
+    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
+    if (forward !== `127.0.0.1:${port}`) continue;
+    stale.push(port);
+  }
+  return stale.sort((left, right) => left - right);
 }
 
 export function isRuntimeHostPairingRecord(
@@ -530,6 +565,13 @@ type PeerState = {
   changesetRecoveryNotBeforeMs: number;
   remoteAddress: string | null;
   remotePort: number | null;
+  /**
+   * Frames received from this peer. A peer that closes having sent none never
+   * attempted the sync protocol at all — the relay readiness self-probe bridges
+   * in and disconnects like this on every poll — so it must not be logged with
+   * the same weight as a peer that tried to authenticate and was rejected.
+   */
+  framesReceived: number;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   adoptChallenge: {
@@ -3172,6 +3214,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pairingRecord: null,
       connectedAt: nowIso(),
       lastSeenAt: nowIso(),
+      framesReceived: 0,
       lastAppliedAt: null,
       lastKnownServerDbVersion: 0,
       latencyMs: null,
@@ -3226,6 +3269,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
     ws.on("message", (raw) => {
+      peer.framesReceived += 1;
       let envelope: ParsedSyncEnvelope;
       try {
         envelope = parseSyncEnvelope(wsDataToText(raw));
@@ -3275,7 +3319,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // changed.", "The machine took too long to respond.", …) while 1006
       // means the transport died with no close frame at all. Keep this log —
       // it is the primary tool for diagnosing mobile disconnect loops.
-      args.logger.info("sync_host.peer_closed", {
+      const closeDetail = {
         code,
         reason: reason.toString("utf8") || null,
         peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
@@ -3283,7 +3327,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         remoteAddress: peer.remoteAddress ?? null,
         connectedAt: peer.connectedAt ?? null,
         authenticated: peer.authenticated,
-      });
+      };
+      // A peer that never sent a frame never attempted the protocol: the relay
+      // readiness self-probe bridges in and drops on every poll, and so does a
+      // port scan. Logging those at info buried the real signal — a rejected
+      // peer looks identical at a glance — so keep them at debug. Anything that
+      // actually spoke, including every authentication failure, stays at info.
+      if (!peer.authenticated && peer.framesReceived === 0) {
+        args.logger.debug("sync_host.peer_closed_without_frames", closeDetail);
+      } else {
+        args.logger.info("sync_host.peer_closed", closeDetail);
+      }
       if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
         broadcastBrainStatus();
       }
@@ -3827,6 +3881,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           stdout: stdoutText || null,
           stderr: stderrText || null,
         });
+        // Best-effort and deliberately after publish: reclaiming old entries
+        // must never delay or endanger advertising the live port.
+        if (tailnetServeActivePublishToken === publishToken) {
+          void reclaimStaleTailnetServes(port).catch(() => {});
+        }
       })
       .catch((error: unknown) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
@@ -3867,6 +3926,72 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.logger.warn("sync_host.tailnet_discovery_failed", logPayload);
         }
       });
+  };
+
+  // A stranded `tailscale serve` entry forwards to a port nothing listens on.
+  // A live one — this host or a sibling ADE — has a real listener behind it.
+  const isLocalPortServing = (port: number): Promise<boolean> => new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    const settle = (serving: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(serving);
+    };
+    socket.setTimeout(750, () => settle(false));
+    socket.once("connect", () => settle(true));
+    socket.once("error", () => settle(false));
+  });
+
+  // `serve --bg` outlives the process that registered it, but the port ADE
+  // tracks is in-memory only, so every restart — and every force-kill that
+  // skips the teardown below — orphans the previous entry. Tailscale keeps it
+  // bound on the tailnet address, which makes ADE's own next wildcard bind fail
+  // EADDRINUSE against its own leftovers and walk one port higher, leaking
+  // another entry. It ratchets forever; one machine had 66 stranded ports and
+  // burned ~70 failed binds on every start. Reclaim them whenever we publish.
+  const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
+    const cli = resolveTailscaleCliPath();
+    let stale: number[];
+    try {
+      const { stdout } = await execFileAsync(cli, ["serve", "status", "--json"], { timeout: 10_000 });
+      stale = staleAdeTailnetServePorts(stdout, currentPort);
+    } catch {
+      // No Tailscale, no permission, unparseable output: publishing the current
+      // port matters more than tidying old ones.
+      return;
+    }
+    if (stale.length === 0) return;
+    let reclaimed = 0;
+    for (const port of stale) {
+      // The snapshot is stale the moment reclaiming starts: turning off a low
+      // port frees it, and a host restarting mid-loop prefers exactly those low
+      // ports. Without re-checking, this loop can turn off the serve entry a
+      // newer host just published and leave the machine with no tailnet route
+      // at all, while status still reports "published".
+      if (disposed) return;
+      if (tailnetServePort != null && port === tailnetServePort) continue;
+      // `tailscale serve` is machine-global while the sync-host singleton is
+      // uid- and channel-scoped, so a sibling ADE (another channel, another
+      // user) can legitimately own one of these ports. Its serve entry is
+      // byte-identical to a stale one — same port forwarding to 127.0.0.1 on
+      // the same port — so the status output cannot tell them apart. What does
+      // is whether anything is actually listening: a stranded entry forwards
+      // into nothing. Probe immediately before each teardown, so the window
+      // between the snapshot and this `off` is closed too.
+      if (await isLocalPortServing(port)) continue;
+      try {
+        await execFileAsync(cli, ["serve", `--tcp=${port}`, "off"], { timeout: 10_000 });
+        reclaimed += 1;
+      } catch {
+        // A single stubborn entry must not stop the rest.
+      }
+    }
+    args.logger.info("sync_host.tailnet_serve_reclaimed", {
+      currentPort,
+      staleCount: stale.length,
+      reclaimed,
+      ports: stale.slice(0, 20),
+    });
   };
 
   const unpublishTailnetDiscovery = async (): Promise<void> => {
@@ -6753,14 +6878,40 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
           }
-          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) return true;
+          // This rejection used to be silent on both ends: the host logged
+          // nothing and the client showed a bare "authentication". Name it,
+          // and tell the client the one thing that actually resolves it.
+          const knownRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) {
+            // Deliberately identical for both cases. The host knows which it
+            // is and logs it below, but telling an UNAUTHENTICATED caller
+            // whether a device id exists here turns this into an existence
+            // oracle, and the user's next step is the same either way.
+            authFailureMessage = "This device is not paired with this machine, or its saved"
+              + " pairing is no longer valid. Pair it again.";
+            args.logger.warn("sync_host.paired_device_rejected", {
+              deviceId: pairedAuth.deviceId,
+              reason: knownRecord ? "secret_mismatch" : "unknown_device",
+            });
+            return true;
+          }
           authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
           if (!authenticatedPairingRecord) return true;
           const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
           if (pairingAccountOwner) {
             const currentOwner = await refreshAccountLease();
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
-            if (currentOwner !== pairingAccountOwner) return true;
+            if (currentOwner !== pairingAccountOwner) {
+              // A LAN client rejected here sees only "authentication"; the
+              // account mismatch is the actionable part.
+              authFailureMessage = "This machine is signed in to a different ADE account than the one that paired this device.";
+              args.logger.warn("sync_host.paired_account_owner_mismatch", {
+                deviceId: pairedAuth.deviceId,
+                hasCurrentOwner: Boolean(currentOwner),
+                ownerMatches: false,
+              });
+              return true;
+            }
           }
           const dpopFailure = evaluatePairedHelloDpop({
             storedPublicKey: authenticatedPairingRecord.dpopPublicKey,

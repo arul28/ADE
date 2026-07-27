@@ -563,8 +563,9 @@ describe("RemoteConnectionService", () => {
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       pruneAccountOwned: vi.fn(() => [{
-        hostIdentity: { deviceId: "owned-host" },
+        hostIdentity: { deviceId: "owned-host", name: "Owned Host" },
         machineKey: "owned-key",
+        accountOwnerUserId: "account-a",
       }]),
     };
     const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
@@ -574,6 +575,13 @@ describe("RemoteConnectionService", () => {
     expect(service.reconcileAccountOwnership("account-b")).toEqual({
       removedTargetIds: [accountOwned.id],
       removedCredentialHostIds: ["owned-host"],
+      // Detail the prune log needs to name what trust it destroyed.
+      removedCredentials: [{
+        hostDeviceId: "owned-host",
+        hostName: "Owned Host",
+        previousOwnerUserId: "account-a",
+      }],
+      currentOwnerUserId: "account-b",
     });
     expect(pool.disconnect).toHaveBeenCalledWith(accountOwned.id);
     expect(pool.disconnect).not.toHaveBeenCalledWith(localOwned.id);
@@ -605,6 +613,8 @@ describe("RemoteConnectionService", () => {
     expect(service.reconcileAccountOwnership(null)).toEqual({
       removedTargetIds: [],
       removedCredentialHostIds: [],
+      removedCredentials: [],
+      currentOwnerUserId: null,
     });
     expect(pool.reconcileAccountRelayOwner).toHaveBeenCalledWith(null);
     expect(registry.pruneAccountOwned).not.toHaveBeenCalled();
