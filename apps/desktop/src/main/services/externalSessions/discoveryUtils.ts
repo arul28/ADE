@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
+  ExternalSessionMessage,
   ExternalSessionProvider,
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
@@ -43,6 +44,12 @@ export const JSONL_SCAN_BYTE_LIMIT = 512 * 1024;
 export const MESSAGE_COUNT_MAX_BYTES = 768 * 1024;
 export const EXTERNAL_SESSION_PREVIEW_MAX_LENGTH = 240;
 export const EXTERNAL_SESSION_TITLE_MAX_LENGTH = 160;
+export const EXTERNAL_SESSION_MESSAGES_MAX_COUNT = 8;
+export const EXTERNAL_SESSION_MESSAGE_MAX_LENGTH = 320;
+// Markup-dominant transport receipts are not useful session previews, while
+// ordinary prose containing a short JSX/XML fragment remains recoverable.
+export const EXTERNAL_SESSION_MARKUP_TEXT_MIN_RATIO = 0.35;
+const EXTERNAL_SESSION_CLIP_BOUNDARY_WINDOW_RATIO = 0.25;
 
 const PLACEHOLDER_SESSION_TITLES = new Set([
   "new session",
@@ -199,8 +206,7 @@ export function cleanSessionTitle(raw: string | null | undefined): string | null
   const normalized = title.toLowerCase();
   if (PLACEHOLDER_SESSION_TITLES.has(normalized)) return null;
   if (/^new (?:session|chat)\s*[-:]\s*\d{4}-\d{2}-\d{2}/u.test(normalized)) return null;
-  if (title.length <= EXTERNAL_SESSION_TITLE_MAX_LENGTH) return title;
-  return `${title.slice(0, EXTERNAL_SESSION_TITLE_MAX_LENGTH - 1).trimEnd()}…`;
+  return clipNormalizedExternalSessionText(title, EXTERNAL_SESSION_TITLE_MAX_LENGTH, "…");
 }
 
 export function asEpochMs(value: unknown): number | null {
@@ -238,8 +244,20 @@ function stripTerminalControlSequences(raw: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/gu, "");
 }
 
+/**
+ * Transport wrappers stripped wholesale. Every name here must be distinctive
+ * enough that it cannot plausibly occur in prose or pasted code — the unclosed
+ * form below deletes everything after the tag, so a generic word like `status`
+ * would truncate a real message. (`<status>` needs no entry of its own: it only
+ * appears inside `<task-notification>`, which is stripped as a block.)
+ */
 const EXTERNAL_SESSION_NOISE_TAGS = [
   "system-reminder",
+  "task-notification",
+  "task-id",
+  "tool-use-id",
+  "output-file",
+  "local-command-args",
   "local-command-caveat",
   "local-command-stdout",
   "command-name",
@@ -253,8 +271,51 @@ function stripKnownNoiseTags(raw: string): string {
   let text = raw;
   for (const tag of EXTERNAL_SESSION_NOISE_TAGS) {
     text = text.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, "giu"), " ");
+    text = text.replace(new RegExp(`^(?:\\s*<\\/${tag}\\s*>)+`, "iu"), " ");
+    // Suffix reads can begin or end inside a provider wrapper. Once a known
+    // opening tag has no close, everything after it is untrusted transport.
+    text = text.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*$`, "giu"), " ");
   }
   return text;
+}
+
+function hasEnoughTextOutsideMarkup(text: string): boolean {
+  const originalLength = text.replace(/\s+/gu, "").length;
+  if (!originalLength) return false;
+  const outsideMarkup = text
+    .replace(/<[^>]*>/gu, " ")
+    .replace(/<\/?[A-Za-z][A-Za-z0-9:_-]*\b[^<>\n]*$/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const outsideLength = outsideMarkup.replace(/\s+/gu, "").length;
+  return outsideLength > 0
+    && outsideLength / originalLength >= EXTERNAL_SESSION_MARKUP_TEXT_MIN_RATIO
+    && /[\p{L}\p{N}_]{3}/u.test(outsideMarkup);
+}
+
+/**
+ * Strip transport noise and return whatever real text is left.
+ *
+ * Deliberately does NOT apply the markup-density gate: this cleaner also feeds
+ * `externalChatHistoryImport`, which builds the *imported chat transcript*.
+ * Rejecting markup-heavy or very short turns there silently deletes real user
+ * messages from someone's history — a pasted JSX snippet, or a reply as ordinary
+ * as "ok". Preview selection wants that gate; history does not.
+ */
+function cleanExternalSessionText(raw: string): string | null {
+  const cleaned = stripKnownNoiseTags(stripTerminalControlSequences(raw)).trim();
+  return cleaned || null;
+}
+
+/**
+ * Preview-only: text that is mostly markup makes a useless row heading, which is
+ * how a raw `<task-notification>` blob once became a session's entire preview.
+ * Import and message-count paths must not use this.
+ */
+function previewWorthyText(raw: string | null | undefined): string | null {
+  const cleaned = raw?.trim();
+  if (!cleaned) return null;
+  return hasEnoughTextOutsideMarkup(cleaned) ? cleaned : null;
 }
 
 function isProviderGeneratedNotice(text: string): boolean {
@@ -300,10 +361,10 @@ export function cleanExternalSessionUserText(raw: string): string | null {
     if (markerIndex >= 0) text = text.slice(markerIndex + markerLength);
   }
 
-  const cleaned = stripKnownNoiseTags(text)
-    .trim();
+  const cleaned = cleanExternalSessionText(text);
+  if (!cleaned) return null;
   const normalizedForNotice = cleaned.replace(/\s+/gu, " ");
-  return cleaned && !isProviderGeneratedNotice(normalizedForNotice) ? cleaned : null;
+  return !isProviderGeneratedNotice(normalizedForNotice) ? cleaned : null;
 }
 
 export function stripAdeGuidance(raw: string): string {
@@ -317,8 +378,26 @@ export function clipExternalSessionText(
   const stripped = stripAdeGuidance(raw ?? "");
   if (!stripped) return null;
   const normalized = stripped.replace(/\s+/gu, " ").trim();
+  return clipNormalizedExternalSessionText(normalized, max, "...");
+}
+
+function clipNormalizedExternalSessionText(
+  normalized: string,
+  max: number,
+  suffix: string,
+): string | null {
+  if (!normalized) return null;
   if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
+  const contentBudget = Math.max(0, max - suffix.length);
+  if (contentBudget <= 0) return suffix.slice(0, Math.max(0, max)) || null;
+  let end = contentBudget;
+  const lastWhitespace = normalized.lastIndexOf(" ", contentBudget);
+  const boundaryFloor = Math.floor(contentBudget * (1 - EXTERNAL_SESSION_CLIP_BOUNDARY_WINDOW_RATIO));
+  if (lastWhitespace >= boundaryFloor) end = lastWhitespace;
+  let clipped = normalized.slice(0, end).trimEnd();
+  const lastOpen = clipped.lastIndexOf("<");
+  if (lastOpen > clipped.lastIndexOf(">")) clipped = clipped.slice(0, lastOpen).trimEnd();
+  return clipped ? `${clipped}${suffix}` : null;
 }
 
 function extractUserFacingText(value: unknown, depth = 0): string | null {
@@ -337,38 +416,111 @@ function extractUserFacingText(value: unknown, depth = 0): string | null {
   return extractText(record, depth);
 }
 
-function externalSessionUserTextFromRecord(record: unknown): string | null {
+/**
+ * The shape both record readers need, parsed once.
+ *
+ * These two used to derive role, type, text, and timestamp with near-identical
+ * inline chains — and they had already drifted: a record with `type: "message"`
+ * and no explicit role counted toward `messageCount` and could become the
+ * preview, but was dropped from `messages`. One classifier means they cannot
+ * disagree about what a record is.
+ */
+type ExternalSessionRecordShape = {
+  explicitRole: string | null;
+  topType: string | null;
+  payloadType: string | null;
+  rawText: string | null;
+  at: number | null;
+  isMeta: boolean;
+};
+
+function externalSessionRecordShape(record: unknown): ExternalSessionRecordShape | null {
   const obj = asRecord(record);
-  if (!obj || obj.isMeta === true) return null;
+  if (!obj) return null;
   const payload = asRecord(obj.payload);
   const message = asRecord(obj.message);
   const payloadMessage = asRecord(payload?.message);
-  const role = (
-    asString(message?.role)
-    ?? asString(payloadMessage?.role)
-    ?? asString(payload?.role)
-    ?? asString(obj.role)
-  )?.toLowerCase() ?? null;
-  const topType = asString(obj.type)?.toLowerCase() ?? null;
-  const payloadType = asString(payload?.type)?.toLowerCase() ?? null;
-  const explicitNonUserRole = role === "assistant" || role === "system" || role === "tool" || role === "developer";
-  const isUser = role === "user"
-    || (!explicitNonUserRole && (
-      topType === "user"
-      || topType === "user_message"
-      || payloadType === "user"
-      || payloadType === "user_message"
-      || ((!role || role === "user") && (topType === "message" || payloadType === "message"))
-    ));
-  if (!isUser) return null;
-  const text = extractUserFacingText(payloadMessage?.content)
-    ?? extractUserFacingText(message?.content)
-    ?? extractUserFacingText(payload?.message)
-    ?? extractUserFacingText(payload?.content)
-    ?? extractUserFacingText(payload?.text)
-    ?? extractUserFacingText(obj.content)
-    ?? extractUserFacingText(obj.text);
-  return text ? cleanExternalSessionUserText(text) : null;
+  return {
+    explicitRole: (
+      asString(message?.role)
+      ?? asString(payloadMessage?.role)
+      ?? asString(payload?.role)
+      ?? asString(obj.role)
+    )?.toLowerCase() ?? null,
+    topType: asString(obj.type)?.toLowerCase() ?? null,
+    payloadType: asString(payload?.type)?.toLowerCase() ?? null,
+    rawText: extractUserFacingText(payloadMessage?.content)
+      ?? extractUserFacingText(message?.content)
+      ?? extractUserFacingText(payload?.message)
+      ?? extractUserFacingText(payload?.content)
+      ?? extractUserFacingText(payload?.text)
+      ?? extractUserFacingText(obj.content)
+      ?? extractUserFacingText(obj.text),
+    at: asEpochMs(obj.timestamp)
+      ?? asEpochMs(message?.timestamp)
+      ?? asEpochMs(payload?.timestamp)
+      ?? asEpochMs(payloadMessage?.timestamp),
+    isMeta: obj.isMeta === true,
+  };
+}
+
+/** Single definition of "this record is a user turn", shared by both readers. */
+function isUserShape(shape: ExternalSessionRecordShape): boolean {
+  const { explicitRole, topType, payloadType } = shape;
+  if (explicitRole === "user") return true;
+  if (explicitRole === "assistant" || explicitRole === "system"
+    || explicitRole === "tool" || explicitRole === "developer") return false;
+  return topType === "user"
+    || topType === "user_message"
+    || payloadType === "user"
+    || payloadType === "user_message"
+    || topType === "message"
+    || payloadType === "message";
+}
+
+function isAssistantShape(shape: ExternalSessionRecordShape): boolean {
+  const { explicitRole, topType, payloadType } = shape;
+  if (explicitRole === "assistant") return true;
+  if (explicitRole) return false;
+  return topType === "assistant"
+    || topType === "assistant_message"
+    || payloadType === "assistant"
+    || payloadType === "assistant_message"
+    || payloadType === "agent_message";
+}
+
+function externalSessionUserTextFromRecord(record: unknown): string | null {
+  const shape = externalSessionRecordShape(record);
+  if (!shape || shape.isMeta || !isUserShape(shape)) return null;
+  return shape.rawText ? cleanExternalSessionUserText(shape.rawText) : null;
+}
+
+function recoverExternalSessionCommandName(raw: string | null): string | null {
+  if (!raw) return null;
+  const matches = Array.from(raw.matchAll(/<command-name\b[^>]*>\s*([\s\S]*?)\s*<\/command-name>/giu));
+  const command = matches.at(-1)?.[1]?.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim() ?? "";
+  return command ? cleanExternalSessionText(command) : null;
+}
+
+function externalSessionMessageFromRecord(record: unknown): ExternalSessionMessage | null {
+  const shape = externalSessionRecordShape(record);
+  if (!shape) return null;
+  const role = isUserShape(shape) ? "user" : isAssistantShape(shape) ? "assistant" : null;
+  if (!role) return null;
+  // A meta row is plumbing, but a slash command inside one is a real thing the
+  // user typed, so recover just that.
+  if (shape.isMeta) {
+    const command = recoverExternalSessionCommandName(shape.rawText);
+    const text = clipExternalSessionText(command, EXTERNAL_SESSION_MESSAGE_MAX_LENGTH);
+    return text ? { role: "user", text, at: shape.at } : null;
+  }
+  const cleaned = role === "user"
+    ? shape.rawText
+      ? cleanExternalSessionUserText(shape.rawText) ?? recoverExternalSessionCommandName(shape.rawText)
+      : null
+    : shape.rawText ? cleanExternalSessionText(shape.rawText) : null;
+  const text = clipExternalSessionText(cleaned, EXTERNAL_SESSION_MESSAGE_MAX_LENGTH);
+  return text ? { role, text, at: shape.at } : null;
 }
 
 export function firstUserTextFromRecords(
@@ -376,10 +528,42 @@ export function firstUserTextFromRecords(
   max = EXTERNAL_SESSION_PREVIEW_MAX_LENGTH,
 ): string | null {
   for (const record of records) {
-    const clipped = clipExternalSessionText(externalSessionUserTextFromRecord(record), max);
+    // The markup gate belongs here, not in the shared cleaner: a preview must be
+    // readable, while imported history must stay verbatim.
+    const worthy = previewWorthyText(externalSessionUserTextFromRecord(record));
+    const clipped = clipExternalSessionText(worthy, max);
     if (clipped) return clipped;
   }
   return null;
+}
+
+export function recentExternalSessionMessagesFromRecords(
+  records: unknown[],
+  maxMessages = EXTERNAL_SESSION_MESSAGES_MAX_COUNT,
+): ExternalSessionMessage[] {
+  const limit = Math.max(0, Math.min(EXTERNAL_SESSION_MESSAGES_MAX_COUNT, Math.floor(maxMessages)));
+  if (!limit) return [];
+  return records
+    .map((record) => externalSessionMessageFromRecord(record))
+    .filter((message): message is ExternalSessionMessage => message != null)
+    .filter((message) => previewWorthyText(message.text) != null)
+    .slice(-limit);
+}
+
+/**
+ * Codex persists a single conversational turn twice: a canonical `event_msg`
+ * and a mirrored `response_item`. Sampling the raw rows would show every turn
+ * twice and evict genuinely older exchanges from the capped window, so drop the
+ * mirror whenever the canonical form is present in the same file.
+ */
+export function canonicalCodexRecords(records: unknown[]): unknown[] {
+  const hasCanonical = records.some((record) => (
+    asString(asRecord(record)?.type)?.toLowerCase() === "event_msg"
+  ));
+  if (!hasCanonical) return records;
+  return records.filter((record) => (
+    asString(asRecord(record)?.type)?.toLowerCase() !== "response_item"
+  ));
 }
 
 function isCanonicalCodexUserRecord(record: unknown): boolean {
@@ -460,6 +644,7 @@ export function recordWithFile(args: {
   cwd: string | null;
   title?: string | null;
   preview?: string | null;
+  messages?: ExternalSessionMessage[] | null;
   createdAt?: number | null;
   updatedAt?: number | null;
   messageCount?: number | null;
@@ -477,6 +662,7 @@ export function recordWithFile(args: {
     cwd: args.cwd,
     title: args.title ?? null,
     preview: args.preview ?? null,
+    ...(args.messages !== undefined ? { messages: args.messages } : {}),
     createdAt: args.createdAt ?? null,
     updatedAt: args.updatedAt ?? sourceMtimeMs,
     messageCount: args.messageCount ?? null,

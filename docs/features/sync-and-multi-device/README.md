@@ -459,7 +459,21 @@ Cross-machine Work chat handoff:
 
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
   `CrossMachineHandoffModal.tsx` — Handoff-tab entry point and the staged
-  source/destination/clone/review/completion UI.
+  source/destination/clone/review/completion UI, including the destination
+  chat's model / reasoning / fast-mode / permission controls and the
+  fast-forward offer for a clean-but-behind destination lane.
+- `apps/desktop/src/renderer/components/chat/crossMachineHandoffPresentation.tsx`
+  — the modal's pure presentation half: stage/mode types, the `SourceCheck`
+  shape, the branch-row and route/repo-readiness copy, permission tone and icon
+  lookups, send-step labels, and the `CheckRow` component. Split out because
+  these are exactly the pieces that shipped wrong (a tone map that rendered
+  every permission pill grey, a branch row that called a two-commits-behind
+  branch "pushed") and were unreachable from a test inside the stateful modal.
+- `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` and
+  `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` —
+  cross-surface primitives the modal reuses rather than reimplementing: the
+  reason-carrying blocked-action button/list, and the composer's permission
+  pill.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
   source readiness, capsule creation and validation, destination preflight,
   deterministic lane/chat acceptance, durable replay record, and source notice.
@@ -698,8 +712,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
   The cross-machine handoff family (`chat.prepareCrossMachineHandoff`,
   `chat.validateCrossMachineSource`, `chat.preflightCrossMachineDestination`,
+  `chat.fastForwardCrossMachineHandoffLane`,
   `chat.acceptCrossMachineHandoff`, and `chat.markCrossMachineHandoff`) keeps
-  source and destination work inside their owning project runtimes. Final
+  source and destination work inside their owning project runtimes. The
+  fast-forward command lets a destination catch an existing clean lane up to the
+  source commit with a `--ff-only` merge it re-validates itself, so a shared
+  branch such as `main` is not an automatic dead end. Final
   acceptance is not queueable; destination idempotency is keyed by the
   capsule's handoff id and fingerprint instead of relying on command replay.
   Desktop **Send to machine** reaches the destination through multi-project

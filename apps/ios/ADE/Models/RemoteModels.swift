@@ -4364,12 +4364,45 @@ struct ExternalSessionImportedRef: Codable, Equatable {
   var sessionId: String
 }
 
+struct ExternalSessionMessage: Codable, Equatable {
+  var role: String
+  var text: String
+  var at: Double?
+
+  private enum CodingKeys: String, CodingKey {
+    case role
+    case text
+    case at
+  }
+
+  init(role: String, text: String, at: Double? = nil) {
+    self.role = role
+    self.text = text
+    self.at = at
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    role = try container.decode(String.self, forKey: .role)
+    guard role == "user" || role == "assistant" else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .role,
+        in: container,
+        debugDescription: "External session message role must be user or assistant."
+      )
+    }
+    text = try container.decode(String.self, forKey: .text)
+    at = try container.decodeIfPresent(Double.self, forKey: .at)
+  }
+}
+
 struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var provider: String
   var id: String
   var cwd: String?
   var title: String?
   var preview: String?
+  var messages: [ExternalSessionMessage]?
   var createdAt: Double?
   var updatedAt: Double?
   var messageCount: Int?
@@ -4385,6 +4418,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case cwd
     case title
     case preview
+    case messages
     case createdAt
     case updatedAt
     case messageCount
@@ -4401,6 +4435,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     cwd: String? = nil,
     title: String? = nil,
     preview: String? = nil,
+    messages: [ExternalSessionMessage]? = nil,
     createdAt: Double? = nil,
     updatedAt: Double? = nil,
     messageCount: Int? = nil,
@@ -4415,6 +4450,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.cwd = cwd
     self.title = title
     self.preview = preview
+    self.messages = messages
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.messageCount = messageCount
@@ -4432,6 +4468,14 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
     title = try container.decodeIfPresent(String.self, forKey: .title)
     preview = try container.decodeIfPresent(String.self, forKey: .preview)
+    if let decodedMessages = try? container.decodeIfPresent(
+      ADELossyArray<ExternalSessionMessage>.self,
+      forKey: .messages
+    ) {
+      messages = decodedMessages.wrappedValue
+    } else {
+      messages = nil
+    }
     createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt)
     updatedAt = try container.decodeIfPresent(Double.self, forKey: .updatedAt)
     messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount)

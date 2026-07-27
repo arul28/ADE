@@ -12,6 +12,8 @@ import {
   normalizeExternalSessionLimit,
   readFileSuffix,
   readJsonlRecords,
+  canonicalCodexRecords,
+  recentExternalSessionMessagesFromRecords,
   recordWithFile,
   resolveHomeDir,
   safeParseJson,
@@ -33,6 +35,8 @@ import type {
 const CODEX_LAUNCH_BACKWARD_SCAN_CHUNK_BYTES = 256 * 1024;
 const CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
 const CODEX_LAUNCH_BACKWARD_SCAN_MAX_LINE_BYTES = 1024 * 1024;
+const CODEX_RECENT_MESSAGES_BROWSE_BYTE_LIMIT = 64 * 1024;
+const CODEX_RECENT_MESSAGES_EXACT_BYTE_LIMIT = 128 * 1024;
 
 type CodexIndexEntry = {
   id: string;
@@ -427,6 +431,21 @@ function firstCodexUserText(records: unknown[]): string | null {
     : firstUserTextFromRecords(records);
 }
 
+function recentCodexRecords(filePath: string, exactLookup: boolean): unknown[] {
+  const text = readFileSuffix(
+    filePath,
+    exactLookup
+      ? CODEX_RECENT_MESSAGES_EXACT_BYTE_LIMIT
+      : CODEX_RECENT_MESSAGES_BROWSE_BYTE_LIMIT,
+  );
+  if (!text) return [];
+  const lines = text.split(/\r?\n/u);
+  if (!text.startsWith("{")) lines.shift();
+  return lines
+    .map((line) => safeParseJson(line))
+    .filter((record): record is Record<string, unknown> => record != null);
+}
+
 function codexApprovalPolicy(payload: Record<string, unknown>): AgentChatCodexApprovalPolicy | null {
   const value = (
     asString(payload.approval_policy)
@@ -785,5 +804,14 @@ export async function discoverCodexSessions(
     }));
   }
 
-  return sortDiscoveryRecords(Array.from(recordsById.values()), limit);
+  return sortDiscoveryRecords(Array.from(recordsById.values()), limit)
+    .map((record) => {
+      if (!record.sourcePath || record.sourcePath.endsWith(".jsonl.zst")) return record;
+      return {
+        ...record,
+        messages: recentExternalSessionMessagesFromRecords(
+          canonicalCodexRecords(recentCodexRecords(record.sourcePath, lookupId != null)),
+        ),
+      };
+    });
 }

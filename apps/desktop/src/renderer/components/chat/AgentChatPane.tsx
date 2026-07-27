@@ -5472,6 +5472,22 @@ export function AgentChatPane({
     handoffCursorModeId,
     handoffCursorConfigValues,
   ]);
+  /**
+   * Writes a whole `NativeControlState` back into the individual handoff fields.
+   * The cross-machine modal edits permissions against the *destination* model,
+   * so it needs to hand back a full state rather than poke one provider's field
+   * — which provider is even relevant depends on the model it just picked.
+   */
+  const applyHandoffNativeControls = useCallback((next: NativeControlState) => {
+    setHandoffClaudePermissionMode(next.claudePermissionMode);
+    setHandoffCodexApprovalPolicy(next.codexApprovalPolicy);
+    setHandoffCodexSandbox(next.codexSandbox);
+    setHandoffCodexConfigSource(next.codexConfigSource);
+    setHandoffOpenCodePermissionMode(next.opencodePermissionMode);
+    setHandoffDroidPermissionMode(next.droidPermissionMode);
+    setHandoffCursorModeId(next.cursorModeId);
+    setHandoffCursorConfigValues(next.cursorConfigValues);
+  }, []);
   const handoffNativePermissionMode = useMemo((): AgentChatPermissionMode | undefined | null => {
     if (!handoffTargetProvider) return null;
     return summarizeNativeControls(handoffTargetProvider, handoffNativeControlState).permissionMode
@@ -5511,7 +5527,11 @@ export function AgentChatPane({
   const crossMachineHandoffTarget = useMemo(() => ({
     targetModelId: remoteHandoffModelId,
     reasoningEffort: handoffReasoningEffort,
-    ...(remoteHandoffTargetProvider === "codex" || remoteHandoffTargetProvider === "opencode"
+    // Serialize fast mode for exactly the models whose toggle the modal renders
+    // (`modelSupportsFastMode`), not a hardcoded provider pair — otherwise a
+    // fast-capable Claude model shows a live control that never reaches the
+    // capsule, and the destination silently inherits the source's tier.
+    ...(remoteHandoffTargetDescriptor && modelSupportsFastMode(remoteHandoffTargetDescriptor)
       ? { fastMode: handoffFastMode }
       : {}),
     claudePermissionMode: handoffClaudePermissionMode,
@@ -5535,6 +5555,7 @@ export function AgentChatPane({
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
     remoteHandoffModelId,
+    remoteHandoffTargetDescriptor,
     remoteHandoffNativePermissionMode,
     remoteHandoffTargetProvider,
   ]);
@@ -12624,6 +12645,12 @@ export function AgentChatPane({
           onModelChange={setRemoteHandoffModelId}
           availableModelIds={handoffAvailableModelIds}
           forkAvailableModelIds={handoffForkAvailableModelIds}
+          reasoningEffort={handoffReasoningEffort}
+          onReasoningEffortChange={setHandoffReasoningEffort}
+          fastMode={handoffFastMode}
+          onFastModeChange={setHandoffFastMode}
+          nativeControls={handoffNativeControlState}
+          onNativeControlsChange={applyHandoffNativeControls}
           onOpenSignIn={openProviderSignIn}
           turnActive={turnActive}
           awaitingInput={selectedSessionAwaitingInput}

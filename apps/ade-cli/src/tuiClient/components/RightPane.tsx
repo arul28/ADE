@@ -14,8 +14,10 @@ import type { TuiChatSessionSummary } from "../adeApi";
 import { theme } from "../theme";
 import {
   externalSessionActionKey,
+  externalSessionAnchors,
   externalSessionBrowserActions,
   externalSessionProviderLabel,
+  externalSessionRowTitle,
   shortenCwd,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
@@ -1608,7 +1610,8 @@ function ExternalSessionBrowserPane({
             const absoluteIndex = windowStart + offset;
             const selected = absoluteIndex === selectedIndex;
             const brand = theme.provider(session.provider);
-            const title = session.title?.trim() || session.preview?.trim() || session.id;
+            const title = externalSessionRowTitle(session);
+            const anchors = externalSessionAnchors(session);
             const cwd = shortenCwd(session.cwd, 4);
             const messageCount = typeof session.messageCount === "number" && Number.isFinite(session.messageCount)
               ? `${compactNumber(session.messageCount)} prompt${session.messageCount === 1 ? "" : "s"}`
@@ -1634,9 +1637,28 @@ function ExternalSessionBrowserPane({
                     {`  ${endTruncate(badges.join(" · "), Math.max(8, inner - 2))}`}
                   </Text>
                 ) : null}
-                {selected && session.preview?.trim() ? (
-                  <Text color={theme.color.t3} wrap="truncate-end">
-                    {`  ${endTruncate(session.preview.trim(), Math.max(8, inner - 2))}`}
+                {/*
+                  Two anchors beat one snippet when you are picking a session out of a
+                  list: the opening ask says which task this was, the last turn says how
+                  far it got. Selected row only, one truncated line each, and each is
+                  suppressed when the heading above already carries that text — so the
+                  common titleless row still costs exactly the one line the old preview
+                  did, spent on newer information.
+                */}
+                {selected && anchors.started ? (
+                  <Text wrap="truncate-end">
+                    <Text color={theme.color.t5} dimColor>{"  started "}</Text>
+                    <Text color={theme.color.t4}>
+                      {endTruncate(anchors.started, Math.max(8, inner - 12))}
+                    </Text>
+                  </Text>
+                ) : null}
+                {selected && anchors.latest ? (
+                  <Text wrap="truncate-end">
+                    <Text color={theme.color.t5} dimColor>{"  latest  "}</Text>
+                    <Text color={theme.color.t3}>
+                      {endTruncate(anchors.latest, Math.max(8, inner - 12))}
+                    </Text>
                   </Text>
                 ) : null}
                 {selected && session.alreadyImported && session.importedSessionRef ? (

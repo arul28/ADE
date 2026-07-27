@@ -446,13 +446,6 @@ private struct WorkImportSessionSummaryRow: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
 
-        if let preview = session.previewSnippet {
-          Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-
         HStack(spacing: 5) {
           Text(providerDisplayName(session.provider))
           if let count = session.messageCount {
@@ -465,6 +458,22 @@ private struct WorkImportSessionSummaryRow: View {
         }
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
+
+        if let started = session.startedAnchorSnippet,
+           let latest = session.latestAnchorMessage {
+          WorkImportSessionAnchorBlock(started: started, latest: latest.text)
+        } else if let started = session.startedAnchorSnippet {
+          WorkImportSessionAnchorBlock(started: started, latest: nil)
+        } else if let latest = session.latestAnchorMessage {
+          WorkImportSessionAnchorBlock(started: nil, latest: latest.text)
+        } else if !session.hasConversationAnchorData,
+                  let preview = session.previewSnippet,
+                  !session.previewDuplicatesHeading {
+          Text(preview)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
       }
 
       Spacer(minLength: 4)
@@ -478,6 +487,41 @@ private struct WorkImportSessionSummaryRow: View {
     .overlay {
       RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+    }
+  }
+}
+
+private struct WorkImportSessionAnchorBlock: View {
+  let started: String?
+  let latest: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      if let started {
+        anchor(label: "started", text: started, lineLimit: 1)
+      }
+      if let latest {
+        anchor(label: "latest", text: latest, lineLimit: 2)
+      }
+    }
+    .padding(.leading, 9)
+    .overlay(alignment: .leading) {
+      Rectangle()
+        .fill(ADEColor.glassBorder)
+        .frame(width: 1)
+    }
+    .padding(.top, 2)
+  }
+
+  private func anchor(label: String, text: String, lineLimit: Int) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(label)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(text)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(lineLimit)
     }
   }
 }
@@ -602,26 +646,52 @@ private struct WorkImportSessionRow: View {
 
   @ViewBuilder
   private var previewDisclosure: some View {
-    if let preview = session.previewSnippet {
-      VStack(alignment: .leading, spacing: 6) {
-        Button {
-          withAnimation(.easeInOut(duration: 0.18)) {
-            previewExpanded.toggle()
-          }
-        } label: {
-          HStack(spacing: 4) {
-            Image(systemName: "chevron.right")
-              .font(.system(size: 10, weight: .bold))
-              .rotationEffect(.degrees(previewExpanded ? 90 : 0))
-            Text("Preview")
-              .font(.caption.weight(.semibold))
-          }
-          .foregroundStyle(ADEColor.textMuted)
-          .contentShape(Rectangle())
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) {
+          previewExpanded.toggle()
         }
-        .buttonStyle(.plain)
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .bold))
+            .rotationEffect(.degrees(previewExpanded ? 90 : 0))
+          Text(session.conversationMessages.isEmpty
+            ? "Preview"
+            : "Last \(session.conversationMessages.count) \(session.conversationMessages.count == 1 ? "message" : "messages")")
+            .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
 
-        if previewExpanded {
+      if previewExpanded {
+        if !session.conversationMessages.isEmpty {
+          ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+              ForEach(Array(session.conversationMessages.enumerated()), id: \.offset) { index, message in
+                WorkImportConversationMessageRow(message: message)
+                if index < session.conversationMessages.count - 1 {
+                  Divider()
+                    .overlay(ADEColor.glassBorder.opacity(0.45))
+                }
+              }
+            }
+          }
+          .frame(
+            height: min(
+              260,
+              max(92, CGFloat(session.conversationMessages.count) * 72)
+            )
+          )
+          .background(ADEColor.textPrimary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
+          }
+        } else if let preview = session.previewSnippet,
+                  !session.previewDuplicatesHeading {
           Text(preview)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
@@ -634,6 +704,11 @@ private struct WorkImportSessionRow: View {
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
             }
+        } else {
+          Text("No conversational preview was recoverable for this session.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
     }
@@ -666,6 +741,33 @@ private struct WorkImportSessionRow: View {
         }
       }
     }
+  }
+}
+
+private struct WorkImportConversationMessageRow: View {
+  let message: ExternalSessionMessage
+
+  private var isUser: Bool {
+    message.role == "user"
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Text(isUser ? "YOU" : "ADE")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(isUser ? ADEColor.purpleAccent : ADEColor.success)
+        .frame(width: 30, alignment: .leading)
+        .padding(.top, 2)
+
+      Text(message.text)
+        .font(.caption)
+        .foregroundStyle(isUser ? ADEColor.textPrimary : ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .background(isUser ? ADEColor.purpleAccent.opacity(0.025) : Color.clear)
   }
 }
 
@@ -758,13 +860,14 @@ private struct WorkImportActionButton: View {
   }
 }
 
-private extension ExternalSessionSummary {
+extension ExternalSessionSummary {
   var importIdentity: String {
     "\(provider):\(id)"
   }
 
   var rowHeading: String {
     if let realTitle { return realTitle }
+    if let openingPromptHeading { return openingPromptHeading }
     let whereText = cwdLastPathSegment ?? cwdDisplayName
     guard !relativeUpdatedAt.isEmpty else { return whereText }
     return "\(whereText) · \(relativeUpdatedAt)"
@@ -779,9 +882,52 @@ private extension ExternalSessionSummary {
     return trimmedTitle.isEmpty ? nil : trimmedTitle
   }
 
+  /// The opening ask, used as a heading when the provider persisted no title.
+  var openingPromptHeading: String? {
+    workImportHeadingText(previewSnippet)
+  }
+
+  var startedAnchorSnippet: String? {
+    guard let openingPromptHeading,
+          workImportHeadingText(openingPromptHeading) != workImportHeadingText(rowHeading) else {
+      return nil
+    }
+    return openingPromptHeading
+  }
+
+  var latestAnchorMessage: ExternalSessionMessage? {
+    guard let latest = conversationMessages.last else { return nil }
+    // Normalize both sides before comparing, and check the started anchor too:
+    // a titled single-message thread clears the heading check yet still repeats
+    // the opening prompt, which reads as a rendering bug.
+    let normalizedLatest = workImportHeadingText(latest.text)
+    guard normalizedLatest != workImportHeadingText(rowHeading) else { return nil }
+    if let started = startedAnchorSnippet, normalizedLatest == workImportHeadingText(started) {
+      return nil
+    }
+    return latest
+  }
+
+  var hasConversationAnchorData: Bool {
+    openingPromptHeading != nil || !conversationMessages.isEmpty
+  }
+
+  var conversationMessages: [ExternalSessionMessage] {
+    (messages ?? []).compactMap { message in
+      let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { return nil }
+      return ExternalSessionMessage(role: message.role, text: text, at: message.at)
+    }
+  }
+
   var previewSnippet: String? {
     let trimmedPreview = preview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmedPreview.isEmpty ? nil : trimmedPreview
+  }
+
+  var previewDuplicatesHeading: Bool {
+    guard let previewSnippet else { return false }
+    return workImportHeadingText(previewSnippet) == workImportHeadingText(rowHeading)
   }
 
   var trimmedCwd: String? {
@@ -806,7 +952,7 @@ private extension ExternalSessionSummary {
     }
     let segments = display.split(separator: "/").map(String.init)
     guard segments.count > 3 else { return display }
-    return ".../" + segments.suffix(3).joined(separator: "/")
+    return "…/" + segments.suffix(3).joined(separator: "/")
   }
 
   var relativeUpdatedAt: String {
@@ -814,6 +960,15 @@ private extension ExternalSessionSummary {
     let seconds = timestamp > 10_000_000_000 ? timestamp / 1000 : timestamp
     return WorkImportSessionFormatters.relative.localizedString(for: Date(timeIntervalSince1970: seconds), relativeTo: Date())
   }
+}
+
+private func workImportHeadingText(_ value: String?) -> String? {
+  let collapsed = value?
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !collapsed.isEmpty else { return nil }
+  guard collapsed.count > 72 else { return collapsed }
+  return String(collapsed.prefix(71)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
 }
 
 private enum WorkImportSessionFormatters {
@@ -825,16 +980,7 @@ private enum WorkImportSessionFormatters {
 }
 
 private func providerDisplayName(_ provider: String) -> String {
-  switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "claude": return "Claude"
-  case "codex": return "Codex"
-  case "cursor": return "Cursor"
-  case "droid": return "Droid"
-  case "opencode": return "OpenCode"
-  default:
-    let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "Unknown" : trimmed
-  }
+  workExternalSessionProviderName(provider)
 }
 
 private func workImportToolType(provider: String) -> String {

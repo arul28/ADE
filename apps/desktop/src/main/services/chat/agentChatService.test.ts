@@ -1578,6 +1578,8 @@ function createService(overrides: Record<string, unknown> = {}) {
 }
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
+const HANDOFF_BEHIND_SHA = "0123456789abcdef0123456789abcdef01234567";
+const HANDOFF_DIVERGED_SHA = "fedcba9876543210fedcba9876543210fedcba98";
 
 function installCleanCrossMachineGitFixture(
   branchRef = "feature/primary",
@@ -1595,6 +1597,65 @@ function installCleanCrossMachineGitFixture(
     if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
     if (command === `rev-parse refs/remotes/origin/${branchRef}`) return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
     if (command === `rev-parse --verify refs/heads/${branchRef}`) return { stdout: "", stderr: "", exitCode: 1 };
+    return { stdout: "", stderr: "", exitCode: 0 };
+  });
+}
+
+function installCrossMachineDestinationLaneGitFixture(options: {
+  branchRef?: string;
+  laneHead?: string;
+  remoteHead?: string;
+  dirtyPorcelain?: string;
+  ancestorExitCode?: number;
+  behindBy?: number;
+  expectedReachable?: boolean;
+  mergeExitCode?: number;
+} = {}) {
+  const branchRef = options.branchRef ?? "feature/primary";
+  const laneHead = options.laneHead ?? HANDOFF_BEHIND_SHA;
+  const remoteHead = options.remoteHead ?? HANDOFF_TEST_SHA;
+  let merged = false;
+  vi.mocked(runGit).mockImplementation(async (args) => {
+    const command = args.join(" ");
+    if (command === "status --porcelain=v1") {
+      return { stdout: options.dirtyPorcelain ?? "", stderr: "", exitCode: 0 };
+    }
+    if (command === "rev-parse HEAD") {
+      return { stdout: `${merged ? HANDOFF_TEST_SHA : laneHead}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `rev-parse refs/remotes/origin/${branchRef}`) {
+      return { stdout: `${remoteHead}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `rev-parse --verify refs/heads/${branchRef}`) {
+      return { stdout: "", stderr: "", exitCode: 1 };
+    }
+    if (command === `cat-file -e ${HANDOFF_TEST_SHA}^{commit}`) {
+      return {
+        stdout: "",
+        stderr: options.expectedReachable === false ? "missing commit" : "",
+        exitCode: options.expectedReachable === false ? 1 : 0,
+      };
+    }
+    if (command === `merge-base --is-ancestor ${laneHead} ${HANDOFF_TEST_SHA}`) {
+      return { stdout: "", stderr: "", exitCode: options.ancestorExitCode ?? 0 };
+    }
+    if (command === `rev-list --count ${laneHead}..${HANDOFF_TEST_SHA}`) {
+      return { stdout: `${options.behindBy ?? 3}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `merge --ff-only ${HANDOFF_TEST_SHA}`) {
+      const exitCode = options.mergeExitCode ?? 0;
+      if (exitCode === 0) merged = true;
+      return {
+        stdout: exitCode === 0 ? "Fast-forward\n" : "",
+        stderr: exitCode === 0 ? "" : "not possible to fast-forward",
+        exitCode,
+      };
+    }
+    if (args[0] === "ls-remote") {
+      return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
     return { stdout: "", stderr: "", exitCode: 0 };
   });
 }
@@ -2295,6 +2356,7 @@ describe("createAgentChatService", () => {
     expect(service.handoffSession).toBeTypeOf("function");
     expect(service.prepareCrossMachineHandoff).toBeTypeOf("function");
     expect(service.preflightCrossMachineDestination).toBeTypeOf("function");
+    expect(service.fastForwardCrossMachineHandoffLane).toBeTypeOf("function");
     expect(service.acceptCrossMachineHandoff).toBeTypeOf("function");
     expect(service.markCrossMachineHandoff).toBeTypeOf("function");
     expect(service.sendMessage).toBeTypeOf("function");
@@ -5383,6 +5445,26 @@ describe("createAgentChatService", () => {
         })).rejects.toThrow("transcript history without fork mode");
       });
 
+      it("refuses a cross-machine Droid fork with the portability message", async () => {
+        installCleanCrossMachineGitFixture();
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "custom:claude-sonnet-5-thinking-32000",
+          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+        });
+
+        await expect(service.prepareCrossMachineHandoff({
+          sourceSessionId: source.id,
+          handoffId: "handoff-droid-fork-1",
+          targetModelId: "droid/custom:claude-sonnet-5-thinking-32000",
+          mode: "fork",
+        })).rejects.toThrow(
+          "Droid sessions aren't portable between machines yet. Use a brief handoff instead.",
+        );
+      });
+
       it("packages Claude native history and bounded ADE transcript envelopes", async () => {
         installCleanCrossMachineGitFixture();
         installRealTranscriptParser();
@@ -5954,6 +6036,143 @@ describe("createAgentChatService", () => {
       });
     });
 
+    describe("destination lane fast-forward", () => {
+      const preflightArgs = {
+        targetModelId: "anthropic/claude-sonnet-5" as const,
+        sourceBranchRef: "feature/primary",
+        sourceHeadSha: HANDOFF_TEST_SHA,
+      };
+
+      const authorizeClaude = () => {
+        vi.mocked(detectAllAuth).mockResolvedValue([
+          { type: "cli-subscription", cli: "claude", path: "/usr/local/bin/claude", authenticated: true, verified: true },
+        ] as any);
+      };
+
+      it("offers a fast-forward for an existing clean lane strictly behind the source", async () => {
+        installCrossMachineDestinationLaneGitFixture({ behindBy: 3 });
+        authorizeClaude();
+        const { service } = createService();
+
+        const result = await service.preflightCrossMachineDestination(preflightArgs);
+
+        expect(result.blockingErrors).toEqual([]);
+        expect(result.laneFastForward).toEqual({
+          laneId: "lane-1",
+          laneName: "Primary",
+          behindBy: 3,
+        });
+        expect(result.warnings).toContain(
+          "Destination lane 'Primary' is 3 commits behind — ADE can fast-forward it.",
+        );
+      });
+
+      it.each([
+        ["dirty", { dirty: true, rebaseInProgress: false }, "uncommitted changes"],
+        ["rebasing", { dirty: false, rebaseInProgress: true }, "rebase in progress"],
+      ])("does not offer a fast-forward for a %s destination lane", async (_label, status, message) => {
+        installCrossMachineDestinationLaneGitFixture();
+        authorizeClaude();
+        const { service, laneService } = createService();
+        const lane = await laneService.getSummary("lane-1");
+        Object.assign(lane.status, status);
+
+        const result = await service.preflightCrossMachineDestination(preflightArgs);
+
+        expect(result).not.toHaveProperty("laneFastForward");
+        expect(result.blockingErrors.join(" ")).toContain(message);
+        expect(result.blockingErrors).toContain("Destination lane 'Primary' is not at the source commit.");
+      });
+
+      it("labels a non-ancestor destination lane as diverged", async () => {
+        installCrossMachineDestinationLaneGitFixture({
+          laneHead: HANDOFF_DIVERGED_SHA,
+          ancestorExitCode: 1,
+        });
+        authorizeClaude();
+        const { service } = createService();
+
+        const result = await service.preflightCrossMachineDestination(preflightArgs);
+
+        expect(result).not.toHaveProperty("laneFastForward");
+        expect(result.blockingErrors).toContain(
+          "Destination lane 'Primary' has diverged from the source commit.",
+        );
+      });
+
+      it("refuses to fast-forward a dirty lane", async () => {
+        installCrossMachineDestinationLaneGitFixture({ dirtyPorcelain: " M src/dirty.ts\n" });
+        const { service } = createService();
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).rejects.toThrow("has uncommitted changes and cannot be fast-forwarded");
+        expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "merge")).toBe(false);
+      });
+
+      it("refuses to fast-forward while a rebase is in progress", async () => {
+        installCrossMachineDestinationLaneGitFixture();
+        const { service, laneService } = createService();
+        const lane = await laneService.getSummary("lane-1");
+        lane.status.rebaseInProgress = true;
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).rejects.toThrow("while a rebase is in progress");
+      });
+
+      it("refuses when the fetched branch has moved away from the expected source commit", async () => {
+        installCrossMachineDestinationLaneGitFixture({ remoteHead: HANDOFF_DIVERGED_SHA });
+        const { service } = createService();
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).rejects.toThrow("no longer points at the expected source commit");
+      });
+
+      it("refuses an unreachable expected source commit", async () => {
+        installCrossMachineDestinationLaneGitFixture({ expectedReachable: false });
+        const { service } = createService();
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).rejects.toThrow("cannot reach the expected source commit");
+      });
+
+      it("refuses when the lane head is not an ancestor of the expected source commit", async () => {
+        installCrossMachineDestinationLaneGitFixture({
+          laneHead: HANDOFF_DIVERGED_SHA,
+          ancestorExitCode: 1,
+        });
+        const { service } = createService();
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).rejects.toThrow("current commit is not an ancestor");
+      });
+
+      it("fast-forwards a clean behind lane with git merge --ff-only", async () => {
+        installCrossMachineDestinationLaneGitFixture();
+        const { service } = createService();
+
+        await expect(service.fastForwardCrossMachineHandoffLane({
+          laneId: "lane-1",
+          expectedHead: HANDOFF_TEST_SHA,
+        })).resolves.toEqual({ ok: true, head: HANDOFF_TEST_SHA });
+        expect(runGit).toHaveBeenCalledWith(
+          ["merge", "--ff-only", HANDOFF_TEST_SHA],
+          expect.objectContaining({ cwd: tmpRoot, timeoutMs: 60_000 }),
+        );
+        expect(vi.mocked(runGit).mock.calls.some(([args]) => args.includes("--force"))).toBe(false);
+        expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "reset")).toBe(false);
+      });
+    });
+
     it("builds a bounded portable capsule only after the source is clean and published", async () => {
       installCleanCrossMachineGitFixture();
       const { service, laneService } = createService();
@@ -5993,6 +6212,79 @@ describe("createAgentChatService", () => {
       expect(prepared.sanitizedSensitiveContext).toBe(true);
       expect(JSON.stringify(prepared.capsule)).not.toContain("threadId");
       expect(JSON.stringify(prepared.capsule)).not.toContain("sdkSessionId");
+    });
+
+    it("inherits source settings into the capsule while preserving explicit target overrides", async () => {
+      installCleanCrossMachineGitFixture();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      Object.assign(source, {
+        reasoningEffort: "high",
+        fastMode: true,
+        claudePermissionMode: "bypassPermissions",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "config-toml",
+        opencodePermissionMode: "full-auto",
+        droidPermissionMode: "agi",
+        permissionMode: "full-auto",
+        cursorModeId: "plan",
+        cursorConfigValues: { privateSetting: "machine-local" },
+      });
+
+      const inherited = await service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-settings-inherited-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+      });
+      expect(inherited.capsule.target).toEqual({
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        reasoningEffort: "high",
+        fastMode: true,
+        claudePermissionMode: "bypassPermissions",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "config-toml",
+        opencodePermissionMode: "full-auto",
+        droidPermissionMode: "agi",
+        permissionMode: "full-auto",
+        cursorModeId: "plan",
+      });
+
+      const overridden = await service.prepareCrossMachineHandoff({
+        sourceSessionId: source.id,
+        handoffId: "handoff-settings-overridden-1",
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        reasoningEffort: null,
+        fastMode: false,
+        claudePermissionMode: "plan",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        permissionMode: "edit",
+        cursorModeId: null,
+      });
+      expect(overridden.capsule.target).toEqual({
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        reasoningEffort: null,
+        fastMode: false,
+        claudePermissionMode: "plan",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        permissionMode: "edit",
+        cursorModeId: null,
+      });
+      expect(overridden.capsule.target).not.toHaveProperty("cursorConfigValues");
     });
 
     it("removes credentials from remote URLs, titles, and lane names before transfer", async () => {
@@ -6201,7 +6493,9 @@ describe("createAgentChatService", () => {
       const remoteAuthCalls = vi.mocked(runGit).mock.calls.filter(([args]) =>
         args[0] === "ls-remote" || args[0] === "fetch",
       );
-      expect(remoteAuthCalls).toHaveLength(2);
+      // Preflight now fetches before evaluating whether an existing lane is a
+      // strict ancestor; acceptance fetches again at its mutation boundary.
+      expect(remoteAuthCalls).toHaveLength(3);
       for (const [, options] of remoteAuthCalls) {
         expect(options?.env).toMatchObject({
           GIT_TERMINAL_PROMPT: "0",

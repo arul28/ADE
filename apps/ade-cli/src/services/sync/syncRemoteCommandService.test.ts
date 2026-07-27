@@ -1750,6 +1750,7 @@ describe("createSyncRemoteCommandService", () => {
       "chat.prepareCrossMachineHandoff",
       "chat.validateCrossMachineSource",
       "chat.preflightCrossMachineDestination",
+      "chat.fastForwardCrossMachineHandoffLane",
       "chat.acceptCrossMachineHandoff",
       "chat.markCrossMachineHandoff",
       "chat.getContextUsage",
@@ -1866,6 +1867,10 @@ describe("createSyncRemoteCommandService", () => {
       blockingErrors: [],
       warnings: [],
     });
+    const fastForwardCrossMachineHandoffLane = vi.fn().mockResolvedValue({
+      ok: true,
+      head: capsule.source.headSha,
+    });
     const acceptCrossMachineHandoff = vi.fn().mockResolvedValue({
       handoffId: capsule.handoffId,
       laneId: "lane-2",
@@ -1879,6 +1884,7 @@ describe("createSyncRemoteCommandService", () => {
         prepareCrossMachineHandoff,
         validateCrossMachineSource,
         preflightCrossMachineDestination,
+        fastForwardCrossMachineHandoffLane,
         acceptCrossMachineHandoff,
         markCrossMachineHandoff,
       },
@@ -1918,6 +1924,10 @@ describe("createSyncRemoteCommandService", () => {
       sourceBranchRef: capsule.source.branchRef,
       sourceHeadSha: capsule.source.headSha,
     }))).resolves.toMatchObject({ providerAuthorized: true, modelAvailable: true });
+    await expect(service.execute(makePayload("chat.fastForwardCrossMachineHandoffLane", {
+      laneId: " lane-2 ",
+      expectedHead: ` ${capsule.source.headSha} `,
+    }))).resolves.toEqual({ ok: true, head: capsule.source.headSha });
     await expect(service.execute(makePayload("chat.acceptCrossMachineHandoff", {
       capsule,
       capsuleFingerprint: "fingerprint-1",
@@ -1935,6 +1945,10 @@ describe("createSyncRemoteCommandService", () => {
       targetModelId: capsule.target.targetModelId,
       sourceBranchRef: capsule.source.branchRef,
       sourceHeadSha: capsule.source.headSha,
+    });
+    expect(fastForwardCrossMachineHandoffLane).toHaveBeenCalledWith({
+      laneId: "lane-2",
+      expectedHead: capsule.source.headSha,
     });
     expect(acceptCrossMachineHandoff).toHaveBeenCalledWith({
       capsule,

@@ -21,16 +21,10 @@ import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCatalog";
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
+import { PERMISSION_TRIGGER_CLASS } from "./PermissionModePicker";
 
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
-
-const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
-  "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
-  "font-sans text-[10.5px] leading-none transition-colors duration-150",
-  "border-white/[0.06] bg-white/[0.03] text-fg/80",
-  "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
-);
 
 function SessionTypeToggle({
   value,
@@ -112,7 +106,7 @@ function LaunchNativePermissionControls({
           type="button"
           disabled={disabled}
           onClick={() => setClaudeOpen((open) => !open)}
-          className={cn(COMPOSER_PERMISSION_TRIGGER_CLASS, claudeOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
+          className={cn(PERMISSION_TRIGGER_CLASS, claudeOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
           title={selected.detail}
         >
           <span className="truncate font-medium">{selected.label}</span>
@@ -160,7 +154,7 @@ function LaunchNativePermissionControls({
           type="button"
           disabled={disabled}
           onClick={() => setCodexOpen((open) => !open)}
-          className={cn(COMPOSER_PERMISSION_TRIGGER_CLASS, codexOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
+          className={cn(PERMISSION_TRIGGER_CLASS, codexOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
           title={activePreset?.detail}
         >
           <span className="truncate font-medium">{label}</span>

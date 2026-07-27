@@ -329,6 +329,7 @@ import type {
 import {
   isPtySendPreDeliveryError,
   isTrackedAgentCliToolType,
+  providerSupportsCrossMachineHandoffFork,
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -29057,14 +29058,14 @@ export function createAgentChatService(args: {
     }
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
     if (mode === "fork") {
-      if (!providerSupportsHandoffFork(managed.session.provider)) {
+      if (!providerSupportsCrossMachineHandoffFork(managed.session.provider)) {
+        if (managed.session.provider === "droid") {
+          throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
+        }
         throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
       }
       if (targetProvider !== managed.session.provider) {
         throw new Error(FORK_SAME_PROVIDER_MESSAGE);
-      }
-      if (managed.session.provider === "droid") {
-        throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
       }
     }
     const portableText = (value: string): string => {
@@ -29140,6 +29141,22 @@ export function createAgentChatService(args: {
       ? portableText(sourceSession.title.trim()).slice(0, 300)
       : null;
     const sourceLaneName = portableText(lane.name).slice(0, 200);
+    const targetReasoningEffort = args.reasoningEffort !== undefined
+      ? args.reasoningEffort
+      : managed.session.reasoningEffort;
+    const targetFastMode = args.fastMode !== undefined
+      ? args.fastMode
+      : managed.session.fastMode;
+    const targetClaudePermissionMode = args.claudePermissionMode || managed.session.claudePermissionMode;
+    const targetCodexApprovalPolicy = args.codexApprovalPolicy || managed.session.codexApprovalPolicy;
+    const targetCodexSandbox = args.codexSandbox || managed.session.codexSandbox;
+    const targetCodexConfigSource = args.codexConfigSource || managed.session.codexConfigSource;
+    const targetOpenCodePermissionMode = args.opencodePermissionMode || managed.session.opencodePermissionMode;
+    const targetDroidPermissionMode = args.droidPermissionMode || managed.session.droidPermissionMode;
+    const targetPermissionMode = args.permissionMode || managed.session.permissionMode;
+    const targetCursorModeId = args.cursorModeId !== undefined
+      ? args.cursorModeId
+      : managed.session.cursorModeId;
     const capsule: AgentChatCrossMachineHandoffCapsule = {
       version: 1,
       handoffId,
@@ -29157,16 +29174,16 @@ export function createAgentChatService(args: {
       },
       target: {
         targetModelId: targetDescriptor.id,
-        ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
-        ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
-        ...(args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
-        ...(args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
-        ...(args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
-        ...(args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
-        ...(args.opencodePermissionMode ? { opencodePermissionMode: args.opencodePermissionMode } : {}),
-        ...(args.droidPermissionMode ? { droidPermissionMode: args.droidPermissionMode } : {}),
-        ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
-        ...(args.cursorModeId !== undefined ? { cursorModeId: args.cursorModeId } : {}),
+        ...(targetReasoningEffort !== undefined ? { reasoningEffort: targetReasoningEffort } : {}),
+        ...(targetFastMode !== undefined ? { fastMode: targetFastMode } : {}),
+        ...(targetClaudePermissionMode ? { claudePermissionMode: targetClaudePermissionMode } : {}),
+        ...(targetCodexApprovalPolicy ? { codexApprovalPolicy: targetCodexApprovalPolicy } : {}),
+        ...(targetCodexSandbox ? { codexSandbox: targetCodexSandbox } : {}),
+        ...(targetCodexConfigSource ? { codexConfigSource: targetCodexConfigSource } : {}),
+        ...(targetOpenCodePermissionMode ? { opencodePermissionMode: targetOpenCodePermissionMode } : {}),
+        ...(targetDroidPermissionMode ? { droidPermissionMode: targetDroidPermissionMode } : {}),
+        ...(targetPermissionMode ? { permissionMode: targetPermissionMode } : {}),
+        ...(targetCursorModeId !== undefined ? { cursorModeId: targetCursorModeId } : {}),
         // Cursor config values are machine-local and may contain private
         // runtime configuration. The destination resolves its own settings.
       },
@@ -29299,6 +29316,7 @@ export function createAgentChatService(args: {
     }
 
     let remoteBranchHeadSha: string | null = null;
+    let fetchedExpectedHead = false;
     if (branchRef && /^[0-9a-f]{40,64}$/i.test(expectedHead)) {
       const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
         cwd: projectRoot,
@@ -29311,10 +29329,38 @@ export function createAgentChatService(args: {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
         if (!remoteBranchHeadSha) blockingErrors.push(`Origin does not contain branch '${branchRef}'.`);
         else if (remoteBranchHeadSha !== expectedHead) blockingErrors.push("The destination sees a different remote branch commit than the source machine.");
+        else {
+          const fetch = await runGit(
+            // Forced refspec: the remote-tracking ref is only a local mirror of origin,
+      // and if the destination still records a newer or rewound commit the
+      // unforced update is rejected as non-fast-forward — blocking a
+      // fast-forward that is otherwise safe. The equality check below is what
+      // actually gates the merge.
+      ["fetch", "origin", `+refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`],
+            {
+              cwd: projectRoot,
+              timeoutMs: 60_000,
+              env: await destinationGitEnv(),
+            },
+          );
+          if (fetch.exitCode !== 0) {
+            blockingErrors.push(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+          } else {
+            const fetchedHead = await runGit(["rev-parse", `refs/remotes/origin/${branchRef}`], {
+              cwd: projectRoot,
+              timeoutMs: 8_000,
+            });
+            fetchedExpectedHead = fetchedHead.exitCode === 0 && fetchedHead.stdout.trim() === expectedHead;
+            if (!fetchedExpectedHead) {
+              blockingErrors.push(`The destination could not resolve origin/${branchRef} at the source commit.`);
+            }
+          }
+        }
       }
     }
 
     let existingLaneId: string | null = null;
+    let laneFastForward: AgentChatCrossMachineDestinationPreflightResult["laneFastForward"];
     if (branchRef) {
       const lanes = await laneService.list({ includeArchived: false, includeStatus: true });
       const existingLane = lanes.find((lane) => lane.branchRef.replace(/^refs\/heads\//, "") === branchRef) ?? null;
@@ -29323,10 +29369,45 @@ export function createAgentChatService(args: {
         if (existingLane.status.dirty) blockingErrors.push(`Destination lane '${existingLane.name}' has uncommitted changes.`);
         if (existingLane.status.rebaseInProgress) blockingErrors.push(`Destination lane '${existingLane.name}' has a rebase in progress.`);
         const existingHead = await runGit(["rev-parse", "HEAD"], { cwd: existingLane.worktreePath, timeoutMs: 8_000 });
-        if (existingHead.exitCode !== 0 || existingHead.stdout.trim() !== expectedHead) {
-          blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
-        } else if (!existingLane.status.dirty && !existingLane.status.rebaseInProgress) {
+        const laneHead = existingHead.stdout.trim();
+        if (existingHead.exitCode !== 0 || !laneHead) {
+          blockingErrors.push(`Destination lane '${existingLane.name}' does not have a readable commit.`);
+        } else if (laneHead === expectedHead && !existingLane.status.dirty && !existingLane.status.rebaseInProgress) {
           warnings.push(`ADE will reuse the existing clean lane '${existingLane.name}'.`);
+        } else if (laneHead !== expectedHead && fetchedExpectedHead) {
+          const ancestor = await runGit(["merge-base", "--is-ancestor", laneHead, expectedHead], {
+            cwd: existingLane.worktreePath,
+            timeoutMs: 15_000,
+          });
+          if (
+            ancestor.exitCode === 0
+            && !existingLane.status.dirty
+            && !existingLane.status.rebaseInProgress
+          ) {
+            const count = await runGit(["rev-list", "--count", `${laneHead}..${expectedHead}`], {
+              cwd: existingLane.worktreePath,
+              timeoutMs: 15_000,
+            });
+            const behindBy = Number.parseInt(count.stdout.trim(), 10);
+            if (count.exitCode === 0 && Number.isSafeInteger(behindBy) && behindBy > 0) {
+              laneFastForward = {
+                laneId: existingLane.id,
+                laneName: existingLane.name,
+                behindBy,
+              };
+              warnings.push(
+                `Destination lane '${existingLane.name}' is ${behindBy} ${behindBy === 1 ? "commit" : "commits"} behind — ADE can fast-forward it.`,
+              );
+            } else {
+              blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
+            }
+          } else if (ancestor.exitCode === 1) {
+            blockingErrors.push(`Destination lane '${existingLane.name}' has diverged from the source commit.`);
+          } else {
+            blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
+          }
+        } else if (laneHead !== expectedHead) {
+          blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
         }
       } else {
         const localHead = await runGit(["rev-parse", "--verify", `refs/heads/${branchRef}`], {
@@ -29342,17 +29423,14 @@ export function createAgentChatService(args: {
     const sourceProvider = typeof args.sourceProvider === "string" ? args.sourceProvider.trim() : "";
     let forkHandoffSupport: AgentChatCrossMachineDestinationPreflightResult["forkHandoffSupport"];
     if (sourceProvider) {
-      if (!providerSupportsHandoffFork(sourceProvider)) {
+      if (!providerSupportsCrossMachineHandoffFork(sourceProvider)) {
         forkHandoffSupport = {
           supported: false,
-          reason: sourceProvider === "cursor"
-            ? "Cursor chats can't fork history."
-            : "This chat's provider can't fork history.",
-        };
-      } else if (sourceProvider === "droid") {
-        forkHandoffSupport = {
-          supported: false,
-          reason: DROID_FORK_NOT_PORTABLE_REASON,
+          reason: sourceProvider === "droid"
+            ? DROID_FORK_NOT_PORTABLE_REASON
+            : sourceProvider === "cursor"
+              ? "Cursor chats can't fork history."
+              : "This chat's provider can't fork history.",
         };
       } else {
         const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : null;
@@ -29390,7 +29468,129 @@ export function createAgentChatService(args: {
       blockingErrors: Array.from(new Set(blockingErrors)),
       warnings: Array.from(new Set(warnings)),
       ...(forkHandoffSupport ? { forkHandoffSupport } : {}),
+      ...(laneFastForward ? { laneFastForward } : {}),
     };
+  };
+
+  const fastForwardCrossMachineHandoffLane = async (
+    args: { laneId: string; expectedHead: string },
+  ): Promise<{ ok: true; head: string }> => {
+    const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    if (!laneId) {
+      throw new Error("Cross-machine handoff lane fast-forward requires a destination lane.");
+    }
+    const expectedHead = typeof args.expectedHead === "string" ? args.expectedHead.trim() : "";
+    if (!/^[0-9a-f]{40,64}$/i.test(expectedHead)) {
+      throw new Error("Cross-machine handoff lane fast-forward received an invalid source commit.");
+    }
+
+    const lane = await laneService.getSummary(laneId, { includeStatus: true });
+    if (!lane || lane.archivedAt) {
+      throw new Error(`Cross-machine handoff lane '${laneId}' is unavailable or archived.`);
+    }
+    const branchRef = await requireGitBranchForHandoff(lane.branchRef, lane.worktreePath);
+    const fetch = await runGit(
+      ["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`],
+      {
+        cwd: lane.worktreePath,
+        timeoutMs: 60_000,
+        env: await destinationGitEnv(),
+      },
+    );
+    if (fetch.exitCode !== 0) {
+      throw new Error(
+        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`,
+      );
+    }
+    const fetchedHead = await requireGitOutputForHandoff(
+      ["rev-parse", `refs/remotes/origin/${branchRef}`],
+      lane.worktreePath,
+      `Cross-machine handoff lane '${lane.name}' could not resolve origin/${branchRef}.`,
+    );
+    if (fetchedHead !== expectedHead) {
+      throw new Error(
+        `Cross-machine handoff lane '${lane.name}' cannot fast-forward because origin/${branchRef} no longer points at the expected source commit.`,
+      );
+    }
+    const reachable = await runGit(["cat-file", "-e", `${expectedHead}^{commit}`], {
+      cwd: lane.worktreePath,
+      timeoutMs: 8_000,
+    });
+    if (reachable.exitCode !== 0) {
+      throw new Error(
+        `Cross-machine handoff lane '${lane.name}' cannot reach the expected source commit after fetching origin.`,
+      );
+    }
+
+    const refreshedLane = await laneService.getSummary(laneId, { includeStatus: true });
+    if (!refreshedLane || refreshedLane.archivedAt) {
+      throw new Error(`Cross-machine handoff lane '${laneId}' became unavailable before it could be updated.`);
+    }
+    if (refreshedLane.status.rebaseInProgress) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' cannot fast-forward while a rebase is in progress.`,
+      );
+    }
+    const status = await runGit(["status", "--porcelain=v1"], {
+      cwd: refreshedLane.worktreePath,
+      timeoutMs: 15_000,
+    });
+    if (status.exitCode !== 0) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${status.stderr.trim() || "unknown Git error"}`,
+      );
+    }
+    if (status.stdout.trim()) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' has uncommitted changes and cannot be fast-forwarded.`,
+      );
+    }
+
+    const laneHead = await requireGitOutputForHandoff(
+      ["rev-parse", "HEAD"],
+      refreshedLane.worktreePath,
+      `Cross-machine handoff lane '${refreshedLane.name}' does not have a readable commit.`,
+    );
+    if (laneHead === expectedHead) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' is already at the expected source commit.`,
+      );
+    }
+    const ancestor = await runGit(["merge-base", "--is-ancestor", laneHead, expectedHead], {
+      cwd: refreshedLane.worktreePath,
+      timeoutMs: 15_000,
+    });
+    if (ancestor.exitCode === 1) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' has diverged; its current commit is not an ancestor of the expected source commit.`,
+      );
+    }
+    if (ancestor.exitCode !== 0) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${ancestor.stderr.trim() || "unknown Git error"}`,
+      );
+    }
+
+    const merge = await runGit(["merge", "--ff-only", expectedHead], {
+      cwd: refreshedLane.worktreePath,
+      timeoutMs: 60_000,
+    });
+    if (merge.exitCode !== 0) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${merge.stderr.trim() || "git merge --ff-only failed"}`,
+      );
+    }
+    const head = await requireGitOutputForHandoff(
+      ["rev-parse", "HEAD"],
+      refreshedLane.worktreePath,
+      `Cross-machine handoff lane '${refreshedLane.name}' could not verify the updated commit.`,
+    );
+    if (head !== expectedHead) {
+      throw new Error(
+        `Cross-machine handoff lane '${refreshedLane.name}' did not reach the expected source commit.`,
+      );
+    }
+    return { ok: true, head };
   };
 
   const buildCrossMachineHandoffPrompt = (capsule: AgentChatCrossMachineHandoffCapsule): string => {
@@ -41337,6 +41537,7 @@ export function createAgentChatService(args: {
     prepareCrossMachineHandoff,
     validateCrossMachineSource,
     preflightCrossMachineDestination,
+    fastForwardCrossMachineHandoffLane,
     acceptCrossMachineHandoff,
     markCrossMachineHandoff,
     sendMessage,

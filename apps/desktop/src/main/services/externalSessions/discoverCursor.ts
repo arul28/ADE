@@ -224,12 +224,13 @@ export async function discoverCursorSessions(
     const cwd = transcriptCwd ?? candidate.trustedCwd ?? resolveCursorCwdFromSlug(candidate.projectSlug);
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const existing = recordsById.get(candidate.agentId);
+    const firstPrompt = firstUserTextFromRecords(jsonl);
     recordsById.set(candidate.agentId, recordWithFile({
       provider: "cursor",
       id: candidate.agentId,
       cwd: existing?.cwd ?? cwd,
       title: existing?.title ?? null,
-      preview: firstUserTextFromRecords(jsonl),
+      preview: firstPrompt,
       createdAt: existing?.createdAt ?? asEpochMs(first?.timestamp) ?? asEpochMs(asRecord(first?.message)?.timestamp),
       updatedAt: Math.max(existing?.updatedAt ?? 0, candidate.mtimeMs),
       messageCount: countJsonlUserMessagesCheap(candidate.filePath, "cursor"),

@@ -1480,6 +1480,7 @@ export type SyncRemoteCommandAction =
   | "chat.prepareCrossMachineHandoff"
   | "chat.validateCrossMachineSource"
   | "chat.preflightCrossMachineDestination"
+  | "chat.fastForwardCrossMachineHandoffLane"
   | "chat.acceptCrossMachineHandoff"
   | "chat.markCrossMachineHandoff"
   | "chat.getContextUsage"

@@ -884,6 +884,21 @@ function parseCrossMachineDestinationPreflightArgs(
   };
 }
 
+function parseFastForwardCrossMachineHandoffLaneArgs(
+  value: Record<string, unknown>,
+): { laneId: string; expectedHead: string } {
+  return {
+    laneId: requireString(
+      value.laneId,
+      "chat.fastForwardCrossMachineHandoffLane requires laneId.",
+    ),
+    expectedHead: requireString(
+      value.expectedHead,
+      "chat.fastForwardCrossMachineHandoffLane requires expectedHead.",
+    ),
+  };
+}
+
 function parsePrepareCrossMachineHandoffArgs(
   value: Record<string, unknown>,
 ): AgentChatPrepareCrossMachineHandoffArgs {
@@ -4115,6 +4130,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.preflightCrossMachineDestination", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").preflightCrossMachineDestination(
       parseCrossMachineDestinationPreflightArgs(payload),
+    ));
+  register("chat.fastForwardCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").fastForwardCrossMachineHandoffLane(
+      parseFastForwardCrossMachineHandoffLaneArgs(payload),
     ));
   register("chat.acceptCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").acceptCrossMachineHandoff(

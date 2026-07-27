@@ -7979,7 +7979,8 @@ final class SyncService: ObservableObject {
     laneId: String? = nil,
     cwd: String? = nil,
     scope: String = "project",
-    limit: Int? = nil
+    limit: Int? = nil,
+    sessionId: String? = nil
   ) async throws -> [ExternalSessionSummary] {
     var args: [String: Any] = ["scope": scope]
     if let providers, !providers.isEmpty {
@@ -7993,6 +7994,9 @@ final class SyncService: ObservableObject {
     }
     if let limit, limit > 0 {
       args["limit"] = limit
+    }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
     }
     let result = try await sendDecodableCommand(
       action: "work.listExternalSessions",

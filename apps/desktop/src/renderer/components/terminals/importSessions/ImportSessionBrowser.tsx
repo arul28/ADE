@@ -27,7 +27,7 @@ import {
   shortenCwd,
   type ImportAffordance,
 } from "./affordances";
-import { formatUpdatedAt, sessionHeading } from "./sessionPresentation";
+import { formatUpdatedAt, sessionAnchors, sessionHeading } from "./sessionPresentation";
 
 const PROVIDER_FILTERS: Array<{ id: ExternalSessionProvider | "all"; label: string }> = [
   { id: "all", label: "All" },
@@ -183,7 +183,10 @@ export function ImportSessionBrowser({
       .filter((s) => (providerFilter === "all" ? true : s.provider === providerFilter))
       .filter((s) =>
         q
-          ? [s.title, s.preview, s.cwd, s.id]
+          // Search the whole thread sample, not just the title: the words you
+          // remember from a conversation are usually in the conversation, and
+          // provider titles are frequently absent entirely.
+          ? [s.title, s.preview, s.cwd, s.id, ...(s.messages ?? []).map((m) => m.text)]
               .some((value) => value?.toLowerCase().includes(q))
           : true,
       )
@@ -269,7 +272,9 @@ export function ImportSessionBrowser({
       title="Import session"
       icon={DownloadSimple}
       widthClassName="w-[min(980px,calc(100vw-4rem))]"
-      heightClassName="h-[min(860px,calc(100dvh-4rem))]"
+      // Content-driven, not pinned: the details stage is far shorter than the
+      // list stage, and a fixed height left ~400px of dead space under it.
+      heightClassName="max-h-[min(860px,calc(100dvh-4rem))]"
       busy={Boolean(importing)}
     >
       <div className="flex h-full min-h-0 flex-col gap-3" onKeyDown={onListKeyDown}>
@@ -458,6 +463,7 @@ function ImportSessionRow({
 }) {
   const heading = sessionHeading(summary);
   const preview = summary.preview?.trim();
+  const anchors = sessionAnchors(summary);
 
   return (
     <li
@@ -515,7 +521,29 @@ function ImportSessionRow({
             ) : null}
           </div>
 
-          {preview && preview !== heading ? (
+          {anchors.started || anchors.latest ? (
+            /*
+              Two anchors beat one snippet: what the thread started as, and where
+              it left off. Picking the right session out of a long list is almost
+              always a question of "which task was this", which the opening ask
+              answers, plus "how far did it get", which the last turn answers.
+            */
+            <div className="mt-2 flex flex-col gap-1 border-l border-white/[0.08] pl-2.5">
+              {anchors.started ? (
+                <p className="line-clamp-1 text-[10.5px] leading-relaxed text-muted-fg/60">
+                  <span className="mr-1.5 font-medium text-muted-fg/45">started</span>
+                  {anchors.started}
+                </p>
+              ) : null}
+              {anchors.latest ? (
+                <p className="line-clamp-2 text-[10.5px] leading-relaxed text-muted-fg/80">
+                  <span className="mr-1.5 font-medium text-muted-fg/45">latest</span>
+                  {anchors.latest.text}
+                </p>
+              ) : null}
+            </div>
+          ) : preview && preview !== heading ? (
+            // Older hosts predate the anchors; fall back to the single snippet.
             <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted-fg/70">{preview}</p>
           ) : null}
         </div>
@@ -560,6 +588,7 @@ function ImportSessionDetail({
   const unavailable = allAffordances.filter((action) => !action.enabled);
   const heading = sessionHeading(summary);
   const preview = summary.preview?.trim();
+  const messages = summary.messages ?? [];
 
   const choose = (affordance: ImportAffordance) => {
     if (
@@ -604,7 +633,54 @@ function ImportSessionDetail({
             </div>
           </div>
         </div>
-        {preview ? (
+        {messages.length > 0 ? (
+          /*
+            The thread is what you are actually identifying, so it gets the room
+            the old fixed-height dialog was wasting below the actions. Bounded
+            and scrollable so long samples never push the action grid off-screen.
+          */
+          <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.06] bg-black/10">
+            <div className="flex items-center gap-2 border-b border-white/[0.05] px-4 py-2 text-[10px] text-muted-fg/55">
+              <span>Last {messages.length} {messages.length === 1 ? "message" : "messages"}</span>
+              <span className="ml-auto truncate font-mono text-[9.5px] text-muted-fg/40" title={summary.id}>{summary.id}</span>
+            </div>
+            {/* Focusable so keyboard-only users can scroll a transcript that
+                overflows; nothing inside it is otherwise focusable. */}
+            <div
+              className="max-h-[280px] overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-400/40"
+              tabIndex={0}
+              role="region"
+              aria-label="Session conversation"
+            >
+              {messages.map((message, index) => (
+                <div
+                  key={`${message.at ?? index}-${index}`}
+                  className={cn(
+                    "flex gap-3 px-4 py-2.5 text-[11.5px] leading-relaxed",
+                    index > 0 && "border-t border-white/[0.035]",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "w-8 shrink-0 pt-px text-[9.5px] font-semibold uppercase tracking-wide",
+                      message.role === "user" ? "text-violet-300/85" : "text-emerald-300/70",
+                    )}
+                  >
+                    {message.role === "user" ? "you" : "ADE"}
+                  </span>
+                  <span
+                    className={cn(
+                      "min-w-0 whitespace-pre-wrap break-words",
+                      message.role === "user" ? "text-fg/85" : "text-muted-fg/80",
+                    )}
+                  >
+                    {message.text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : preview ? (
           <div className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-white/[0.06] bg-black/10 px-4 py-3 text-[12px] leading-relaxed text-muted-fg/85">
             {preview}
           </div>

@@ -1970,6 +1970,20 @@ export function providerSupportsHandoffFork(provider: AgentChatProvider | null |
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
 }
 
+/**
+ * Droid can fork locally, but its session index is machine-local, so the
+ * relocated-file resume path is not portable across ADE machines yet. Derived
+ * from the local set rather than restated, so adding a provider to one list
+ * cannot silently leave the other behind.
+ */
+export const CROSS_MACHINE_HANDOFF_FORK_PROVIDERS = HANDOFF_FORK_PROVIDERS
+  .filter((provider) => provider !== "droid");
+
+export function providerSupportsCrossMachineHandoffFork(provider: string | null | undefined): boolean {
+  return provider != null
+    && (CROSS_MACHINE_HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
+}
+
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
@@ -2133,6 +2147,16 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
   forkHandoffSupport?: {
     supported: boolean;
     reason?: string;
+  };
+  /**
+   * Present when the destination's existing lane is clean and a strict ancestor of the
+   * source commit, so ADE can safely fast-forward it instead of blocking. Absent on older
+   * destinations and whenever a fast-forward would not be safe.
+   */
+  laneFastForward?: {
+    laneId: string;
+    laneName: string;
+    behindBy: number;
   };
 };
 

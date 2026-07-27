@@ -11,6 +11,7 @@ import type { TerminalToolType } from "../../../../shared/types";
 export type {
   ExternalSessionProvider,
   ExternalSessionCapabilities,
+  ExternalSessionMessage,
   ExternalSessionSummary,
   ExternalSessionListArgs,
   ExternalSessionImportArgs,

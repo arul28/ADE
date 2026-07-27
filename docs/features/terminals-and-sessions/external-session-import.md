@@ -31,7 +31,7 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point. Runs provider discovery, applies the capabilities matrix, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. |
-| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, semantic user-prompt extraction/counting, provider-wrapper cleanup, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
+| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles and excludes SDK entrypoints. |
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex rollout JSONL files under `CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`), enriches them from `session_index.jsonl`, and maintains the rebuildable cwd/importability index used by project-scoped discovery. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Discovers current Cursor sessions from `~/.cursor/chats/<workspace-md5>/<agentId>/store.db`, merges legacy transcript previews from `~/.cursor/projects/.../agent-transcripts`, uses `.workspace-trusted` for exact cwd recovery, and excludes SDK `agent-<uuid>` sessions. |
@@ -50,17 +50,17 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions` and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/import payloads and results. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop two-stage browser/details flow: provider filters, search, project/all scope, progressive scans, full details, target lane selection, imported/active badges, Open-in-ADE, and safe action dispatch. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop two-stage browser/details flow: provider filters, search (which spans the sampled `messages` text, not just titles), project/all scope, progressive scans, full details with a bounded scrollable message sample, target lane selection, imported/active badges, Open-in-ADE, and safe action dispatch. The dialog height is content-driven rather than pinned, because the details stage is far shorter than the list stage. |
 | `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Canonical capability-to-action mapper for the 2x2 Continue/Copy x ADE-chat/CLI-session policy, plus the renderer compatibility export. Shared directly with the TUI. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time helpers. Provider titles win; untitled rows use cwd + relative time and never reuse the prompt preview as a heading. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time/anchor helpers. Provider titles win, then the opening prompt (`preview`), then cwd + relative time. `sessionAnchors` returns the row's "started"/"latest" pair and drops whichever one the heading is already showing, so a row never prints the same sentence twice. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge/types/display helpers for external sessions. |
 | `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` | Adopts import results into the Work surface and focuses existing imported sessions without re-importing. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`, `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx`, `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` | Wires the import browser into the Work draft/new-session surface and routes imported or already-imported sessions to the selected Work tab. |
 | `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts`, `apps/ade-cli/src/tuiClient/components/RightPane.tsx` | ADE Code TUI helpers and right-pane rendering for the same external-session DTOs and affordance mapper. |
-| `apps/ios/ADE/Models/RemoteModels.swift` | iOS Codable mirrors for `ExternalSessionSummary`, capabilities, imported refs, and import results. |
-| `apps/ios/ADE/Services/SyncService.swift` | iOS client methods for `work.listExternalSessions` and `work.importExternalSession`. |
+| `apps/ios/ADE/Models/RemoteModels.swift` | iOS Codable mirrors for `ExternalSessionSummary`, `ExternalSessionMessage`, capabilities, imported refs, and import results. `messages` decodes through `ADELossyArray`, and `ExternalSessionMessage` rejects any role other than `user`/`assistant`, so a bad element is dropped instead of taking the whole summary down. A new key must be added in all three places inside the summary struct — `CodingKeys`, the memberwise `init`, and `init(from:)` — or it silently decodes as nil. |
+| `apps/ios/ADE/Services/SyncService.swift` | iOS client methods for `work.listExternalSessions` (including the exact `sessionId` lookup) and `work.importExternalSession` (model, permission mode, reasoning effort, and fast mode). |
 | `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` | Adds the Import session affordance when a concrete lane is selected. |
-| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift`, `apps/ios/ADE/Views/Work/WorkExternalSessionAffordances.swift` | iOS two-stage browser/details flow plus pure action policy. Mirrors the capability model, target lane selection, project/all scope, provider chips/logos, Open-in-ADE, imported/active badges, and persisted-summary navigation after import. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift`, `apps/ios/ADE/Views/Work/WorkExternalSessionAffordances.swift` | iOS two-stage browser/details flow plus pure action policy. Mirrors the capability model, target lane selection, project/all scope, provider chips/logos, Open-in-ADE, imported/active badges, started/latest row anchors, the model + reasoning + fast-mode + permission controls shown before a chat import, and persisted-summary navigation after import. `workExternalSessionProviderName` is the one provider-label map both files use. |
 | `apps/ios/ADE/Views/Work/WorkRootComponents.swift`, `apps/ios/ADE/Views/Work/WorkStatusAndFormattingHelpers.swift`, `apps/ios/ADE/Views/Components/ADEDesignSystem.swift` | Shared iOS provider logos, fallback symbols, and provider accent colors consumed by the import screen. |
 
 ## Architecture
@@ -95,14 +95,58 @@ Titles and previews are deliberately separate:
 
 - `title` is a real provider-persisted title, or `null`. Discovery must not use
   the first user message as a title.
-- `preview` is a distinct snippet, usually the first user message after ADE
-  guidance and provider transport-wrapper stripping. Synthetic Claude
+- `preview` is the thread's **opening prompt** — the first real human message,
+  after ADE guidance and provider transport-wrapper stripping. It is what the
+  row heading falls back to when the provider persisted no title, which is the
+  common case for Claude CLI transcripts. Synthetic Claude
   `<local-command-caveat>`, `<command-name>`, `<local-command-stdout>`, and
-  Codex environment/AGENTS payloads must never become previews.
+  Codex environment/AGENTS payloads must never become previews. There is no
+  separate first-prompt field: an alias of `preview` is one more thing to keep
+  in sync across the DTO, the sync command, the iOS mirror, and two renderers,
+  for no information the summary did not already carry.
+- `messages` is a bounded sample of recent user/assistant exchanges, oldest to
+  newest, capped by `EXTERNAL_SESSION_MESSAGES_MAX_COUNT` (8) and clipped per
+  message by `EXTERNAL_SESSION_MESSAGE_MAX_LENGTH` (320). Claude derives it from
+  the tail of its existing prefix + suffix scan at no extra I/O cost; Codex
+  reads a bounded rollout suffix (64 KiB while browsing, 128 KiB for an exact
+  `sessionId` lookup) and skips `.jsonl.zst` rollouts entirely. Cursor, Droid,
+  and OpenCode leave it absent rather than paying for new I/O — OpenCode in
+  particular must not gain a per-session `opencode export` fan-out.
 
-The desktop and iOS rows use the real title when present. When title is null,
-they fall back to a path/time heading so the heading never duplicates the
-preview. Placeholder titles such as "New Session" are normalized to null.
+`messages` is **optional and nullable**, and must stay that way. The iOS mirror
+decodes every field with `decodeIfPresent`, and a decode failure there drops the
+entire summary through a swallowing `try?`, so the import screen would show an
+empty "No sessions found" state with no error. `messages` additionally decodes
+through a lossy array wrapper, so one malformed element costs that element, not
+the session. Add new optional keys; never re-type an existing one.
+
+Two rules keep previews honest:
+
+- **Wrapper rejection is not an allow-list.** The named noise-tag list still
+  exists, but it cannot be complete — a `<task-notification>` blob shipped to
+  users as a preview precisely because it was not on it. Preview selection
+  therefore also rejects text that is predominantly markup
+  (`EXTERNAL_SESSION_MARKUP_TEXT_MIN_RATIO`), and wrapper stripping handles tags
+  whose closing half fell outside the read window.
+
+  That density gate is **preview-only**. It runs where a preview or a `messages`
+  sample is chosen, never inside `cleanExternalSessionUserText`, because that
+  cleaner also feeds `externalChatHistoryImport` and therefore the imported chat
+  transcript. Rejecting markup-heavy or very short turns there would silently
+  delete real user messages from someone's history — a pasted JSX snippet, or a
+  reply as ordinary as "ok". Message counting must not use it either.
+- **`preview` may only come from *prefix* records.** Claude's scan array is
+  prefix ++ tail, so a loop that simply took the first record yielding text
+  would fall through into the tail and surface a background-task receipt as the
+  opening prompt. Recent `messages` are the only thing sourced from the tail.
+
+Clipping snaps to a word boundary and never ends inside a tag; a hard `slice`
+produces visibly bisected markup such as `<stat…`.
+
+The desktop and iOS rows use the real title when present, then the opening
+prompt, then a path/time heading. Placeholder titles such as "New Session" are
+normalized to null. Both surfaces suppress an anchor that would repeat the
+heading, so a one-message thread with no provider title shows its prompt once.
 
 The service also stamps:
 
@@ -277,6 +321,14 @@ Continue/Copy x ADE-chat/CLI-session actions, and "Open in ADE" for
 `RemoteModels.swift` decodes the shared DTOs. Browsing and acting are separate
 steps: selecting a compact row opens full details, the target lane picker, and
 only the actions safe for that provider/cwd combination.
+
+Rows show the same two anchors as desktop — what the thread started as and where
+it left off — falling back to the single preview snippet when the host predates
+`messages`. Chat imports also choose how the resulting ADE chat starts: model,
+reasoning effort, fast mode (only where the model supports it), and permission
+mode, seeded from and saved back to `WorkComposerPreferences` so the phone's
+composer and its imports agree. Those fields are sent only for `target: "chat"`;
+a CLI import keeps preserving provider state instead of injecting overrides.
 
 ## Provider gotchas
 
