@@ -491,6 +491,12 @@ export type RecentProjectSummary = {
   kind?: "local" | "remote";
   /** Present iff kind === "remote". */
   remote?: RecentProjectRemoteRef;
+  /**
+   * The repo's `origin` remote, when it has one. Normalized through
+   * `normalizeGitRemoteIdentity` this is what joins a local checkout and a
+   * remote checkout of the same repository into a single project tab.
+   */
+  gitOriginUrl?: string | null;
   /** Pinned recents sort above the recency order. */
   pinned?: boolean;
 };

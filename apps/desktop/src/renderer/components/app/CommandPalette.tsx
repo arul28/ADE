@@ -30,8 +30,6 @@ import type {
   ProjectIcon,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
-  RemoteRuntimeLocalWorkCheckResult,
-  RemoteRuntimeProjectRecord,
   WorktreeParentRef,
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
@@ -57,7 +55,6 @@ import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
 import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { ReadmeMarkdown } from "./ReadmeMarkdown";
-import { RemoteProjectOpenDialog } from "../projects/RemoteProjectOpenDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 
 export type CommandPaletteIntent =
@@ -76,13 +73,6 @@ type ProjectActionOutcome = {
   rootPath: string;
   location: ProjectLocation;
   projectId?: string;
-};
-
-type PendingRemoteProjectOpen = {
-  targetId: string;
-  runtimeName: string;
-  project: RemoteRuntimeProjectRecord;
-  localWork: RemoteRuntimeLocalWorkCheckResult;
 };
 
 type Command = {
@@ -309,10 +299,6 @@ export function CommandPalette({
     },
     [],
   );
-  const [pendingRemoteOpen, setPendingRemoteOpen] =
-    useState<PendingRemoteProjectOpen | null>(null);
-  const [openingPendingRemote, setOpeningPendingRemote] = useState(false);
-
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
@@ -471,8 +457,6 @@ export function CommandPalette({
       setSystemPickerPending(false);
       setActionOutcome(null);
       setSelectedProjectLocation(null);
-      setPendingRemoteOpen(null);
-      setOpeningPendingRemote(false);
       return;
     }
 
@@ -553,8 +537,8 @@ export function CommandPalette({
       },
       {
         id: "project-remote",
-        title: "Connect to remote machine",
-        hint: "Register an SSH target and list its ADE projects",
+        title: "Connect to another machine",
+        hint: "Add a Mac over SSH and list its ADE projects",
         group: "Projects",
         closeOnRun: false,
         run: startProjectRemote,
@@ -1282,25 +1266,13 @@ export function CommandPalette({
       setBrowseError(null);
       setOpenProjectPending(true);
       try {
+        // One tab per repo: the machine is a dimension of the tab, not a second
+        // tab, so opening a project on another machine just rebinds this one.
         if (activeRemoteTargetId) {
           const remoteProject = await window.ade.remoteRuntime.addProject(
             activeRemoteTargetId,
             nextTarget,
           );
-	          const localWork =
-	            await window.ade.remoteRuntime.checkLocalWork(
-	              activeRemoteTargetId,
-	              remoteProject,
-	            );
-          if (localWork.hasDirtyWork) {
-            setPendingRemoteOpen({
-              targetId: activeRemoteTargetId,
-              runtimeName: browseMachineName,
-              project: remoteProject,
-              localWork,
-            });
-            return;
-          }
           await switchRemoteProject(
             activeRemoteTargetId,
             remoteProject.projectId,
@@ -1317,30 +1289,11 @@ export function CommandPalette({
     },
     [
       activeRemoteTargetId,
-      browseMachineName,
       onOpenChange,
       switchProjectToPath,
       switchRemoteProject,
     ],
   );
-
-  const confirmPendingRemoteOpen = useCallback(async () => {
-    if (!pendingRemoteOpen) return;
-    setOpeningPendingRemote(true);
-    setBrowseError(null);
-    try {
-      await switchRemoteProject(
-        pendingRemoteOpen.targetId,
-        pendingRemoteOpen.project.projectId,
-      );
-      setPendingRemoteOpen(null);
-      onOpenChange(false);
-    } catch (error) {
-      setBrowseError(extractError(error));
-    } finally {
-      setOpeningPendingRemote(false);
-    }
-  }, [onOpenChange, pendingRemoteOpen, switchRemoteProject]);
 
   const handleChooseInSystemPicker = useCallback(async () => {
     setBrowseError(null);
@@ -2319,18 +2272,6 @@ export function CommandPalette({
                     )}
                   </div>
                 )}
-                {pendingRemoteOpen ? (
-                  <RemoteProjectOpenDialog
-                    project={pendingRemoteOpen.project}
-                    localWork={pendingRemoteOpen.localWork}
-                    runtimeName={pendingRemoteOpen.runtimeName}
-                    busy={openingPendingRemote}
-                    onCancel={() => setPendingRemoteOpen(null)}
-                    onContinue={() => {
-                      void confirmPendingRemoteOpen();
-                    }}
-                  />
-                ) : null}
               </motion.div>
             </Dialog.Content>
           </Dialog.Portal>
@@ -2389,8 +2330,8 @@ function ProjectLocationChooser({
               </span>
               <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                 {isRemote
-                  ? `${status?.target.hostname ?? "remote"}${status?.version ? ` · ADE ${status.version}` : ""}`
-                  : "Local filesystem"}
+                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${status.version}` : ""}`
+                  : "Projects on this Mac"}
               </span>
               {isRemote ? (
                 <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#FBBF24]">

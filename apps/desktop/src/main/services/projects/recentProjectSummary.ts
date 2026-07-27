@@ -131,6 +131,33 @@ function readGitLaneCount(projectRoot: string): number | undefined {
   }
 }
 
+/**
+ * Reads `origin` straight out of the repo's git config.
+ *
+ * This is what lets the top bar join a local checkout and a remote checkout of
+ * the same repository into one tab. Deliberately a plain file read rather than
+ * `git remote get-url`: the recents path already opens a SQLite database per
+ * project, so a few hundred bytes of config is noise, whereas spawning `git`
+ * once per recent would not be.
+ */
+function readGitOriginUrl(projectRoot: string): string | null {
+  try {
+    const gitDir = resolveGitMetadataDirectory(projectRoot);
+    if (!gitDir) return null;
+    // A linked worktree's metadata dir is `<main>/.git/worktrees/<name>`, and it
+    // has no remotes of its own — the config we want lives in the main repo.
+    const marker = `${path.sep}worktrees${path.sep}`;
+    const markerIdx = gitDir.lastIndexOf(marker);
+    const configDir = markerIdx === -1 ? gitDir : gitDir.slice(0, markerIdx);
+    const raw = fs.readFileSync(path.join(configDir, "config"), "utf8");
+    const section = /\[remote\s+"origin"\]([\s\S]*?)(?=\n\[|$)/.exec(raw);
+    const url = section ? /^\s*url\s*=\s*(.+)$/m.exec(section[1])?.[1] : null;
+    return url?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function remoteRecentSummary(entry: RecentProjectEntry): RecentProjectSummary {
   return {
     rootPath: entry.rootPath,
@@ -168,6 +195,7 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
       ...(worktreeOf ? { worktreeOf } : {}),
       laneCount,
       kind: "local",
+      ...(exists ? { gitOriginUrl: readGitOriginUrl(entry.rootPath) } : {}),
       ...(entry.pinned ? { pinned: true } : {}),
     },
     projectId: adeProject.projectId,

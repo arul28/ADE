@@ -26,6 +26,20 @@ export function projectBindingKey(binding: OpenProjectBinding): string {
 }
 
 /**
+ * State key for anything shaped like a project reference — a recents row, a
+ * persisted `RecentProject`, or any other `{ rootPath, remote? }` record. Local
+ * projects key by absolute root path, so a remote path string can never collide
+ * with a local one.
+ */
+export function projectRefStateKey(
+  proj: { rootPath: string; remote?: { targetId: string; projectId: string } | null },
+): string {
+  return proj.remote
+    ? remoteProjectBindingKey(proj.remote.targetId, proj.remote.projectId)
+    : proj.rootPath;
+}
+
+/**
  * State key for a recents row. Remote recents must resolve to the same key their
  * open binding would, otherwise cache retention silently drops them: retention
  * protects open remote tabs by binding key while recents contributed only
@@ -33,7 +47,5 @@ export function projectBindingKey(binding: OpenProjectBinding): string {
  * cache on the next project switch.
  */
 export function recentProjectStateKey(row: RecentProjectSummary): string {
-  return row.kind === "remote" && row.remote
-    ? remoteProjectBindingKey(row.remote.targetId, row.remote.projectId)
-    : row.rootPath;
+  return projectRefStateKey(row.kind === "remote" ? row : { rootPath: row.rootPath });
 }

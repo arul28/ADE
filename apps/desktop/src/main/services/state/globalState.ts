@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AppWelcomeVideoState, OpenProjectBinding, RecentProjectRemoteRef, RecentlyInstalledUpdate } from "../../../shared/types";
+import { projectRefStateKey } from "../../../shared/projectIdentity";
 
 export type RecentProjectRemote = RecentProjectRemoteRef;
 
@@ -19,13 +20,16 @@ export type RecentProject = {
  * Stable identity for a recent project. Local projects are keyed by their
  * absolute root path (so a remote path string can never collide with a local
  * one); remote projects are keyed by their owning target + remote project id.
+ *
+ * Delegates to the shared definition so main, preload, and renderer cannot
+ * drift — they previously each had their own copy of this format, which is how
+ * the renderer ended up writing its lane cache under one key and reading it
+ * back under another.
  */
 export function recentProjectKey(
   proj: { rootPath: string; remote?: RecentProjectRemote },
 ): string {
-  return proj.remote
-    ? `remote:${proj.remote.targetId}:${proj.remote.projectId}`
-    : proj.rootPath;
+  return projectRefStateKey(proj);
 }
 
 export type PendingInstallUpdate = {

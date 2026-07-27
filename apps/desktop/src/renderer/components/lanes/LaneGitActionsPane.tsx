@@ -16,6 +16,13 @@ import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButt
 import { CommitTimeline } from "./CommitTimeline";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LinearIssueBadge } from "./LinearIssueBadge";
+import { PushDivergenceDialog } from "./PushDivergenceDialog";
+import {
+  detectPushDivergence,
+  EMPTY_MACHINE_BRANCH_STATES,
+  type DivergenceWarning,
+  type MachineBranchState,
+} from "../../../shared/laneDivergence";
 import type {
   DiffChanges,
   FileChange,
@@ -209,6 +216,62 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
   );
 }
 
+// ---------------------------------------------------------------------------
+// Cross-machine branch state (push divergence guard)
+// ---------------------------------------------------------------------------
+//
+// Other surfaces that already hold union lane state (the chat git toolbar
+// today, the cross-machine lane list once it lands) publish per-lane branch
+// state here; the push actions below read it. This is a plain registry over
+// data the renderer already has — no polling, no subscription, no git call. It
+// stays empty until a caller publishes, which keeps the single-machine path at
+// zero cost.
+
+/** Identity for the machine the renderer is running on, so it never self-matches. */
+const LOCAL_MACHINE_ID = "__ade_local_machine__";
+
+const otherMachineBranchStatesByLane = new Map<string, readonly MachineBranchState[]>();
+const otherMachineBranchStateListeners = new Set<() => void>();
+
+function readOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
+  if (!laneId || otherMachineBranchStatesByLane.size === 0) return EMPTY_MACHINE_BRANCH_STATES;
+  return otherMachineBranchStatesByLane.get(laneId) ?? EMPTY_MACHINE_BRANCH_STATES;
+}
+
+/**
+ * Publishes (or clears, with `null`/empty) the other machines known to hold
+ * this lane's branch. Safe to call from any surface; the push guard picks it up
+ * on the next push without re-rendering anything else.
+ */
+export function publishLaneOtherMachineBranchStates(
+  laneId: string | null,
+  states: readonly MachineBranchState[] | null | undefined,
+): void {
+  if (!laneId) return;
+  const previous = otherMachineBranchStatesByLane.get(laneId);
+  if (!states || states.length === 0) {
+    if (!previous) return;
+    otherMachineBranchStatesByLane.delete(laneId);
+  } else {
+    if (previous === states) return;
+    otherMachineBranchStatesByLane.set(laneId, states);
+  }
+  for (const listener of otherMachineBranchStateListeners) listener();
+}
+
+function useOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
+  return React.useSyncExternalStore(
+    (listener) => {
+      otherMachineBranchStateListeners.add(listener);
+      return () => {
+        otherMachineBranchStateListeners.delete(listener);
+      };
+    },
+    () => readOtherMachineBranchStates(laneId),
+    () => EMPTY_MACHINE_BRANCH_STATES,
+  );
+}
+
 export {
   beginLaneGitActionRuntime,
   patchLaneGitActionRuntimeStateIfCurrent,
@@ -219,6 +282,7 @@ export {
 export function __resetLaneGitActionRuntimeForTests(): void {
   laneGitActionRuntimeByScope.clear();
   laneGitActionsStateByScope.clear();
+  otherMachineBranchStatesByLane.clear();
   emitLaneGitActionRuntimeChange();
 }
 
@@ -582,7 +646,11 @@ export function LaneGitActionsPane({
   selectedPath,
   selectedMode,
   selectedCommit = null,
-  selectedCommitSha
+  selectedCommitSha,
+  otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
+  currentMachineName = "This Mac",
+  currentMachineId = LOCAL_MACHINE_ID,
+  currentMachineHeadSha = null
 }: {
   laneId: string | null;
   active?: boolean;
@@ -602,6 +670,18 @@ export function LaneGitActionsPane({
   /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
+  /**
+   * Other machines known to hold this lane's branch, from union lane state the
+   * renderer already has (`LaneListSnapshot` / `lane_state_snapshots`). Empty
+   * until a caller supplies it — the push guard is inert (and free) until then.
+   * Callers may also publish via `publishLaneOtherMachineBranchStates`.
+   */
+  otherMachineBranchStates?: readonly MachineBranchState[];
+  /** Absolute name for this machine in guard copy. Never "remote". */
+  currentMachineName?: string;
+  currentMachineId?: string;
+  /** This machine's head commit, when a caller knows it. Unknown is fine. */
+  currentMachineHeadSha?: string | null;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
