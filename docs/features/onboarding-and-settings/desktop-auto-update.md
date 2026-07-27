@@ -61,6 +61,48 @@ so loopback transfer and staging are not mistaken for a stalled quit. Handoff
 timeouts retain the pending-install marker because Squirrel may still complete;
 an explicit updater error clears it.
 
+## Quit deadline during the native handoff
+
+`quitAndInstall` arms a deadline before entering `electron-updater` so a quit
+that never happens cannot strand the app in `installing` forever. The window has
+to respect what Squirrel.Mac actually does after that call: pull the archive
+from the loopback server, expand it, code-sign verify the expanded bundle, then
+spawn ShipIt. On a ~750 MB archive that is roughly ten seconds, and it scales
+with bundle size and disk contention.
+
+So the deadline is staged rather than a single hard bound:
+
+| Stage | Default | Behavior |
+| --- | --- | --- |
+| Soft mark | 10s | Logs `autoUpdate.quit_staging_slow`. Never fatal. |
+| Native staging complete | — | Electron's own `autoUpdater` emits `update-downloaded`; logs `autoUpdate.native_staging_complete` and re-arms the short bound below. |
+| Post-staging bound | 15s | ShipIt is already running, so a process still alive here is genuinely wedged: escalate. |
+| Hard bound | 5min | Staging never signalled at all: escalate. |
+
+Escalation logs `autoUpdate.quit_escalated` and calls `logger.flushSync()`
+before `forceQuit`, because `forceQuit` ends the process and ordinary log writes
+are batched onto an async stream — without the sync drain the escalation record
+dies with the process and the failure leaves no trace.
+
+A single hard 10-second bound is what this replaced. It force-quit the process
+mid-staging and lost that race most of the time, so the app quit, nothing
+installed, and it relaunched on the old version with no log line explaining it.
+
+## When an install does not land
+
+Relaunching on the old version while a `pendingInstallUpdate` marker exists
+means the handoff never completed. The service records this in
+`failedInstallAttempts` (target version + consecutive count), logs
+`autoUpdate.install_did_not_land`, and exposes `lastInstallFailed` on the
+snapshot so the top-bar pill reads "Retry install vX" instead of silently
+offering the same update again.
+
+The first such failure **keeps** the cached archive. It was checksum-verified
+before the update was ever offered, so a lost quit race says nothing about the
+bytes, and re-downloading the whole release on every retry is pure cost. A
+second consecutive failure on the same version stops trusting the archive and
+clears the updater cache.
+
 ## Truthful version surfaces
 
 Every version surface reads from one shared snapshot so they can never disagree

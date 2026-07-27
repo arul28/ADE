@@ -12,6 +12,7 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_analytics_budget",
   "ade_update_install_aborted",
   "ade_update_quit_escalated",
+  "ade_update_install_did_not_land",
   "ade_update_auto_applied",
   "ade_update_auto_apply_cancelled",
   "ade_brain_recovered",

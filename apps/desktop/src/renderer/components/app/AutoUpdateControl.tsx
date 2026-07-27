@@ -201,6 +201,14 @@ export function AutoUpdateControl() {
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
   const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
 
+  // A previous attempt quit but came back on the old version. Saying so beats
+  // re-offering the identical button as if nothing had happened.
+  const retryAfterFailedInstall = Boolean(
+    snapshot.lastInstallFailed
+    && snapshot.version
+    && snapshot.lastInstallFailed.targetVersion === snapshot.version,
+  );
+
   function indicatorTitle(): string {
     switch (effectiveStatus) {
       case "checking":
@@ -210,7 +218,10 @@ export function AutoUpdateControl() {
       case "installing":
         return "ADE is preparing to quit and reopen automatically";
       default:
-        return `Install ${versionLabel(snapshot.version)}. ADE will quit and reopen automatically.`;
+        return retryAfterFailedInstall
+          ? `The last attempt to install ${versionLabel(snapshot.version)} quit without finishing. `
+            + "Try again — the download is already on this machine."
+          : `Install ${versionLabel(snapshot.version)}. ADE will quit and reopen automatically.`;
     }
   }
 
@@ -284,7 +295,10 @@ export function AutoUpdateControl() {
             </>
           ) : null}
           {effectiveStatus === "ready" ? (
-            <span>Install update {snapshot.version ? `v${snapshot.version}` : ""}</span>
+            <span>
+              {retryAfterFailedInstall ? "Retry install" : "Install update"}
+              {snapshot.version ? ` v${snapshot.version}` : ""}
+            </span>
           ) : null}
           {effectiveStatus === "installing" ? (
             <span>ADE will quit and reopen</span>

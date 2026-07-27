@@ -29,7 +29,20 @@ import {
 } from "./autoUpdateVersions";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+// Soft mark only. After `quitAndInstall` the OS installer (Squirrel.Mac) still
+// has to pull the archive over its loopback server, expand it, and code-sign
+// verify the expanded bundle before it can spawn ShipIt and replace us. For an
+// ~750 MB archive that runs right around ten seconds, so treating this as a
+// deadline to kill the process loses a coin flip against a healthy install.
 const DEFAULT_QUIT_DEADLINE_MS = 10_000;
+// Hard bound while the OS installer may still be staging. Only a genuinely
+// wedged handoff should reach this.
+const DEFAULT_QUIT_HARD_DEADLINE_MS = 5 * 60_000;
+// Once staging is done the installer is already running and about to replace
+// the bundle, so a process that still has not exited is a real wedge and a
+// short bound is safe again.
+const DEFAULT_QUIT_POST_STAGING_DEADLINE_MS = 15_000;
+const FAILED_INSTALL_CACHE_RESET_ATTEMPTS = 2;
 const DEFAULT_AUTO_APPLY_IDLE_MS = 2 * 60_000;
 const DEFAULT_AUTO_APPLY_COUNTDOWN_MS = 10_000;
 const DEFAULT_AUTO_APPLY_SUPPRESSION_MS = 4 * 60 * 60_000;
@@ -51,6 +64,26 @@ type AutoUpdaterLike = {
   removeListener: (event: string, listener: (...args: any[]) => void) => unknown;
 };
 
+// Electron's own `autoUpdater`, i.e. the Squirrel.Mac binding that
+// electron-updater's MacUpdater drives underneath. Its `update-downloaded`
+// fires when the OS installer has finished staging the new bundle — the only
+// in-process signal that the native handoff actually got somewhere.
+type NativeUpdaterLike = {
+  on: (event: string, listener: (...args: any[]) => void) => unknown;
+  removeListener: (event: string, listener: (...args: any[]) => void) => unknown;
+};
+
+function resolveNativeUpdater(): NativeUpdaterLike | null {
+  try {
+    if (typeof require !== "function") return null;
+    const electron = require("electron") as { autoUpdater?: NativeUpdaterLike };
+    const candidate = electron?.autoUpdater;
+    return typeof candidate?.on === "function" ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 type CreateAutoUpdateServiceArgs = {
   logger: Logger;
   currentVersion: string;
@@ -71,6 +104,9 @@ type CreateAutoUpdateServiceArgs = {
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   installWatchdogMs?: number;
   quitDeadlineMs?: number;
+  quitHardDeadlineMs?: number;
+  quitPostStagingDeadlineMs?: number;
+  nativeUpdater?: NativeUpdaterLike | null;
   autoApplyIdleMs?: number;
   autoApplyCountdownMs?: number;
   autoApplySuppressionMs?: number;
@@ -111,6 +147,7 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
     errorDetails: null,
     recentlyInstalled: null,
     parked: null,
+    lastInstallFailed: null,
     autoApplyPending: null,
     autoApplySuppressedUntil: null,
   };
@@ -208,10 +245,12 @@ function reconcilePersistedUpdateState(args: {
   changed: boolean;
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
+  failedInstall: { targetVersion: string; attempt: number } | null;
 } {
   const nextState: GlobalState = { ...args.state };
   let changed = false;
   let cacheCleanupReason: string | null = null;
+  let failedInstall: { targetVersion: string; attempt: number } | null = null;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -233,8 +272,25 @@ function reconcilePersistedUpdateState(args: {
         githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion),
       };
       cacheCleanupReason = "installed";
+      nextState.failedInstallAttempts = undefined;
     } else {
-      cacheCleanupReason = "failed_install";
+      const previous = nextState.failedInstallAttempts;
+      const attempt = previous?.targetVersion === pendingInstall.targetVersion
+        ? previous.count + 1
+        : 1;
+      nextState.failedInstallAttempts = {
+        targetVersion: pendingInstall.targetVersion,
+        count: attempt,
+        lastFailedAt: args.now,
+      };
+      failedInstall = { targetVersion: pendingInstall.targetVersion, attempt };
+      // First failure: the archive passed its checksum before it ever went
+      // "ready", so the quit lost a race rather than the bytes being bad.
+      // Keeping it turns a retry into a click instead of a fresh download of
+      // the whole release. A second failure stops trusting it.
+      cacheCleanupReason = attempt >= FAILED_INSTALL_CACHE_RESET_ATTEMPTS
+        ? "failed_install"
+        : null;
     }
     nextState.pendingInstallUpdate = undefined;
     changed = true;
@@ -247,6 +303,7 @@ function reconcilePersistedUpdateState(args: {
       cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
     ),
     cacheCleanupReason,
+    failedInstall,
   };
 }
 
@@ -283,6 +340,9 @@ export function createAutoUpdateService({
   getDiskSpace = readDiskSpace,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
   quitDeadlineMs = DEFAULT_QUIT_DEADLINE_MS,
+  quitHardDeadlineMs = DEFAULT_QUIT_HARD_DEADLINE_MS,
+  quitPostStagingDeadlineMs = DEFAULT_QUIT_POST_STAGING_DEADLINE_MS,
+  nativeUpdater = resolveNativeUpdater(),
   autoApplyIdleMs = DEFAULT_AUTO_APPLY_IDLE_MS,
   autoApplyCountdownMs = DEFAULT_AUTO_APPLY_COUNTDOWN_MS,
   autoApplySuppressionMs = DEFAULT_AUTO_APPLY_SUPPRESSION_MS,
@@ -334,10 +394,27 @@ export function createAutoUpdateService({
       reason: initialState.cacheCleanupReason,
     });
   }
+  if (initialState.failedInstall) {
+    // Relaunching on the old version after an install was requested means the
+    // handoff never landed. Say so plainly: silently re-offering the same
+    // update is what made this look like the update "did nothing".
+    logger.error("autoUpdate.install_did_not_land", {
+      targetVersion: initialState.failedInstall.targetVersion,
+      currentVersion,
+      attempt: initialState.failedInstall.attempt,
+      downloadPreserved: initialState.cacheCleanupReason == null,
+    });
+    productAnalyticsService?.captureInternal({
+      event: "ade_update_install_did_not_land",
+      surface: "desktop",
+      properties: { attempt: initialState.failedInstall.attempt },
+    });
+  }
 
   let snapshot: AutoUpdateSnapshot = {
     ...createEmptyAutoUpdateSnapshot(currentVersion),
     recentlyInstalled: initialState.recentlyInstalled,
+    lastInstallFailed: initialState.failedInstall,
   };
   let checkPromise: Promise<unknown> | null = null;
   // In-flight guard for quitAndInstall. Two IPC callers (e.g. AutoUpdateControl
@@ -358,6 +435,10 @@ export function createAutoUpdateService({
   let compressedUpdateVersion: string | null = null;
   let preservedDownloadRetry: PreservedDownloadRetry | null = null;
   let quitDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let quitSoftDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let quitArmedAtMs: number | null = null;
+  let nativeStagingCompleted = false;
+  let detachNativeStagingListener: (() => void) | null = null;
   let activityCheckTimer: ReturnType<typeof setTimeout> | null = null;
   let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let idleSinceMs: number | null = null;
@@ -397,9 +478,18 @@ export function createAutoUpdateService({
   }
 
   function clearQuitDeadline(): void {
-    if (!quitDeadlineTimer) return;
-    clearTimeout(quitDeadlineTimer);
-    quitDeadlineTimer = null;
+    if (quitDeadlineTimer) {
+      clearTimeout(quitDeadlineTimer);
+      quitDeadlineTimer = null;
+    }
+    if (quitSoftDeadlineTimer) {
+      clearTimeout(quitSoftDeadlineTimer);
+      quitSoftDeadlineTimer = null;
+    }
+    detachNativeStagingListener?.();
+    detachNativeStagingListener = null;
+    quitArmedAtMs = null;
+    nativeStagingCompleted = false;
   }
 
   function clearAutoApplyDeadline(): void {
@@ -1079,26 +1169,84 @@ export function createAutoUpdateService({
     return false;
   }
 
+  function escalateQuit(reason: "hard_deadline" | "post_staging"): void {
+    if (!installQuitArmed) return;
+    const blockedMs = Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs()));
+    const blockedPhase = "app_quit";
+    logger.error("autoUpdate.quit_escalated", {
+      blockedPhase,
+      blockedMs,
+      reason,
+      nativeStagingCompleted,
+    });
+    productAnalyticsService?.captureInternal({
+      event: "ade_update_quit_escalated",
+      surface: "desktop",
+      properties: {
+        blocked_ms: blockedMs,
+        escalation_reason: reason,
+        native_staging_completed: nativeStagingCompleted,
+      },
+    });
+    // forceQuit ends the process outright, and log writes are batched onto an
+    // async stream — without this the record above dies with the process and
+    // the escalation leaves no trace at all.
+    logger.flushSync?.();
+    forceQuit?.({ blockedPhase, blockedMs });
+  }
+
+  // Squirrel finished expanding and verifying the new bundle and is handing off
+  // to its installer, so the remaining window is short and bounded.
+  function onNativeStagingComplete(): void {
+    if (!installQuitArmed || nativeStagingCompleted) return;
+    nativeStagingCompleted = true;
+    logger.info("autoUpdate.native_staging_complete", {
+      elapsedMs: Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs())),
+    });
+    if (quitDeadlineTimer) {
+      clearTimeout(quitDeadlineTimer);
+      quitDeadlineTimer = null;
+    }
+    quitDeadlineTimer = setTimeout(() => {
+      quitDeadlineTimer = null;
+      escalateQuit("post_staging");
+    }, quitPostStagingDeadlineMs);
+    quitDeadlineTimer.unref?.();
+  }
+
   function armQuitDeadline(): void {
     clearQuitDeadline();
     installQuitArmed = true;
-    const startedAt = nowMs();
+    nativeStagingCompleted = false;
+    quitArmedAtMs = nowMs();
+
+    if (nativeUpdater) {
+      const listener = () => onNativeStagingComplete();
+      nativeUpdater.on("update-downloaded", listener);
+      detachNativeStagingListener = () => {
+        try {
+          nativeUpdater.removeListener("update-downloaded", listener);
+        } catch {
+          // A detached native updater is not worth failing the install over.
+        }
+      };
+    }
+
+    // Observation, not enforcement: staging legitimately runs past this on a
+    // large bundle or a busy disk. Killing here is what broke installs before.
+    quitSoftDeadlineTimer = setTimeout(() => {
+      quitSoftDeadlineTimer = null;
+      if (!installQuitArmed || nativeStagingCompleted) return;
+      logger.warn("autoUpdate.quit_staging_slow", {
+        blockedMs: Math.max(0, nowMs() - (quitArmedAtMs ?? nowMs())),
+      });
+    }, quitDeadlineMs);
+    quitSoftDeadlineTimer.unref?.();
+
     quitDeadlineTimer = setTimeout(() => {
       quitDeadlineTimer = null;
-      if (!installQuitArmed) return;
-      const blockedMs = Math.max(0, nowMs() - startedAt);
-      const blockedPhase = "app_quit";
-      logger.error("autoUpdate.quit_escalated", {
-        blockedPhase,
-        blockedMs,
-      });
-      productAnalyticsService?.captureInternal({
-        event: "ade_update_quit_escalated",
-        surface: "desktop",
-        properties: { blocked_ms: blockedMs },
-      });
-      forceQuit?.({ blockedPhase, blockedMs });
-    }, quitDeadlineMs);
+      escalateQuit("hard_deadline");
+    }, quitHardDeadlineMs);
     quitDeadlineTimer.unref?.();
   }
 
@@ -1170,6 +1318,8 @@ export function createAutoUpdateService({
         error: null,
         errorDetails: null,
         parked: null,
+        // This attempt supersedes the notice about the previous one.
+        lastInstallFailed: null,
         autoApplyPending: null,
       });
       try {

@@ -222,6 +222,12 @@ export type AutoUpdateSnapshot = {
   recentlyInstalled: RecentlyInstalledUpdate | null;
   /** A consented install that aborted before the native updater could take over. */
   parked: { reason: AutoUpdateInstallAbortReason; at: number } | null;
+  /**
+   * A previous install quit but came back on the old version. Survives the
+   * restart so the UI can say the update did not land instead of silently
+   * offering the same version again.
+   */
+  lastInstallFailed: { targetVersion: string; attempt: number } | null;
   /** Renderer-visible countdown before an idle update is applied. */
   autoApplyPending: { deadlineAt: number } | null;
   /** Explicit user cancellation suppresses another idle countdown until this epoch. */

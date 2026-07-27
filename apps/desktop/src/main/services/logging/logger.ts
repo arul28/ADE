@@ -29,6 +29,11 @@ export type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
   warn: (event: string, meta?: Record<string, unknown>) => void;
   error: (event: string, meta?: Record<string, unknown>) => void;
+  // Writes anything still queued straight to disk. Normal logging batches
+  // through an async stream, so a caller that is about to end the process
+  // (app.exit, force quit) must call this or its last records are lost —
+  // exactly the records that explain why the process died.
+  flushSync?: () => void;
 };
 
 function resolveMinLevel(): number {
@@ -224,6 +229,26 @@ export function createFileLogger(
     flushTimer.unref?.();
   };
 
+  // Lines already handed to an in-flight async flush have been spliced out of
+  // queuedLines, so draining the rest here cannot duplicate them. Rotation is
+  // skipped deliberately: this runs on the way out of the process, where a
+  // slightly oversized log beats a lost one.
+  const flushSync = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (queuedLines.length === 0) return;
+    const payload = queuedLines.splice(0, queuedLines.length).join("");
+    try {
+      if (!ensureLogDir()) return;
+      fs.appendFileSync(logFilePath, payload);
+      estimatedFileSize = (estimatedFileSize ?? 0) + Buffer.byteLength(payload, "utf8");
+    } catch {
+      // Same contract as flush(): never crash the app over a log write.
+    }
+  };
+
   const writeLine = (level: LogLevel, event: string, meta?: Record<string, unknown>) => {
     if (LOG_LEVELS[level] < minLevel) return;
 
@@ -245,6 +270,7 @@ export function createFileLogger(
     debug: (event, meta) => writeLine("debug", event, meta),
     info: (event, meta) => writeLine("info", event, meta),
     warn: (event, meta) => writeLine("warn", event, meta),
-    error: (event, meta) => writeLine("error", event, meta)
+    error: (event, meta) => writeLine("error", event, meta),
+    flushSync
   };
 }

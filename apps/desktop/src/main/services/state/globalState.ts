@@ -35,6 +35,16 @@ export type PendingInstallUpdate = {
   requestedAt: string;
 };
 
+// Consecutive installs of the same version that quit without landing. The
+// archive was already checksum-verified before it went "ready", so the first
+// failure keeps it and a retry skips re-downloading; a repeat says the archive
+// itself is suspect and earns a clean slate.
+export type FailedInstallAttempts = {
+  targetVersion: string;
+  count: number;
+  lastFailedAt: string;
+};
+
 export type GlobalState = {
   lastProjectRoot?: string;
   lastRemoteProjectBinding?: Extract<OpenProjectBinding, { kind: "remote" }> & {
@@ -43,6 +53,7 @@ export type GlobalState = {
   recentProjects?: RecentProject[];
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
+  failedInstallAttempts?: FailedInstallAttempts;
   welcomeVideo?: AppWelcomeVideoState;
 };
 
