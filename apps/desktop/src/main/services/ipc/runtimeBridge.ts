@@ -28,7 +28,6 @@ import type {
   RemoteRuntimeDoctorResult,
   RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
-  RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeLocalPairingInfo,
   RemoteRuntimePairWithMachineArgs,
   RemoteRuntimePairWithMachineResult,
@@ -39,7 +38,6 @@ import type {
   RemoteRuntimeHandoffStoragePreflightArgs,
   RemoteRuntimeHandoffStoragePreflightResult,
   RemoteRuntimeCloneProjectOptions,
-  RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
@@ -59,12 +57,8 @@ import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
-import { runGit } from "../git/git";
-import { getProjectWorkSummary } from "../projects/projectDetailService";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
-import { readGlobalState } from "../state/globalState";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createSyncCloudRelayStore } from "../../../../../ade-cli/src/services/sync/syncCloudRelayStore";
@@ -81,6 +75,11 @@ function invalidateInspectionCacheForLaneAction(domain: string, action: string):
 
 type RuntimeBridgeArgs = {
   appVersion: string;
+  /**
+   * Retained for callers; the bridge itself no longer reads global state — the
+   * only handler that did (`remoteRuntimeCheckLocalWork`) was removed with its
+   * last caller.
+   */
   globalStatePath: string;
   getWindowSession?: (windowId: number | null) => {
     windowId: number | null;
@@ -271,45 +270,6 @@ function canBindRemoteProjectToSender(
   return !window.webContents.isDestroyed();
 }
 
-async function inspectLocalWorkForRemoteOrigin(args: {
-  rootPath: string;
-  displayName: string;
-  remoteOriginKey: string;
-}): Promise<RemoteRuntimeLocalWorkCheckResult["matches"][number] | null> {
-  if (!fs.existsSync(args.rootPath)) return null;
-  const origin = await runGit(["remote", "get-url", "origin"], {
-    cwd: args.rootPath,
-    timeoutMs: 8_000,
-  });
-  if (origin.exitCode !== 0) return null;
-  const originUrl = origin.stdout.trim();
-  if (normalizeGitRemoteIdentity(originUrl) !== args.remoteOriginKey)
-    return null;
-  const workSummary = await getProjectWorkSummary(args.rootPath).catch(
-    () => null,
-  );
-  const dirtyCount = workSummary?.dirtyFileCount ?? 0;
-  if (dirtyCount <= 0) return null;
-  return {
-    rootPath: args.rootPath,
-    displayName: args.displayName,
-    gitOriginUrl: originUrl,
-    dirtyCount,
-    workSummary,
-  };
-}
-
-async function getRemoteProjectWorkSummary(args: {
-  targetId: string;
-  rootPath: string | null;
-  remoteConnectionService: RemoteConnectionService;
-}): Promise<RemoteRuntimeProjectWorkSummary | null> {
-  if (!args.targetId || !args.rootPath) return null;
-  return await args.remoteConnectionService
-    .getProjectWorkSummary(args.targetId, args.rootPath)
-    .catch(() => null);
-}
-
 function createGitHubAuthHeader(token: string | null | undefined): string | null {
   const trimmed = token?.trim();
   if (!trimmed) return null;
@@ -377,7 +337,6 @@ export function registerRuntimeBridge({
   getGitHubTokenForRemoteClone,
   getLocalMachineIdentity,
   getWindowSession,
-  globalStatePath,
   localRuntimeConnectionPool,
 }: RuntimeBridgeArgs): RuntimeBridgeRegistration {
   const remoteTargetRegistry = new RemoteTargetRegistry();
@@ -1369,110 +1328,6 @@ export function registerRuntimeBridge({
         subscribe,
       ).catch(() => {});
       return result;
-    },
-  );
-
-  ipcMain.handle(
-    IPC.remoteRuntimeCheckLocalWork,
-    async (
-      _event,
-      arg: { id?: string; project?: RemoteRuntimeProjectRecord },
-    ): Promise<RemoteRuntimeLocalWorkCheckResult> => {
-      const targetId = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const project =
-        arg?.project &&
-        typeof arg.project === "object" &&
-        !Array.isArray(arg.project)
-          ? arg.project
-          : null;
-      const remoteProjectId =
-        typeof project?.projectId === "string" ? project.projectId : "";
-      const remoteDisplayName =
-        typeof project?.displayName === "string" && project.displayName.trim()
-          ? project.displayName.trim()
-          : typeof project?.rootPath === "string"
-            ? path.basename(project.rootPath)
-            : "remote project";
-      const remoteGitOriginUrl =
-        typeof project?.gitOriginUrl === "string" && project.gitOriginUrl.trim()
-          ? project.gitOriginUrl.trim()
-          : null;
-      const remoteWorkSummary = await getRemoteProjectWorkSummary({
-        targetId,
-        rootPath:
-          typeof project?.rootPath === "string" && project.rootPath.trim()
-            ? project.rootPath.trim()
-            : null,
-        remoteConnectionService,
-      });
-      const remoteOriginKey =
-        normalizeGitRemoteIdentity(remoteGitOriginUrl);
-      if (!remoteOriginKey) {
-        return {
-          remoteProjectId,
-          remoteDisplayName,
-          remoteGitOriginUrl,
-          remoteWorkSummary,
-          matches: [],
-          hasDirtyWork: false,
-        };
-      }
-
-      const state = readGlobalState(globalStatePath);
-      const recents = (state.recentProjects ?? [])
-        .filter((entry) => !entry.remote)
-        .slice(0, 100)
-        .map((entry) => ({
-          rootPath: entry.rootPath,
-          displayName: entry.displayName,
-        }));
-      const localRuntimeProjects = localRuntimeConnectionPool
-        ? await localRuntimeConnectionPool
-            .projects()
-            .catch(() => [] as RemoteRuntimeProjectRecord[])
-        : [];
-      const entriesByRoot = new Map<
-        string,
-        { rootPath: string; displayName: string }
-      >();
-      for (const entry of recents) {
-        if (!entry.rootPath) continue;
-        entriesByRoot.set(path.resolve(entry.rootPath), entry);
-      }
-      for (const project of localRuntimeProjects) {
-        if (!project.rootPath) continue;
-        const rootPath = path.resolve(project.rootPath);
-        if (entriesByRoot.has(rootPath)) continue;
-        entriesByRoot.set(rootPath, {
-          rootPath: project.rootPath,
-          displayName: project.displayName || path.basename(project.rootPath),
-        });
-      }
-      const matches = (
-        await Promise.all(
-          [...entriesByRoot.values()].map((entry) =>
-            inspectLocalWorkForRemoteOrigin({
-              rootPath: entry.rootPath,
-              displayName: entry.displayName,
-              remoteOriginKey,
-            }),
-          ),
-        )
-      ).filter(
-        (
-          entry,
-        ): entry is RemoteRuntimeLocalWorkCheckResult["matches"][number] =>
-          entry != null,
-      );
-
-      return {
-        remoteProjectId,
-        remoteDisplayName,
-        remoteGitOriginUrl,
-        remoteWorkSummary,
-        matches,
-        hasDirtyWork: matches.length > 0,
-      };
     },
   );
 

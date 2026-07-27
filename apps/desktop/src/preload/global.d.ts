@@ -912,10 +912,6 @@ declare global {
           projectId: string,
           request?: RemoteRuntimeStreamEventsRequest,
         ) => Promise<RemoteRuntimeStreamEventsResult>;
-        checkLocalWork: (
-          id: string,
-          project: RemoteRuntimeProjectRecord,
-        ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
         disconnect: (
           id: string,
           options?: { manual?: boolean },

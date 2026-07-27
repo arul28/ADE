@@ -130,7 +130,7 @@ identity.
 
 ## Local-vs-remote work warning
 
-`remoteRuntimeCheckLocalWork` compares a remote project's git origin with local projects. It checks both recent desktop projects and projects known to the local runtime's project registry, then runs `git status --porcelain` on matches. It no longer gates the open: the confirmation it used to drive only warned that a separate remote tab was being created, which one-tab-per-repository made meaningless. The same origin comparison now feeds tab grouping (`projectTabGrouping.ts`), and the risk it was really guarding against — two machines pushing the same branch from different commits — is caught at push time by `laneDivergence.ts`.
+There is no longer one. `remoteRuntimeCheckLocalWork` compared a remote project's git origin against local checkouts to gate the open with a confirmation, but that confirmation only warned that a separate remote tab was being created — which one-tab-per-repository made meaningless. Its last caller (`RemoteProjectOpenDialog`) was removed, and the channel with it. The origin comparison now feeds tab grouping (`projectTabGrouping.ts`), and the risk it was really guarding against — two machines pushing the same branch from different commits — is caught at push time by `laneDivergence.ts`.
 
 ## Sync command scoping
 

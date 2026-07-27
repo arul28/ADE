@@ -27,6 +27,7 @@ import type {
   LaneSummary,
   LaneTemplate,
   NewLaneBaseSource,
+  OpenProjectBinding,
   RemoteRuntimeConnectionSnapshot,
 } from "../../../shared/types";
 
@@ -208,6 +209,16 @@ export function CreateLaneDialogHost({
   const pendingMachinePrepareRef = useRef(false);
   /** Lane name / Linear issue carried across a machine switch's re-prepare. */
   const machinePrefillRef = useRef<CreateLanePrefill | null>(null);
+  /**
+   * Picking a machine rebinds the whole app, so a dialog that is closed without
+   * creating anything has to put the binding back. Without this, "open dialog →
+   * look at another machine → press Escape" leaves the window pointed at that
+   * machine with nothing on screen saying a dialog did it.
+   */
+  const bindingOnOpenRef = useRef<OpenProjectBinding | null>(null);
+  const machineRebindPendingRef = useRef(false);
+  const projectBindingRef = useRef<OpenProjectBinding | null>(projectBinding);
+  projectBindingRef.current = projectBinding;
 
   useEffect(() => {
     if (!open) return;
@@ -307,7 +318,24 @@ export function CreateLaneDialogHost({
     });
   }, []);
 
+  /** Put the app back on the machine it was on before the dialog opened. */
+  const restoreBindingFromBeforeOpen = useCallback(() => {
+    const previous = bindingOnOpenRef.current;
+    bindingOnOpenRef.current = null;
+    if (!machineRebindPendingRef.current) return;
+    machineRebindPendingRef.current = false;
+    if (!previous || projectBindingRef.current?.key === previous.key) return;
+    const restoring = previous.kind === "remote"
+      ? switchRemoteProject(previous.targetId, previous.projectId).then(() => {})
+      : switchProjectToPath(previous.rootPath);
+    void restoring.catch(() => {
+      // Best effort: the dialog is already gone, and the machine picker in the
+      // top bar remains the way back.
+    });
+  }, [switchProjectToPath, switchRemoteProject]);
+
   const resetCreateDialogState = useCallback(() => {
+    restoreBindingFromBeforeOpen();
     createEnvInitLaneIdRef.current = null;
     createBaseBranchUserPickedRef.current = false;
     createBaseBranchesLoadSeqRef.current += 1;
@@ -326,7 +354,7 @@ export function CreateLaneDialogHost({
     setCreateSelectedColor(null);
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
-  }, []);
+  }, [restoreBindingFromBeforeOpen]);
 
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
@@ -449,8 +477,14 @@ export function CreateLaneDialogHost({
   useEffect(() => {
     if (open === prevOpenRef.current) return;
     prevOpenRef.current = open;
-    if (open) prepareCreateDialog(prefillRef.current);
-    else resetCreateDialogState();
+    if (open) {
+      // Captured before anything in the dialog can rebind the app.
+      bindingOnOpenRef.current = projectBindingRef.current;
+      machineRebindPendingRef.current = false;
+      prepareCreateDialog(prefillRef.current);
+    } else {
+      resetCreateDialogState();
+    }
   }, [open, prepareCreateDialog, resetCreateDialogState]);
 
   /**
@@ -473,6 +507,10 @@ export function CreateLaneDialogHost({
       setSelectedMachineId(previousMachineId);
       setCreateError(message);
     };
+
+    // From here on the app may end up bound to another machine purely because a
+    // dialog was open; closing it without creating a lane has to undo that.
+    machineRebindPendingRef.current = true;
 
     machinePrefillRef.current = {
       name: createLaneName.trim(),
@@ -758,6 +796,10 @@ export function CreateLaneDialogHost({
       // Lane created successfully: record its id so retries skip creation.
       createEnvInitLaneIdRef.current = lane.id;
       setLaneCreated(true);
+      // The lane now lives on the selected machine, so the rebind is the user's
+      // intent rather than a dialog side effect — nothing to undo on close.
+      machineRebindPendingRef.current = false;
+      bindingOnOpenRef.current = null;
 
       if (createSelectedColor) {
         try {

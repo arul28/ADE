@@ -3647,17 +3647,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         });
       },
       streamEvents: resolvedArg({ events: [], nextCursor: 0, hasMore: false }),
-      checkLocalWork: async (_id: string, project: {
-        projectId: string;
-        displayName: string;
-        gitOriginUrl: string | null;
-      }) => ({
-        remoteProjectId: project.projectId,
-        remoteDisplayName: project.displayName,
-        remoteGitOriginUrl: project.gitOriginUrl,
-        matches: [],
-        hasDirtyWork: false,
-      }),
       disconnect: resolvedArg({ disconnected: true }),
     },
     keybindings: {

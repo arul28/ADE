@@ -262,7 +262,7 @@ users pair or adopt machines again. It does not sign the user out, change the
 machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
 launches do not perform the reset.
 
-Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch at a different commit (`apps/desktop/src/shared/laneDivergence.ts`). `remoteRuntimeCheckLocalWork` remains available for callers that want the comparison.
+Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch at a different commit (`apps/desktop/src/shared/laneDivergence.ts`).
 
 Local project opens use typed recovery rather than raw error text. If the
 machine brain could not open project data, it records a bounded failure report;

@@ -92,7 +92,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeCallSync:
     case IPC.remoteRuntimeEnsurePortForward:
     case IPC.remoteRuntimeStreamEvents:
-    case IPC.remoteRuntimeCheckLocalWork:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesCreate:
     case IPC.lanesCreateChild:

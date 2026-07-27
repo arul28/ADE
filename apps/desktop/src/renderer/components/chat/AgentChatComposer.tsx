@@ -74,7 +74,8 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
-import { AUTO_CREATE_LANE_OPTION_ID } from "../terminals/LaneCombobox";
+import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
+import { resolveThisMachineProjectRoot } from "./thisMachineProjectRoot";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import {
@@ -562,8 +563,11 @@ export type ComposerMachineOption = {
   name: string;
 };
 
-export const COMPOSER_LOCAL_MACHINE_ID = "local";
-export const COMPOSER_LOCAL_MACHINE_NAME = "This Mac";
+import {
+  THIS_MACHINE_ID as COMPOSER_LOCAL_MACHINE_ID,
+  THIS_MACHINE_NAME as COMPOSER_LOCAL_MACHINE_NAME,
+} from "../../../shared/machineIdentity";
+export { COMPOSER_LOCAL_MACHINE_ID, COMPOSER_LOCAL_MACHINE_NAME };
 
 const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -1651,24 +1655,39 @@ export function AgentChatComposer({
   }, [machineOptionsOverride, openRemoteProjectTabs]);
   // Opt-in: an unknown lane selection is treated as settled, so the chip only
   // claims to be a control when the host says the lane is still auto-create.
-  const machineChipSelectable = laneSelectionId === AUTO_CREATE_LANE_OPTION_ID;
+  const machineChipSelectable = isAutoCreateLaneOptionId(laneSelectionId);
+  const [machineSwitchError, setMachineSwitchError] = useState<string | null>(null);
   const handleMachineChange = useCallback(
     (machineId: string) => {
       if (onMachineChange) {
         onMachineChange(machineId);
         return;
       }
+      setMachineSwitchError(null);
       // Default: the machine IS the tab binding, so choosing one rebinds this
-      // tab rather than opening a second one.
+      // tab rather than opening a second one. Which means it must rebind to
+      // THIS repo's checkout on that machine — switching repositories behind
+      // the user's back is not a machine switch.
       if (machineId === COMPOSER_LOCAL_MACHINE_ID) {
-        const rootPath = projectBinding?.kind === "local"
-          ? projectBinding.rootPath
-          : (openProjectTabRoots[0] ?? localProjectRootPath);
-        if (rootPath) void switchProjectToPath(rootPath).catch(() => {});
+        const resolved = resolveThisMachineProjectRoot({
+          projectBinding,
+          openProjectTabRoots,
+          localProjectRootPath,
+        });
+        if (!resolved.ok) {
+          setMachineSwitchError(resolved.message);
+          return;
+        }
+        void switchProjectToPath(resolved.rootPath).catch((reason: unknown) => {
+          setMachineSwitchError(reason instanceof Error ? reason.message : String(reason));
+        });
         return;
       }
       const tab = openRemoteProjectTabs.find((entry) => entry.targetId === machineId);
-      if (tab) void switchRemoteProject(tab.targetId, tab.projectId).catch(() => {});
+      if (!tab) return;
+      void switchRemoteProject(tab.targetId, tab.projectId).catch((reason: unknown) => {
+        setMachineSwitchError(reason instanceof Error ? reason.message : String(reason));
+      });
     },
     [
       localProjectRootPath,
@@ -3931,6 +3950,21 @@ export function AgentChatComposer({
             type="button"
             className="text-amber-200/60 underline decoration-amber-200/20 underline-offset-2 transition-colors hover:text-amber-100"
             onClick={() => setVoiceError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {machineSwitchError ? (
+        <div
+          role="status"
+          className="mx-auto mb-1.5 flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-amber-300/80"
+        >
+          <span>{machineSwitchError}</span>
+          <button
+            type="button"
+            className="text-amber-200/60 underline decoration-amber-200/20 underline-offset-2 transition-colors hover:text-amber-100"
+            onClick={() => setMachineSwitchError(null)}
           >
             Dismiss
           </button>
