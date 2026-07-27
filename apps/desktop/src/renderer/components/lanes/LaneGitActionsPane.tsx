@@ -225,61 +225,23 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // Cross-machine branch state (push divergence guard)
 // ---------------------------------------------------------------------------
 //
-// Other surfaces that already hold union lane state (the chat git toolbar
-// today, the cross-machine lane list once it lands) publish per-lane branch
-// state here; the push actions below read it. This is a plain registry over
-// data the renderer already has — no polling, no subscription, no git call. It
-// stays empty until a caller publishes, which keeps the single-machine path at
-// zero cost.
+// There is exactly one seam: the `otherMachineBranchStates` prop below. A
+// module-global publish/subscribe registry used to sit here as a second path,
+// relayed through the chat git toolbar, with no producer at either end — two
+// delivery mechanisms for zero data. It is gone. When the renderer grows a
+// cross-machine lane list, it fills the prop.
 
 // Identity for the machine the renderer is running on, so the guard never
 // warns about this machine. Values match `laneMachines.ts` (THIS_MACHINE_ID /
 // THIS_MACHINE_NAME) so a caller sourcing `others` from that module lines up
 // without a translation step. Machines are named absolutely — never "remote".
-const THIS_MACHINE_GUARD_ID = "this-mac";
-const THIS_MACHINE_GUARD_NAME = "This Mac";
-
-const otherMachineBranchStatesByLane = new Map<string, readonly MachineBranchState[]>();
-const otherMachineBranchStateListeners = new Set<() => void>();
-
-function readOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
-  if (!laneId || otherMachineBranchStatesByLane.size === 0) return EMPTY_MACHINE_BRANCH_STATES;
-  return otherMachineBranchStatesByLane.get(laneId) ?? EMPTY_MACHINE_BRANCH_STATES;
-}
-
-/**
- * Publishes (or clears, with `null`/empty) the other machines known to hold
- * this lane's branch. Safe to call from any surface; the push guard picks it up
- * on the next push without re-rendering anything else.
- */
-export function publishLaneOtherMachineBranchStates(
-  laneId: string | null,
-  states: readonly MachineBranchState[] | null | undefined,
-): void {
-  if (!laneId) return;
-  const previous = otherMachineBranchStatesByLane.get(laneId);
-  if (!states || states.length === 0) {
-    if (!previous) return;
-    otherMachineBranchStatesByLane.delete(laneId);
-  } else {
-    if (previous === states) return;
-    otherMachineBranchStatesByLane.set(laneId, states);
-  }
-  for (const listener of otherMachineBranchStateListeners) listener();
-}
-
-function useOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
-  return React.useSyncExternalStore(
-    (listener) => {
-      otherMachineBranchStateListeners.add(listener);
-      return () => {
-        otherMachineBranchStateListeners.delete(listener);
-      };
-    },
-    () => readOtherMachineBranchStates(laneId),
-    () => EMPTY_MACHINE_BRANCH_STATES,
-  );
-}
+// Imported, not re-typed. The previous hardcoded literals were kept in sync
+// with laneMachines.ts by a comment; the guard compares machine ids, so a drift
+// here makes it warn that This Mac diverged from itself.
+import {
+  THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
+  THIS_MACHINE_NAME as THIS_MACHINE_GUARD_NAME,
+} from "../../../shared/machineIdentity";
 
 export {
   beginLaneGitActionRuntime,
@@ -291,7 +253,6 @@ export {
 export function __resetLaneGitActionRuntimeForTests(): void {
   laneGitActionRuntimeByScope.clear();
   laneGitActionsStateByScope.clear();
-  otherMachineBranchStatesByLane.clear();
   emitLaneGitActionRuntimeChange();
 }
 
@@ -680,10 +641,15 @@ export function LaneGitActionsPane({
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
   /**
-   * Other machines known to hold this lane's branch, from union lane state the
-   * renderer already has (`LaneListSnapshot` / `lane_state_snapshots`). Empty
-   * until a caller supplies it — the push guard is inert (and free) until then.
-   * Callers may also publish via `publishLaneOtherMachineBranchStates`.
+   * Other machines known to hold this lane's branch, built with
+   * `toMachineBranchState` from lane records the renderer already has
+   * (`LaneListSnapshot` / `lane_state_snapshots`). The single seam into the
+   * push guard — there is no registry, no publisher, no second path.
+   *
+   * Empty today: the renderer has no cross-machine lane list yet (the
+   * remote-runtime connection snapshot carries projects, not lanes). The guard
+   * short-circuits on an empty list before any work, so the single-machine
+   * path costs nothing, and lights up the moment this prop is filled.
    */
   otherMachineBranchStates?: readonly MachineBranchState[];
   /** Absolute name for this machine in guard copy. Never "remote". */
@@ -736,7 +702,6 @@ export function LaneGitActionsPane({
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
   const [pendingPush, setPendingPush] = useState<PendingGuardedPush | null>(null);
-  const publishedOtherMachineBranchStates = useOtherMachineBranchStates(laneId);
   const laneGitActionScopeKey = laneGitActionsStateKey(projectStateKey, laneId);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneGitActionScopeKey);
   const busyAction = laneGitActionRuntime.busyAction;
@@ -1385,9 +1350,7 @@ export function LaneGitActionsPane({
   // it is the one moment that interrupts. Resolved at click time (not in a
   // memo) so a single-machine project pays nothing.
   const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
-    const others = otherMachineBranchStates.length > 0
-      ? otherMachineBranchStates
-      : publishedOtherMachineBranchStates;
+    const others = otherMachineBranchStates;
     if (others.length === 0) return null;
     if (!lane) return null;
     return detectPushDivergence({
@@ -1407,7 +1370,6 @@ export function LaneGitActionsPane({
     currentMachineName,
     lane,
     otherMachineBranchStates,
-    publishedOtherMachineBranchStates,
     syncStatus,
   ]);
 

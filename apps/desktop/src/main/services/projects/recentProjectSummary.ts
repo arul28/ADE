@@ -5,6 +5,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { RecentProjectSummary } from "../../../shared/types";
 import type { RecentProjectRemote } from "../state/globalState";
 import { hasTable, openReadOnlyDatabase } from "./readOnlySqlite";
+import { readOriginRemoteUrlFromGitConfig } from "./repoProjectResolver";
 import { resolveGitMetadataDirectory, resolveWorktreeParentRef } from "./worktreeParent";
 
 type RecentProjectEntry = {
@@ -132,27 +133,108 @@ function readGitLaneCount(projectRoot: string): number | undefined {
 }
 
 /**
+ * Undecorates a git-config value: git strips surrounding quotes and honours
+ * `\` escapes inside them, and treats an unquoted `;` or `#` as the start of a
+ * trailing comment. Leaving either in place corrupts the origin URL, and the
+ * origin URL is what decides whether two checkouts are the same repository.
+ */
+export function cleanGitConfigValue(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("\"")) {
+    let out = "";
+    for (let i = 1; i < trimmed.length; i += 1) {
+      const char = trimmed[i];
+      if (char === "\\" && i + 1 < trimmed.length) {
+        out += trimmed[i + 1];
+        i += 1;
+        continue;
+      }
+      if (char === "\"") break;
+      out += char;
+    }
+    return out.trim() || null;
+  }
+  const commentIdx = trimmed.search(/[;#]/);
+  const value = (commentIdx === -1 ? trimmed : trimmed.slice(0, commentIdx)).trim();
+  return value || null;
+}
+
+/**
+ * `origin`'s url from raw git-config text.
+ *
+ * Section scanning is delegated to the line-based parser the repo resolver
+ * already uses, which anchors on whole `[...]` lines (so an indented
+ * `  [remote "upstream"]` still ends origin's section) and case-folds the
+ * section name. Only value undecoration is added on top.
+ */
+export function parseGitOriginUrlFromConfig(configText: string): string | null {
+  const raw = readOriginRemoteUrlFromGitConfig(configText);
+  return raw ? cleanGitConfigValue(raw) : null;
+}
+
+/**
+ * The directory whose `config` holds a checkout's remotes.
+ *
+ * A linked worktree's metadata dir is exactly `<main>/.git/worktrees/<name>`
+ * and has no remotes of its own, so the config we want is the main repo's. The
+ * check is structural rather than a substring search for `worktrees`: a repo
+ * that merely lives under a folder named `worktrees` would otherwise be
+ * truncated to that folder's parent, and a submodule nested inside a linked
+ * worktree would report the superproject's origin instead of its own.
+ */
+export function resolveGitConfigDirectory(gitDir: string): string {
+  const parent = path.dirname(gitDir);
+  if (path.basename(parent) !== "worktrees") return gitDir;
+  const commonGitDir = path.dirname(parent);
+  if (path.basename(commonGitDir) !== ".git") return gitDir;
+  return commonGitDir;
+}
+
+type GitOriginCacheEntry = {
+  configPath: string;
+  mtimeMs: number;
+  url: string | null;
+};
+
+// Recents are re-summarized on every focus and every project change. The config
+// file is small, but re-reading and re-parsing one per recent on every pass is
+// pure waste when it almost never changes — key on its mtime.
+const GIT_ORIGIN_CACHE_LIMIT = 256;
+const gitOriginCache = new Map<string, GitOriginCacheEntry>();
+
+export function clearGitOriginCacheForTests(): void {
+  gitOriginCache.clear();
+}
+
+/**
  * Reads `origin` straight out of the repo's git config.
  *
  * This is what lets the top bar join a local checkout and a remote checkout of
  * the same repository into one tab. Deliberately a plain file read rather than
- * `git remote get-url`: the recents path already opens a SQLite database per
- * project, so a few hundred bytes of config is noise, whereas spawning `git`
- * once per recent would not be.
+ * `git remote get-url`: spawning `git` once per recent would not be free.
  */
-function readGitOriginUrl(projectRoot: string): string | null {
+export function readGitOriginUrl(projectRoot: string): string | null {
   try {
     const gitDir = resolveGitMetadataDirectory(projectRoot);
     if (!gitDir) return null;
-    // A linked worktree's metadata dir is `<main>/.git/worktrees/<name>`, and it
-    // has no remotes of its own — the config we want lives in the main repo.
-    const marker = `${path.sep}worktrees${path.sep}`;
-    const markerIdx = gitDir.lastIndexOf(marker);
-    const configDir = markerIdx === -1 ? gitDir : gitDir.slice(0, markerIdx);
-    const raw = fs.readFileSync(path.join(configDir, "config"), "utf8");
-    const section = /\[remote\s+"origin"\]([\s\S]*?)(?=\n\[|$)/.exec(raw);
-    const url = section ? /^\s*url\s*=\s*(.+)$/m.exec(section[1])?.[1] : null;
-    return url?.trim() || null;
+    const configPath = path.join(resolveGitConfigDirectory(gitDir), "config");
+
+    let mtimeMs: number;
+    try {
+      mtimeMs = fs.statSync(configPath).mtimeMs;
+    } catch {
+      return null;
+    }
+    const cached = gitOriginCache.get(projectRoot);
+    if (cached && cached.configPath === configPath && cached.mtimeMs === mtimeMs) {
+      return cached.url;
+    }
+
+    const url = parseGitOriginUrlFromConfig(fs.readFileSync(configPath, "utf8"));
+    if (gitOriginCache.size >= GIT_ORIGIN_CACHE_LIMIT) gitOriginCache.clear();
+    gitOriginCache.set(projectRoot, { configPath, mtimeMs, url });
+    return url;
   } catch {
     return null;
   }
@@ -216,6 +298,12 @@ export function toShallowRecentProjectSummary(entry: RecentProjectEntry): Recent
     exists,
     ...(worktreeOf ? { worktreeOf } : {}),
     kind: "local",
+    // The renderer's tab bar joins local and remote checkouts of one repo on
+    // this key, and IPC.projectListRecent serves the tab bar from this shallow
+    // path — without it every tab would arrive origin-less and nothing would
+    // ever merge. The read is mtime-cached, so it stays cheap on the repeated
+    // focus/project-change passes the recents cache already absorbs.
+    ...(exists ? { gitOriginUrl: readGitOriginUrl(entry.rootPath) } : {}),
     ...(entry.pinned ? { pinned: true } : {}),
   };
 }

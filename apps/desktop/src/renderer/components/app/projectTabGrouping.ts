@@ -1,4 +1,6 @@
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+// Origin normalization is a URL/regex parse and the tab list re-derives on
+// every connection-snapshot tick, so it goes through the shared per-URL cache.
+import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
 import type { OpenProjectBinding, RecentProjectSummary } from "../../../shared/types";
 
 import {
@@ -83,11 +85,11 @@ export function groupProjectTabs(args: {
   const entries: { machine: ProjectTabMachine; origin: string | null }[] = [
     ...localTabs.map((tab) => ({
       machine: localMachine(tab),
-      origin: normalizeGitRemoteIdentity(tab.gitOriginUrl),
+      origin: cachedGitRemoteIdentity(tab.gitOriginUrl),
     })),
     ...remoteTabs.map((binding) => ({
       machine: remoteMachine(binding),
-      origin: normalizeGitRemoteIdentity(remoteOriginByKey[binding.key] ?? null),
+      origin: cachedGitRemoteIdentity(remoteOriginByKey[binding.key] ?? null),
     })),
   ];
 

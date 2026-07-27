@@ -7,11 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import type { MachineBranchState } from "../../../shared/laneDivergence";
-import {
-  __resetLaneGitActionRuntimeForTests,
-  LaneGitActionsPane,
-  publishLaneOtherMachineBranchStates,
-} from "./LaneGitActionsPane";
+import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
 vi.mock("./CommitTimeline", () => ({
   CommitTimeline: () => <div data-testid="commit-timeline-mock" />,
@@ -233,34 +229,26 @@ describe("LaneGitActionsPane push divergence guard", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("picks up cross-machine state published by another surface", async () => {
-    renderPane({ currentMachineHeadSha: "aaaaaaa" });
-    publishLaneOtherMachineBranchStates("lane-1", [otherMachine({ ahead: 1 })]);
-
+  // The realistic case end to end: nothing in ADE records a head sha, so the
+  // guard has to fire off the lane's `ahead` count alone or it never fires.
+  it("warns from lane state alone, with no head sha on either side", async () => {
+    renderPane({
+      otherMachineBranchStates: [otherMachine({ headSha: null, ahead: 9 })],
+    });
     await clickPush();
 
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("is 1 commit ahead");
+    const dialog = await screen.findByRole("dialog", {
+      name: "MacBook Pro (97) also has this branch",
+    });
+    expect(dialog.textContent).toContain("is 9 commits ahead");
     expect(window.ade.git.push).not.toHaveBeenCalled();
   });
 
-  it("stops warning once the published state is cleared", async () => {
-    renderPane({ currentMachineHeadSha: "aaaaaaa" });
-    publishLaneOtherMachineBranchStates("lane-1", [otherMachine()]);
-    publishLaneOtherMachineBranchStates("lane-1", null);
-
-    await clickPush();
-
-    await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledTimes(1);
-    });
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("does not warn on a machine whose head commit is unknown", async () => {
+  it("never warns about this machine's own entry", async () => {
     renderPane({
-      otherMachineBranchStates: [otherMachine({ headSha: null, ahead: 9 })],
-      currentMachineHeadSha: "aaaaaaa",
+      otherMachineBranchStates: [
+        otherMachine({ machineId: "this-mac", machineName: "This Mac", headSha: null, ahead: 9 }),
+      ],
     });
     await clickPush();
 

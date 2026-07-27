@@ -528,6 +528,9 @@ describe("toRecentProjectSummary", () => {
       lastOpenedAt: "2026-04-02T12:00:00.000Z",
       exists: true,
       kind: "local",
+      // The tab bar's repo join key. Cheap (one mtime-cached config read) and
+      // deliberately still on the shallow path — unlike the lane scan.
+      gitOriginUrl: null,
     });
   });
 
