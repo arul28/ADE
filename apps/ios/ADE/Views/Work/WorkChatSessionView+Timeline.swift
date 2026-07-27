@@ -121,7 +121,14 @@ extension WorkChatSessionView {
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
-      WorkTurnEndMarkerView(marker: marker)
+      let activity = turnToolActivity.completedByTurnId[marker.turnId]
+      WorkTurnEndMarkerView(
+        marker: marker,
+        toolCount: activity?.count ?? 0,
+        onOpenActivity: activity.map { _ in
+          { toolActivitySheet = .completed(marker.turnId) }
+        }
+      )
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the
       // transcript keeps its full context; the top-right gear icon already
@@ -292,6 +299,73 @@ extension WorkChatSessionView {
       }
     )
   }
+}
+
+struct WorkTurnToolActivityIndex {
+  let completedByTurnId: [String: WorkToolGroupModel]
+  let active: WorkToolGroupModel?
+}
+
+enum WorkToolActivitySheetSelection: Identifiable, Equatable {
+  case active
+  case completed(String)
+
+  var id: String {
+    switch self {
+    case .active:
+      return "active"
+    case .completed(let turnId):
+      return "completed:\(turnId)"
+    }
+  }
+}
+
+func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToolActivityIndex {
+  var completed: [String: WorkToolGroupModel] = [:]
+  var pendingMembers: [WorkToolGroupMember] = []
+  var currentUserTurnId: String?
+
+  func mergedGroup(id: String, members: [WorkToolGroupMember]) -> WorkToolGroupModel? {
+    var seen = Set<String>()
+    let unique = members.filter { seen.insert($0.id).inserted }
+    guard !unique.isEmpty else { return nil }
+    return WorkToolGroupModel(id: id, members: unique)
+  }
+
+  for entry in entries {
+    switch entry.payload {
+    case .message(let message) where message.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "user":
+      let turnId = message.turnId?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let normalizedTurnId = turnId.flatMap { $0.isEmpty ? nil : $0 }
+      let steerId = message.steerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let isFollowUp = steerId?.isEmpty == false
+      if normalizedTurnId != currentUserTurnId || (normalizedTurnId == nil && !isFollowUp) {
+        pendingMembers.removeAll(keepingCapacity: true)
+      }
+      currentUserTurnId = normalizedTurnId
+    case .toolGroup(let group):
+      pendingMembers.append(contentsOf: group.members)
+    case .turnEndMarker(let marker):
+      if let group = mergedGroup(id: "turn-activity:\(marker.turnId)", members: pendingMembers) {
+        completed[marker.turnId] = group
+      }
+      pendingMembers.removeAll(keepingCapacity: true)
+      currentUserTurnId = nil
+    case .turnSeparator:
+      // Imported or interrupted transcripts can begin a new turn without a
+      // terminal marker for the previous one. Do not attribute that earlier
+      // provider's tools to the next turn's completion disclosure.
+      pendingMembers.removeAll(keepingCapacity: true)
+      currentUserTurnId = nil
+    default:
+      continue
+    }
+  }
+
+  return WorkTurnToolActivityIndex(
+    completedByTurnId: completed,
+    active: mergedGroup(id: "turn-activity:active", members: pendingMembers)
+  )
 }
 
 struct WorkAssistantMarkdownBlockRow: View, Equatable {

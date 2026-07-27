@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretDown,
@@ -70,7 +70,12 @@ import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { ChatMarkdown } from "./chatMarkdown";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
-import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
+import {
+  ChatToolActivityDetails,
+  ChatWorkLogBlock,
+  chatWorkLogHasFileChanges,
+  dedupeChatToolActivityEntries,
+} from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import {
   buildRenderKey,
@@ -96,6 +101,7 @@ import {
   type SubagentStoppedGroupEvent,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
+  type ChatWorkLogEntry,
 } from "./chatTranscriptRows";
 import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -1918,9 +1924,27 @@ export function formatElapsedSeconds(totalSeconds: number): string {
  * leaving the chat and coming back keeps the true elapsed instead of resetting
  * to 0 on remount.
  */
-function WorkingIndicator({ activity, startedAt }: { activity: string | null; startedAt: number | null }) {
+function WorkingIndicator({
+  activity,
+  startedAt,
+  toolEntries,
+  onNavigateSuggestion,
+  onInsertDraft,
+  onRevealChatTerminal,
+  sessionId,
+}: {
+  activity: string | null;
+  startedAt: number | null;
+  toolEntries: ChatWorkLogEntry[];
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  sessionId?: string | null;
+}) {
   const timerRef = useRef<HTMLSpanElement>(null);
   const [longRunning, setLongRunning] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const hasToolActivity = toolEntries.length > 0;
   useEffect(() => {
     const startMs = startedAt ?? Date.now();
     const el = timerRef.current;
@@ -1934,21 +1958,60 @@ function WorkingIndicator({ activity, startedAt }: { activity: string | null; st
     tick();
     return () => window.clearTimeout(handle);
   }, [startedAt]);
-  return (
-    <span className="inline-flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
+  const status = (
+    <span className="inline-flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
       <ThinkingDots toneClass="bg-violet-400/70" />
-      <span className="font-medium text-fg/55">{activity ?? "Working"}</span>
-      <span className="text-fg/28" aria-hidden>·</span>
-      <span className="text-fg/38">
+      <span className="min-w-0 truncate font-medium text-fg/55">{activity ?? "Working"}</span>
+      <span className="shrink-0 text-fg/28" aria-hidden>·</span>
+      <span className="shrink-0 text-fg/38">
         working for <span ref={timerRef} className="tabular-nums">0s</span>
       </span>
       {longRunning ? (
         <>
-          <span className="text-fg/28" aria-hidden>·</span>
-          <span className="text-fg/35">taking longer than usual</span>
+          <span className="shrink-0 text-fg/28" aria-hidden>·</span>
+          <span className="shrink-0 text-fg/35">taking longer than usual</span>
         </>
       ) : null}
+      {hasToolActivity ? (
+        activityOpen
+          ? <CaretDown size={10} weight="bold" className="shrink-0 text-violet-300/45" />
+          : <CaretRight size={10} weight="bold" className="shrink-0 text-violet-300/45" />
+      ) : null}
     </span>
+  );
+  return (
+    <div className="min-w-0 max-w-full">
+      {hasToolActivity ? (
+        <button
+          type="button"
+          aria-expanded={activityOpen}
+          aria-label={`${activityOpen ? "Hide" : "Show"} activity from the active turn`}
+          onClick={() => setActivityOpen((open) => !open)}
+          className="flex max-w-full items-center rounded-md py-0.5 text-left transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/40"
+        >
+          {status}
+        </button>
+      ) : status}
+      <AnimatePresence initial={false}>
+        {hasToolActivity && activityOpen ? (
+          <motion.div
+            initial={{ opacity: 0, height: 0, y: -4 }}
+            animate={{ opacity: 1, height: "auto", y: 0 }}
+            exit={{ opacity: 0, height: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+            className="mt-2 min-w-0 overflow-hidden border-l border-violet-300/15 pl-4"
+          >
+            <ChatToolActivityDetails
+              entries={toolEntries}
+              onNavigateSuggestion={onNavigateSuggestion}
+              onInsertDraft={onInsertDraft}
+              onRevealChatTerminal={onRevealChatTerminal}
+              sessionId={sessionId}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -4707,26 +4770,36 @@ function DoneTurnDivider({
   event,
   timestamp,
   durationMs,
+  toolEntries,
+  onNavigateSuggestion,
+  onInsertDraft,
+  onRevealChatTerminal,
+  sessionId,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
   timestamp: string;
   durationMs: number | null;
+  toolEntries: ChatWorkLogEntry[];
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  sessionId?: string | null;
 }) {
+  const [activityOpen, setActivityOpen] = useState(false);
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   const ranFor = durationMs !== null && durationMs > 1500
     ? `Ran for ${formatTurnDuration(durationMs)}`
     : null;
-  return (
-    <div className="my-4 flex items-center gap-3">
-      <span className="h-px flex-1 bg-white/[0.06]" />
-      <span
-        className={cn(
-          "inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
-          completed ? "text-fg/40" : doneStatusToneClass(event.status),
-        )}
-      >
+  const hasToolActivity = toolEntries.length > 0;
+  const content = (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
+        completed ? "text-fg/40" : doneStatusToneClass(event.status),
+      )}
+    >
         {!completed && modelLabel ? (
           <span className="inline-flex items-center gap-1.5">
             <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
@@ -4750,10 +4823,101 @@ function DoneTurnDivider({
             <span>{ranFor}</span>
           </>
         ) : null}
-      </span>
-      <span className="h-px flex-1 bg-white/[0.06]" />
+      {hasToolActivity ? (
+        activityOpen
+          ? <CaretDown size={9} weight="bold" className="opacity-55" />
+          : <CaretRight size={9} weight="bold" className="opacity-55" />
+      ) : null}
+    </span>
+  );
+  return (
+    <div className="my-4 min-w-0">
+      <div className="flex items-center gap-3">
+        <span className="h-px flex-1 bg-white/[0.06]" />
+        {hasToolActivity ? (
+          <button
+            type="button"
+            aria-expanded={activityOpen}
+            aria-label={`${activityOpen ? "Hide" : "Show"} activity from this turn`}
+            onClick={() => setActivityOpen((open) => !open)}
+            className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+          >
+            {content}
+          </button>
+        ) : content}
+        <span className="h-px flex-1 bg-white/[0.06]" />
+      </div>
+      <AnimatePresence initial={false}>
+        {hasToolActivity && activityOpen ? (
+          <motion.div
+            initial={{ opacity: 0, height: 0, y: -4 }}
+            animate={{ opacity: 1, height: "auto", y: 0 }}
+            exit={{ opacity: 0, height: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+            className="mx-auto mt-2 w-full max-w-[min(100%,70ch)] overflow-hidden border-l border-white/[0.08] pl-4"
+          >
+            <ChatToolActivityDetails
+              entries={toolEntries}
+              onNavigateSuggestion={onNavigateSuggestion}
+              onInsertDraft={onInsertDraft}
+              onRevealChatTerminal={onRevealChatTerminal}
+              sessionId={sessionId}
+            />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
+}
+
+type TranscriptToolActivity = {
+  byDoneRowKey: Map<string, ChatWorkLogEntry[]>;
+  activeEntries: ChatWorkLogEntry[];
+};
+
+export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]): TranscriptToolActivity {
+  const entriesByTurnId = new Map<string, ChatWorkLogEntry[]>();
+  const byDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
+  let pendingSegment: Array<{ entries: ChatWorkLogEntry[]; turnId: string | null }> = [];
+
+  for (const row of rows) {
+    if (row.event.type === "work_log_group") {
+      const turnId = row.event.turnId ?? row.event.entries.find((entry) => entry.turnId)?.turnId ?? null;
+      pendingSegment.push({ entries: row.event.entries, turnId });
+      if (turnId) {
+        const existing = entriesByTurnId.get(turnId) ?? [];
+        existing.push(...row.event.entries);
+        entriesByTurnId.set(turnId, existing);
+      }
+      continue;
+    }
+    if (row.event.type === "user_message" && row.event.deliveryState !== "queued") {
+      pendingSegment = [];
+      continue;
+    }
+    if (row.event.type !== "done") continue;
+    const doneTurnId = row.event.turnId;
+    const segmentEntries = pendingSegment
+      .filter((group) => !doneTurnId || !group.turnId || group.turnId === doneTurnId)
+      .flatMap((group) => group.entries);
+    const turnEntries = doneTurnId
+      ? [...(entriesByTurnId.get(doneTurnId) ?? []), ...segmentEntries]
+      : segmentEntries;
+    byDoneRowKey.set(row.key, dedupeChatToolActivityEntries(turnEntries));
+    pendingSegment = [];
+  }
+
+  const lastBoundaryIndex = rows.findLastIndex((row) => (
+    row.event.type === "done"
+    || (row.event.type === "user_message" && row.event.deliveryState !== "queued")
+  ));
+  const activeEntries = rows
+    .slice(lastBoundaryIndex + 1)
+    .flatMap((row) => row.event.type === "work_log_group" ? row.event.entries : []);
+  return {
+    byDoneRowKey,
+    activeEntries: dedupeChatToolActivityEntries(activeEntries),
+  };
 }
 
 function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: string; detail?: string } | null {
@@ -4847,6 +5011,7 @@ type EventRowProps = {
   showForkHistoryDivider?: boolean;
   turnModel: { label: string; modelId?: string; model?: string } | null;
   turnEndDurationMs?: number | null;
+  turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
@@ -4889,6 +5054,7 @@ const EventRow = React.memo(function EventRow({
   showForkHistoryDivider,
   turnModel,
   turnEndDurationMs,
+  turnToolEntries = [],
   onApproval,
   onCodexRecovery,
   onRetryProviderFailure,
@@ -4971,6 +5137,7 @@ const EventRow = React.memo(function EventRow({
               onRevealChatTerminal={onRevealChatTerminal}
               sessionId={sessionId}
               animate={workLogAnimate}
+              showToolCalls={false}
             />
           </div>
         )
@@ -5012,6 +5179,11 @@ const EventRow = React.memo(function EventRow({
           event={envelope.event}
           timestamp={envelope.timestamp}
           durationMs={turnEndDurationMs ?? null}
+          toolEntries={turnToolEntries}
+          onNavigateSuggestion={onNavigateSuggestion}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+          sessionId={sessionId}
         />
       ) : null}
     </div>
@@ -5345,7 +5517,26 @@ export function resolveAnchoredChatRowIndex({
   );
   const targetRow = targetRows[targetRows.length - 1];
   if (!targetRow) return -1;
-  return groupedRows.findIndex((row) => row.key === targetRow.key);
+  const directIndex = groupedRows.findIndex((row) => row.key === targetRow.key);
+  if (directIndex >= 0) return directIndex;
+
+  // Tool-only rows are intentionally absent from the presented transcript.
+  // Keep event anchors useful by resolving a hidden target to the closest
+  // visible row around it instead of treating it as missing history.
+  const visibleKeys = new Map(groupedRows.map((row, index) => [row.key, index]));
+  for (let index = targetRows.length - 2; index >= 0; index -= 1) {
+    const visibleIndex = visibleKeys.get(targetRows[index]!.key);
+    if (visibleIndex !== undefined) return visibleIndex;
+  }
+  const targetMs = Date.parse(targetRow.timestamp);
+  if (Number.isFinite(targetMs)) {
+    const followingIndex = groupedRows.findIndex((row) => {
+      const rowMs = Date.parse(row.timestamp);
+      return Number.isFinite(rowMs) && rowMs >= targetMs;
+    });
+    if (followingIndex >= 0) return followingIndex;
+  }
+  return groupedRows.length > 0 ? groupedRows.length - 1 : -1;
 }
 
 type PendingChatEventAnchor = {
@@ -5612,12 +5803,22 @@ function AgentChatMessageListMain({
     }
     return byRowKey;
   }, [rows]);
-  const groupedRows = useMemo(
+  const allGroupedRows = useMemo(
     // Drop automatic context-usage snapshots before they become flex rows: an
     // empty (null-rendered) row still consumes a `--chat-row-gap` on each side,
     // so leaving them in would stack blank gaps during a streaming turn.
     () => groupChatTranscriptRows(rows).filter((row) => !isAutomaticContextUsageEvent(row.event)),
     [rows],
+  );
+  const transcriptToolActivity = useMemo(
+    () => deriveTranscriptToolActivity(allGroupedRows),
+    [allGroupedRows],
+  );
+  const groupedRows = useMemo(
+    () => allGroupedRows.filter((row) => (
+      row.event.type !== "work_log_group" || chatWorkLogHasFileChanges(row.event.entries)
+    )),
+    [allGroupedRows],
   );
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
   // Mirrored for the render-free paths (scroll handler, unmount snapshot) that
@@ -5728,22 +5929,20 @@ function AgentChatMessageListMain({
   const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
   // Per-turn worked-for duration, keyed by grouped-row index, derived from the
   // universal `done` event (runtime-agnostic — no reliance on turnId).
-  const turnEndDurationByRowIndex = useMemo(() => {
-    const map = new Map<number, number>();
+  const turnEndDurationByRowKey = useMemo(() => {
+    const map = new Map<string, number>();
     let turnStartMs: number | null = null;
-    for (let i = 0; i < groupedRows.length; i += 1) {
-      const env = groupedRows[i];
-      if (!env) continue;
+    for (const env of allGroupedRows) {
       const ts = Date.parse(env.timestamp);
       if (turnStartMs === null && Number.isFinite(ts)) turnStartMs = ts;
       if (env.event.type === "done") {
         const start = turnStartMs ?? ts;
-        map.set(i, Number.isFinite(ts) && Number.isFinite(start) ? Math.max(0, ts - start) : 0);
+        map.set(env.key, Number.isFinite(ts) && Number.isFinite(start) ? Math.max(0, ts - start) : 0);
         turnStartMs = null;
       }
     }
     return map;
-  }, [groupedRows]);
+  }, [allGroupedRows]);
 
   const handleReviewChanges = useCallback(() => {
     if (!turnSummary?.changedFileCount) return;
@@ -6470,7 +6669,10 @@ function AgentChatMessageListMain({
     const showTurnDivider = false;
     const turnDividerLabel: string | null = null;
     const turnEndDurationMs = envelope.event.type === "done"
-      ? (turnEndDurationByRowIndex.get(index) ?? null)
+      ? (turnEndDurationByRowKey.get(envelope.key) ?? null)
+      : undefined;
+    const turnToolEntries = envelope.event.type === "done"
+      ? (transcriptToolActivity.byDoneRowKey.get(envelope.key) ?? [])
       : undefined;
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
@@ -6494,6 +6696,7 @@ function AgentChatMessageListMain({
           showForkHistoryDivider={showForkHistoryDivider}
           turnModel={turnModel}
           turnEndDurationMs={turnEndDurationMs}
+          turnToolEntries={turnToolEntries}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
           onRetryProviderFailure={onRetryProviderFailure}
@@ -6538,6 +6741,7 @@ function AgentChatMessageListMain({
         showForkHistoryDivider={showForkHistoryDivider}
         turnModel={turnModel}
         turnEndDurationMs={turnEndDurationMs}
+        turnToolEntries={turnToolEntries}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
         onRetryProviderFailure={onRetryProviderFailure}
@@ -6573,7 +6777,7 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage, transcriptToolActivity, turnEndDurationByRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -6603,6 +6807,11 @@ function AgentChatMessageListMain({
             : latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null
         }
         startedAt={activeTurnStartedAt}
+        toolEntries={transcriptToolActivity.activeEntries}
+        onNavigateSuggestion={handleNavigateSuggestion}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+        sessionId={sessionId}
       />
     </motion.div>
   ) : null;

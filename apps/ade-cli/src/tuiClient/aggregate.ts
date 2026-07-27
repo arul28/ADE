@@ -18,6 +18,7 @@ import {
   renderChatLines,
   type RenderedChatLine,
 } from "./format";
+import { terminalReasonLabel } from "./terminalReason";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
 import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextIdentity";
 
@@ -91,6 +92,7 @@ export type AggregatedBlock =
   | { kind: "conversation-reset"; id: string }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
+  | { kind: "turn-end"; id: string; turnId: string | null; timestamp: string; status: string; terminalReasonLabel?: string; durationMs?: number; entries: ToolCallEntry[] }
   | { kind: "approval"; id: string; line: RenderedChatLine }
   | { kind: "error"; id: string; line: RenderedChatLine }
   | { kind: "notice"; id: string; line: RenderedChatLine };
@@ -848,12 +850,20 @@ export function aggregateChatBlocks(args: {
     blocks.push({ kind, id, line } as AggregatedBlock);
   };
   const workItemStartedAt = new Map<string, number>();
+  const segmentWorkItemStartedAt = new Map<string, number>();
   // turnId:itemId → live entry reference, so a tool's later lifecycle events
   // resolve the SAME entry even when assistant text split the visual groups.
   const toolEntryByItemKey = new Map<string, ToolCallEntry>();
+  const segmentToolEntryByItemId = new Map<string, ToolCallEntry>();
   const imageBlockByItemKey = new Map<string, Extract<AggregatedBlock, { kind: "notice" }>>();
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
+  const turnStartedAt = new Map<string, number>();
+  let toolActivitySegmentStart = 0;
+  let interruptedTerminusCluster: {
+    startBlockIndex: number;
+    turnEndBlock?: Extract<AggregatedBlock, { kind: "turn-end" }>;
+  } | null = null;
 
   for (const entry of timeline) {
     if (entry.kind === "notice") {
@@ -870,6 +880,20 @@ export function aggregateChatBlocks(args: {
     const event = envelope.event;
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
+    const turnKey = turnId ?? "__turn_without_id__";
+    if (!turnStartedAt.has(turnKey)) turnStartedAt.set(turnKey, safeMs(envelope.timestamp));
+    const isInterruptedTerminus = (
+      event.type === "status"
+      && (event.turnStatus === "interrupted" || event.turnStatus === "failed")
+    ) || (
+      event.type === "done"
+      && (event.status === "interrupted" || event.status === "failed")
+    );
+    if (isInterruptedTerminus) {
+      interruptedTerminusCluster ??= { startBlockIndex: blocks.length };
+    } else {
+      interruptedTerminusCluster = null;
+    }
 
     const activityEntry = activityBundleEntryFromEvent(id, event, resolvedSubagentKeysByParent);
     if (activityEntry) {
@@ -897,7 +921,18 @@ export function aggregateChatBlocks(args: {
         }
         continue;
       }
+      for (const block of blocks.slice(toolActivitySegmentStart)) {
+        if (isLiveTurnBlock(block)) {
+          block.live = false;
+        }
+      }
+      toolEntryByItemKey.clear();
+      segmentToolEntryByItemId.clear();
+      workItemStartedAt.clear();
+      segmentWorkItemStartedAt.clear();
       passthrough(id, "user-bubble");
+      toolActivitySegmentStart = blocks.length;
+      turnStartedAt.set(turnKey, safeMs(envelope.timestamp));
       continue;
     }
     if (event.type === "user_message_resolution") {
@@ -990,7 +1025,10 @@ export function aggregateChatBlocks(args: {
         // genuinely new entry arrives); lookups resolve across ALL groups of
         // the turn so a result never duplicates its call's row.
         const registry: ToolEntryRegistry = {
-          get: (itemId) => toolEntryByItemKey.get(workItemKey(turnId, itemId)),
+          get: (itemId) => (
+            toolEntryByItemKey.get(workItemKey(turnId, itemId))
+            ?? segmentToolEntryByItemId.get(itemId)
+          ),
           add: (newEntry) => {
             const last = blocks[blocks.length - 1];
             let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
@@ -1002,24 +1040,31 @@ export function aggregateChatBlocks(args: {
             }
             group.entries.push(newEntry);
             toolEntryByItemKey.set(workItemKey(turnId, newEntry.itemId), newEntry);
+            segmentToolEntryByItemId.set(newEntry.itemId, newEntry);
           },
         };
         if (event.type === "web_search") {
           appendWebSearchEvent(registry, event);
         } else if (event.type === "command") {
           const key = workItemKey(turnId, event.itemId);
-          const startedAt = workItemStartedAt.get(key);
+          const startedAt = workItemStartedAt.get(key) ?? segmentWorkItemStartedAt.get(event.itemId);
           const derivedDurationMs = event.status === "running" || startedAt === undefined
             ? undefined
             : entry.timestamp - startedAt;
           if (!workItemStartedAt.has(key)) workItemStartedAt.set(key, entry.timestamp);
+          if (!segmentWorkItemStartedAt.has(event.itemId)) {
+            segmentWorkItemStartedAt.set(event.itemId, entry.timestamp);
+          }
           appendCommandAsTool(registry, event, derivedDurationMs);
         } else {
           const key = workItemKey(turnId, event.itemId);
           if (event.type === "tool_call" && !workItemStartedAt.has(key)) {
             workItemStartedAt.set(key, entry.timestamp);
           }
-          const startedAt = workItemStartedAt.get(key);
+          if (event.type === "tool_call" && !segmentWorkItemStartedAt.has(event.itemId)) {
+            segmentWorkItemStartedAt.set(event.itemId, entry.timestamp);
+          }
+          const startedAt = workItemStartedAt.get(key) ?? segmentWorkItemStartedAt.get(event.itemId);
           const derivedDurationMs = event.type === "tool_result" && event.status !== "running" && startedAt !== undefined
             ? entry.timestamp - startedAt
             : undefined;
@@ -1181,6 +1226,63 @@ export function aggregateChatBlocks(args: {
     }
     if (event.type === "done") {
       finishTurnBlocks(blocks, turnId);
+      for (const block of blocks.slice(toolActivitySegmentStart)) {
+        const blockTurnId = (block as { turnId?: string | null }).turnId ?? null;
+        if (
+          isLiveTurnBlock(block)
+          && (!turnId || !blockTurnId || blockTurnId === turnId)
+        ) {
+          block.live = false;
+        }
+      }
+      const entries = blocks
+        .slice(toolActivitySegmentStart)
+        .filter((block): block is Extract<AggregatedBlock, { kind: "tool-calls-group" }> => (
+          block.kind === "tool-calls-group"
+          && (!turnId || !block.turnId || block.turnId === turnId)
+        ))
+        .flatMap((block) => block.entries);
+      const uniqueEntries = Array.from(new Map(entries.map((toolEntry) => [toolEntry.itemId, toolEntry])).values());
+      const endedAt = safeMs(envelope.timestamp);
+      const startedAt = turnStartedAt.get(turnKey);
+      const turnEndBlock: Extract<AggregatedBlock, { kind: "turn-end" }> = {
+        kind: "turn-end",
+        id: `${id}:turn-end`,
+        turnId,
+        timestamp: envelope.timestamp,
+        status: event.status,
+        terminalReasonLabel: terminalReasonLabel(event.terminalReason) ?? undefined,
+        durationMs: startedAt !== undefined && endedAt >= startedAt ? endedAt - startedAt : undefined,
+        entries: uniqueEntries,
+      };
+      if (interruptedTerminusCluster) {
+        const existing = interruptedTerminusCluster.turnEndBlock;
+        if (existing) {
+          const existingIndex = blocks.indexOf(existing);
+          if (existingIndex >= 0) blocks.splice(existingIndex + 1);
+          existing.timestamp = turnEndBlock.timestamp;
+          existing.status = existing.status === "failed" || turnEndBlock.status === "failed"
+            ? "failed"
+            : "interrupted";
+          existing.terminalReasonLabel = turnEndBlock.terminalReasonLabel ?? existing.terminalReasonLabel;
+          existing.durationMs = Math.max(existing.durationMs ?? 0, turnEndBlock.durationMs ?? 0) || undefined;
+          existing.entries = Array.from(new Map(
+            [...existing.entries, ...turnEndBlock.entries].map((toolEntry) => [toolEntry.itemId, toolEntry]),
+          ).values());
+        } else {
+          blocks.splice(interruptedTerminusCluster.startBlockIndex);
+          blocks.push(turnEndBlock);
+          interruptedTerminusCluster.turnEndBlock = turnEndBlock;
+        }
+      } else {
+        blocks.push(turnEndBlock);
+      }
+      toolActivitySegmentStart = blocks.length;
+      toolEntryByItemKey.clear();
+      segmentToolEntryByItemId.clear();
+      workItemStartedAt.clear();
+      segmentWorkItemStartedAt.clear();
+      turnStartedAt.delete(turnKey);
       continue;
     }
     if (SILENCED_EVENT_TYPES.has(event.type)) {

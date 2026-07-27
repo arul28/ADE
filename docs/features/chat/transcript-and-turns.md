@@ -263,12 +263,25 @@ implements a two-layer transform:
    by assistant text, user messages, plans, pending inputs, or other hard
    boundaries) can merge again when the phase is noisy: at least three rows,
    or at least two reasoning rows, or at least two work groups. The pass
-   emits one merged `Thought` row and one merged `Tool calls (N)` row in
+   emits one merged `Thought` row and one merged work-log group in
    chronological first-occurrence order. Simple one-thought + one-tool
-   turns stay as two rows. Shared logic lives in
+   turns stay as two grouped envelopes. Shared logic lives in
    `apps/desktop/src/shared/chatActivityPhase.ts`; desktop wires it through
    `groupChatTranscriptRows()`, the TUI through `aggregateChatBlocks()`,
    and iOS through `collapseActivityPhaseTimelineEntries()`.
+
+4. **Client presentation.** Grouping remains lossless, but normalized tool,
+   command, hook, and web-search groups no longer occupy permanent transcript
+   rows. During a live turn they are available from the expandable working
+   status; after `done` they move to the existing turn-finished / `Ran for`
+   status. File-change summaries remain chronological transcript rows, and
+   assistant narration is unchanged. Desktop and hosted web share this
+   presentation in `AgentChatMessageList`; iOS opens the activity in a sheet so
+   the working row stays readable at narrow widths; ADE Code expands the same
+   activity from its working or turn-finished row. This is capability
+   preserving: clients show only events and file data the selected provider
+   actually emitted, without synthesizing Claude-style file histories for
+   other runtimes.
 
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.

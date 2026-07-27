@@ -358,6 +358,22 @@ function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[
   return [...map.values()];
 }
 
+export function chatWorkLogHasFileChanges(entries: ChatWorkLogEntry[]): boolean {
+  return aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)).length > 0;
+}
+
+export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): ChatWorkLogEntry[] {
+  const byId = new Map<string, ChatWorkLogEntry>();
+  for (const entry of entries) {
+    // Canonical file-change events keep their own chronological transcript
+    // panel. A write tool can still appear here as an action, but the resulting
+    // file event itself should not be duplicated inside activity details.
+    if (entry.entryKind === "file_change") continue;
+    byId.set(entry.id, entry);
+  }
+  return Array.from(byId.values());
+}
+
 function FlatPre({ children }: { children: React.ReactNode }) {
   return (
     <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/55">
@@ -624,6 +640,40 @@ function ToolCallsPanel({
   );
 }
 
+export function ChatToolActivityDetails({
+  entries,
+  className,
+  onNavigateSuggestion,
+  onInsertDraft,
+  onRevealChatTerminal,
+  sessionId,
+}: {
+  entries: ChatWorkLogEntry[];
+  className?: string;
+  onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  sessionId?: string | null;
+}) {
+  const activityEntries = useMemo(() => dedupeChatToolActivityEntries(entries), [entries]);
+  if (activityEntries.length === 0) return null;
+  return (
+    <div className={cn("min-w-0 max-w-full overflow-hidden", className)}>
+      <LocalhostServersStrip
+        entries={activityEntries}
+        sessionId={sessionId}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+      />
+      <div className="max-h-72 min-w-0 max-w-full space-y-0.5 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
+        {activityEntries.map((entry) => (
+          <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FilesChangedPanel({
   files,
   onUndo,
@@ -823,6 +873,7 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal,
   sessionId,
   animate: _animate = true,
+  showToolCalls = true,
 }: {
   entries: ChatWorkLogEntry[];
   summary?: ChatWorkLogGroupEvent["summary"];
@@ -833,6 +884,7 @@ export function ChatWorkLogBlock({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
   animate?: boolean;
+  showToolCalls?: boolean;
 }) {
   const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
     const readOnly: ChatWorkLogEntry[] = [];
@@ -849,18 +901,20 @@ export function ChatWorkLogBlock({
     [codeChangeEntries],
   );
 
-  const hasReadOnly = readOnlyEntries.length > 0;
+  const hasReadOnly = showToolCalls && readOnlyEntries.length > 0;
   const hasCodeChange = aggregatedFiles.length > 0;
   if (!hasReadOnly && !hasCodeChange) return null;
 
   return (
     <div className={cn("min-w-0 max-w-full space-y-3 overflow-hidden", className)}>
-      <LocalhostServersStrip
-        entries={entries}
-        sessionId={sessionId}
-        onInsertDraft={onInsertDraft}
-        onRevealChatTerminal={onRevealChatTerminal}
-      />
+      {showToolCalls ? (
+        <LocalhostServersStrip
+          entries={entries}
+          sessionId={sessionId}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+        />
+      ) : null}
       {hasReadOnly ? (
         <ToolCallsPanel
           entries={readOnlyEntries}

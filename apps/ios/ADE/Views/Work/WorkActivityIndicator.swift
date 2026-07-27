@@ -11,6 +11,8 @@ import SwiftUI
 struct WorkActivityIndicator: View {
   let transcript: [WorkChatEnvelope]
   let isStreaming: Bool
+  var toolCount: Int = 0
+  var onOpenActivity: (() -> Void)? = nil
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -36,34 +38,46 @@ struct WorkActivityIndicator: View {
       TimelineView(.periodic(from: .now, by: 1)) { context in
         let elapsed = elapsedSeconds(at: context.date)
 
-        HStack(spacing: 10) {
-          // The lone streaming animation in the transcript: three staggered
-          // violet dots (static under Reduce Motion).
+        let statusContent = ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            activityLabel(presentation: presentation, elapsed: elapsed)
+            if let detail = presentation.detail {
+              Text(detail)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
+          }
+          activityLabel(presentation: presentation, elapsed: elapsed)
+        }
+        let row = HStack(spacing: 10) {
           WorkThinkingDots()
             .frame(height: 6)
-
-          Text(tailLabel(for: presentation, elapsed: elapsed))
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(presentation.tint)
-            .tracking(0.3)
-            .lineLimit(1)
-            .truncationMode(.tail)
-
-          if let detail = presentation.detail {
-            Text(detail)
-              .font(.caption2.monospaced())
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-
+          statusContent
           Spacer(minLength: 0)
+          if toolCount > 0 {
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .frame(width: 24, height: 24)
+          }
+        }
+        Group {
+          if let onOpenActivity, toolCount > 0 {
+            Button(action: onOpenActivity) { row }
+              .buttonStyle(.plain)
+              .contentShape(Rectangle())
+              .accessibilityHint("Opens activity details.")
+          } else {
+            row
+          }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityLabel(activityAccessibilityLabel(presentation: presentation, elapsed: elapsed))
       }
       .onAppear { syncTurnStart() }
       .onChange(of: transcript.count) { _, _ in syncTurnStart() }
@@ -77,16 +91,28 @@ struct WorkActivityIndicator: View {
     return max(0, Int(now.timeIntervalSince(turnStart)))
   }
 
-  /// "Thinking · 4s" / "Working · 1m 02s · taking longer than usual".
-  private func tailLabel(for presentation: Presentation, elapsed: Int) -> String {
-    var label = presentation.label
-    if elapsed > 0 {
-      label += " · \(Self.formatElapsedSeconds(elapsed))"
+  @ViewBuilder
+  private func activityLabel(presentation: Presentation, elapsed: Int) -> some View {
+    HStack(spacing: 6) {
+      Text(presentation.label)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Text("·")
+        .foregroundStyle(ADEColor.textMuted)
+      Text(Self.formatElapsedSeconds(elapsed))
+        .monospacedDigit()
+        .layoutPriority(1)
     }
-    if elapsed >= 30 {
-      label += " · taking longer than usual"
-    }
-    return label
+    .font(.caption.weight(.semibold))
+    .foregroundStyle(presentation.tint)
+    .tracking(0.2)
+  }
+
+  private func activityAccessibilityLabel(presentation: Presentation, elapsed: Int) -> String {
+    var parts = [presentation.accessibilityLabel, "Working for \(Self.formatElapsedSeconds(elapsed))"]
+    if elapsed >= 30 { parts.append("Taking longer than usual") }
+    if toolCount > 0 { parts.append("\(toolCount) actions") }
+    return parts.joined(separator: ". ")
   }
 
   static func formatElapsedSeconds(_ totalSeconds: Int) -> String {

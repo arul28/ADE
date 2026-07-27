@@ -17412,6 +17412,59 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testWorkTurnEndMarkersFallBackWhenProviderOmitsTurnIdentityOrStartEvent() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .command(
+          command: "npm test",
+          cwd: "/repo",
+          output: "",
+          itemId: "command-1",
+          status: "completed",
+          exitCode: 0,
+          turnId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 2,
+        event: .done(
+          status: "completed",
+          summary: "Completed",
+          usage: nil,
+          turnId: "",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:01:03.000Z",
+        sequence: 3,
+        event: .done(
+          status: "completed",
+          summary: "Completed",
+          usage: nil,
+          turnId: "turn-without-start",
+          model: "gpt-5.4-mini",
+          modelId: "openai/gpt-5.4-mini"
+        )
+      ),
+    ]
+
+    let markers = workTurnEndMarkers(from: transcript)
+
+    XCTAssertEqual(markers.count, 2)
+    XCTAssertTrue(markers[0].turnId.hasPrefix("fallback-"))
+    XCTAssertEqual(markers[0].workedDurationLabel, "2s")
+    XCTAssertEqual(markers[1].turnId, "turn-without-start")
+    XCTAssertEqual(markers[1].workedDurationLabel, "0s")
+  }
+
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
     let transcript = [
       WorkChatEnvelope(
@@ -17680,6 +17733,81 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(60), "1m 00s")
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(61), "1m 01s")
     XCTAssertEqual(WorkActivityIndicator.formatElapsedSeconds(2610), "43m 30s")
+  }
+
+  func testTurnToolActivitySeparatesCompletedAndActiveTurnsWithoutTouchingFiles() {
+    func command(_ id: String, _ timestamp: String) -> WorkToolGroupMember {
+      .command(WorkCommandCardModel(
+        id: id,
+        command: id,
+        cwd: "/repo",
+        output: "",
+        status: .completed,
+        timestamp: timestamp,
+        exitCode: 0,
+        durationMs: 12
+      ))
+    }
+
+    let firstGroup = WorkToolGroupModel(
+      id: "tools-1",
+      members: [command("read-one", "2026-01-01T12:00:00.000Z")]
+    )
+    let staleGroup = WorkToolGroupModel(
+      id: "tools-stale",
+      members: [command("stale-before-user", "2026-01-01T11:59:00.000Z")]
+    )
+    let activeGroup = WorkToolGroupModel(
+      id: "tools-2",
+      members: [command("test-two", "2026-01-01T12:01:00.000Z")]
+    )
+    let marker = WorkTurnEndMarker(
+      turnId: "turn-1",
+      time: "2026-01-01T12:00:30.000Z",
+      workedDurationLabel: "30s",
+      status: "completed",
+      terminalReasonLabel: nil,
+      provider: "claude",
+      modelLabel: "Claude",
+      modelId: nil
+    )
+    let entries = [
+      WorkTimelineEntry(id: "tools-stale", timestamp: "2026-01-01T11:59:00.000Z", rank: 1, payload: .toolGroup(staleGroup)),
+      WorkTimelineEntry(
+        id: "user-1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        rank: 2,
+        payload: .message(WorkChatMessage(
+          id: "user-1",
+          role: "user",
+          markdown: "Start",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          turnId: "turn-1",
+          itemId: nil
+        ))
+      ),
+      WorkTimelineEntry(id: "tools-1", timestamp: "2026-01-01T12:00:01.000Z", rank: 3, payload: .toolGroup(firstGroup)),
+      WorkTimelineEntry(
+        id: "user-follow-up",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        rank: 4,
+        payload: .message(WorkChatMessage(
+          id: "user-follow-up",
+          role: "user",
+          markdown: "Any update?",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          turnId: "turn-1",
+          itemId: nil
+        ))
+      ),
+      WorkTimelineEntry(id: "done-1", timestamp: marker.time, rank: 5, payload: .turnEndMarker(marker)),
+      WorkTimelineEntry(id: "tools-2", timestamp: "2026-01-01T12:01:00.000Z", rank: 6, payload: .toolGroup(activeGroup)),
+    ]
+
+    let index = workTurnToolActivityIndex(from: entries)
+
+    XCTAssertEqual(index.completedByTurnId["turn-1"]?.members.map(\.id), firstGroup.members.map(\.id))
+    XCTAssertEqual(index.active?.members.map(\.id), activeGroup.members.map(\.id))
   }
 
   func testWorkActivityIndicatorFollowUpDoesNotResetTurnStart() {

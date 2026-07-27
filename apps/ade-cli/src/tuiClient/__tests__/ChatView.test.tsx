@@ -24,7 +24,8 @@ import {
   type AssistantMarkdownBlock,
 } from "../format";
 import type { AdeCodeProvider } from "../types";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import { mixedIdToolActivityBoundaryEvents } from "../../../../desktop/src/shared/testFixtures/chatToolActivity";
 
 const session: AgentChatSessionSummary = {
   sessionId: "s1",
@@ -44,9 +45,9 @@ function stripAnsi(value: string): string {
   return value.replace(/\[[0-9;]*m/g, "");
 }
 
-// Tool-call / file-change groups collapse to a single header row by default.
-// Tests that assert per-entry rendering (every call/file, glyphs, durations,
-// badges) pass `expanded: true` to open every work group.
+// Tool calls live behind the active/completed status rows, while file changes
+// remain in their chronological transcript cards. Tests that assert detail rows
+// pass `expanded: true` to open every available disclosure.
 function expandAllWorkGroups(
   events: AgentChatEventEnvelope[],
   activeSession: AgentChatSessionSummary | null,
@@ -54,10 +55,11 @@ function expandAllWorkGroups(
   const blocks = aggregateChatBlocks({ events, notices: [], activeSession });
   const ids = new Set<string>();
   for (const block of blocks) {
-    if (block.kind === "tool-calls-group" || block.kind === "files-changed-group") {
+    if (block.kind === "tool-calls-group" || block.kind === "files-changed-group" || block.kind === "turn-end") {
       ids.add(workGroupExpandKey(block.id));
     }
   }
+  ids.add(workGroupExpandKey("active-turn-activity"));
   return ids;
 }
 
@@ -339,10 +341,39 @@ describe("ChatView", () => {
           resultsTotal: 4,
         },
       },
-    ], { expanded: true, width: 100 });
+    ], { expanded: true, streaming: true, width: 100 });
 
     expect(frame).toContain("Codex docs — example.com");
     expect(frame).toContain("Server guide — docs.example.org  +2 more");
+  });
+
+  it("keeps web-search result previews in completed turn activity", () => {
+    const turnId = "turn-search-done";
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "web_search",
+          query: "codex app server",
+          itemId: "w1",
+          turnId,
+          status: "completed",
+          results: [{ title: "Codex docs", url: "https://www.example.com/codex" }],
+          resultsTotal: 1,
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "done", turnId, status: "completed" },
+      },
+    ], { expanded: true, width: 100 });
+
+    expect(frame).toContain("1 action");
+    expect(frame).toContain("Codex docs — example.com");
   });
 
   it("keeps showing the model working indicator while active text is streaming", () => {
@@ -368,11 +399,45 @@ describe("ChatView", () => {
         sequence: 1,
         event: { type: "user_message", text: "claude status", turnId: "turn-active" },
       },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/repo",
+          output: "",
+          itemId: "c1",
+          turnId: "turn-active",
+          status: "running",
+        },
+      },
     ], { streaming: true, width: 80, provider: "claude" });
 
     expect(frame).toContain("claude status");
+    expect(frame).toContain("1 action");
+    expect(frame).not.toContain("npm test");
     expect(frame).not.toContain("model working");
     expect(frame).not.toContain("waiting for runtime events");
+
+    const expanded = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/repo",
+          output: "",
+          itemId: "c1",
+          turnId: "turn-active",
+          status: "running",
+        },
+      },
+    ], { streaming: true, width: 80, provider: "claude", expanded: true });
+    expect(expanded).toContain("npm test");
   });
 
   it("shows interrupted state where the working indicator normally appears", () => {
@@ -451,7 +516,9 @@ describe("ChatView", () => {
       },
     ], { width: 80 });
 
-    expect(frame).toContain("[status] failed · context window overflow");
+    expect(frame).toContain("failed · context window overflow");
+    expect(frame).toContain("Ran for 1.0s");
+    expect(frame).not.toContain("[status]");
     expect(frame).not.toContain("[done]");
     expect(frame).not.toContain("prompt_too_long");
   });
@@ -648,11 +715,10 @@ describe("ChatView", () => {
 
     expect(frame).not.toContain("Runtime");
     expect(frame).not.toContain("Processing tool input");
-    // The two real tool calls collapse to a single header row; the latest call
-    // (read) previews, the earlier one (grep) hides behind the collapsed group.
-    expect(frame).toContain("Tool calls");
-    expect(frame).toContain("(2)");
-    expect(frame).toContain("read");
+    // Normalized tool telemetry is kept out of the transcript body. Active and
+    // completed status rows own the disclosure instead.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).not.toContain("read");
     expect(frame).not.toContain("grep");
     expect(frame).toContain("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
   });
@@ -877,9 +943,8 @@ describe("ChatView", () => {
         sequence: 1,
         event: { type: "command", command: "git branch", cwd: "/repo", output: "main", itemId: "cmd-1", status: "completed", exitCode: 0, durationMs: 12 },
       },
-    ], { width: 100, expanded: true });
-    expect(frame).toContain("Tool calls");
-    expect(frame).toContain("(1)");
+    ], { width: 100, expanded: true, streaming: true });
+    expect(frame).toContain("1 action");
     expect(frame).toMatch(/✓ shell\s+git branch\s+12ms/);
   });
 
@@ -905,13 +970,13 @@ describe("ChatView", () => {
         event: { type: "command", command: "npm run typecheck", cwd: "/repo", output: "", itemId: "cmd-b", status: "running", turnId },
       },
     ];
-    const frame = renderEvents(events, { width: 100 });
+    const frame = renderEvents(events, { width: 100, streaming: true });
     // Typed split: tool calls and file changes each get their own collapsible
     // header. The collapsed tool-call header previews the latest call so live
     // progress stays visible without stacking every command by default.
-    expect(frame).toContain("Tool calls");
+    expect(frame).toContain("2 actions");
     expect(frame).toContain("Files changed");
-    expect(frame).toContain("npm run typecheck");
+    expect(frame).not.toContain("npm run typecheck");
     expect(frame).not.toContain("npm test");
     expect(frame).toContain("auth.ts");
     // The collapsed file header keeps the badge + diff stats format.
@@ -997,13 +1062,12 @@ describe("ChatView", () => {
           turnId,
         },
       },
-    ], { width: 100 });
+    ], { width: 100, streaming: true });
 
     // The top-level spawn collapses into a single "Tool calls" header that
     // previews it; the subagent's own child tool chatter stays suppressed.
-    expect(frame).toContain("Tool calls");
-    expect(frame).toContain("spawn_agent");
-    expect(frame).toContain("Explore renderer");
+    expect(frame).toContain("1 action");
+    expect(frame).not.toContain("spawn_agent");
     expect(frame).toContain("Activity");
     expect(frame).toContain("child result spam");
     expect(frame).toContain("agent");
@@ -1062,7 +1126,7 @@ describe("ChatView", () => {
     const transcriptBody = transcriptEvents
       .map((entry) => JSON.stringify(entry.event))
       .join("\n");
-    const frame = renderEvents(transcriptEvents, { width: 100, maxRows: 40 });
+    const frame = renderEvents(transcriptEvents, { width: 100, maxRows: 40, streaming: true, expanded: true });
     expect(frame).toContain("Viewing agent transcript.");
     expect(frame).toContain("Select Main chat in Chat Info to return.");
     expect(transcriptBody).toContain("Started.");
@@ -1108,14 +1172,13 @@ describe("ChatView", () => {
     ];
     const frame = renderEvents(events, { width: 100, expanded: true });
     // Expanded group: ok/failed status lives on each call's glyph.
-    expect(frame).toContain("Tool calls");
-    expect(frame).toContain("(4)");
+    expect(frame).toContain("4 actions");
     expect(frame.match(/✓/g)).toHaveLength(3);
     expect(frame.match(/✗/g)).toHaveLength(1);
     // Every shell command is visible when expanded.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
-    expect(frame).not.toContain("8.3s");
+    expect(frame).toContain("Ran for 8.3s");
   });
 
   it("hides missing and zero tool durations while preserving valid per-call durations", () => {
@@ -1146,7 +1209,7 @@ describe("ChatView", () => {
     expect(frame).toContain("measured");
     expect(frame).toContain("12ms");
     expect(frame).not.toContain("0ms");
-    expect(frame).not.toContain("24m");
+    expect(frame).toContain("Ran for 24m");
   });
 
   it("collapses streamed reasoning into one desktop-style Thinking row", () => {
@@ -1177,7 +1240,7 @@ describe("ChatView", () => {
     expect(frame).toContain("weighing options");
   });
 
-  it("suppresses done footers because token/runtime detail lives in the footer", () => {
+  it("keeps a calm turn-finished line without token or cost detail", () => {
     const turnId = "turn-footer";
     const events: AgentChatEventEnvelope[] = [
       { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "user_message", text: "hi", turnId } },
@@ -1185,9 +1248,100 @@ describe("ChatView", () => {
     ];
     const frame = renderEvents(events, { width: 80 });
     expect(frame).toContain("hi");
-    expect(frame).not.toContain("8.3s");
+    expect(frame).toContain("Ran for 8.3s");
     expect(frame).not.toContain("6.2k tok");
     expect(frame).not.toContain("$0.31");
+  });
+
+  it("keeps tool activity isolated across completed turns that omit turn ids", () => {
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "command", command: "first", cwd: "/repo", output: "", itemId: "c1", status: "completed", exitCode: 0 } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "done", status: "completed" } as unknown as AgentChatEvent },
+      { sessionId: "s1", timestamp: "2026-01-01T12:01:00.000Z", sequence: 3, event: { type: "command", command: "second", cwd: "/repo", output: "", itemId: "c2", status: "completed", exitCode: 0 } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:01:01.000Z", sequence: 4, event: { type: "done", status: "completed" } as unknown as AgentChatEvent },
+    ];
+
+    const frame = renderEvents(events, { width: 100, expanded: true });
+
+    expect(frame.match(/1 action/g)).toHaveLength(2);
+    expect(frame).not.toContain("2 actions");
+    expect(frame).toContain("first");
+    expect(frame).toContain("second");
+  });
+
+  it("resets untagged activity at a new user turn and merges mixed provider turn ids", () => {
+    const events = [
+      ...mixedIdToolActivityBoundaryEvents(),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:02:00.000Z",
+        sequence: 6,
+        event: { type: "user_message", text: "start another turn", turnId: "turn-3" } as const,
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:02:01.000Z",
+        sequence: 7,
+        event: {
+          type: "command",
+          command: "active-command",
+          cwd: "/repo",
+          output: "",
+          itemId: "active",
+          turnId: "turn-3",
+          status: "running",
+        } as const,
+      },
+    ];
+
+    const frame = renderEvents(events, { width: 100, expanded: true, streaming: true });
+
+    expect(frame).toContain("2 actions");
+    expect(frame).toContain("1 action");
+    expect(frame).not.toContain("3 actions");
+    expect(frame).toContain("tagged-command");
+    expect(frame).toContain("untagged-command");
+    expect(frame).toContain("active-command");
+    expect(frame).not.toContain("stale-command");
+  });
+
+  it("counts expanded active activity in the scroll range", () => {
+    const events: AgentChatEventEnvelope[] = Array.from({ length: 8 }, (_, index) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${index}.000Z`,
+      sequence: index + 1,
+      event: {
+        type: "command",
+        command: `cmd-${index}`,
+        cwd: "/repo",
+        output: "",
+        itemId: `c${index}`,
+        turnId: "turn-1",
+        status: "running",
+      },
+    }));
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const collapsed = computeChatScrollMaxOffset({
+      events,
+      blocks,
+      notices: [],
+      activeSession: session,
+      streaming: true,
+      maxRows: 3,
+      width: 80,
+    });
+    const expanded = computeChatScrollMaxOffset({
+      events,
+      blocks,
+      notices: [],
+      activeSession: session,
+      expandedLineIds: new Set([workGroupExpandKey("active-turn-activity")]),
+      streaming: true,
+      maxRows: 3,
+      width: 80,
+    });
+
+    expect(expanded).toBeGreaterThan(collapsed);
   });
 
   it("renders a markdown table with box-drawing borders", () => {
@@ -1249,16 +1403,15 @@ describe("ChatView", () => {
 
     // Collapsed (default): one header row with the count + the latest call's
     // preview; the earlier calls are hidden behind the collapsed group.
-    const collapsed = renderEvents(events, { width: 120, maxRows: 40 });
-    expect(collapsed).toContain("Tool calls");
-    expect(collapsed).toContain("(12)");
-    expect(collapsed).toContain("cmd-12");
+    const collapsed = renderEvents(events, { width: 120, maxRows: 40, streaming: true });
+    expect(collapsed).toContain("12 actions");
+    expect(collapsed).not.toContain("cmd-12");
     expect(collapsed).not.toContain("cmd-1 ");
     expect(collapsed).not.toContain("cmd-5");
 
     // Expanded: the header stays, and every consecutive call stacks one per line.
-    const expanded = renderEvents(events, { width: 120, maxRows: 40, expanded: true });
-    expect(expanded).toContain("Tool calls");
+    const expanded = renderEvents(events, { width: 120, maxRows: 40, expanded: true, streaming: true });
+    expect(expanded).toContain("12 actions");
     expect(expanded).toContain("cmd-1");
     expect(expanded).toContain("cmd-5");
     expect(expanded).toContain("cmd-12");
@@ -1297,7 +1450,7 @@ describe("ChatView", () => {
         },
       },
     ];
-    const frame = renderEvents(events, { width: 120, expanded: true });
+    const frame = renderEvents(events, { width: 120, expanded: true, streaming: true });
     expect(frame).toContain("git status --short");
     expect(frame).toContain("npm test");
     // Launcher prefix is gone.
@@ -1388,11 +1541,12 @@ describe("ChatView", () => {
         event: { type: "command", command: "beta", cwd: "/repo", output: "", itemId: "c2", status: "completed", exitCode: 0, durationMs: 10, turnId: "t1" },
       },
     ];
-    const expectedKey = workGroupExpandKey(chatEventLineId(events[0]!, 0));
+    const expectedKey = workGroupExpandKey("active-turn-activity");
     const rows = renderChatVisibleSelectionRows({
       events,
       notices: [],
       activeSession: session,
+      streaming: true,
       width: 120,
     });
     const headerRow = rows.find((row) => row.expandableId != null);
@@ -1405,6 +1559,7 @@ describe("ChatView", () => {
       events,
       notices: [],
       activeSession: session,
+      streaming: true,
       expandedLineIds: new Set([expectedKey]),
       width: 120,
     });

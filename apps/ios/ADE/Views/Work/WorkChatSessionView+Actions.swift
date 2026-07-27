@@ -755,6 +755,8 @@ extension WorkChatSessionView {
     timelineIncrementalCache.reset()
     timelineSnapshot = .empty
     timelinePresentation = .empty
+    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
+    toolActivitySheet = nil
   }
 
   @MainActor
@@ -778,6 +780,8 @@ extension WorkChatSessionView {
     )
 
     let alreadyEmpty = timelineSnapshot == .empty && timelinePresentation == .empty
+    turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
+    toolActivitySheet = nil
     if !alreadyEmpty {
       timelineSnapshot = .empty
       timelinePresentation = .empty

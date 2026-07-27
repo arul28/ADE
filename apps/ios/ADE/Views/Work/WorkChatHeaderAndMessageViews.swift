@@ -1031,6 +1031,8 @@ struct WorkTurnSeparatorView: View {
 
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
+  var toolCount: Int = 0
+  var onOpenActivity: (() -> Void)? = nil
 
   private var status: String {
     marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1049,21 +1051,43 @@ struct WorkTurnEndMarkerView: View {
   }
 
   private var markerAccessibilityLabel: String {
+    let activityLabel = toolCount > 0
+      ? "\(toolCount) \(toolCount == 1 ? "action" : "actions"). Opens activity details."
+      : nil
     if completed {
-      return "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Ran for \(marker.workedDurationLabel)"
+      return [
+        "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Ran for \(marker.workedDurationLabel)",
+        activityLabel,
+      ].compactMap { $0 }.joined(separator: ". ")
     }
     return [
       "Turn \(status)",
       marker.terminalReasonLabel,
       marker.modelLabel.isEmpty ? nil : marker.modelLabel,
       "Elapsed \(marker.workedDurationLabel)",
+      activityLabel,
     ].compactMap { $0 }.joined(separator: ". ")
   }
 
   var body: some View {
     HStack(spacing: 10) {
       hairline
-      content
+      if let onOpenActivity, toolCount > 0 {
+        Button(action: onOpenActivity) {
+          HStack(spacing: 5) {
+            content
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.system(size: 8, weight: .semibold))
+              .opacity(0.55)
+          }
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityHint("Opens activity details.")
+      } else {
+        content
+      }
       hairline
     }
     .frame(maxWidth: .infinity)
@@ -1083,30 +1107,45 @@ struct WorkTurnEndMarkerView: View {
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
     } else {
-      HStack(spacing: 6) {
-        runtimeGlyph
-        if !marker.modelLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          Text(marker.modelLabel)
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 6) {
+          runtimeGlyph
+          if !marker.modelLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(marker.modelLabel)
+              .font(.caption2.weight(.semibold))
+          }
+          Text(status.uppercased())
             .font(.caption2.weight(.semibold))
-        }
-        Text(status.uppercased())
-          .font(.caption2.weight(.semibold))
-          .tracking(0.5)
-        if let terminalReasonLabel = marker.terminalReasonLabel {
+            .tracking(0.5)
+          if let terminalReasonLabel = marker.terminalReasonLabel {
+            Text("·")
+              .opacity(0.42)
+            Text(terminalReasonLabel)
+              .font(.caption2)
+          }
           Text("·")
             .opacity(0.42)
-          Text(terminalReasonLabel)
+          Text("Elapsed \(marker.workedDurationLabel)")
             .font(.caption2)
         }
-        Text("·")
-          .opacity(0.42)
-        Text("Elapsed \(marker.workedDurationLabel)")
-          .font(.caption2)
+        .fixedSize(horizontal: true, vertical: false)
+
+        HStack(spacing: 5) {
+          runtimeGlyph
+          Text(status.uppercased())
+            .font(.caption2.weight(.semibold))
+            .tracking(0.4)
+          Text("·")
+            .opacity(0.42)
+          Text("Elapsed \(marker.workedDurationLabel)")
+            .font(.caption2)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.82)
       }
       .foregroundStyle(statusTint.opacity(0.9))
       .lineLimit(1)
       .minimumScaleFactor(0.82)
-      .fixedSize(horizontal: true, vertical: false)
       .layoutPriority(1)
     }
   }

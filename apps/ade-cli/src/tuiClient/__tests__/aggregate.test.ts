@@ -528,6 +528,40 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroup!.entries[0]).toMatchObject({ itemId: "t1", status: "ok", durationMs: 1250 });
   });
 
+  it("resolves matching tool lifecycle events across missing turn ids in both directions", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: { path: "important.ts" }, itemId: "mixed-1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.250Z", { type: "tool_result", tool: "read", result: "ok", itemId: "mixed-1", status: "completed" } as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_call", tool: "grep", args: { pattern: "needle" }, itemId: "mixed-2" } as AgentChatEvent),
+      env("2026-01-01T12:00:03.500Z", { type: "tool_result", tool: "grep", result: "ok", itemId: "mixed-2", turnId: "turn-1", status: "completed" }),
+      env("2026-01-01T12:00:04.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnd = blocks.find((block) => block.kind === "turn-end") as Extract<AggregatedBlock, { kind: "turn-end" }>;
+
+    expect(turnEnd.entries).toHaveLength(2);
+    expect(turnEnd.entries[0]).toMatchObject({ itemId: "mixed-1", arg: "important.ts", durationMs: 1250, status: "ok" });
+    expect(turnEnd.entries[1]).toMatchObject({ itemId: "mixed-2", arg: "needle", durationMs: 1500, status: "ok" });
+  });
+
+  it("consolidates clustered interrupted parent and subagent terminal events", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "status", turnStatus: "started", turnId: "parent" }),
+      env("2026-01-01T12:00:01.000Z", { type: "status", turnStatus: "interrupted", turnId: "parent" }),
+      env("2026-01-01T12:00:01.100Z", { type: "done", turnId: "parent", status: "interrupted" }),
+      env("2026-01-01T12:00:01.200Z", { type: "status", turnStatus: "failed", turnId: "child" }),
+      env("2026-01-01T12:00:01.300Z", { type: "done", turnId: "child", status: "failed" }),
+    ];
+
+    const blocks = aggregate(events);
+    const turnEnds = blocks.filter((block) => block.kind === "turn-end") as Array<Extract<AggregatedBlock, { kind: "turn-end" }>>;
+
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]).toMatchObject({ status: "failed", timestamp: "2026-01-01T12:00:01.300Z" });
+    expect(blocks.filter((block) => block.kind === "error")).toHaveLength(0);
+  });
+
   it("derives command duration from running and completed command events when provider duration is missing", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "command", command: "npm test", cwd: "/tmp", output: "", itemId: "c1", turnId: "turn-1", status: "running" }),
