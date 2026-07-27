@@ -35,6 +35,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  AgentChatStopMode,
   ClaudeActiveGoal,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
@@ -96,6 +97,7 @@ import {
   previewTerminal,
   renameChat,
   recoverTurn,
+  restoreCancelledQueue,
   resolveUnprocessedMessage,
   requestSessionAttention,
   resumeTerminalSession,
@@ -1055,6 +1057,9 @@ function compactNumber(value: number): string {
 }
 
 function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string | null {
+  if (stats.contextState === "compacting") return "compacting context…";
+  if (stats.contextState === "recalculating") return "recalculating context…";
+  if (stats.contextState === "unknown") return "context usage unavailable";
   // Compact last-turn breakdown: `+2.3k/1.1k (450✶)` — input / output (cached marker).
   const parts: string[] = [];
   if (stats.inputTokens != null || stats.outputTokens != null) {
@@ -1072,6 +1077,17 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
   if (cacheParts.length) parts.push(`(${cacheParts.join(" ")})`);
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
   return parts.length ? parts.join(" ") : null;
+}
+
+function chatInterruptNotice(result: Awaited<ReturnType<typeof interruptChat>>): string {
+  if (result.mode === "stop_only") {
+    return "Stopped. Queued messages are preserved.";
+  }
+  if (result.cancelledQueuedCount > 0 && result.recoveryId) {
+    const noun = result.cancelledQueuedCount === 1 ? "message" : "messages";
+    return `Stopped and cleared ${result.cancelledQueuedCount} queued ${noun}. Undo: /restore-queue ${result.recoveryId}`;
+  }
+  return "Stopped.";
 }
 
 export function formatGoalBannerLine(goal: CodexThreadGoal | ClaudeActiveGoal | null): string | null {
@@ -10733,6 +10749,51 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice(`Stage all complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
+    if (name === "/stop") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      const normalizedMode = args.trim().toLowerCase();
+      let mode: AgentChatStopMode;
+      if (!normalizedMode || normalizedMode === "clear-queue" || normalizedMode === "--clear-queue") {
+        mode = "stop_and_clear";
+      } else if (
+        normalizedMode === "keep-queue"
+        || normalizedMode === "--keep-queue"
+        || normalizedMode === "stop-only"
+        || normalizedMode === "--stop-only"
+      ) {
+        mode = "stop_only";
+      } else {
+        addNotice("Usage: /stop [keep-queue|clear-queue]", "error");
+        return;
+      }
+      setStreaming(false);
+      setInterrupted(true);
+      const result = await interruptChat(conn, sessionId, mode);
+      addNotice(chatInterruptNotice(result), "info");
+      return;
+    }
+    if (name === "/restore-queue") {
+      if (!sessionId) {
+        addNotice("No active chat is selected.", "error");
+        return;
+      }
+      const recoveryId = args.trim();
+      if (!recoveryId) {
+        addNotice("Usage: /restore-queue <recovery-id>", "error");
+        return;
+      }
+      const result = await restoreCancelledQueue(conn, sessionId, recoveryId);
+      if (!result.restored) {
+        addNotice("That queue recovery is no longer available.", "error");
+        return;
+      }
+      addNotice(`Restored ${result.restoredCount} queued message${result.restoredCount === 1 ? "" : "s"}.`, "success");
+      await refreshState();
+      return;
+    }
     if (name.startsWith("/steer")) {
       if (!sessionId) {
         addNotice("No active chat is selected.", "error");
@@ -12219,6 +12280,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
+          .then((result) => addNotice(chatInterruptNotice(result), "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       } else {
         addNotice("No active response to interrupt.", "info");
@@ -13996,6 +14058,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
+          .then((result) => addNotice(chatInterruptNotice(result), "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         return;
       }
@@ -14011,6 +14074,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
+          .then((result) => addNotice(chatInterruptNotice(result), "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         return;
       }

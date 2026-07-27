@@ -565,6 +565,7 @@ export function renderChatLines(args: {
   const latestLegacyRecoveryIndexByTurn = new Map<string, number>();
   const latestNeutralRecoveryIndexByTurn = new Map<string, number>();
   const latestRecoveryStateByTurn = new Map<string, "recovering" | "recovered" | "failed">();
+  const latestQueueRecoveryIndexById = new Map<string, number>();
   const neutralHealthTurnIds = new Set<string>();
   const latestHealthIndexByTurn = new Map<string, number>();
   for (const entry of timeline) {
@@ -582,6 +583,8 @@ export function renderChatLines(args: {
     } else if (event.type === "turn_recovery") {
       latestNeutralRecoveryIndexByTurn.set(event.turnId, entry.index);
       latestRecoveryStateByTurn.set(event.turnId, event.state);
+    } else if (event.type === "queue_recovery") {
+      latestQueueRecoveryIndexById.set(event.recoveryId, entry.index);
     } else if (event.type === "turn_health") {
       neutralHealthTurnIds.add(event.turnId);
       latestHealthIndexByTurn.set(event.turnId, entry.index);
@@ -943,6 +946,27 @@ export function renderChatLines(args: {
           tone: "notice",
           body: `stopped — ${count} queued message${count === 1 ? "" : "s"} will still run`,
         });
+      }
+      continue;
+    }
+    if (event.type === "queue_recovery") {
+      if (latestQueueRecoveryIndexById.get(event.recoveryId) !== index) {
+        continue;
+      }
+      if (event.state === "available") {
+        lines.push({
+          id,
+          tone: "notice",
+          body: `cleared ${event.messageCount} queued message${event.messageCount === 1 ? "" : "s"} · undo /restore-queue ${event.recoveryId}`,
+        });
+      } else if (event.state === "restored") {
+        lines.push({
+          id,
+          tone: "notice",
+          body: `restored ${event.messageCount} queued message${event.messageCount === 1 ? "" : "s"}`,
+        });
+      } else {
+        lines.push({ id, tone: "notice", body: "queue recovery expired" });
       }
       continue;
     }

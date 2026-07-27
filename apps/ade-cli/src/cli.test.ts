@@ -3350,6 +3350,85 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("routes queue-aware interruption and recovery for project and personal chats", () => {
+    const stopOnly = expectExecutePlan(buildCliPlan([
+      "chat",
+      "interrupt",
+      "chat-1",
+      "--keep-queue",
+    ]));
+    expect(stopOnly.label).toBe("chat interrupt");
+    expect(stopOnly.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "interrupt",
+        args: { sessionId: "chat-1", mode: "stop_only" },
+      },
+    });
+
+    const restore = expectExecutePlan(buildCliPlan([
+      "chat",
+      "restore-queue",
+      "chat-1",
+      "recovery-1",
+    ]));
+    expect(restore.label).toBe("chat restore cancelled queue");
+    expect(restore.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "restoreCancelledQueue",
+        args: { sessionId: "chat-1", recoveryId: "recovery-1" },
+      },
+    });
+
+    const personalStop = expectExecutePlan(buildCliPlan([
+      "chat",
+      "stop",
+      "personal-1",
+      "--personal",
+      "--mode",
+      "stop_and_clear",
+    ]));
+    expect(personalStop.machineOnly).toBe(true);
+    expect(personalStop.steps[0]?.params).toEqual({
+      action: "interrupt",
+      args: { sessionId: "personal-1", mode: "stop_and_clear" },
+    });
+
+    const personalRestore = expectExecutePlan(buildCliPlan([
+      "chat",
+      "undo-stop",
+      "personal-1",
+      "--personal",
+      "--recovery",
+      "recovery-2",
+    ]));
+    expect(personalRestore.steps[0]?.params).toEqual({
+      action: "restoreCancelledQueue",
+      args: { sessionId: "personal-1", recoveryId: "recovery-2" },
+    });
+
+    expect(() => buildCliPlan([
+      "chat",
+      "interrupt",
+      "chat-1",
+      "--keep-queue",
+      "--clear-queue",
+    ])).toThrow(/only one of --mode, --keep-queue, or --clear-queue/);
+    expect(() => buildCliPlan([
+      "chat",
+      "interrupt",
+      "chat-1",
+      "--arg",
+      "mode=discard_everything",
+    ])).toThrow(/stop_and_clear or stop_only/);
+    expect(() => buildCliPlan([
+      "chat",
+      "restore-queue",
+      "chat-1",
+    ])).toThrow(/recoveryId/);
+  });
+
   it.each([
     ["wait", "wait"],
     ["nudge", "nudge"],

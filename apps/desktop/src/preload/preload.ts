@@ -331,6 +331,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueArgs,
+  AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
@@ -1310,6 +1313,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "respondToInput",
   "approveToolUse",
   "interrupt",
+  "restoreCancelledQueue",
   "recoverTurn",
   "recoverCodexTurn",
   "resolveUnprocessedMessage",
@@ -5676,16 +5680,29 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    interrupt: async (args: AgentChatInterruptArgs): Promise<void> => {
+    interrupt: async (args: AgentChatInterruptArgs): Promise<AgentChatInterruptResult> => {
       agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<void>(
+      const result = await callProjectRuntimeActionOr<AgentChatInterruptResult>(
         "chat",
         "interrupt",
         { args },
+        () => ipcRenderer.invoke(IPC.agentChatInterrupt, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
       agentChatSummaryCache.clear();
+      return result;
+    },
+    restoreCancelledQueue: async (
+      args: AgentChatRestoreCancelledQueueArgs,
+    ): Promise<AgentChatRestoreCancelledQueueResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callProjectRuntimeActionOr<AgentChatRestoreCancelledQueueResult>(
+        "chat",
+        "restoreCancelledQueue",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRestoreCancelledQueue, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
     },
     recoverTurn: async (
       args: AgentChatRecoverTurnArgs,

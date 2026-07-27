@@ -131,7 +131,7 @@ Two helpers summarise a parsed stream:
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
-| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. |
+| `tool_call` / `tool_result` | Paired per tool invocation; rendered inside work-log groups. `tool_result.status` can be `running`, `completed`, `failed`, or `interrupted`. Claude SDK `tool_result_meta` is retained as optional `toolResultMeta` for consumers that need to distinguish execution, rejection, or provider feedback without reparsing display text. Provider-native MCP calls retain `mcp: AgentChatMcpToolSource` (`server`, `tool`, optional plugin/resource/app context) so transcript labels, the TUI/iOS, and Sources use the connector identity instead of a generic tool name. |
 | `file_change` | Emitted when the agent writes or deletes a file; carries `path`, `diff`, and `kind`. |
 | `command` | A shell command invocation; carries `cwd`, `output`, `exitCode`, `durationMs`. |
 | `plan` | Final plan payload (steps + explanation); replaces any earlier `plan_text` rows for that turn. |
@@ -140,7 +140,7 @@ Two helpers summarise a parsed stream:
 | `structured_question` | Claude SDK `AskUserQuestion` tool surface. |
 | `pending_input_resolved` | Hidden row; consumed by pending-input derivation to clear UI state. |
 | `status` | Turn-level lifecycle: `started`, `completed`, `interrupted`, `failed`. |
-| `done` | Final turn marker with model, model id, usage, cost, and optional open-string `terminalReason`. Failed/interrupted dividers translate known reasons into a short explanation; completed turns omit the reason. Also clears non-question pending inputs when status is not `completed`. |
+| `done` | Final turn marker with model, model id, usage, cost, and optional open-string `terminalReason`. Claude may also carry `canonicalModel`, `modelProvider`, `apiErrorStatus`, `fastModeDisabledReason`, `userMessageUuid`, and `requestSentWallMs`; these preserve billing/provider provenance, terminal HTTP class, Fast fallback cause, and request correlation/latency metadata without exposing raw provider envelopes. Failed/interrupted dividers translate known reasons into a short explanation; completed turns omit the reason. Also clears non-question pending inputs when status is not `completed`. |
 | `error` | Provider/runtime failure with message, detail, and semantic `errorInfo`. Codex can report the same terminal failure first as an app-server `error` notification and again on failed `turn/completed`; ADE keeps one visible row for the same turn/error identity while preserving distinct failures. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
@@ -150,14 +150,15 @@ Two helpers summarise a parsed stream:
 | `step_boundary` | Workflow step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Special-cased renders: the "Promoted to Cursor Cloud" pill, and the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`; the TUI shows the message line; iOS renders it through its existing system_notice mapping). |
 | `conversation_reset` | Marks a fresh Claude conversation inside the same ADE session. ADE adopts `newConversationId` as the next SDK resume pointer, clears conversation-scoped auto-title/continuity caches while preserving a manual title, and renderers show a `New conversation` divider. |
-| `interrupt_receipt` | Records SDK UUIDs that remain queued after an interrupt. Clients show the full queued count; ADE-attributed messages include their `steerId` and offer cancellation through the SDK control channel. The long-lived query remains attached while those messages are queued so the receipt stays actionable. |
+| `interrupt_receipt` | Records SDK UUIDs that remain queued or were cancelled after an interrupt, plus the selected `stopMode`. Clients show the full remaining count; ADE-attributed messages include their `steerId` and offer cancellation through the SDK control channel. The long-lived query remains attached while messages are still queued so the receipt stays actionable. |
+| `queue_recovery` | Bounded recovery lifecycle for Claude **Stop & clear queue**: `available` renders one Undo card for the actually cancelled ADE-attributed messages, `restored` rehydrates the original steer payloads/ids, and `expired` closes the eight-second window. Terminal recovery events suppress the earlier available card during replay. |
 | `command_lifecycle` | Ground-truth lifecycle for ADE-owned Claude messages (`queued`, `started`, `completed`, `cancelled`, `discarded`). ADE ignores internal UUIDs it cannot attribute, deduplicates repeated states, clears staged composer rows once execution begins, and renders only cancelled/discarded terminal anomalies to keep transcripts quiet. |
 | `claude_goal_updated` / `claude_goal_cleared` | Read-only Claude `/goal` lifecycle. The update carries the condition, iteration count, token baseline, timestamps, and optional last reason; the session summary mirrors the latest value as `claudeGoal`. |
 | `session_meta_updated` | Runtime-native session metadata update. Carries title / manual-name state, and — when a client changes the session's mode via `updateSession` — the permission/interaction mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, `cursorModeSnapshot`). The renderer treats it as a local-touch event so Work lists and grid tiles refresh when a provider renames a session, patches the session summary with any mode fields present, and re-seeds the selected chat's composer mode controls so a mode change on another client (desktop ↔ iOS) shows up live without a refetch. All mode fields are optional; a title-only emit carries none of them. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
-| `context_usage` | Provider-neutral context occupancy. Automatic per-API-call Claude snapshots carry `origin: "live"` and are filtered out of the transcript — they feed only the composer's context meter (`ContextUsageDial`), whose hover shows the full per-turn breakdown in real time. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
+| `context_usage` | Provider-neutral context occupancy. Automatic Claude samples use `origin: "live" \| "snapshot" \| "compact"` and are filtered out of the transcript; `live` is the responsive stream estimate, while `snapshot`/`compact` come from the SDK control channel after initialization, settled turns, and compact completion. `state` is `measured`, `compacting`, `recalculating`, or `unknown`; non-measured states deliberately hide the old percentage. Monotonic `sampleId` plus `capturedAt` support stale-response rejection and diagnostics. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
 | `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. |
 | `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. Large stored data URIs are removed with original/omitted byte metadata. |
@@ -169,6 +170,13 @@ Two helpers summarise a parsed stream:
 
 Live Claude occupancy emits at most once every five seconds and only after a
 one-point percentage change. ADE never preempts the SDK's natural compaction.
+The streamed reading is refreshed from authoritative SDK `getContextUsage()`
+snapshots after runtime initialization, every settled turn, and compact
+completion. A compact start emits `compacting`; completion emits
+`recalculating` until exact `postTokens` or the control snapshot establishes the
+new measured value. A failed snapshot emits `unknown`, so an old 100% is never
+presented as fresh.
+
 It sends a fallback `/compact` only at a turn boundary when all three gates
 hold: occupancy is at least 97%, no natural `context_compact` has appeared
 since occupancy crossed 90%, and no fallback was already issued in the same
@@ -544,6 +552,16 @@ bound instead of sending the replacement ambiguously. Likewise, a steer sent to
 an idle or stale Claude session waits only for input-dispatch acceptance; the
 provider turn keeps streaming asynchronously instead of making the steer action
 wait for the full answer.
+
+Queue handling is explicit at this boundary. `stop_and_clear` is the
+backward-compatible default and uses `cancel_queued: true` when the Claude
+session advertises the capability; otherwise ADE interrupts first and cancels
+each attributed provider-queued message through `cancelAsyncMessage`. Local
+pending steers are cleared in the same operation. `stop_only` interrupts the
+turn but preserves the local/provider queues. A successful clear snapshots only
+the queued steers the runtime actually cancelled, emits `queue_recovery`, and
+accepts one `restoreCancelledQueue` call for eight seconds; expiry and restore
+are persisted as terminal recovery events so replay cannot resurrect Undo.
 
 Codex adapters deduplicate repeated lifecycle notifications before
 converting them to envelope events. Terminal app-server failures use a

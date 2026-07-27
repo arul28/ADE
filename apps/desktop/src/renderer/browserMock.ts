@@ -41,6 +41,8 @@ import {
   type AgentChatRecoverTurnArgs,
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
+  type AgentChatInterruptResult,
+  type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
   type RemoteRuntimeActionRequest,
@@ -4914,7 +4916,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         reason: "Browser mock does not run chat sessions.",
       }),
       cancelDispatchedSteer: resolvedArg({ cancelled: false }),
-      interrupt: resolvedArg(undefined),
+      interrupt: resolvedArg<AgentChatInterruptResult>({
+        mode: "stop_and_clear",
+        cancelledQueuedCount: 0,
+      }),
+      restoreCancelledQueue: resolvedArg<AgentChatRestoreCancelledQueueResult>({
+        restored: false,
+        restoredCount: 0,
+      }),
       recoverTurn: async (
         args: AgentChatRecoverTurnArgs,
       ): Promise<AgentChatRecoverTurnResult> => ({

@@ -1666,6 +1666,7 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case filePersist = "file_persist"
   case info
   case providerHealth = "provider_health"
+  case queueRecovery = "queue_recovery"
   case threadError = "thread_error"
   case warning
   case error
@@ -2101,9 +2102,9 @@ enum AgentChatEvent: Decodable, Equatable {
   case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?, terminalReason: String? = nil)
   case tokens(turnId: String, itemId: String?, inputTokens: Int?, outputTokens: Int?, cacheReadTokens: Int?, cacheWriteTokens: Int?, contextWindow: Int?)
   case codexTokenUsage(usage: AgentChatCodexThreadTokenUsage, turnId: String?)
-  case contextUsage(usage: AgentChatContextUsage, turnId: String?, origin: String?)
+  case contextUsage(usage: AgentChatContextUsage, turnId: String?, origin: String?, state: String?, sampleId: Int?)
   case conversationReset(newConversationId: String)
-  case interruptReceipt(stillQueuedUuids: [String])
+  case interruptReceipt(stillQueuedUuids: [String], cancelledUuids: [String]?)
   case commandLifecycle(commandUuid: String, status: String, preview: String?, steerId: String?, turnId: String?)
   case claudeGoalUpdated(goal: AgentChatClaudeGoal, turnId: String?)
   case claudeGoalCleared(turnId: String?)
@@ -2489,7 +2490,9 @@ extension AgentChatEvent {
       self = .contextUsage(
         usage: try container.decode(AgentChatContextUsage.self, forKey: .usage),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        origin: try container.decodeIfPresent(String.self, forKey: .origin)
+        origin: try container.decodeIfPresent(String.self, forKey: .origin),
+        state: try container.decodeIfPresent(String.self, forKey: .state),
+        sampleId: try container.decodeIfPresent(Int.self, forKey: .sampleId)
       )
     case "conversation_reset":
       self = .conversationReset(
@@ -2497,7 +2500,20 @@ extension AgentChatEvent {
       )
     case "interrupt_receipt":
       self = .interruptReceipt(
-        stillQueuedUuids: try container.decodeIfPresent([String].self, forKey: .stillQueuedUuids) ?? []
+        stillQueuedUuids: try container.decodeIfPresent([String].self, forKey: .stillQueuedUuids) ?? [],
+        cancelledUuids: try container.decodeIfPresent([String].self, forKey: .cancelledUuids)
+      )
+    case "queue_recovery":
+      self = .systemNotice(
+        noticeKind: .queueRecovery,
+        message: try container.decode(String.self, forKey: .state),
+        detail: .object([
+          "messageCount": .number(Double(try container.decode(Int.self, forKey: .messageCount))),
+          "expiresAt": .string(try container.decode(String.self, forKey: .expiresAt)),
+          "stopMode": .string(try container.decode(String.self, forKey: .stopMode)),
+        ]),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        steerId: try container.decode(String.self, forKey: .recoveryId)
       )
     case "command_lifecycle":
       self = .commandLifecycle(
@@ -2968,8 +2984,24 @@ struct AgentChatCancelDispatchedSteerRequest: Codable, Equatable {
   var steerId: String
 }
 
+enum AgentChatStopMode: String, Codable, Equatable {
+  case stopAndClear = "stop_and_clear"
+  case stopOnly = "stop_only"
+}
+
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
+  var mode: AgentChatStopMode? = nil
+}
+
+struct AgentChatRestoreCancelledQueueRequest: Codable, Equatable {
+  var sessionId: String
+  var recoveryId: String
+}
+
+struct AgentChatRestoreCancelledQueueResult: Codable, Equatable {
+  var restored: Bool
+  var restoredCount: Int
 }
 
 struct AgentChatRecoverCodexTurnRequest: Codable, Equatable {

@@ -239,6 +239,7 @@ function createMockAgentChatService() {
     }),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue(undefined),
+    restoreCancelledQueue: vi.fn().mockResolvedValue({ restored: false, restoredCount: 0 }),
     steer: vi.fn().mockResolvedValue(undefined),
     cancelSteer: vi.fn().mockResolvedValue(undefined),
     editSteer: vi.fn().mockResolvedValue(undefined),
@@ -1707,6 +1708,53 @@ describe("createSyncRemoteCommandService", () => {
       }));
       expect(agentChatService.interrupt).toHaveBeenCalledWith({ sessionId: "sess-1" });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.interruptWithQueueMode preserves the selected stop mode and recovery result", async () => {
+      agentChatService.interrupt.mockResolvedValueOnce({
+        mode: "stop_and_clear",
+        cancelledQueuedCount: 2,
+        recoveryId: "recovery-1",
+        recoveryExpiresAt: "2026-07-27T12:00:08.000Z",
+      });
+
+      const result = await service.execute(makePayload("chat.interruptWithQueueMode", {
+        sessionId: "sess-1",
+        mode: "stop_and_clear",
+      }));
+
+      expect(agentChatService.interrupt).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        mode: "stop_and_clear",
+      });
+      expect(result).toEqual({
+        ok: true,
+        mode: "stop_and_clear",
+        cancelledQueuedCount: 2,
+        recoveryId: "recovery-1",
+        recoveryExpiresAt: "2026-07-27T12:00:08.000Z",
+      });
+    });
+
+    it("chat.restoreCancelledQueue validates recovery ids and returns the restore result", async () => {
+      agentChatService.restoreCancelledQueue.mockResolvedValueOnce({
+        restored: true,
+        restoredCount: 2,
+      });
+
+      const result = await service.execute(makePayload("chat.restoreCancelledQueue", {
+        sessionId: "sess-1",
+        recoveryId: "recovery-1",
+      }));
+
+      expect(agentChatService.restoreCancelledQueue).toHaveBeenCalledWith({
+        sessionId: "sess-1",
+        recoveryId: "recovery-1",
+      });
+      expect(result).toEqual({ ok: true, restored: true, restoredCount: 2 });
+      await expect(service.execute(makePayload("chat.restoreCancelledQueue", {
+        sessionId: "sess-1",
+      }))).rejects.toThrow("chat.restoreCancelledQueue requires recoveryId.");
     });
 
     it("chat.interrupt throws when sessionId is missing", async () => {

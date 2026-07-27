@@ -9884,13 +9884,45 @@ final class SyncService: ObservableObject {
     return syncChatMessageDelivery(from: response)
   }
 
-  func interruptChatSession(sessionId: String) async throws {
+  func interruptChatSession(
+    sessionId: String,
+    mode: AgentChatStopMode = .stopAndClear
+  ) async throws {
     let scope = chatCommandScope(for: sessionId)
+    let queueAwareAction = chatActionName("chat.interruptWithQueueMode", sessionId: sessionId)
+    let supportsQueueMode = supportsRemoteAction(queueAwareAction)
+    let action = supportsQueueMode
+      ? queueAwareAction
+      : chatActionName("chat.interrupt", sessionId: sessionId)
     _ = try await sendChatCommand(
-      action: chatActionName("chat.interrupt", sessionId: sessionId),
-      payload: AgentChatInterruptRequest(sessionId: sessionId),
+      action: action,
+      // Older brains only know `chat.interrupt`; preserve its original payload
+      // shape instead of relying on permissive decoding of an unknown field.
+      payload: AgentChatInterruptRequest(
+        sessionId: sessionId,
+        mode: supportsQueueMode ? mode : nil
+      ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func restoreCancelledChatQueue(
+    sessionId: String,
+    recoveryId: String
+  ) async throws -> AgentChatRestoreCancelledQueueResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.restoreCancelledQueue", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: AgentChatRestoreCancelledQueueRequest(
+        sessionId: sessionId,
+        recoveryId: recoveryId
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatRestoreCancelledQueueResult.self
     )
   }
 

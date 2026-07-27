@@ -7,6 +7,7 @@ import type { ContextUsageViewModel } from "./contextUsageModel";
 function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
   return {
     provider: "codex",
+    state: "measured",
     contextWindow: 200_000,
     usedTokens: 100_000,
     inputTokens: 100_000,
@@ -26,6 +27,22 @@ describe("ContextUsageDial", () => {
     const { getByText, container } = render(<ContextUsageDial usage={vm({ ratio: 0.52 })} />);
     expect(getByText("52")).toBeTruthy();
     expect(container.querySelector("svg")).toBeTruthy();
+  });
+
+  it("hides stale percentages while usage is being recalculated", () => {
+    const { getByLabelText, queryByText } = render(
+      <ContextUsageDial usage={vm({ ratio: 1, state: "recalculating" })} />,
+    );
+    expect(queryByText("100")).toBeNull();
+    expect(getByLabelText("Context usage: recalculating")).toBeTruthy();
+  });
+
+  it("marks an unavailable authoritative reading as unknown", () => {
+    const { getByLabelText, getByText } = render(
+      <ContextUsageDial usage={vm({ ratio: 1, state: "unknown" })} />,
+    );
+    expect(getByText("?")).toBeTruthy();
+    expect(getByLabelText("Context usage unavailable")).toBeTruthy();
   });
 
   it("uses the sky color below 70%", () => {

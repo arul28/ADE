@@ -126,6 +126,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueArgs,
+  AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
@@ -1499,7 +1502,10 @@ declare global {
         cancelDispatchedSteer: (
           args: AgentChatCancelDispatchedSteerArgs,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
-        interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
+        interrupt: (args: AgentChatInterruptArgs) => Promise<AgentChatInterruptResult>;
+        restoreCancelledQueue: (
+          args: AgentChatRestoreCancelledQueueArgs,
+        ) => Promise<AgentChatRestoreCancelledQueueResult>;
         recoverTurn: (
           args: AgentChatRecoverTurnArgs,
         ) => Promise<AgentChatRecoverTurnResult>;

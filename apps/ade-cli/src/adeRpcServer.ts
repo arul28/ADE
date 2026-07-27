@@ -2409,6 +2409,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "setSessionStatusNote",
   "settleSelfSession",
   "unsettleSelfSession",
+  "interrupt",
+  "interruptWithQueueMode",
+  "restoreCancelledQueue",
 ]);
 
 function scopeChatAdeActionArgs(
@@ -2696,7 +2699,9 @@ async function runCtoOperatorBridgeTool(
     updateChatSession: agentChatService.updateSession,
     previewSessionToolNames: agentChatService.previewSessionToolNames,
     sendChatMessage: agentChatService.sendMessage,
-    interruptChat: agentChatService.interrupt,
+    interruptChat: async (args) => {
+      await agentChatService.interrupt(args);
+    },
     ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
       agentChatService.ensureIdentitySession({
         identityKey: "cto",

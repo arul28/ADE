@@ -336,6 +336,9 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueArgs,
+  AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
   AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
@@ -6929,9 +6932,39 @@ export function registerIpc({
     return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
+  ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: unknown): Promise<AgentChatInterruptResult> => {
     const ctx = ensureAgentChatContext();
-    await ctx.agentChatService.interrupt(arg);
+    if (!arg || typeof arg !== "object" || typeof (arg as { sessionId?: unknown }).sessionId !== "string") {
+      throw new Error("A chat session id is required.");
+    }
+    const rawMode = (arg as { mode?: unknown }).mode;
+    if (rawMode !== undefined && rawMode !== "stop_and_clear" && rawMode !== "stop_only") {
+      throw new Error("Invalid chat stop mode.");
+    }
+    const request: AgentChatInterruptArgs = {
+      sessionId: (arg as { sessionId: string }).sessionId,
+      ...(rawMode ? { mode: rawMode } : {}),
+    };
+    return await ctx.agentChatService.interrupt(request);
+  });
+
+  ipcMain.handle(IPC.agentChatRestoreCancelledQueue, async (
+    _event,
+    arg: unknown,
+  ): Promise<AgentChatRestoreCancelledQueueResult> => {
+    const ctx = ensureAgentChatContext();
+    if (
+      !arg
+      || typeof arg !== "object"
+      || typeof (arg as { sessionId?: unknown }).sessionId !== "string"
+      || typeof (arg as { recoveryId?: unknown }).recoveryId !== "string"
+    ) {
+      throw new Error("A chat session id and queue recovery id are required.");
+    }
+    return await ctx.agentChatService.restoreCancelledQueue({
+      sessionId: (arg as { sessionId: string }).sessionId,
+      recoveryId: (arg as { recoveryId: string }).recoveryId,
+    });
   });
 
   ipcMain.handle(IPC.agentChatRecoverTurn, async (

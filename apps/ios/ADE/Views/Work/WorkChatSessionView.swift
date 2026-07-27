@@ -168,13 +168,16 @@ struct WorkChatSessionView: View {
   let canSendMessages: Bool
   let sendWillQueue: Bool
   let sendWillQueueIsReconnect: Bool
+  let activeSendModesAvailable: Bool
+  let queueAwareStopAvailable: Bool
   let transportHealth: SyncTransportHealth
   let composerDraftRestore: WorkChatComposerDraftRestore?
   var inputLockMessage: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
-  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
-  let onInterrupt: @MainActor () async -> Void
+  let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
+  let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
+  let onRestoreCancelledQueue: (@MainActor (String) async -> Void)?
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
@@ -788,6 +791,20 @@ struct WorkChatSessionView: View {
 
       consolidatedPendingStripSection
 
+      if let recovery = workAvailableQueueRecovery(from: transcript),
+         let onRestoreCancelledQueue {
+        WorkQueueRecoveryBanner(
+          recovery: recovery,
+          restoring: actionInFlight,
+          enabled: !hostUnreachable && !actionInFlight,
+          onRestore: {
+            await runSessionAction {
+              await onRestoreCancelledQueue(recovery.recoveryId)
+            }
+          }
+        )
+      }
+
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         usageViewModel: workContextUsageViewModel(
@@ -813,9 +830,13 @@ struct WorkChatSessionView: View {
         // broader live hint can lag after `done`; this stricter gate keeps the
         // composer from showing Stop after the completed-turn separator appears.
         showInterrupt: shouldShowInterruptControl,
+        activeSendModesAvailable: activeSendModesAvailable,
+        queueAwareStopAvailable: queueAwareStopAvailable,
         interruptInFlight: actionInFlight,
-        onInterrupt: {
-          await runSessionAction(onInterrupt)
+        onInterrupt: { mode in
+          await runSessionAction {
+            await onInterrupt(mode)
+          }
         },
         onOpenModelPicker: !chatSummaryContext.isAvailable
           || (isPersonalChat && (
@@ -1792,11 +1813,13 @@ private struct WorkChatComposerCard: View {
   /// active (`border-red-500/25 bg-red-500/[0.08] text-red-400/80`).
   /// old full-width yellow slab that used to sit under the header.
   let showInterrupt: Bool
+  let activeSendModesAvailable: Bool
+  let queueAwareStopAvailable: Bool
   let interruptInFlight: Bool
-  let onInterrupt: @MainActor () async -> Void
+  let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
 
   var body: some View {
@@ -1818,6 +1841,8 @@ private struct WorkChatComposerCard: View {
       draftPersistenceKey: draftPersistenceKey,
       compact: compact,
       showInterrupt: showInterrupt,
+      activeSendModesAvailable: activeSendModesAvailable,
+      queueAwareStopAvailable: queueAwareStopAvailable,
       interruptInFlight: interruptInFlight,
       onInterrupt: onInterrupt,
       onOpenModelPicker: onOpenModelPicker,
@@ -1860,11 +1885,13 @@ private struct WorkChatComposerDraftInput: View {
   let draftPersistenceKey: String
   let compact: Bool
   let showInterrupt: Bool
+  let activeSendModesAvailable: Bool
+  let queueAwareStopAvailable: Bool
   let interruptInFlight: Bool
-  let onInterrupt: @MainActor () async -> Void
+  let onInterrupt: @MainActor (AgentChatStopMode) async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
 
   @EnvironmentObject private var syncService: SyncService
@@ -1875,6 +1902,11 @@ private struct WorkChatComposerDraftInput: View {
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   @State private var attachmentPickerPresented = false
+  @State private var stopMode: AgentChatStopMode = .stopAndClear
+  @State private var stopOptionsPresented = false
+  @State private var stopHapticToken = 0
+  @State private var activeSendMode: WorkActiveSendMode = .inline
+  @State private var sendOptionsPresented = false
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -1939,7 +1971,7 @@ private struct WorkChatComposerDraftInput: View {
         )
 
         if showInterrupt && hasSendableDraftOrAttachment {
-          Text("Message will stage behind the active turn.")
+          Text(activeTurnSendHint)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2010,11 +2042,19 @@ private struct WorkChatComposerDraftInput: View {
         contextUsagePresented = false
       }
     }
-    .onAppear { configureSuggestionController() }
+    .onAppear {
+      configureSuggestionController()
+    }
     // Bind before applying a restore: `bind` only seeds an empty field, so a
     // failed-send restore that runs first would be preserved either way, but
     // binding first keeps the persisted key correct for the very first autosave.
     .task(id: draftPersistenceKey) {
+      stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
+        ? .stopOnly
+        : .stopAndClear
+      activeSendMode = .inline
+      sendOptionsPresented = false
+      stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
     }
     .task(id: composerDraftRestore?.id) {
@@ -2023,7 +2063,17 @@ private struct WorkChatComposerDraftInput: View {
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
-    .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
+    .onChange(of: showInterrupt) { _, _ in
+      activeSendMode = .inline
+      sendOptionsPresented = false
+      stopOptionsPresented = false
+    }
+    .onChange(of: chatSummary.provider) { _, _ in
+      activeSendMode = .inline
+      sendOptionsPresented = false
+      stopOptionsPresented = false
+      configureSuggestionController()
+    }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
     .workChatAttachmentPicker(
       isPresented: $attachmentPickerPresented,
@@ -2039,16 +2089,22 @@ private struct WorkChatComposerDraftInput: View {
     if showInterrupt {
       if hasSendableDraftOrAttachment {
         stopButton()
-        WorkChatComposerSendButton(
-          draftState: draftState,
-          attachments: $inputAttachments,
-          canSend: canSend,
-          canUploadAttachments: canUploadAttachments,
-          sending: sending,
-          accessibilityLabelText: "Stage message",
-          onSend: onSend,
-          onSent: onSent
-        )
+        if chatSummary.provider.lowercased() == "claude" && activeSendModesAvailable {
+          activeTurnSendButton()
+        } else {
+          WorkChatComposerSendButton(
+            draftState: draftState,
+            attachments: $inputAttachments,
+            canSend: canSend,
+            canUploadAttachments: canUploadAttachments,
+            sending: sending,
+            accessibilityLabelText: "Stage message",
+            onSend: { text, attachments in
+              await onSend(text, attachments, .queue)
+            },
+            onSent: onSent
+          )
+        }
       } else {
         stopButton()
       }
@@ -2059,10 +2115,132 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        onSend: onSend,
+        onSend: { text, attachments in
+          await onSend(text, attachments, .queue)
+        },
         onSent: onSent
       )
     }
+  }
+
+  @ViewBuilder
+  private func activeTurnSendButton() -> some View {
+    HStack(spacing: 0) {
+      WorkChatComposerSendButton(
+        draftState: draftState,
+        attachments: $inputAttachments,
+        canSend: canSend,
+        canUploadAttachments: canUploadAttachments,
+        sending: sending,
+        accessibilityLabelText: activeSendModeTitle,
+        systemImageName: activeSendModeIcon,
+        minimumTapTargetSize: 44,
+        onSend: { text, attachments in
+          await onSend(text, attachments, activeSendMode)
+        },
+        onSent: onSent
+      )
+
+      Button {
+        sendOptionsPresented.toggle()
+      } label: {
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.14))
+          .frame(width: 44, height: 44)
+          .background(Color.white.opacity(0.9))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("More send options")
+      .accessibilityValue(activeSendModeTitle)
+      .accessibilityHint("Choose whether this message sends during, after, or by interrupting the active Claude turn")
+      .popover(isPresented: $sendOptionsPresented, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: 0) {
+          activeSendOption(
+            mode: .inline,
+            title: "Send during turn",
+            detail: "Claude picks this up after the current tool step.",
+            systemImage: "arrow.turn.down.right"
+          )
+          Divider()
+          activeSendOption(
+            mode: .queue,
+            title: "Send after turn",
+            detail: "Keep this message staged until the turn finishes.",
+            systemImage: "clock"
+          )
+          Divider()
+          activeSendOption(
+            mode: .interrupt,
+            title: "Interrupt & send",
+            detail: "Stop the current model step and redirect Claude now.",
+            systemImage: "bolt.fill"
+          )
+        }
+        .frame(width: 270)
+        .presentationCompactAdaptation(.popover)
+      }
+    }
+    .clipShape(Capsule())
+  }
+
+  private var activeSendModeTitle: String {
+    switch activeSendMode {
+    case .queue: return "Send after turn"
+    case .interrupt: return "Interrupt and send"
+    default: return "Send during turn"
+    }
+  }
+
+  private var activeSendModeIcon: String {
+    switch activeSendMode {
+    case .queue: return "clock"
+    case .interrupt: return "bolt.fill"
+    default: return "arrow.turn.down.right"
+    }
+  }
+
+  private var activeTurnSendHint: String {
+    guard chatSummary.provider.lowercased() == "claude", activeSendModesAvailable else {
+      return "Message will stage behind the active turn."
+    }
+    switch activeSendMode {
+    case .queue: return "Message will send after the active turn."
+    case .interrupt: return "Message will interrupt and redirect Claude."
+    default: return "Message will reach Claude during the active turn."
+    }
+  }
+
+  @ViewBuilder
+  private func activeSendOption(mode: WorkActiveSendMode, title: String, detail: String, systemImage: String) -> some View {
+    Button {
+      activeSendMode = mode
+      sendOptionsPresented = false
+    } label: {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: systemImage)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(mode == .interrupt ? ADEColor.warning : ADEColor.accent)
+          .frame(width: 16)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer(minLength: 4)
+        if activeSendMode == mode {
+          Image(systemName: "checkmark")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(12)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 
   private func configureSuggestionController() {
@@ -2073,31 +2251,124 @@ private struct WorkChatComposerDraftInput: View {
 
   @ViewBuilder
   private func stopButton() -> some View {
-    Button {
-      Task { await onInterrupt() }
-    } label: {
-      stopButtonIcon()
-      .foregroundStyle(ADEColor.danger.opacity(0.85))
-      .frame(width: 28, height: 28)
+    if chatSummary.provider.lowercased() == "claude" && queueAwareStopAvailable {
+      HStack(spacing: 0) {
+        Button {
+          stopHapticToken &+= 1
+          Task { await onInterrupt(stopMode) }
+        } label: {
+          stopButtonModeIcon()
+            .foregroundStyle(ADEColor.danger.opacity(0.85))
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(stopMode == .stopOnly ? "Stop turn and keep queue" : "Stop turn and clear queue")
+        .disabled(interruptInFlight)
+
+        Button {
+          stopOptionsPresented.toggle()
+        } label: {
+          Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.danger.opacity(0.72))
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("More stop options")
+        .accessibilityValue(stopMode == .stopOnly ? "Stop only" : "Stop and clear queue")
+        .accessibilityHint("Choose whether queued Claude messages are kept or cancelled")
+        .disabled(interruptInFlight)
+        .popover(isPresented: $stopOptionsPresented, arrowEdge: .bottom) {
+          VStack(alignment: .leading, spacing: 0) {
+            stopOption(
+              mode: .stopAndClear,
+              title: "Stop & clear queue",
+              detail: "Stop this turn and cancel staged Claude messages.",
+              systemImage: "trash"
+            )
+            Divider()
+            stopOption(
+              mode: .stopOnly,
+              title: "Stop only",
+              detail: "Stop this turn and keep staged messages.",
+              systemImage: "stop.fill"
+            )
+          }
+          .frame(width: 260)
+          .presentationCompactAdaptation(.popover)
+        }
+      }
       .background(
         RoundedRectangle(cornerRadius: 8, style: .continuous)
           .fill(ADEColor.danger.opacity(0.08))
       )
-      .overlay(
+      .overlay {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
           .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
+      }
+      .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
+    } else {
+      Button {
+        stopHapticToken &+= 1
+        Task { await onInterrupt(.stopAndClear) }
+      } label: {
+        stopButtonIcon()
+        .foregroundStyle(ADEColor.danger.opacity(0.85))
+        .frame(width: 28, height: 28)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(ADEColor.danger.opacity(0.08))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
+        )
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
+      .disabled(interruptInFlight)
+      .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
+      .adeInspectable(
+        "Work.Chat.Composer.StopButton",
+        metadata: [
+          "label": interruptInFlight ? "Interrupting turn" : "Stop turn",
+          "role": "button"
+        ]
       )
     }
+  }
+
+  @ViewBuilder
+  private func stopOption(mode: AgentChatStopMode, title: String, detail: String, systemImage: String) -> some View {
+    Button {
+      stopMode = mode
+      UserDefaults.standard.set(mode.rawValue, forKey: "\(draftPersistenceKey).stopMode")
+      stopOptionsPresented = false
+    } label: {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: systemImage)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.danger)
+          .frame(width: 16)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer(minLength: 4)
+        if stopMode == mode {
+          Image(systemName: "checkmark")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(12)
+      .contentShape(Rectangle())
+    }
     .buttonStyle(.plain)
-    .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
-    .disabled(interruptInFlight)
-    .adeInspectable(
-      "Work.Chat.Composer.StopButton",
-      metadata: [
-        "label": interruptInFlight ? "Interrupting turn" : "Stop turn",
-        "role": "button"
-      ]
-    )
   }
 
   @ViewBuilder
@@ -2111,6 +2382,75 @@ private struct WorkChatComposerDraftInput: View {
         .font(.system(size: 10, weight: .bold))
     }
   }
+
+  @ViewBuilder
+  private func stopButtonModeIcon() -> some View {
+    if interruptInFlight {
+      ProgressView()
+        .controlSize(.mini)
+        .tint(ADEColor.danger)
+    } else if stopMode == .stopOnly {
+      Image(systemName: "stop.fill")
+        .font(.system(size: 10, weight: .bold))
+    } else {
+      Image(systemName: "trash")
+        .font(.system(size: 11, weight: .bold))
+    }
+  }
+}
+
+private struct WorkQueueRecoveryBanner: View {
+  let recovery: WorkQueueRecoveryModel
+  let restoring: Bool
+  let enabled: Bool
+  let onRestore: @MainActor () async -> Void
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "arrow.uturn.backward.circle.fill")
+        .font(.body)
+        .foregroundStyle(ADEColor.warning)
+
+      Text("\(recovery.messageCount) queued message\(recovery.messageCount == 1 ? "" : "s") cancelled")
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Spacer(minLength: 4)
+
+      Button {
+        Task { await onRestore() }
+      } label: {
+        Group {
+          if restoring {
+            ProgressView()
+              .controlSize(.small)
+          } else {
+            Text("Undo")
+              .font(.caption.weight(.semibold))
+          }
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(ADEColor.accent)
+      .disabled(!enabled)
+      .accessibilityLabel(
+        restoring
+          ? "Restoring cancelled queue"
+          : (enabled ? "Undo queue cancellation" : "Queue restoration unavailable")
+      )
+      .accessibilityHint("Restores the cancelled messages to Claude’s queue")
+    }
+    .padding(.leading, 12)
+    .padding(.trailing, 4)
+    .background(ADEColor.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
+    }
+  }
 }
 
 private struct WorkContextUsageMeter: View {
@@ -2119,7 +2459,8 @@ private struct WorkContextUsageMeter: View {
   @Binding var isPresented: Bool
 
   private var percent: Int? {
-    usage.ratio.map { Int(($0 * 100).rounded()) }
+    guard usage.state == .measured else { return nil }
+    return usage.ratio.map { Int(($0 * 100).rounded()) }
   }
 
   private var ringColor: Color {
@@ -2127,6 +2468,19 @@ private struct WorkContextUsageMeter: View {
     if ratio >= 0.9 { return ADEColor.danger }
     if ratio >= 0.7 { return ADEColor.warning }
     return Color(red: 0.22, green: 0.74, blue: 0.97)
+  }
+
+  private var accessibilityLabel: String {
+    switch usage.state {
+    case .compacting:
+      return "Context usage: compacting"
+    case .recalculating:
+      return "Context usage: recalculating"
+    case .unknown:
+      return "Context usage unavailable"
+    case .measured:
+      return percent.map { "Context usage: \($0)% full" } ?? "Context usage"
+    }
   }
 
   var body: some View {
@@ -2137,7 +2491,14 @@ private struct WorkContextUsageMeter: View {
         }
       } label: {
         ZStack {
-          if let ratio = usage.ratio, let percent {
+          if usage.state != .measured {
+            Circle()
+              .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
+              .frame(width: 22, height: 22)
+            Text(usage.state == .unknown ? "?" : "…")
+              .font(.system(size: 10, weight: .semibold, design: .rounded))
+              .foregroundStyle(ADEColor.textSecondary)
+          } else if let ratio = usage.ratio, let percent {
             Circle()
               .stroke(Color.white.opacity(0.10), lineWidth: 2.5)
               .frame(width: 22, height: 22)
@@ -2166,7 +2527,7 @@ private struct WorkContextUsageMeter: View {
         .opacity(active ? 1 : 0.92)
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(percent.map { "Context usage: \($0)% full" } ?? "Context usage")
+      .accessibilityLabel(accessibilityLabel)
       .accessibilityHint(isPresented ? "Dismisses context usage details" : "Shows context usage details")
       .adeInspectable(
         "Work.Chat.Composer.ContextUsageMeter",
@@ -2184,7 +2545,8 @@ private struct WorkContextUsagePopover: View {
   let modelLabel: String?
 
   private var percent: Int? {
-    usage.ratio.map { Int(($0 * 100).rounded()) }
+    guard usage.state == .measured else { return nil }
+    return usage.ratio.map { Int(($0 * 100).rounded()) }
   }
 
   private var windowLabel: String? {
@@ -2196,6 +2558,15 @@ private struct WorkContextUsagePopover: View {
   }
 
   private var description: String {
+    if usage.state == .compacting {
+      return "Claude is compacting this chat. The previous exact reading is temporarily hidden."
+    }
+    if usage.state == .recalculating {
+      return "Compaction finished. ADE is waiting for the next authoritative usage snapshot."
+    }
+    if usage.state == .unknown {
+      return "The runtime did not return an authoritative context reading."
+    }
     let model = modelLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let percent, let windowLabel {
       let owner: String
@@ -2215,6 +2586,7 @@ private struct WorkContextUsagePopover: View {
   }
 
   private var breakdown: String? {
+    guard usage.state == .measured else { return nil }
     var segments: [String] = []
     if let value = usage.inputTokens { segments.append("in \(workAbbreviateCount(value))") }
     if let value = usage.outputTokens { segments.append("out \(workAbbreviateCount(value))") }
@@ -2261,7 +2633,7 @@ private struct WorkContextUsagePopover: View {
           .minimumScaleFactor(0.7)
       }
 
-      if let ratio = usage.ratio, ratio >= 0.8 {
+      if usage.state == .measured, let ratio = usage.ratio, ratio >= 0.8 {
         Text("Nearing the limit; older context may be auto-trimmed or compacted.")
           .font(.caption2)
           .foregroundStyle(ADEColor.warning)
@@ -2454,6 +2826,8 @@ private struct WorkChatComposerSendButton: View {
   let canUploadAttachments: Bool
   let sending: Bool
   var accessibilityLabelText = "Send message"
+  var systemImageName = "arrow.up"
+  var minimumTapTargetSize: CGFloat = 28
   let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
@@ -2470,7 +2844,9 @@ private struct WorkChatComposerSendButton: View {
     ADEComposerSendButton(
       enabled: sendEnabled,
       sending: sending,
-      accessibilityLabelText: accessibilityLabelText
+      accessibilityLabelText: accessibilityLabelText,
+      systemImageName: systemImageName,
+      minimumTapTargetSize: minimumTapTargetSize
     ) {
       let originalText = draftState.consumeSendableText()
       let outgoingAttachments = workChatInputReadyAttachments(attachments)

@@ -1012,6 +1012,15 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return undefined;
     }),
+    request: vi.fn(async (request: unknown) => {
+      if (typeof session.request === "function") {
+        return session.request(request);
+      }
+      if (typeof session.query?.request === "function") {
+        return session.query.request(request);
+      }
+      return { response: undefined };
+    }),
     stopTask: vi.fn(async (taskId: string) => {
       if (typeof session.stopTask === "function") {
         return session.stopTask(taskId);
@@ -1819,6 +1828,7 @@ async function waitForFakeTimerPromise<T>(
 async function createClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
+  getContextUsage?: () => Promise<unknown>;
 }) {
   const events: AgentChatEventEnvelope[] = [];
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -1848,6 +1858,7 @@ async function createClaudeStreamFixture(args: {
     close: vi.fn(),
     sessionId: args.sdkSessionId,
     setPermissionMode,
+    ...(args.getContextUsage ? { getContextUsage: args.getContextUsage } : {}),
   } as any);
 
   const harness = createService({
@@ -29874,6 +29885,184 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("interrupt", () => {
+    it("does not cancel staged Claude messages for stop_only", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const interrupt = vi.fn(async () => {
+        releaseTurn();
+        return { still_queued: [] };
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-stop-only",
+              slash_commands: [],
+            };
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              id: "stop-only-assistant",
+              content: [{ type: "text", text: "Still working." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          await turnGate;
+        })()),
+        close: vi.fn(() => releaseTurn()),
+        interrupt,
+        sessionId: "sdk-stop-only",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      });
+      await waitForEvent(events, (entry): entry is AgentChatEventEnvelope => entry.event.type === "text");
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Keep this staged message.",
+      });
+
+      await expect(service.interrupt({
+        sessionId: session.id,
+        mode: "stop_only",
+      })).resolves.toEqual({
+        mode: "stop_only",
+        cancelledQueuedCount: 0,
+      });
+      expect(events.some((entry) =>
+        entry.event.type === "queue_recovery"
+        && entry.event.state === "available"
+      )).toBe(false);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.steerId === queued.steerId
+        && /cancelled because the current turn was interrupted/i.test(entry.event.message)
+      )).toBe(false);
+      await turnPromise;
+    });
+
+    it("cancels Claude's queued messages with the SDK option and makes them recoverable", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const request = vi.fn(async () => {
+        releaseTurn();
+        return { response: { still_queued: [], cancelled: [] } };
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-stop-and-clear",
+            slash_commands: [],
+            capabilities: ["interrupt_cancel_queued_v1"],
+          };
+          if (streamCall === 1) {
+            return;
+          }
+          yield {
+            type: "assistant",
+            message: {
+              id: "stop-and-clear-assistant",
+              content: [{ type: "text", text: "Still working." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          await turnGate;
+        })()),
+        close: vi.fn(() => releaseTurn()),
+        request,
+        sessionId: "sdk-stop-and-clear",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      });
+      await waitForEvent(events, (entry): entry is AgentChatEventEnvelope => entry.event.type === "text");
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Recover this staged message.",
+      });
+
+      const interrupted = await service.interrupt({
+        sessionId: session.id,
+        mode: "stop_and_clear",
+      });
+      expect(request).toHaveBeenCalledWith({
+        subtype: "interrupt",
+        cancel_queued: true,
+      });
+      expect(interrupted).toMatchObject({
+        mode: "stop_and_clear",
+        cancelledQueuedCount: 1,
+        recoveryId: expect.any(String),
+        recoveryExpiresAt: expect.any(String),
+      });
+      await expect(service.cancelSteer({
+        sessionId: session.id,
+        steerId: queued.steerId,
+        requireQueued: true,
+      })).rejects.toThrow("This message is no longer queued.");
+
+      await expect(service.restoreCancelledQueue({
+        sessionId: session.id,
+        recoveryId: interrupted.recoveryId!,
+      })).resolves.toEqual({ restored: true, restoredCount: 1 });
+      await expect(service.cancelSteer({
+        sessionId: session.id,
+        steerId: queued.steerId,
+        requireQueued: true,
+      })).resolves.toBeUndefined();
+      expect(events.filter((entry) => entry.event.type === "queue_recovery").map((entry) => entry.event))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ state: "available", messageCount: 1 }),
+          expect.objectContaining({
+            state: "restored",
+            messageCount: 1,
+            restoredSteers: [expect.objectContaining({
+              steerId: queued.steerId,
+              text: "Recover this staged message.",
+            })],
+          }),
+        ]));
+      await turnPromise;
+    });
+
     it.each([
       { providerFirst: true, expectedOrder: ["interrupt_receipt", "done"] },
       { providerFirst: false, expectedOrder: ["done", "interrupt_receipt"] },
@@ -32275,9 +32464,10 @@ describe("createAgentChatService", () => {
       })(),
     }) as any);
 
-    const { service } = createService({
+    const harness = createService({
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
     });
+    const { service } = harness;
 
     const session = await service.createSession({
       laneId: "lane-1",
@@ -33197,6 +33387,77 @@ describe("createAgentChatService", () => {
       .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }> =>
         event.type === "context_usage" && event.origin === "live");
     expect(usageEvents.map((event) => event.usage.percentage)).toEqual([15, 17]);
+  });
+
+  it("refreshes authoritative Claude context usage automatically after a settled turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const getContextUsage = vi.fn().mockResolvedValue({
+        categories: [
+          { name: "System", tokens: 10_000 },
+          { name: "Messages", tokens: 40_000 },
+        ],
+        totalTokens: 50_000,
+        maxTokens: 200_000,
+        rawMaxTokens: 200_000,
+        percentage: 25,
+        gridRows: [],
+        model: "claude-sonnet-5",
+      });
+      let streamCall = 0;
+      let releaseTail!: () => void;
+      const tailGate = new Promise<void>((resolve) => { releaseTail = resolve; });
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        getContextUsage,
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-authoritative-context",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          if (streamCall > 1) await tailGate;
+        })()),
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Measure context after this turn.",
+        timeoutMs: 15_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await turn;
+
+      await vi.waitFor(() => {
+        expect(getContextUsage).toHaveBeenCalled();
+        expect(events.map((entry) => entry.event))
+          .toEqual(expect.arrayContaining([
+            expect.objectContaining({
+              type: "context_usage",
+              origin: "snapshot",
+              state: "measured",
+              usage: expect.objectContaining({ percentage: 25 }),
+            }),
+          ]));
+      });
+      releaseTail();
+      await service.dispose({ sessionId: session.id });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lets natural compaction suppress the 97% fallback", async () => {

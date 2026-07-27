@@ -332,10 +332,15 @@ struct WorkUsageSummary: Equatable {
   var costUsd: Double
   /// True for provider-reported current-context snapshots (not per-turn totals).
   var isContextSnapshot: Bool = false
+  /// Lifecycle state attached to an authoritative context snapshot.
+  var contextState: WorkContextUsageState? = nil
+  /// Monotonic runtime sample used to reject late pre-compaction snapshots.
+  var contextSampleId: Int? = nil
 }
 
 struct WorkContextUsageViewModel: Equatable {
   var provider: String
+  var state: WorkContextUsageState = .measured
   var contextWindow: Int?
   var usedTokens: Int?
   var inputTokens: Int?
@@ -346,6 +351,25 @@ struct WorkContextUsageViewModel: Equatable {
   var totalTokens: Int?
   var ratio: Double?
   var windowSource: WorkContextUsageWindowSource?
+}
+
+enum WorkContextUsageState: String, Equatable {
+  case measured
+  case compacting
+  case recalculating
+  case unknown
+}
+
+enum WorkActiveSendMode: String, Equatable {
+  case inline
+  case queue
+  case interrupt
+}
+
+struct WorkQueueRecoveryModel: Equatable {
+  let recoveryId: String
+  let messageCount: Int
+  let expiresAt: String
 }
 
 enum WorkContextUsageWindowSource: String, Equatable {

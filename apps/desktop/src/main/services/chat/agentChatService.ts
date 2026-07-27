@@ -244,6 +244,10 @@ import type {
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
+  AgentChatInterruptResult,
+  AgentChatRestoreCancelledQueueArgs,
+  AgentChatRestoreCancelledQueueResult,
+  AgentChatStopMode,
   AgentChatMessageSessionArgs,
   AgentChatMessageSessionKind,
   AgentChatMessageSessionResult,
@@ -581,7 +585,7 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.211";
+  return "0.3.220";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
@@ -698,9 +702,9 @@ function claudeQueuedMessagePreview(value: string): string {
 }
 
 function rememberClaudeKnownQueuedMessage(
-  known: Map<string, { preview: string; steerId?: string }>,
+  known: Map<string, ClaudeKnownQueuedMessage>,
   uuid: string,
-  value: { preview: string; steerId?: string },
+  value: ClaudeKnownQueuedMessage,
 ): void {
   known.set(uuid, value);
   while (known.size > 256) {
@@ -1296,6 +1300,16 @@ type ClaudeContextGuardrailState = {
   pendingInternalCompactionId: string | null;
   lastUsageEmitAt: number | null;
   lastUsageEmitPct: number | null;
+  nextSampleId: number;
+  latestSnapshotRequestId: number;
+  /** Increments whenever a newer live/boundary sample changes context state. */
+  usageRevision: number;
+};
+
+type ClaudeKnownQueuedMessage = {
+  preview: string;
+  steerId?: string;
+  steer?: QueuedSteer;
 };
 
 type ClaudeRuntime = {
@@ -1399,7 +1413,7 @@ type ClaudeRuntime = {
    * user is explicitly dispatching it with Claude's priority queue. */
   dispatchingSteerIds: Set<string>;
   pendingSteers: QueuedSteer[];
-  knownQueuedMessages: Map<string, { preview: string; steerId?: string }>;
+  knownQueuedMessages: Map<string, ClaudeKnownQueuedMessage>;
   commandLifecycleByUuid: Map<string, "queued" | "started" | "completed" | "cancelled" | "discarded">;
   contextGuardrail: ClaudeContextGuardrailState;
   approvals: Map<string, PendingClaudeApproval>;
@@ -4449,6 +4463,52 @@ function extractReportedModelUsageNames(value: unknown): string[] {
     .filter((name): name is string => name !== null);
 }
 
+function extractReportedModelUsageProvenance(value: unknown): {
+  canonicalModel?: string;
+  modelProvider?: string;
+} {
+  if (!value || typeof value !== "object") return {};
+  const rows = Object.values(value as Record<string, unknown>)
+    .map(asRecord)
+    .filter((row): row is Record<string, unknown> => row !== null);
+  const canonicalModels = new Set(rows
+    .map((row) => normalizeReportedModelName(row.canonicalModel))
+    .filter((model): model is string => model !== null));
+  const providers = new Set(rows
+    .map((row) => normalizeReportedModelName(row.provider))
+    .filter((provider): provider is string => provider !== null));
+  return {
+    ...(canonicalModels.size === 1 ? { canonicalModel: [...canonicalModels][0] } : {}),
+    ...(providers.size === 1 ? { modelProvider: [...providers][0] } : {}),
+  };
+}
+
+type ClaudeResultMetadata = {
+  canonicalModel?: string;
+  modelProvider?: string;
+  apiErrorStatus?: number;
+  fastModeDisabledReason?: string;
+  userMessageUuid?: string;
+  requestSentWallMs?: number;
+};
+
+function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeResultMetadata {
+  const provenance = extractReportedModelUsageProvenance(result.modelUsage);
+  const userMessageUuid = normalizeReportedModelName(result.user_message_uuid);
+  const fastModeDisabledReason = typeof result.fast_mode_disabled_reason === "string"
+    ? result.fast_mode_disabled_reason
+    : result.fast_mode_disabled_reason
+      ? JSON.stringify(result.fast_mode_disabled_reason)
+      : undefined;
+  return {
+    ...provenance,
+    ...(typeof result.api_error_status === "number" ? { apiErrorStatus: result.api_error_status } : {}),
+    ...(fastModeDisabledReason ? { fastModeDisabledReason } : {}),
+    ...(userMessageUuid ? { userMessageUuid } : {}),
+    ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
+  };
+}
+
 function resolveClaudeTurnModelPayload(
   session: Pick<AgentChatSession, "model" | "modelId">,
   candidates: Array<string | null | undefined>,
@@ -6561,6 +6621,12 @@ export function createAgentChatService(args: {
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const notifiedSettledTurns = new Set<string>();
+  const cancelledQueueRecoveries = new Map<string, {
+    sessionId: string;
+    expiresAt: number;
+    steers: QueuedSteer[];
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   if (!getDirtyFileTextForPath) {
     throw new Error("createAgentChatService: getDirtyFileTextForPath is required");
@@ -8070,7 +8136,9 @@ export function createAgentChatService(args: {
         createChat: createSession,
         updateChatSession: updateSession,
         sendChatMessage: sendMessage,
-        interruptChat: interrupt,
+        interruptChat: async (args) => {
+          await interrupt(args);
+        },
         sessionService,
         ensureCtoSession: async ({ laneId: requestedLaneId, modelId, reasoningEffort, reuseExisting }) =>
           ensureIdentitySession({
@@ -8118,9 +8186,16 @@ export function createAgentChatService(args: {
       getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
       rewindFiles?: (userMessageId: string, options?: { dryRun?: boolean }) => Promise<ClaudeRewindFilesResult>;
       interrupt?: ClaudeQuery["interrupt"];
+      interruptWithOptions?: (options: { cancelQueued: boolean }) => Promise<SDKControlInterruptResponse>;
       stopTask?: ClaudeQuery["stopTask"];
       cancelAsyncMessage?: (uuid: string) => Promise<boolean>;
   } => {
+    const rawQuery = sessionQuery as (ClaudeQuery & {
+      request?: (request: {
+        subtype: "interrupt";
+        cancel_queued?: boolean;
+      }) => Promise<{ response?: SDKControlInterruptResponse }>;
+    }) | null | undefined;
     return {
         setPermissionMode: typeof sessionQuery?.setPermissionMode === "function"
           ? sessionQuery.setPermissionMode.bind(sessionQuery) as (mode: AgentChatClaudePermissionMode) => Promise<void>
@@ -8142,6 +8217,15 @@ export function createAgentChatService(args: {
         : undefined,
       interrupt: typeof sessionQuery?.interrupt === "function"
         ? sessionQuery.interrupt.bind(sessionQuery)
+        : undefined,
+      interruptWithOptions: typeof rawQuery?.request === "function"
+        ? async ({ cancelQueued }) => {
+            const result = await rawQuery.request!({
+              subtype: "interrupt",
+              ...(cancelQueued ? { cancel_queued: true } : {}),
+            });
+            return result.response ?? { still_queued: [] };
+          }
         : undefined,
       stopTask: typeof sessionQuery?.stopTask === "function"
         ? sessionQuery.stopTask.bind(sessionQuery)
@@ -12356,6 +12440,14 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "done" }>,
   ): void => {
+    if (managed.runtime?.kind === "claude") {
+      void refreshClaudeContextUsageSnapshot(
+        managed,
+        managed.runtime,
+        "snapshot",
+        event.turnId,
+      );
+    }
     if (!onTurnSettled) return;
     const callbackKey = `${managed.session.id}:${event.turnId}`;
     if (notifiedSettledTurns.has(callbackKey)) return;
@@ -12680,15 +12772,21 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     response: SDKControlInterruptResponse | undefined,
+    stopMode: AgentChatStopMode = "stop_and_clear",
   ): void => {
-    if (!response || !Array.isArray(response.still_queued) || response.still_queued.length === 0) return;
-    const stillQueuedUuids = response.still_queued
+    if (!response) return;
+    const stillQueuedUuids = (Array.isArray(response.still_queued) ? response.still_queued : [])
       .filter((uuid): uuid is string => typeof uuid === "string" && uuid.trim().length > 0)
       .map((uuid) => uuid.trim());
-    if (!stillQueuedUuids.length) return;
+    const cancelledUuids = (Array.isArray(response.cancelled) ? response.cancelled : [])
+      .filter((uuid): uuid is string => typeof uuid === "string" && uuid.trim().length > 0)
+      .map((uuid) => uuid.trim());
+    if (!stillQueuedUuids.length && !cancelledUuids.length) return;
     emitChatEvent(managed, {
       type: "interrupt_receipt",
       stillQueuedUuids,
+      ...(cancelledUuids.length ? { cancelledUuids } : {}),
+      stopMode,
       known: stillQueuedUuids.flatMap((uuid) => {
         const known = runtime.knownQueuedMessages.get(uuid);
         return known ? [{ uuid, preview: known.preview, ...(known.steerId ? { steerId: known.steerId } : {}) }] : [];
@@ -12750,6 +12848,126 @@ export function createAgentChatService(args: {
     }
   };
 
+  const nextClaudeContextSampleId = (runtime: ClaudeRuntime): number => {
+    runtime.contextGuardrail.nextSampleId += 1;
+    return runtime.contextGuardrail.nextSampleId;
+  };
+
+  const claudeGuardrailUsage = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): AgentChatContextUsage => {
+    const guardrail = runtime.contextGuardrail;
+    const maxTokens = guardrail.maxTokens > 0
+      ? guardrail.maxTokens
+      : resolveSessionModelDescriptor(managed.session)?.contextWindow ?? 0;
+    const category = (name: string, tokens: number) => ({
+      name,
+      tokens,
+      percentage: maxTokens > 0 ? (tokens / maxTokens) * 100 : 0,
+    });
+    return {
+      categories: [
+        category("Input", guardrail.inputTokens),
+        category("Cache read", guardrail.cacheReadTokens),
+        category("Cache creation", guardrail.cacheCreationTokens),
+        category("Output", guardrail.outputTokens),
+      ].filter((entry) => entry.tokens > 0),
+      totalTokens: Math.max(0, guardrail.totalTokens),
+      maxTokens: Math.max(0, maxTokens),
+      rawMaxTokens: Math.max(0, maxTokens),
+      percentage: maxTokens > 0
+        ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
+        : 0,
+      model: managed.session.model,
+      inputTokens: guardrail.inputTokens,
+      outputTokens: guardrail.outputTokens,
+      cacheReadTokens: guardrail.cacheReadTokens,
+      cacheCreationTokens: guardrail.cacheCreationTokens,
+    };
+  };
+
+  const emitClaudeContextUsageState = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    state: "measured" | "compacting" | "recalculating" | "unknown",
+    origin: "live" | "compact" | "snapshot",
+    turnId?: string,
+    usage = claudeGuardrailUsage(managed, runtime),
+  ): void => {
+    emitChatEvent(managed, {
+      type: "context_usage",
+      origin,
+      state,
+      sampleId: nextClaudeContextSampleId(runtime),
+      capturedAt: nowIso(),
+      usage,
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const refreshClaudeContextUsageSnapshot = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    origin: "snapshot" | "compact",
+    turnId?: string,
+  ): Promise<void> => {
+    if (managed.runtime !== runtime || !runtime.query) return;
+    const control = getClaudeQueryControl(runtime.query);
+    if (!control.getContextUsage) return;
+    const requestId = ++runtime.contextGuardrail.latestSnapshotRequestId;
+    const usageRevision = runtime.contextGuardrail.usageRevision;
+    const queryGeneration = runtime.queryGeneration;
+    try {
+      const usage = normalizeClaudeContextUsage(await awaitClaudeControlCall(
+        "Claude context usage",
+        CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
+        () => control.getContextUsage!(),
+      ));
+      if (
+        managed.runtime !== runtime
+        || runtime.queryGeneration !== queryGeneration
+        || runtime.contextGuardrail.latestSnapshotRequestId !== requestId
+        || runtime.contextGuardrail.usageRevision !== usageRevision
+      ) {
+        return;
+      }
+      const guardrail = runtime.contextGuardrail;
+      guardrail.totalTokens = usage.totalTokens;
+      guardrail.maxTokens = usage.maxTokens;
+      guardrail.occupancyPct = usage.percentage;
+      updateClaudeContextEpisode(guardrail, usage.percentage);
+      emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
+      logger.debug("agent_chat.claude_context_snapshot", {
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+        sessionId: managed.session.id,
+        turnId,
+        origin,
+        totalTokens: usage.totalTokens,
+        maxTokens: usage.maxTokens,
+        percentage: usage.percentage,
+        model: usage.model ?? managed.session.model,
+      });
+    } catch (error) {
+      if (
+        managed.runtime !== runtime
+        || runtime.queryGeneration !== queryGeneration
+        || runtime.contextGuardrail.latestSnapshotRequestId !== requestId
+        || runtime.contextGuardrail.usageRevision !== usageRevision
+      ) {
+        return;
+      }
+      emitClaudeContextUsageState(managed, runtime, "unknown", origin, turnId);
+      logger.warn("agent_chat.claude_context_snapshot_failed", {
+        ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
+        sessionId: managed.session.id,
+        turnId,
+        origin,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const updateClaudeLiveContextUsage = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -12759,6 +12977,7 @@ export function createAgentChatService(args: {
   ): void => {
     if (!usage) return;
     const guardrail = runtime.contextGuardrail;
+    guardrail.usageRevision += 1;
     if (mode === "message_start") {
       guardrail.inputTokens = Math.max(0, numberOrNull(usage.input_tokens) ?? 0);
       guardrail.cacheReadTokens = Math.max(0, numberOrNull(usage.cache_read_input_tokens) ?? 0);
@@ -12786,35 +13005,7 @@ export function createAgentChatService(args: {
     if (!movedEnough || !waitedEnough) return;
     guardrail.lastUsageEmitAt = now;
     guardrail.lastUsageEmitPct = occupancyPct;
-    const category = (name: string, tokens: number) => ({
-      name,
-      tokens,
-      percentage: maxTokens > 0 ? (tokens / maxTokens) * 100 : 0,
-    });
-    emitChatEvent(managed, {
-      type: "context_usage",
-      origin: "live",
-      usage: {
-        categories: [
-          category("Input", guardrail.inputTokens),
-          category("Cache read", guardrail.cacheReadTokens),
-          category("Cache creation", guardrail.cacheCreationTokens),
-          category("Output", guardrail.outputTokens),
-        ].filter((entry) => entry.tokens > 0),
-        totalTokens: guardrail.totalTokens,
-        maxTokens,
-        rawMaxTokens: maxTokens,
-        percentage: occupancyPct,
-        model: managed.session.model,
-        // Typed breakdown for the composer meter's hover (parallels `categories`,
-        // which stays display-shaped for the inline `/context` card).
-        inputTokens: guardrail.inputTokens,
-        outputTokens: guardrail.outputTokens,
-        cacheReadTokens: guardrail.cacheReadTokens,
-        cacheCreationTokens: guardrail.cacheCreationTokens,
-      },
-      ...(turnId ? { turnId } : {}),
-    });
+    emitClaudeContextUsageState(managed, runtime, "measured", "live", turnId);
   };
 
   const observeClaudeCompaction = (
@@ -12823,6 +13014,7 @@ export function createAgentChatService(args: {
     options: { completed: boolean; postTokens?: number | null },
   ): void => {
     const guardrail = runtime.contextGuardrail;
+    guardrail.usageRevision += 1;
     const internalTrigger = guardrail.pendingInternalCompactionTrigger;
     const occupancyPctAtTrigger = guardrail.occupancyPct;
     if (guardrail.highWaterEpisode && !internalTrigger) {
@@ -12943,6 +13135,7 @@ export function createAgentChatService(args: {
       tool: toolMeta.toolName,
       result: payload.result ?? structured,
       structured,
+      ...(record.tool_result_meta !== undefined ? { toolResultMeta: record.tool_result_meta } : {}),
       ...claudeStructuredToolResultFields(toolMeta.toolName, structured),
       itemId: payload.toolUseId,
       ...(turnId ? { turnId } : {}),
@@ -14864,7 +15057,9 @@ export function createAgentChatService(args: {
     deleteSession: (args) => deleteSession(args),
     sendMessage: (args, options) => sendMessage(args, options),
     steer: (args) => steer(args),
-    interrupt: (args) => interrupt(args),
+    interrupt: async (args) => {
+      await interrupt(args);
+    },
     // Wrapped (not a direct reference) so the handle can be bound before
     // `readTranscript` is declared later in this factory body.
     readTranscript: (sessionId, limit, since) => readTranscript(sessionId, limit, since),
@@ -16464,6 +16659,12 @@ export function createAgentChatService(args: {
       cacheCreationTokens?: number | null;
     };
     costUsd: number | null;
+    canonicalModel?: string;
+    modelProvider?: string;
+    apiErrorStatus?: number;
+    fastModeDisabledReason?: string;
+    userMessageUuid?: string;
+    requestSentWallMs?: number;
     emittedToolIds: Set<string>;
     openToolUses: Map<string, { toolName: string }>;
     structuredActivity: ClaudeStructuredActivityState;
@@ -16626,6 +16827,12 @@ export function createAgentChatService(args: {
       ...resolveClaudeTurnModelPayload(managed.session, []),
       ...(state.usage ? { usage: state.usage } : {}),
       ...(state.costUsd != null ? { costUsd: state.costUsd } : {}),
+      ...(state.canonicalModel ? { canonicalModel: state.canonicalModel } : {}),
+      ...(state.modelProvider ? { modelProvider: state.modelProvider } : {}),
+      ...(state.apiErrorStatus != null ? { apiErrorStatus: state.apiErrorStatus } : {}),
+      ...(state.fastModeDisabledReason ? { fastModeDisabledReason: state.fastModeDisabledReason } : {}),
+      ...(state.userMessageUuid ? { userMessageUuid: state.userMessageUuid } : {}),
+      ...(state.requestSentWallMs != null ? { requestSentWallMs: state.requestSentWallMs } : {}),
       ...(terminalReason ? { terminalReason, terminalReasonSource: "sdk" as const } : {}),
     });
     if (state.assistantText.trim().length > 0) {
@@ -17081,6 +17288,7 @@ export function createAgentChatService(args: {
       if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
       applyClaudeProtocolCapabilities(managed, record.capabilities);
       persistChatState(managed);
+      void refreshClaudeContextUsageSnapshot(managed, runtime, "snapshot", state.turnId ?? undefined);
       return;
     }
 
@@ -17114,6 +17322,7 @@ export function createAgentChatService(args: {
       const turnId = startClaudeIdleTurn(managed, runtime, state, "Claude is compacting context");
       const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
       observeClaudeCompaction(managed, runtime, { completed: false });
+      emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
       if (!internalCompactionPending) {
         emitChatEvent(managed, {
           type: "context_compact",
@@ -17132,6 +17341,7 @@ export function createAgentChatService(args: {
       const internalTrigger = runtime.contextGuardrail.pendingInternalCompactionTrigger;
       const internalCompactionId = runtime.contextGuardrail.pendingInternalCompactionId;
       observeClaudeCompaction(managed, runtime, { completed: true, postTokens });
+      emitClaudeContextUsageState(managed, runtime, "recalculating", "compact", turnId);
       emitChatEvent(managed, {
         type: "context_compact",
         trigger: internalTrigger ? "ade_fallback" : metadata?.trigger === "manual" ? "manual" : "auto",
@@ -17142,6 +17352,7 @@ export function createAgentChatService(args: {
         state: "completed",
         turnId,
       });
+      void refreshClaudeContextUsageSnapshot(managed, runtime, "compact", turnId);
       return;
     }
 
@@ -17525,6 +17736,13 @@ export function createAgentChatService(args: {
       if (typeof resultMsg.total_cost_usd === "number") {
         state.costUsd = resultMsg.total_cost_usd;
       }
+      const metadata = extractClaudeResultMetadata(resultMsg);
+      state.canonicalModel = metadata.canonicalModel;
+      state.modelProvider = metadata.modelProvider;
+      state.apiErrorStatus = metadata.apiErrorStatus;
+      state.fastModeDisabledReason = metadata.fastModeDisabledReason;
+      state.userMessageUuid = metadata.userMessageUuid;
+      state.requestSentWallMs = metadata.requestSentWallMs;
       if (resultIsError && turnId) {
         for (const error of resultErrors.userFacing) {
           emitChatEvent(managed, { type: "error", message: error, turnId });
@@ -17851,6 +18069,12 @@ export function createAgentChatService(args: {
     let costUsd: number | null = null;
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
     let resultTerminalReason: string | undefined;
+    let resultCanonicalModel: string | undefined;
+    let resultModelProvider: string | undefined;
+    let resultApiErrorStatus: number | undefined;
+    let resultFastModeDisabledReason: string | undefined;
+    let resultUserMessageUuid: string | undefined;
+    let resultRequestSentWallMs: number | undefined;
     let recoverFromContextOverflow = false;
     let reportedAssistantModel: string | null = null;
     let reportedInitModel: string | null = null;
@@ -18300,6 +18524,7 @@ export function createAgentChatService(args: {
             }
           } catch { /* ignore */ }
           persistChatState(managed);
+          void refreshClaudeContextUsageSnapshot(managed, runtime, "snapshot", turnId);
           continue;
         }
 
@@ -18350,6 +18575,7 @@ export function createAgentChatService(args: {
           if (statusMsg.status === "compacting") {
             const internalCompactionPending = runtime.contextGuardrail.pendingInternalCompactionTrigger !== null;
             observeClaudeCompaction(managed, runtime, { completed: false });
+            emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
             // Begin marker so the UI shows a live "compacting…" indicator instead of
             // feeling stuck until the compact_boundary lands. The real trigger arrives
             // with the boundary (completed) event, so default to "auto" here.
@@ -18374,6 +18600,7 @@ export function createAgentChatService(args: {
             completed: true,
             postTokens: numberOrNull(compactMsg.compact_metadata?.post_tokens),
           });
+          emitClaudeContextUsageState(managed, runtime, "recalculating", "compact", turnId);
           emitChatEvent(managed, {
             type: "context_compact",
             trigger: internalTrigger ? "ade_fallback" : compactMsg.compact_metadata?.trigger === "manual" ? "manual" : "auto",
@@ -18384,6 +18611,7 @@ export function createAgentChatService(args: {
             state: "completed",
             turnId,
           });
+          void refreshClaudeContextUsageSnapshot(managed, runtime, "compact", turnId);
           // Re-inject identity context after compaction so identity-backed
           // sessions keep their role and current operating instructions.
           if (managed.session.identityKey) {
@@ -19659,6 +19887,13 @@ export function createAgentChatService(args: {
           for (const modelName of extractReportedModelUsageNames(resultMsg.modelUsage)) {
             reportedUsageModels.add(modelName);
           }
+          const metadata = extractClaudeResultMetadata(resultMsg);
+          resultCanonicalModel = metadata.canonicalModel;
+          resultModelProvider = metadata.modelProvider;
+          resultApiErrorStatus = metadata.apiErrorStatus;
+          resultFastModeDisabledReason = metadata.fastModeDisabledReason;
+          resultUserMessageUuid = metadata.userMessageUuid;
+          resultRequestSentWallMs = metadata.requestSentWallMs;
           if (resultMsg.usage) {
             usage = {
               inputTokens: resultMsg.usage.input_tokens ?? null,
@@ -19842,6 +20077,12 @@ export function createAgentChatService(args: {
           ...doneModel,
           ...(usage ? { usage } : {}),
           ...(costUsd != null ? { costUsd } : {}),
+          ...(resultCanonicalModel ? { canonicalModel: resultCanonicalModel } : {}),
+          ...(resultModelProvider ? { modelProvider: resultModelProvider } : {}),
+          ...(resultApiErrorStatus != null ? { apiErrorStatus: resultApiErrorStatus } : {}),
+          ...(resultFastModeDisabledReason ? { fastModeDisabledReason: resultFastModeDisabledReason } : {}),
+          ...(resultUserMessageUuid ? { userMessageUuid: resultUserMessageUuid } : {}),
+          ...(resultRequestSentWallMs != null ? { requestSentWallMs: resultRequestSentWallMs } : {}),
           ...(resultTerminalReason
             ? { terminalReason: resultTerminalReason, terminalReasonSource: "sdk" as const }
             : {}),
@@ -26306,7 +26547,13 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const personalSession = isPersonalSession(managed.session);
-    const claudeEnv = buildAgentRuntimeEnv(managed);
+    const claudeEnv = {
+      ...buildAgentRuntimeEnv(managed),
+      // Claude Code has changed these defaults between public builds. ADE owns
+      // the agent-tree UX, so keep the harness behavior deterministic.
+      CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "3",
+      CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "20",
+    };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     const pluginPaths = personalSession ? [] : discoverClaudePluginPaths(managed.laneWorktreePath);
@@ -26336,6 +26583,7 @@ export function createAgentChatService(args: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
+        workflowSizeGuideline: "medium",
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -26622,6 +26870,87 @@ export function createAgentChatService(args: {
         turnId: runtime.activeTurnId ?? undefined,
       });
     }
+  };
+
+  const createCancelledQueueRecovery = (
+    managed: ManagedChatSession,
+    steers: QueuedSteer[],
+    stopMode: AgentChatStopMode,
+  ): { recoveryId: string; expiresAt: string } | null => {
+    const unique = [...new Map(
+      steers.map((steer) => [steer.steerId, steer] as const),
+    ).values()];
+    if (!unique.length) return null;
+    const recoveryId = randomUUID();
+    const expiresAt = Date.now() + 8_000;
+    const timer = setTimeout(() => {
+      const recovery = cancelledQueueRecoveries.get(recoveryId);
+      if (!recovery) return;
+      cancelledQueueRecoveries.delete(recoveryId);
+      if (managed.closed || managed.deleted) return;
+      emitChatEvent(managed, {
+        type: "queue_recovery",
+        recoveryId,
+        state: "expired",
+        messageCount: recovery.steers.length,
+        expiresAt: new Date(recovery.expiresAt).toISOString(),
+        stopMode,
+      });
+      persistChatState(managed);
+    }, 8_000);
+    timer.unref?.();
+    cancelledQueueRecoveries.set(recoveryId, {
+      sessionId: managed.session.id,
+      expiresAt,
+      steers: unique,
+      timer,
+    });
+    emitChatEvent(managed, {
+      type: "queue_recovery",
+      recoveryId,
+      state: "available",
+      messageCount: unique.length,
+      expiresAt: new Date(expiresAt).toISOString(),
+      stopMode,
+    });
+    return { recoveryId, expiresAt: new Date(expiresAt).toISOString() };
+  };
+
+  const restoreCancelledQueue = async ({
+    sessionId,
+    recoveryId,
+  }: AgentChatRestoreCancelledQueueArgs): Promise<AgentChatRestoreCancelledQueueResult> => {
+    const managed = ensureManagedSession(sessionId);
+    const recovery = cancelledQueueRecoveries.get(recoveryId);
+    if (!recovery || recovery.sessionId !== sessionId || recovery.expiresAt <= Date.now()) {
+      if (recovery) {
+        clearTimeout(recovery.timer);
+        cancelledQueueRecoveries.delete(recoveryId);
+      }
+      return { restored: false, restoredCount: 0 };
+    }
+    clearTimeout(recovery.timer);
+    cancelledQueueRecoveries.delete(recoveryId);
+    const runtime = ensureClaudeSessionRuntime(managed);
+    const existingSteerIds = new Set(runtime.pendingSteers.map((steer) => steer.steerId));
+    const restored = recovery.steers.filter((steer) => !existingSteerIds.has(steer.steerId));
+    runtime.pendingSteers.push(...restored);
+    emitChatEvent(managed, {
+      type: "queue_recovery",
+      recoveryId,
+      state: "restored",
+      messageCount: restored.length,
+      expiresAt: new Date(recovery.expiresAt).toISOString(),
+      stopMode: "stop_and_clear",
+      restoredSteers: restored.map((steer) => ({
+        steerId: steer.steerId,
+        text: steer.text,
+        ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+        ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+      })),
+    });
+    persistChatState(managed);
+    return { restored: restored.length > 0, restoredCount: restored.length };
   };
 
   const waitForClaudeWarmup = async (
@@ -27051,9 +27380,11 @@ export function createAgentChatService(args: {
       ...(extra?.interactionMode ? { interactionMode: extra.interactionMode } : {}),
     });
     if (runtime.kind === "claude") {
+      const queuedSteer = runtime.pendingSteers[runtime.pendingSteers.length - 1];
       rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, uuid, {
         preview: claudeQueuedMessagePreview(displayText),
         steerId,
+        ...(queuedSteer ? { steer: { ...queuedSteer } } : {}),
       });
     }
     const queuedMetadata = metadata?.scheduledWake
@@ -27468,6 +27799,9 @@ export function createAgentChatService(args: {
         pendingInternalCompactionId: null,
         lastUsageEmitAt: null,
         lastUsageEmitPct: null,
+        nextSampleId: 0,
+        latestSnapshotRequestId: 0,
+        usageRevision: 0,
       },
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
@@ -27480,6 +27814,7 @@ export function createAgentChatService(args: {
       rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, steer.uuid, {
         preview: claudeQueuedMessagePreview(steer.displayText ?? steer.text),
         steerId: steer.steerId,
+        steer: { ...steer },
       });
     }
     managed.runtime = runtime;
@@ -34364,6 +34699,7 @@ export function createAgentChatService(args: {
     rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, dispatchUuid, {
       preview: claudeQueuedMessagePreview(steer.displayText ?? steer.text),
       steerId: steer.steerId,
+      steer: { ...steer },
     });
     runtime.inputPump.push(sdkMsg);
     onAccepted?.();
@@ -35161,15 +35497,19 @@ export function createAgentChatService(args: {
   };
 
   const interrupt = async (
-    { sessionId }: AgentChatInterruptArgs,
+    { sessionId, mode = "stop_and_clear" }: AgentChatInterruptArgs,
     internalOptions: { requireClaudeProviderInterrupt?: boolean } = {},
-  ): Promise<void> => {
+  ): Promise<AgentChatInterruptResult> => {
     const managed = ensureManagedSession(sessionId);
+    const result: AgentChatInterruptResult = {
+      mode,
+      cancelledQueuedCount: 0,
+    };
     abortActiveBashControllers(managed, "Session interrupt requested.");
 
     // OpenCode runtime interrupt
     if (managed.runtime?.kind === "opencode") {
-      if (managed.runtime.interrupted) return;
+      if (managed.runtime.interrupted) return result;
       managed.runtime.interrupted = true;
       managed.runtime.eventAbortController?.abort();
       try {
@@ -35190,7 +35530,7 @@ export function createAgentChatService(args: {
         }).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
-      return;
+      return result;
     }
 
     if (managed.runtime?.kind === "cursor") {
@@ -35227,7 +35567,7 @@ export function createAgentChatService(args: {
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
-      return;
+      return result;
     }
 
     if (managed.runtime?.kind === "droid") {
@@ -35243,30 +35583,30 @@ export function createAgentChatService(args: {
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
-      return;
+      return result;
     }
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
       cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       persistChatState(managed);
-      return;
+      return result;
     }
 
     if (managed.session.provider === "cursor") {
       cursorRuntimeSetupInterruptRequested.set(managed, true);
       cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       persistChatState(managed);
-      return;
+      return result;
     }
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
-      if (!managed.session.threadId) return;
+      if (!managed.session.threadId) return result;
       if (!runtime.activeTurnId) {
         await interruptActiveCodexSubagentTurns(managed, runtime);
-        return;
+        return result;
       }
       let interruptedTurnId = runtime.activeTurnId;
       const interruptActiveTurn = async (turnId: string): Promise<void> => {
@@ -35293,7 +35633,7 @@ export function createAgentChatService(args: {
             "Interrupted by user before Codex app-server acknowledged the interrupt",
           );
           teardownRuntime(managed, "handle_close");
-          return;
+          return result;
         }
         adoptCodexActiveTurnId(
           managed,
@@ -35319,11 +35659,11 @@ export function createAgentChatService(args: {
             "Interrupted by user before Codex app-server acknowledged the interrupt",
           );
           teardownRuntime(managed, "handle_close");
-          return;
+          return result;
         }
       }
       await interruptActiveCodexSubagentTurns(managed, runtime);
-      return;
+      return result;
     }
 
     if (managed.session.provider === "claude" && managed.claudeBackgroundJobShort && managed.runtime?.kind !== "claude") {
@@ -35339,12 +35679,12 @@ export function createAgentChatService(args: {
       }
       markSessionIdleWithFreshCache(managed);
       persistChatState(managed);
-      return;
+      return result;
     }
 
     const runtime = ensureClaudeSessionRuntime(managed);
     // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
-    if (runtime.interrupted) return;
+    if (runtime.interrupted) return result;
     if (!runtime.busy && !runtime.activeTurnId) {
       terminalizeUnsettledClaudeParentTurn(managed, "idle_interrupt");
     }
@@ -35357,16 +35697,55 @@ export function createAgentChatService(args: {
     });
     const claudeControl = getClaudeQueryControl(runtime.query);
     let interruptResponse: SDKControlInterruptResponse | undefined;
-    if (internalOptions.requireClaudeProviderInterrupt) {
-      if (!claudeControl.interrupt) {
-        throw new Error("Claude interrupt is unavailable; the replacement was not sent.");
+    const localQueuedForRecovery = mode === "stop_and_clear"
+      ? [...runtime.pendingSteers]
+      : [];
+    // Remove ADE-local staged messages before awaiting the provider interrupt.
+    // The Claude stream can settle while that control request is in flight; if
+    // the rows remain in pendingSteers, turn finalization may dispatch them
+    // even though the user explicitly chose Stop and clear queued.
+    if (localQueuedForRecovery.length) {
+      cancelQueuedSteers(managed, runtime, "interrupted");
+    }
+    const knownQueuedMessagesAtInterrupt = new Map(runtime.knownQueuedMessages);
+    const cancelQueuedCapability = managed.session.protocolCapabilities?.includes("interrupt_cancel_queued_v1") === true;
+    const requestClaudeInterrupt = async (): Promise<SDKControlInterruptResponse | undefined> => {
+      if (mode === "stop_and_clear" && cancelQueuedCapability && claudeControl.interruptWithOptions) {
+        return await awaitClaudeControlCall(
+          "Claude interrupt and queue cancellation",
+          CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
+          () => claudeControl.interruptWithOptions!({ cancelQueued: true }),
+        );
       }
-      interruptResponse = await awaitClaudeControlCall(
+      if (!claudeControl.interrupt) return undefined;
+      const response = await awaitClaudeControlCall(
         "Claude interrupt",
         CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
         () => claudeControl.interrupt!(),
       );
-      emitClaudeInterruptReceipt(managed, runtime, interruptResponse);
+      if (mode !== "stop_and_clear" || !response?.still_queued?.length || !claudeControl.cancelAsyncMessage) {
+        return response;
+      }
+      const cancelled: string[] = [];
+      for (const uuid of response.still_queued) {
+        const didCancel = await awaitClaudeControlCall(
+          "Claude queued message cancellation",
+          CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
+          () => claudeControl.cancelAsyncMessage!(uuid),
+        ).catch(() => false);
+        if (didCancel) cancelled.push(uuid);
+      }
+      return {
+        still_queued: response.still_queued.filter((uuid) => !cancelled.includes(uuid)),
+        ...(cancelled.length ? { cancelled } : {}),
+      };
+    };
+    if (internalOptions.requireClaudeProviderInterrupt) {
+      if (!claudeControl.interrupt && !claudeControl.interruptWithOptions) {
+        throw new Error("Claude interrupt is unavailable; the replacement was not sent.");
+      }
+      interruptResponse = await requestClaudeInterrupt();
+      emitClaudeInterruptReceipt(managed, runtime, interruptResponse, mode);
     }
     // Set interrupted before touching the runtime so the streaming loop can
     // break cleanly while the underlying SDK stream is aborted below.
@@ -35388,13 +35767,9 @@ export function createAgentChatService(args: {
     await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
     if (!internalOptions.requireClaudeProviderInterrupt) {
       try {
-        if (claudeControl.interrupt) {
-          interruptResponse = await awaitClaudeControlCall(
-            "Claude interrupt",
-            CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS,
-            () => claudeControl.interrupt!(),
-          );
-          emitClaudeInterruptReceipt(managed, runtime, interruptResponse);
+        if (claudeControl.interrupt || claudeControl.interruptWithOptions) {
+          interruptResponse = await requestClaudeInterrupt();
+          emitClaudeInterruptReceipt(managed, runtime, interruptResponse, mode);
         }
       } catch (error) {
         logger.warn("agent_chat.claude_interrupt_failed", {
@@ -35410,7 +35785,25 @@ export function createAgentChatService(args: {
       // promise consume the next turn after an interrupt.
       await resetClaudeQuerySession(managed, runtime, "interrupt");
     }
-    cancelQueuedSteers(managed, runtime, "interrupted");
+    if (mode === "stop_and_clear") {
+      const localQueuedCount = localQueuedForRecovery.length;
+      result.cancelledQueuedCount = localQueuedCount + (interruptResponse?.cancelled?.length ?? 0);
+      const providerCancelledSteers = (interruptResponse?.cancelled ?? []).flatMap((uuid) => {
+        const steer = knownQueuedMessagesAtInterrupt.get(uuid)?.steer;
+        return steer ? [steer] : [];
+      });
+      const recovery = result.cancelledQueuedCount > 0
+        ? createCancelledQueueRecovery(
+            managed,
+            [...localQueuedForRecovery, ...providerCancelledSteers],
+            mode,
+          )
+        : null;
+      if (recovery) {
+        result.recoveryId = recovery.recoveryId;
+        result.recoveryExpiresAt = recovery.expiresAt;
+      }
+    }
     // Drain pending approvals so their promises settle instead of hanging forever
     for (const pending of runtime.approvals.values()) {
       pending.resolve({ decision: "cancel" });
@@ -35423,7 +35816,10 @@ export function createAgentChatService(args: {
       provider: "claude",
       turnId: interruptedTurnId,
       busy: runtime.busy,
+      mode,
+      cancelledQueuedCount: result.cancelledQueuedCount,
     });
+    return result;
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
@@ -38709,6 +39105,8 @@ export function createAgentChatService(args: {
   const disposeAll = async (): Promise<void> => {
     clearInterval(sessionCleanupTimer);
     scheduledWorkScheduler?.dispose();
+    for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
+    cancelledQueueRecoveries.clear();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");
@@ -38723,6 +39121,8 @@ export function createAgentChatService(args: {
   const forceDisposeAll = (): void => {
     clearInterval(sessionCleanupTimer);
     scheduledWorkScheduler?.dispose();
+    for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
+    cancelledQueueRecoveries.clear();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -40411,6 +40811,7 @@ export function createAgentChatService(args: {
     filesChanged: Array.isArray(result.filesChanged) ? result.filesChanged.filter((file): file is string => typeof file === "string" && file.trim().length > 0) : [],
     insertions: Number.isFinite(result.insertions) ? Math.max(0, result.insertions ?? 0) : 0,
     deletions: Number.isFinite(result.deletions) ? Math.max(0, result.deletions ?? 0) : 0,
+    ...(Number.isFinite(result.skippedLinks) ? { skippedLinks: Math.max(0, result.skippedLinks ?? 0) } : {}),
     dryRun,
   });
 
@@ -40851,6 +41252,14 @@ export function createAgentChatService(args: {
           : "Files restored from checkpoint.",
         detail: result.filesChanged.length ? result.filesChanged.join("\n") : undefined,
       });
+      if ((result.skippedLinks ?? 0) > 0) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `${result.skippedLinks} linked path${result.skippedLinks === 1 ? " was" : "s were"} skipped while restoring this checkpoint.`,
+          detail: "Claude leaves symlink targets untouched during rewind so linked files outside the checkpoint are not overwritten.",
+        });
+      }
       void refreshHeadShaStartForManagedExecutionLane(managed).catch(() => undefined);
     }
     return result;
@@ -41685,6 +42094,7 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    restoreCancelledQueue,
     recoverTurn,
     recoverCodexTurn,
     assertRecoveryTargetOwned,

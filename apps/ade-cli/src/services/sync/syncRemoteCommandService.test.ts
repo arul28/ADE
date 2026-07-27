@@ -856,6 +856,59 @@ describe("createSyncRemoteCommandService", () => {
     expect(ptyService.resumeSession).not.toHaveBeenCalled();
   });
 
+  it("routes queue-aware interruption and cancelled-queue recovery", async () => {
+    const interrupt = vi.fn(async ({ mode = "stop_and_clear" }) => ({
+      mode,
+      cancelledQueuedCount: mode === "stop_and_clear" ? 2 : 0,
+      ...(mode === "stop_and_clear"
+        ? { recoveryId: "recovery-1", recoveryExpiresAt: "2026-07-27T12:00:08.000Z" }
+        : {}),
+    }));
+    const restoreCancelledQueue = vi.fn(async () => ({
+      restored: true,
+      restoredCount: 2,
+    }));
+    const { service } = createService({
+      agentChatService: { interrupt, restoreCancelledQueue },
+    });
+
+    await expect(service.execute(makePayload("chat.interruptWithQueueMode", {
+      sessionId: "chat-1",
+      mode: "stop_only",
+    }))).resolves.toEqual({
+      ok: true,
+      mode: "stop_only",
+      cancelledQueuedCount: 0,
+    });
+    expect(interrupt).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      mode: "stop_only",
+    });
+
+    await expect(service.execute(makePayload("chat.restoreCancelledQueue", {
+      sessionId: "chat-1",
+      recoveryId: "recovery-1",
+    }))).resolves.toEqual({
+      ok: true,
+      restored: true,
+      restoredCount: 2,
+    });
+    expect(restoreCancelledQueue).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      recoveryId: "recovery-1",
+    });
+
+    await expect(service.execute(makePayload("chat.interrupt", {
+      sessionId: "chat-1",
+      mode: "discard_everything",
+    }))).rejects.toThrow(/stop_and_clear.*stop_only/);
+    await expect(service.execute(makePayload("chat.restoreCancelledQueue", {
+      sessionId: "chat-1",
+    }))).rejects.toThrow(/requires recoveryId/);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(restoreCancelledQueue).toHaveBeenCalledTimes(1);
+  });
+
   it("routes all Codex recovery actions through the mobile sync command", async () => {
     const recoverCodexTurn = vi.fn(async (args) => ({
       action: args.action,

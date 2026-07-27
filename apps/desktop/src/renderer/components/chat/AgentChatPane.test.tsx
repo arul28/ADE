@@ -7876,6 +7876,56 @@ describe("deriveRuntimeState", () => {
 
     expect(deriveRuntimeState(events).pendingSteers).toEqual([]);
   });
+
+  it("restores cancelled Claude queue entries after the user chooses Undo", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-16T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "queued",
+          steerId: "steer-1",
+          deliveryState: "queued",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-16T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Queued message cancelled because the current turn was interrupted.",
+          steerId: "steer-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-16T12:00:02.000Z",
+        sequence: 3,
+        event: {
+          type: "queue_recovery",
+          recoveryId: "recovery-1",
+          state: "restored",
+          messageCount: 1,
+          expiresAt: "2026-07-16T12:00:10.000Z",
+          stopMode: "stop_and_clear",
+          restoredSteers: [{ steerId: "steer-1", text: "queued" }],
+        },
+      },
+    ];
+
+    expect(deriveRuntimeState(events).pendingSteers).toEqual([
+      {
+        steerId: "steer-1",
+        text: "queued",
+        attachments: [],
+        contextAttachments: [],
+      },
+    ]);
+  });
 });
 
 describe("mergeChatHistorySnapshot", () => {

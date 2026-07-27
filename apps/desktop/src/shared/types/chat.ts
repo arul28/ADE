@@ -582,6 +582,7 @@ export type AgentChatEvent =
       turnId?: string;
       status?: "running" | "completed" | "failed" | "interrupted";
       structured?: unknown;
+      toolResultMeta?: unknown;
       timedOutAfterMs?: number;
       backgroundCwdHint?: string;
       grepTotals?: {
@@ -695,6 +696,10 @@ export type AgentChatEvent =
       status: "completed" | "interrupted" | "failed";
       model?: string;
       modelId?: ModelId;
+      /** Canonical model used for provider billing/pricing resolution. */
+      canonicalModel?: string;
+      /** API route that served the model (firstParty, bedrock, vertex, etc.). */
+      modelProvider?: string;
       usage?: {
         inputTokens?: number | null;
         outputTokens?: number | null;
@@ -706,6 +711,14 @@ export type AgentChatEvent =
         contextWindow?: number | null;
       };
       costUsd?: number | null;
+      /** HTTP status attached to an SDK terminal API error (notably 429/529). */
+      apiErrorStatus?: number | null;
+      /** Why fast mode was disabled for this result, when reported by Claude. */
+      fastModeDisabledReason?: string;
+      /** Provider UUID of the user message this result acknowledges. */
+      userMessageUuid?: string;
+      /** Wall-clock timestamp at which the provider request was sent. */
+      requestSentWallMs?: number;
       // Set only at render time when multiple done events from one cancellation
       // (parent + subagents) are consolidated into a single row.
       subagentStoppedCount?: number;
@@ -996,7 +1009,11 @@ export type AgentChatEvent =
   | {
       type: "context_usage";
       usage: AgentChatContextUsage;
-      origin?: "command" | "live" | "compact";
+      origin?: "command" | "live" | "compact" | "snapshot";
+      state?: AgentChatContextUsageState;
+      /** Monotonic within one Claude runtime; rejects stale async snapshots. */
+      sampleId?: number;
+      capturedAt?: string;
       turnId?: string;
     }
   | {
@@ -1007,7 +1024,25 @@ export type AgentChatEvent =
   | {
       type: "interrupt_receipt";
       stillQueuedUuids: string[];
+      cancelledUuids?: string[];
+      stopMode?: AgentChatStopMode;
+      recoveryId?: string;
       known: Array<{ uuid: string; preview: string; steerId?: string }>;
+      turnId?: string;
+    }
+  | {
+      type: "queue_recovery";
+      recoveryId: string;
+      state: "available" | "restored" | "expired";
+      messageCount: number;
+      expiresAt: string;
+      stopMode: AgentChatStopMode;
+      restoredSteers?: Array<{
+        steerId: string;
+        text: string;
+        attachments?: AgentChatFileRef[];
+        contextAttachments?: AgentChatContextAttachment[];
+      }>;
       turnId?: string;
     }
   | {
@@ -1640,6 +1675,12 @@ export type AgentChatContextUsage = {
   cacheCreationTokens?: number;
 };
 
+export type AgentChatContextUsageState =
+  | "measured"
+  | "compacting"
+  | "recalculating"
+  | "unknown";
+
 export type AgentChatContextUsageArgs = {
   sessionId: string;
 };
@@ -1658,6 +1699,8 @@ export type AgentChatRewindFilesResult = {
   deletions: number;
   dryRun: boolean;
   conversationRollback?: boolean;
+  /** Links the SDK could not restore while otherwise completing the rewind. */
+  skippedLinks?: number;
 };
 
 export type AgentChatClaudeSessionListArgs = {
@@ -2443,8 +2486,29 @@ export type AgentChatCancelDispatchedSteerResult = {
   cancelled: boolean;
 };
 
+export type AgentChatStopMode = "stop_and_clear" | "stop_only";
+
 export type AgentChatInterruptArgs = {
   sessionId: string;
+  /** Defaults to stop_and_clear for backward-compatible Stop-means-stop behavior. */
+  mode?: AgentChatStopMode;
+};
+
+export type AgentChatInterruptResult = {
+  mode: AgentChatStopMode;
+  cancelledQueuedCount: number;
+  recoveryId?: string;
+  recoveryExpiresAt?: string;
+};
+
+export type AgentChatRestoreCancelledQueueArgs = {
+  sessionId: string;
+  recoveryId: string;
+};
+
+export type AgentChatRestoreCancelledQueueResult = {
+  restored: boolean;
+  restoredCount: number;
 };
 
 export type AgentChatCodexRecoveryAction =

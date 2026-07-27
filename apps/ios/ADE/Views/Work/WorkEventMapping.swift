@@ -420,7 +420,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       turnId: turnId ?? usage.turnId ?? "",
       itemId: nil
     )
-  case .contextUsage(let usage, let turnId, _):
+  case .contextUsage(let usage, let turnId, _, let state, let sampleId):
     return .tokens(
       usage: WorkUsageSummary(
         turnCount: 1,
@@ -431,7 +431,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         totalTokens: usage.totalTokens,
         contextWindow: usage.maxTokens,
         costUsd: 0,
-        isContextSnapshot: true
+        isContextSnapshot: true,
+        contextState: state.flatMap(WorkContextUsageState.init(rawValue:)) ?? .measured,
+        contextSampleId: sampleId
       ),
       turnId: turnId ?? "",
       itemId: nil
@@ -444,11 +446,20 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       turnId: nil,
       steerId: nil
     )
-  case .interruptReceipt(let stillQueuedUuids):
-    let count = stillQueuedUuids.count
+  case .interruptReceipt(let stillQueuedUuids, let cancelledUuids):
+    let stillQueuedCount = stillQueuedUuids.count
+    let cancelledCount = cancelledUuids?.count ?? 0
+    let message: String
+    if stillQueuedCount > 0 {
+      message = "Stopped — \(stillQueuedCount) queued will still run"
+    } else if cancelledCount > 0 {
+      message = "Stopped — \(cancelledCount) queued cancelled"
+    } else {
+      message = "Stopped"
+    }
     return .systemNotice(
       kind: "interrupt_receipt",
-      message: "Stopped — \(count) queued will still run",
+      message: message,
       detail: nil,
       turnId: nil,
       steerId: nil

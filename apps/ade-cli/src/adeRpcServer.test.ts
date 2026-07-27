@@ -581,7 +581,14 @@ function createRuntime() {
         awaitingInputBefore: false,
         delivery: "sent",
       })),
-      interrupt: vi.fn(async () => {}),
+      interrupt: vi.fn(async ({ mode = "stop_and_clear" }: { mode?: string }) => ({
+        mode,
+        cancelledQueuedCount: mode === "stop_and_clear" ? 2 : 0,
+      })),
+      restoreCancelledQueue: vi.fn(async ({ recoveryId }: { recoveryId: string }) => ({
+        restored: recoveryId === "recovery-1",
+        restoredCount: recoveryId === "recovery-1" ? 2 : 0,
+      })),
       resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         id: sessionId,
         laneId: "lane-1",
@@ -1380,6 +1387,58 @@ describe("adeRpcServer", () => {
       expect(runtime.sessionService.setStatusNote).not.toHaveBeenCalledWith(
         "another-chat",
         "Cross-session write",
+      );
+    });
+  });
+
+  it("scopes queue-aware chat stop and recovery actions to the caller session", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "chat-1",
+        role: "agent",
+        chatSessionId: "chat-1",
+      });
+      const interrupted = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "interrupt",
+        args: { mode: "stop_only" },
+      });
+      expect(interrupted?.isError).toBeUndefined();
+      expect(runtime.agentChatService.interrupt).toHaveBeenCalledWith({
+        sessionId: "chat-1",
+        mode: "stop_only",
+      });
+
+      const restored = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "restoreCancelledQueue",
+        args: { recoveryId: "recovery-1" },
+      });
+      expect(restored?.isError).toBeUndefined();
+      expect(runtime.agentChatService.restoreCancelledQueue).toHaveBeenCalledWith({
+        sessionId: "chat-1",
+        recoveryId: "recovery-1",
+      });
+
+      for (const action of ["interrupt", "restoreCancelledQueue"]) {
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "chat",
+          action,
+          args: {
+            sessionId: "chat-2",
+            ...(action === "restoreCancelledQueue" ? { recoveryId: "recovery-1" } : {}),
+          },
+        });
+        expect(denied.isError).toBe(true);
+      }
+      expect(runtime.agentChatService.interrupt).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "chat-2" }),
+      );
+      expect(runtime.agentChatService.restoreCancelledQueue).not.toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "chat-2" }),
       );
     });
   });
