@@ -679,6 +679,63 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(focusSessionSpy).not.toHaveBeenCalledWith("background-pty-session");
   });
 
+  it("applies optimistic UI for a session pinned to another open machine", async () => {
+    // Regression: `canMutatePinnedProjectUi` used to require the pin to equal
+    // the ACTIVE binding, which meant "stale detached launch". Under per-chat
+    // runtime routing a pin that differs from the active binding is the normal
+    // state for every chat whose lane lives on another machine — dropping those
+    // updates would silently blank exactly the sessions that feature adds. The
+    // question is now whether the pinned binding is still open.
+    const otherMachine = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-b",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    } as const;
+    const closedMachine = { ...otherMachine, key: "remote:target-z:project-z" } as const;
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: { kind: "local", key: "/fake/project", rootPath: "/fake/project", displayName: "Fake" },
+      openRemoteProjectTabs: [otherMachine],
+      openProjectTabRoots: ["/fake/project"],
+    };
+
+    (window as any).ade.pty.create
+      .mockResolvedValueOnce({ sessionId: "foreign-open", ptyId: "pty-foreign", pid: 41 })
+      .mockResolvedValueOnce({ sessionId: "foreign-closed", ptyId: "pty-closed", pid: 42 });
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1", profile: "codex", title: "On the other machine", pin: otherMachine as any,
+      });
+    });
+
+    // The pinned binding is open but not active — its UI update must land.
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "foreign-open", ptyId: "pty-foreign" }),
+    ]));
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1", profile: "codex", title: "On a closed machine", pin: closedMachine as any,
+      });
+    });
+
+    // A pin for a project that is no longer open is still discarded.
+    expect(result.current.sessions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "foreign-closed" }),
+    ]));
+  });
+
   it("launchPtySession carries its project pin into stopRuntime", async () => {
     const pin = {
       kind: "local",
