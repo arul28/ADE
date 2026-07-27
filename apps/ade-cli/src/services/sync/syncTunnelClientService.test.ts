@@ -390,6 +390,65 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  // Regression: the tunnel client is cached one-per-machine and built by
+  // whichever runtime bootstrapped first — regularly a scope that owns no
+  // listener (headless one-shot, embedded fallback). The accessors and the
+  // loopback retry hook captured in that closure then read null for the life
+  // of the process, so the bridge never validated and Relay stayed
+  // fail-closed even though the real listener was bound and healthy.
+  it("validates the bridge when the host attaches a listener the constructor never saw", async () => {
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    relay.on("connection", (socket, request) => {
+      if ((request.url ?? "").startsWith("/connect/")) {
+        socket.send(JSON.stringify({ t: "accepted", v: 2 }));
+        socket.send(JSON.stringify({ t: "ready", v: 2 }));
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    // Built by a runtime with no listener: every accessor is null, and no
+    // loopback subscription is possible.
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getExpectedLoopbackNonce: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().connected).toBe(true);
+      });
+      expect(service.getStatus().relayBridgeValidated).toBe(false);
+
+      const syncPort = await listener.ensureListening([0]);
+      // The host runtime hands over the listener it owns. Before the fix this
+      // had no way in, and the client stayed pinned to the null accessors.
+      service.attachHostListener(listener);
+
+      await vi.waitFor(() => {
+        expect(service.getStatus()).toMatchObject({
+          connected: true,
+          relayBridgeValidated: true,
+          validatedPort: syncPort,
+        });
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await listener.close();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
   it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
