@@ -982,12 +982,17 @@ struct WorkStructuredQuestionCard: View {
   /// Provider to fall back on when the parsed question carries no `source`
   /// (legacy `structured_question` envelopes). Usually the session provider.
   var fallbackProvider: String? = nil
-  /// Hard ceiling for the card's total laid-out height, computed by the chat
-  /// surface from the space actually available (keyboard included). The card
-  /// never exceeds it — the option list scrolls internally instead. Derived
-  /// from the chat surface, NOT from the transcript viewport: the transcript
-  /// shrinks as this card grows, so feeding its height back in created a
-  /// runaway loop where the card ate the whole screen. 0 until measured.
+  /// Hard ceiling for the card's total laid-out height, computed from the space
+  /// actually available (keyboard included). The card never exceeds it — the
+  /// option list scrolls internally instead. 0 until measured.
+  ///
+  /// For the composer-anchored strip — the live path — this comes from
+  /// `workPendingInputMaxHeight`, which budgets the whole chat surface and NOT
+  /// the transcript viewport: the transcript shrinks as this card grows, so
+  /// feeding its height back in created a runaway loop where the card ate the
+  /// screen. The inline-in-transcript variant is the deliberate exception; it
+  /// sits *inside* the transcript, so `workInlinePendingInputMaxHeight` budgets
+  /// it from the viewport with no such feedback path.
   var maxCardHeight: CGFloat = 0
 
   /// Resolved asking provider: the parsed question source, else the session
