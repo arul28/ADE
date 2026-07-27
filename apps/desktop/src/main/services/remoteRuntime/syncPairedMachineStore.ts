@@ -591,6 +591,16 @@ export class DesktopPairedMachineStore {
     // can never match again — one orphaned, still-valid secret per re-pair,
     // forever.
     //
+    // Known tradeoff: because the host upserts on this id, `pairPeer` rotates
+    // the secret and DPoP binding for an EXISTING record before it answers, and
+    // this client only persists the replacement after `hello_ok`. A drop in
+    // between leaves the host holding credentials the desktop never saved, so a
+    // previously working pairing needs one more manual re-pair. Minting a fresh
+    // id instead would avoid that window at the cost of the unbounded orphaned-
+    // record leak this reuse exists to stop — strictly worse. Closing it
+    // properly needs an atomic commit/ack in the pairing protocol, which is a
+    // host-side change and not something to land in a merge loop.
+    //
     // The hello that reports the host identity arrives after the pairing request
     // that carries this id, so the prior record has to be recovered up front:
     // by the host the caller is aiming at, else the relay machine key. Both

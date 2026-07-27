@@ -86,6 +86,9 @@ export function createFileLogger(
   let queuedLines: string[] = [];
   let flushTimer: NodeJS.Timeout | null = null;
   let flushInProgress = false;
+  // The batch a running flush() spliced out of queuedLines but has not yet
+  // written. flushSync must be able to reach it.
+  let inFlightPayload: string | null = null;
   let flushRequested = false;
   let logDirReady = false;
   let logStream: fs.WriteStream | null = null;
@@ -201,6 +204,7 @@ export function createFileLogger(
     const payload = lines.join("");
     const bytes = Buffer.byteLength(payload, "utf8");
     flushInProgress = true;
+    inFlightPayload = payload;
 
     try {
       if (!ensureLogDir()) return;
@@ -210,6 +214,7 @@ export function createFileLogger(
     } catch {
       // Last ditch: avoid crashing the app on log write failures.
     } finally {
+      inFlightPayload = null;
       flushInProgress = false;
       if (flushRequested || queuedLines.length > 0) {
         flushRequested = false;
@@ -231,17 +236,22 @@ export function createFileLogger(
     flushTimer.unref?.();
   };
 
-  // Lines already handed to an in-flight async flush have been spliced out of
-  // queuedLines, so draining the rest here cannot duplicate them. Rotation is
-  // skipped deliberately: this runs on the way out of the process, where a
-  // slightly oversized log beats a lost one.
+  // Drains the in-flight batch as well as the queue. A line that lands exactly
+  // on the batch limit triggers flush() synchronously, which splices it out
+  // before its first await — so draining only queuedLines would return having
+  // written nothing, and the app.exit() that follows would kill the pending
+  // write and lose precisely the record this API exists to preserve. Rotation
+  // is skipped deliberately: on the way out, a slightly oversized log beats a
+  // lost one, and a duplicated line beats a missing one if the async write also
+  // lands.
   const flushSync = () => {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
-    if (queuedLines.length === 0) return;
-    const payload = queuedLines.splice(0, queuedLines.length).join("");
+    const pending = inFlightPayload ?? "";
+    if (pending.length === 0 && queuedLines.length === 0) return;
+    const payload = pending + queuedLines.splice(0, queuedLines.length).join("");
     try {
       if (!ensureLogDir()) return;
       fs.appendFileSync(logFilePath, payload);

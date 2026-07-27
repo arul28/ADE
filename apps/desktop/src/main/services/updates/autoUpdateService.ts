@@ -270,6 +270,20 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  // The counter outlives the launch that recorded it, so the notice has to as
+  // well. Without this, one ordinary quit-and-reopen drops lastInstallFailed
+  // from the snapshot while the persisted counter still makes the next failure
+  // attempt 2 and evicts the cache — the UI would claim a clean slate the
+  // policy does not agree with. The renderer only shows it when it matches the
+  // version actually being offered, so surfacing it here is safe.
+  const persistedFailure = nextState.failedInstallAttempts;
+  if (persistedFailure) {
+    failedInstall = {
+      targetVersion: persistedFailure.targetVersion,
+      attempt: persistedFailure.count,
+    };
+  }
+
   const pendingInstall = nextState.pendingInstallUpdate;
   if (pendingInstall) {
     const installedTargetOrNewer = compareUpdateVersions(args.currentVersion, pendingInstall.targetVersion) >= 0;
@@ -283,6 +297,7 @@ function reconcilePersistedUpdateState(args: {
       };
       cacheCleanupReason = "installed";
       nextState.failedInstallAttempts = undefined;
+      failedInstall = null;
     } else {
       const previous = nextState.failedInstallAttempts;
       const attempt = previous?.targetVersion === pendingInstall.targetVersion
