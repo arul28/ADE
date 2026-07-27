@@ -4587,19 +4587,27 @@ final class ADETests: XCTestCase {
     service.beginOutboundEnvelopeCaptureForTesting()
     defer { service.endOutboundEnvelopeCaptureForTesting() }
 
-    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
-    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
-    try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    let firstRequestDispatched = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    let secondRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    let thirdRequestCoalesced = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    XCTAssertTrue(firstRequestDispatched)
+    XCTAssertTrue(secondRequestCoalesced)
+    XCTAssertTrue(thirdRequestCoalesced)
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
     XCTAssertEqual(service.localStateRevision, 1)
+
+    service.disconnect(clearCredentials: false)
+    let offlineRequestDispatched = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
+    XCTAssertFalse(offlineRequestDispatched)
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
   }
 
   func testOpeningSnapshotRequestDoesNotRepeatAfterDispatch() {
     XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
       alreadySubscribed: false,
-      openingSnapshotRequestedAt: nil,
+      openingSnapshotRequestedAtUptime: nil,
       forceFreshTranscriptOnOpen: false,
       initialTranscriptTailHydrated: false,
       hasVisiblePresentation: false,
@@ -4607,7 +4615,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
       alreadySubscribed: true,
-      openingSnapshotRequestedAt: nil,
+      openingSnapshotRequestedAtUptime: nil,
       forceFreshTranscriptOnOpen: true,
       initialTranscriptTailHydrated: false,
       hasVisiblePresentation: true,
@@ -4615,16 +4623,16 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertFalse(workChatShouldRequestOpeningSnapshot(
       alreadySubscribed: true,
-      openingSnapshotRequestedAt: Date(timeIntervalSince1970: 100),
+      openingSnapshotRequestedAtUptime: 100,
       forceFreshTranscriptOnOpen: true,
       initialTranscriptTailHydrated: false,
       hasVisiblePresentation: true,
       hasCachedEventHistory: true,
-      now: Date(timeIntervalSince1970: 120)
+      nowUptime: 120
     ))
     XCTAssertFalse(workChatShouldRequestOpeningSnapshot(
       alreadySubscribed: true,
-      openingSnapshotRequestedAt: nil,
+      openingSnapshotRequestedAtUptime: nil,
       forceFreshTranscriptOnOpen: false,
       initialTranscriptTailHydrated: false,
       hasVisiblePresentation: true,
@@ -4632,12 +4640,12 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertTrue(workChatShouldRequestOpeningSnapshot(
       alreadySubscribed: true,
-      openingSnapshotRequestedAt: Date(timeIntervalSince1970: 100),
+      openingSnapshotRequestedAtUptime: 100,
       forceFreshTranscriptOnOpen: true,
       initialTranscriptTailHydrated: false,
       hasVisiblePresentation: true,
       hasCachedEventHistory: true,
-      now: Date(timeIntervalSince1970: 131)
+      nowUptime: 131
     ))
   }
 

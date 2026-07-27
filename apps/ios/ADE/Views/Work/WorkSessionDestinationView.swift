@@ -370,17 +370,17 @@ func workChatTranscriptEntriesByIndexForRestoredPresentation(
 
 func workChatShouldRequestOpeningSnapshot(
   alreadySubscribed: Bool,
-  openingSnapshotRequestedAt: Date?,
+  openingSnapshotRequestedAtUptime: TimeInterval?,
   forceFreshTranscriptOnOpen: Bool,
   initialTranscriptTailHydrated: Bool,
   hasVisiblePresentation: Bool,
   hasCachedEventHistory: Bool,
-  now: Date = Date(),
+  nowUptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
   retryInterval: TimeInterval = workChatOpeningSnapshotRetryInterval
 ) -> Bool {
   if !alreadySubscribed { return true }
-  if let openingSnapshotRequestedAt,
-     now.timeIntervalSince(openingSnapshotRequestedAt) < retryInterval {
+  if let openingSnapshotRequestedAtUptime,
+     nowUptime - openingSnapshotRequestedAtUptime < retryInterval {
     return false
   }
   if forceFreshTranscriptOnOpen && !initialTranscriptTailHydrated { return true }
@@ -528,7 +528,7 @@ struct WorkSessionDestinationView: View {
       initialValue: !providedTranscript.isEmpty
         || cachedPresentation?.initialTranscriptTailHydrated == true
     )
-    _openingTranscriptSnapshotRequestedAt = State(initialValue: nil)
+    _openingTranscriptSnapshotRequestedAtUptime = State(initialValue: nil)
   }
 
   /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
@@ -617,7 +617,7 @@ struct WorkSessionDestinationView: View {
   @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
   @State var lastArtifactRefreshAt = Date.distantPast
   @State var initialTranscriptTailHydrated = false
-  @State var openingTranscriptSnapshotRequestedAt: Date?
+  @State var openingTranscriptSnapshotRequestedAtUptime: TimeInterval?
   @State var initialLoadCompleted = false
   @State var openingLoadInFlight = false
   @State var emptyTranscriptHydrationInFlight = false
@@ -659,7 +659,7 @@ struct WorkSessionDestinationView: View {
     transcriptCursorKind = nil
     olderChatEventHistoryCursor = nil
     initialTranscriptTailHydrated = false
-    openingTranscriptSnapshotRequestedAt = nil
+    openingTranscriptSnapshotRequestedAtUptime = nil
   }
 
   @MainActor
@@ -1751,7 +1751,7 @@ struct WorkSessionDestinationView: View {
       let hasVisiblePresentation = !transcript.isEmpty || !fallbackEntries.isEmpty || hasReusablePresentation
       let needsOpeningSnapshot = workChatShouldRequestOpeningSnapshot(
         alreadySubscribed: alreadySubscribed,
-        openingSnapshotRequestedAt: openingTranscriptSnapshotRequestedAt,
+        openingSnapshotRequestedAtUptime: openingTranscriptSnapshotRequestedAtUptime,
         forceFreshTranscriptOnOpen: forceFreshTranscriptOnOpen,
         initialTranscriptTailHydrated: initialTranscriptTailHydrated,
         hasVisiblePresentation: hasVisiblePresentation,
@@ -1765,12 +1765,12 @@ struct WorkSessionDestinationView: View {
         // byte-capped snapshot on every 8s poll was redundant wire traffic
         // and a full dedupe/sort merge on the phone mid-stream.
         do {
-          try await syncService.subscribeToChatEvents(
+          let snapshotRequestDispatched = try await syncService.subscribeToChatEvents(
             sessionId: sessionId,
             requestSnapshot: needsOpeningSnapshot
           )
-          if needsOpeningSnapshot {
-            openingTranscriptSnapshotRequestedAt = Date()
+          if needsOpeningSnapshot && snapshotRequestDispatched {
+            openingTranscriptSnapshotRequestedAtUptime = ProcessInfo.processInfo.systemUptime
           }
         } catch {
           // Leave the retry latch open. A later poll can recover if the
@@ -1782,8 +1782,12 @@ struct WorkSessionDestinationView: View {
         // reduced JSONL tail can start mid-message and render as a broken
         // final transcript until the canonical transcript fetch lands.
         do {
-          try await syncService.requestFullChatEventSnapshot(sessionId: sessionId)
-          openingTranscriptSnapshotRequestedAt = Date()
+          let snapshotRequestDispatched = try await syncService.requestFullChatEventSnapshot(
+            sessionId: sessionId
+          )
+          if snapshotRequestDispatched {
+            openingTranscriptSnapshotRequestedAtUptime = ProcessInfo.processInfo.systemUptime
+          }
         } catch {
           // Leave the retry latch open; the next poll can try again.
         }
@@ -1791,7 +1795,7 @@ struct WorkSessionDestinationView: View {
         // Reopening an already-warm idle chat must still cancel its pending
         // delayed unsubscribe. No envelope is sent when the subscription is
         // already active; this only preserves live delivery while visible.
-        try? await syncService.subscribeToChatEvents(sessionId: sessionId)
+        _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId)
       }
 
       // Quick looks stay on the chat_subscribe snapshot/tail — the canonical
