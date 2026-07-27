@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.39] - 2026-07-27
+
+### Work session lifecycle
+
+- Added synced snooze and wake controls across desktop, iOS, hosted web, `ade code`, ADE CLI, and operator tools.
+- Surfaced snoozed sessions early for approvals, newer failures, completed turns, and failed session exits.
+- Added explicit settle and keep-active overrides with consistent validation, rollback, and bulk-action behavior across clients.
+
+### Chats
+
+- Made large-chat switching paint from byte-bounded caches while retaining hidden-chat subscriptions briefly to keep cached views current.
+- Restored per-chat scroll position and added a new-message jump control for conversations that are not pinned to the live edge.
+- Added an authoritative older-history signal across desktop, iOS, and `ade code`, removing false retry banners and protecting history during remote transitions.
+- Replaced the message minimap with an accessible tick rail and added gradient collapsing for long user messages.
+
+### Pull requests and lanes
+
+- Redesigned the chat PR pane title bar and create flow with branch direction, ahead/behind state, target selection, and chat-title defaults.
+- Persisted PR-pane state per chat through navigation and temporary remote disconnects.
+- Detected lane branch drift and added guarded switch-back or keep-current-head actions.
+- Matched PRs by head repository owner so same-named branches from other forks cannot attach to a lane.
+
+### Reliability
+
+- Prevented closed terminal streams from terminating the app and isolated Claude capability checks from user MCP servers.
+- Sorted settled session tails by settle time and tightened lifecycle request/result handling across local, remote, web, TUI, and iOS paths.
+
 ## [1.2.38] - 2026-07-27
 
 ### Workspace
@@ -1035,7 +1062,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.38...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.39...HEAD
+[1.2.39]: https://github.com/arul28/ADE/compare/v1.2.38...v1.2.39
 [1.2.38]: https://github.com/arul28/ADE/compare/v1.2.37...v1.2.38
 [1.2.37]: https://github.com/arul28/ADE/compare/v1.2.36...v1.2.37
 [1.2.36]: https://github.com/arul28/ADE/compare/v1.2.35...v1.2.36

@@ -1,0 +1,34 @@
+---
+title: "v1.2.39"
+description: "Release notes for ADE v1.2.39 - July 27, 2026"
+---
+
+v1.2.39 adds cross-device snooze and settle controls for work sessions, makes switching between large chats feel immediate, and replaces the old message minimap with a compact tick rail. It also detects lane branch drift, improves PR matching and creation, and closes several reliability gaps across desktop, iOS, the hosted client, `ade code`, and the CLI.
+
+---
+
+## Sessions can be snoozed or kept active
+
+- **Snooze everywhere.** Snooze and wake controls now work across desktop, iOS, the hosted client, `ade code`, the CLI, and operator tools.
+- **Attention still breaks through.** A snoozed session resurfaces for approvals, newer failures, completed turns, or failed session exits instead of hiding work that needs you.
+- **Settled is reversible.** A tri-state override lets you settle a thread explicitly or keep an otherwise finished thread active, with consistent parsing and validation across every surface.
+- **Lifecycle state stays in sync.** Desktop, web, TUI, and iOS now agree on successful lifecycle actions, expired snoozes, bulk settling, and rollback behavior.
+
+## Chat switching is immediate
+
+- **Large chats stay warm.** Chat views use byte-bounded caches and retain their event subscriptions briefly after hiding, so returning to a conversation paints from current local state instead of rereading the transcript.
+- **Your place is preserved.** Each chat remembers whether it was pinned to the live edge or scrolled back; new messages appear behind a jump-to-latest pill without moving the viewport.
+- **History is authoritative.** Desktop, iOS, and `ade code` use an explicit older-history signal, eliminating false retry banners and protecting rendered history during remote project transitions.
+- **Long user messages stay compact.** Large messages collapse behind a gradient without breaking Markdown or code layout.
+
+## A clearer message rail and PR pane
+
+- **The minimap is now a tick rail.** Turn markers compress to fit, preview safely near screen edges, expose interrupted and failed outcomes accessibly, and leave message-text selection unobstructed.
+- **PR controls have their own title bar.** Refresh and create actions move into the pane, source and target branches read as one flow, ahead/behind state is visible, and the chat title becomes the default PR title.
+- **Pane state follows the chat.** Open state persists per conversation, including through temporary remote disconnects.
+
+## Safer lanes and runtimes
+
+- **Branch drift is visible.** ADE detects when a lane worktree no longer matches its recorded branch and offers a guarded switch-back or keep-current-head choice.
+- **Fork PRs match correctly.** PR lookup now checks the head repository owner, preventing a same-named branch from another fork from attaching to the lane.
+- **Background failures stay contained.** Closed terminal streams no longer terminate the app, Claude capability checks no longer boot user MCP servers, and settled tails sort by settle time.
