@@ -27,7 +27,7 @@ export function extensionOf(path: string): string {
 
 /**
  * Ordered first-match resolution:
- *   pdf → image → media → csv → documents → largeText(streamed) → markdown → binary → code(default).
+ *   pdf → image → media → csv → documents → largeText(streamed) → html → markdown → binary → code(default).
  *
  * Special file types (pdf/image/csv) win over the large-text streamer because
  * their viewers stream bytes themselves; an oversized plain/markdown/code file
@@ -44,6 +44,7 @@ export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
   if (DOCUMENT_EXTS.has(ext)) return "document";
   // previewKind === "image" already returned above, so only text/binary remain here.
   if (ctx.isPartial && !ctx.isBinary) return "largeText";
+  if (ext === "html" || ext === "htm") return "html";
   if (ext === "md" || ext === "mdx" || ext === "markdown") return "markdown";
   if (ctx.isBinary || ctx.previewKind === "binary") return "binary";
   return "code";
@@ -56,7 +57,7 @@ export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
  * `files.writeText`, so they are editable immediately — no trust toggle, no
  * enable-editing step, no read-only default.
  */
-const TEXT_EDITABLE_VIEWER_KINDS: ReadonlySet<ViewerKind> = new Set(["code", "markdown", "csv"]);
+const TEXT_EDITABLE_VIEWER_KINDS: ReadonlySet<ViewerKind> = new Set(["code", "markdown", "html", "csv"]);
 
 /** Whether a viewer kind has a text-editing surface (others are read-only viewers). */
 export function viewerIsEditable(kind: ViewerKind): boolean {

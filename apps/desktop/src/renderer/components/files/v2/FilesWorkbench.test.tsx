@@ -236,6 +236,38 @@ describe("FilesWorkbench", () => {
     expect(screen.queryByRole("button", { name: /enable editing/i })).toBeNull();
   });
 
+  it("opens a chat navigation target in the matching lane workspace without using the local external-path API", async () => {
+    render(
+      <FilesWorkbench
+        active
+        navigationOpenRequest={{
+          path: "src/from-chat.ts",
+          laneId: "lane-b",
+          nonce: "router-entry-1",
+          line: 42,
+          column: 5,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(window.ade.files.readFile).toHaveBeenCalledWith({
+        workspaceId: "workspace-b",
+        path: "src/from-chat.ts",
+      });
+    });
+    expect(window.ade.files.openExternalPath).toBeUndefined();
+    const openedTabs = Object.values(
+      useEditorGroupsStore.getState().getSession(filesProjectSessionKey("/repo"))?.groups ?? {},
+    ).flatMap((group) => group.tabs);
+    expect(openedTabs).toContainEqual(expect.objectContaining({
+      workspaceId: "workspace-b",
+      laneId: "lane-b",
+      path: "src/from-chat.ts",
+      preview: false,
+    }));
+  });
+
   it("remaps stale restored workspace ids by lane, then falls back to primary", async () => {
     const restoredTab = (workspaceId: string, laneId: string | null, path: string): EditorTab => ({
       id: editorTabId(workspaceId, path),

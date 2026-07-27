@@ -16,6 +16,8 @@ describe("resolveViewerKind", () => {
     ["word document", { path: "docs/spec.docx", isBinary: true }, "document"],
     ["powerpoint document", { path: "deck.pptx", isBinary: true }, "document"],
     ["excel document", { path: "budget.xlsx", isBinary: true }, "document"],
+    ["html", { path: "public/index.html" }, "html"],
+    ["htm", { path: "legacy/index.htm" }, "html"],
     ["markdown", { path: "README.md" }, "markdown"],
     ["mdx", { path: "page.mdx" }, "markdown"],
     ["plain code", { path: "src/index.ts" }, "code"],
@@ -43,8 +45,12 @@ describe("resolveViewerKind", () => {
     expect(resolveViewerKind({ path: "huge.md", isPartial: true })).toBe("largeText");
   });
 
-  it("text-backed viewers (code, markdown source, csv source) are editable; others stay read-only viewers", () => {
-    for (const kind of ["code", "markdown", "csv"] as const) {
+  it("oversized HTML streams as largeText rather than constructing a large iframe document", () => {
+    expect(resolveViewerKind({ path: "huge.html", isPartial: true })).toBe("largeText");
+  });
+
+  it("text-backed viewers (code, markdown source, HTML source, csv source) are editable; others stay read-only viewers", () => {
+    for (const kind of ["code", "markdown", "html", "csv"] as const) {
       expect(viewerIsEditable(kind)).toBe(true);
     }
     for (const kind of ["image", "pdf", "audio", "video", "document", "largeText", "binary", "diff", "conflict"] as const) {
@@ -58,6 +64,7 @@ describe("resolveViewerKind", () => {
     // no enable-editing step, no read-only default.
     expect(tabIsTextEditable("code", fullText)).toBe(true);
     expect(tabIsTextEditable("markdown", fullText)).toBe(true);
+    expect(tabIsTextEditable("html", fullText)).toBe(true);
     expect(tabIsTextEditable("csv", fullText)).toBe(true);
     // A partial (streamed) buffer would truncate the file on save.
     expect(contentSupportsTextEditing({ ...fullText, isPartial: true })).toBe(false);

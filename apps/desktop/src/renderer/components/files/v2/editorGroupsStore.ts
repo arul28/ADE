@@ -19,6 +19,7 @@ export type ViewerKind =
   | "code"
   | "image"
   | "markdown"
+  | "html"
   | "csv"
   | "pdf"
   | "audio"

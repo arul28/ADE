@@ -1604,6 +1604,57 @@ function resolveFilesNavigationTarget(args: {
   };
 }
 
+function WorkspacePathLink({
+  children,
+  code,
+  neutral,
+  onOpen,
+}: {
+  children: React.ReactNode;
+  code: boolean;
+  neutral: boolean;
+  onOpen: () => void;
+}) {
+  const content = (
+    <>
+      <FileCode size={12} aria-hidden className="shrink-0 self-center" />
+      <span className="min-w-0 break-all">{children}</span>
+    </>
+  );
+  let className: string;
+  if (code) {
+    className = neutral
+      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
+      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100";
+  } else {
+    className = neutral
+      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100";
+  }
+
+  return code ? (
+    <span
+      role="button"
+      tabIndex={0}
+      className={className}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      title="Open file in Files"
+    >
+      {content}
+    </span>
+  ) : (
+    <button type="button" className={className} onClick={onOpen} title="Open file in Files">
+      {content}
+    </button>
+  );
+}
+
 /* ── Markdown renderer ── */
 
 const MarkdownBlock = React.memo(function MarkdownBlock({
@@ -1706,20 +1757,9 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             return isBlock ? (
               <HighlightedCode code={text} language={language} />
             ) : pathIsClickable ? (
-              <span
-                role="button"
-                tabIndex={0}
-                className={
-                  neu
-                    ? "inline max-w-full cursor-pointer break-all whitespace-normal rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
-                    : "inline max-w-full cursor-pointer break-all whitespace-normal rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
-                }
-                onClick={() => openWorkspacePath(workspacePath!)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWorkspacePath(workspacePath!); } }}
-                title="Open file in Files"
-              >
+              <WorkspacePathLink code neutral={neu} onOpen={() => openWorkspacePath(workspacePath!)}>
                 {children}
-              </span>
+              </WorkspacePathLink>
             ) : (
               <code
                 className={
@@ -1736,18 +1776,9 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             const workspacePath = resolveWorkspacePathFromHref(href);
             if (workspacePath) {
               return (
-                <button
-                  type="button"
-                  className={
-                    neu
-                      ? "inline max-w-full break-all whitespace-normal rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-                      : "inline max-w-full break-all whitespace-normal rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
-                  }
-                  onClick={() => openWorkspacePath(workspacePath)}
-                  title="Open file in Files"
-                >
+                <WorkspacePathLink code={false} neutral={neu} onOpen={() => openWorkspacePath(workspacePath)}>
                   {children}
-                </button>
+                </WorkspacePathLink>
               );
             }
             return (
@@ -5967,9 +5998,10 @@ function AgentChatMessageListMain({
     [events, showStreamingIndicator, activeTurnId],
   );
 
-  const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
+  const locationLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
     : null;
+  const currentLaneId = laneId ?? locationLaneId;
 
   const openWorkspacePath = useCallback(async (path: string | WorkspacePathLocation) => {
     let resolvedWorkspaces = filesWorkspaces;
