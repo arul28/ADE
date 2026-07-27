@@ -231,13 +231,21 @@ export function CreateLaneDialogHost({
   const boundProject = useMemo<LaneMachineProjectRef | null>(() => {
     if (projectBinding) {
       return {
+        // The active binding IS this repo by definition — no inference involved.
+        matchedBy: "origin" as const,
         projectId: projectBinding.kind === "remote" ? projectBinding.projectId : null,
         rootPath: projectBinding.rootPath,
         displayName: projectBinding.displayName,
       };
     }
     if (!project) return null;
-    return { projectId: null, rootPath: project.rootPath, displayName: project.displayName };
+    return {
+      // The open project is the repo lanes are being created for, not a guess.
+      matchedBy: "origin" as const,
+      projectId: null,
+      rootPath: project.rootPath,
+      displayName: project.displayName,
+    };
   }, [project, projectBinding]);
 
   const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;

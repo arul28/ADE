@@ -42,6 +42,12 @@ export type LaneMachineProjectRef = {
   projectId: string | null;
   rootPath: string;
   displayName: string;
+  /**
+   * How this checkout was tied to the current repo. `"origin"` is proof;
+   * `"name"` is a guess from the folder name and must not, on its own, drive an
+   * action that rebinds the app to this project.
+   */
+  matchedBy: "origin" | "name";
 };
 
 export type LaneMachineOption = {
@@ -148,19 +154,32 @@ function resolveProjectMatch(
         projectId: byOrigin.projectId,
         rootPath: byOrigin.rootPath,
         displayName: byOrigin.displayName,
+        matchedBy: "origin",
       };
     }
   }
-  const byName = projects.find(
-    (project) =>
+  const byName = projects.find((project) => {
+    const nameMatches =
       sameRepoName(project.displayName, repoDisplayName)
-      || sameRepoName(pathBaseName(project.rootPath), repoDisplayName),
-  );
+      || sameRepoName(pathBaseName(project.rootPath), repoDisplayName);
+    if (!nameMatches) return false;
+    // A folder name is not an identity. When both sides have a known origin and
+    // those origins disagree, matching names are proof the repos are DIFFERENT
+    // — `~/src/api` for two unrelated `api` checkouts is common. Selecting such
+    // a machine rebinds the whole app tab to the wrong repository, so a
+    // contradicted candidate must never be offered as a match.
+    const candidateIdentity = cachedGitRemoteIdentity(project.gitOriginUrl);
+    if (repoIdentity && candidateIdentity && candidateIdentity !== repoIdentity) return false;
+    return true;
+  });
   if (!byName) return null;
   return {
     projectId: byName.projectId,
     rootPath: byName.rootPath,
     displayName: byName.displayName,
+    // Records that identity was never proven — only the folder name lined up.
+    // Callers that mutate global state on selection must not act on this alone.
+    matchedBy: "name",
   };
 }
 
@@ -168,7 +187,11 @@ function repoMatchFor(
   project: LaneMachineProjectRef | null,
   canProveAbsence: boolean,
 ): LaneMachineRepoMatch {
-  if (project) return "matched";
+  // Only a matching git origin proves two checkouts are the same repository.
+  // A folder-name hit is reported as `unknown` — it may well be right, but it
+  // is not evidence, and callers that rebind the app on selection must be able
+  // to tell the difference.
+  if (project) return project.matchedBy === "origin" ? "matched" : "unknown";
   return canProveAbsence ? "missing" : "unknown";
 }
 
@@ -191,6 +214,7 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
         projectId: null,
         rootPath: matchedRoot,
         displayName: pathBaseName(matchedRoot),
+        matchedBy: "name",
       };
     }
   }

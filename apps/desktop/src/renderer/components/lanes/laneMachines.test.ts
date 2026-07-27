@@ -148,7 +148,7 @@ describe("deriveLaneMachineOptions", () => {
     const options = deriveLaneMachineOptions({
       connections: [connection({ id: "studio" })],
       boundTargetId: "studio",
-      boundProject: { projectId: "ade", rootPath: "/Users/x/ADE", displayName: "ADE" },
+      boundProject: { projectId: "ade", rootPath: "/Users/x/ADE", displayName: "ADE", matchedBy: "origin" },
     });
 
     const studio = options.find((option) => option.id === "studio");
@@ -164,13 +164,45 @@ describe("deriveLaneMachineOptions", () => {
     const options = deriveLaneMachineOptions({
       connections: [connection({ id: "studio" })],
       boundTargetId: "studio",
-      boundProject: { projectId: "ade", rootPath: "/Users/x/remote/ADE", displayName: "ADE" },
+      boundProject: { projectId: "ade", rootPath: "/Users/x/remote/ADE", displayName: "ADE", matchedBy: "origin" },
       repoDisplayName: "ADE",
       localProjectRoots: ["/Users/x/code/notes", "/Users/x/code/ADE"],
     });
 
-    expect(options[0]?.repoMatch).toBe("matched");
+    // The folder name lined up, which is a useful hint and worth surfacing as a
+    // candidate — but a name is not an identity, so it must not read as proven.
+    // Two unrelated repos both called "ADE" would look identical here, and
+    // selecting the machine rebinds the whole app tab to that checkout.
+    expect(options[0]?.repoMatch).toBe("unknown");
     expect(options[0]?.project?.rootPath).toBe("/Users/x/code/ADE");
+    expect(options[0]?.project?.matchedBy).toBe("name");
+  });
+
+  it("does not offer a same-named checkout whose origin proves it is a different repo", () => {
+    const options = deriveLaneMachineOptions({
+      connections: [
+        connection({
+          id: "studio",
+          projects: [
+            {
+              projectId: "other-api",
+              rootPath: "/Users/x/src/api",
+              displayName: "api",
+              gitOriginUrl: "git@github.com:other/api.git",
+            },
+          ],
+        }),
+      ],
+      boundTargetId: null,
+      repoOriginUrl: "git@github.com:acme/api.git",
+      repoDisplayName: "api",
+    });
+
+    const studio = options.find((option) => option.id === "studio");
+    // Same folder name, different origin — that is proof they are NOT the same
+    // repository, so the machine must not present a checkout to rebind to.
+    expect(studio?.project).toBeNull();
+    expect(studio?.repoMatch).not.toBe("matched");
   });
 
   it("says the repo is missing from this Mac only when the local tabs are known", () => {
