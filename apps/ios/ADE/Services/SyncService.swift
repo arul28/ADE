@@ -8417,6 +8417,16 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func isFullChatEventSnapshotPending(sessionId: String) -> Bool {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canSendLiveRequests(),
+          let recentRequest = recentFullChatSnapshotRequestBySession[trimmedSessionId]
+    else {
+      return false
+    }
+    return recentRequest.connectionGeneration == connectionGeneration
+  }
+
   func unsubscribeFromChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }

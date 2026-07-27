@@ -4597,10 +4597,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1"]))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
     XCTAssertEqual(service.localStateRevision, 1)
+    XCTAssertTrue(service.isFullChatEventSnapshotPending(sessionId: "session-1"))
 
     service.disconnect(clearCredentials: false)
     let offlineRequestDispatched = try await service.requestFullChatEventSnapshot(sessionId: "session-1")
     XCTAssertFalse(offlineRequestDispatched)
+    XCTAssertFalse(service.isFullChatEventSnapshotPending(sessionId: "session-1"))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
   }
 

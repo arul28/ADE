@@ -1212,6 +1212,9 @@ struct WorkSessionDestinationView: View {
       .task(id: emptyTranscriptHydrationKey) {
         await hydrateEmptyTranscriptFromHostIfNeeded()
       }
+      .task(id: openingSnapshotRetryKey) {
+        await retryUnacknowledgedOpeningSnapshotIfNeeded()
+      }
       .task(id: sessionRowObservationKey) {
         // A cross-project quick look has no local DB row for this session (only
         // the active project is mirrored) — status comes from the streamed
@@ -1558,6 +1561,10 @@ struct WorkSessionDestinationView: View {
     "\(session?.id ?? sessionId)-empty:\(transcript.isEmpty)-fallback:\(fallbackEntries.isEmpty)-host:\(hostReachable)-opening:\(openingLoadInFlight)-local:\(syncService.localStateRevision)"
   }
 
+  var openingSnapshotRetryKey: String {
+    "\(sessionId)-request:\(openingTranscriptSnapshotRequestedAtUptime ?? -1)-cross:\(isCrossProject)-reachable:\(isLiveAndReachable)"
+  }
+
   var selectedSubagentPollingKey: String {
     guard let selectedSubagentSnapshot,
           selectedSubagentSnapshot.status == .running
@@ -1730,6 +1737,34 @@ struct WorkSessionDestinationView: View {
     defer { emptyTranscriptHydrationInFlight = false }
 
     await refreshChatSummaryFromHost()
+    await loadTranscript(forceRemote: true, preferLightweight: false)
+  }
+
+  @MainActor
+  func retryUnacknowledgedOpeningSnapshotIfNeeded() async {
+    guard isCrossProject,
+          isLiveAndReachable,
+          transcript.isEmpty,
+          fallbackEntries.isEmpty,
+          let requestedAtUptime = openingTranscriptSnapshotRequestedAtUptime,
+          syncService.isFullChatEventSnapshotPending(sessionId: sessionId)
+    else { return }
+
+    let elapsed = ProcessInfo.processInfo.systemUptime - requestedAtUptime
+    let remaining = max(0, workChatOpeningSnapshotRetryInterval - elapsed)
+    if remaining > 0 {
+      try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+    }
+    guard !Task.isCancelled,
+          isCrossProject,
+          isLiveAndReachable,
+          transcript.isEmpty,
+          fallbackEntries.isEmpty,
+          openingTranscriptSnapshotRequestedAtUptime == requestedAtUptime,
+          syncService.isFullChatEventSnapshotPending(sessionId: sessionId)
+    else { return }
+
+    openingTranscriptSnapshotRequestedAtUptime = nil
     await loadTranscript(forceRemote: true, preferLightweight: false)
   }
 
