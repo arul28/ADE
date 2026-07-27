@@ -4,6 +4,7 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
 import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
+import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
@@ -801,6 +802,34 @@ export type ProjectTransitionError = {
   rootPath?: string;
 };
 
+/**
+ * One machine's slice of the cross-machine Work union.
+ *
+ * A lane owns its machine (`lanes.worktree_path` is an absolute path on exactly
+ * one machine) and chats inherit their machine through `laneId`, so the union is
+ * keyed by machine and holds lanes — never a per-chat machine field.
+ *
+ * `online: false` is a *dimming* flag, never a removal signal: a machine that
+ * drops keeps every lane it last reported. A sidebar that reflowed away half its
+ * rows on a wifi blip would be worse than the single-machine list it replaces.
+ */
+export type CrossMachineMachineLanes = {
+  /** `THIS_MACHINE_ID` is never stored here — the union's local half is `lanes`. */
+  machineId: string;
+  /** Absolute machine name ("MacBook Pro (97)"). Never the word "remote". */
+  machineName: string;
+  /** Remote-runtime target id used to address the machine. */
+  targetId: string | null;
+  /** The machine's own project id for the repo the active tab is showing. */
+  projectId: string | null;
+  online: boolean;
+  lanes: LaneSummary[];
+  sessions: TerminalSessionSummary[];
+  lastSyncedAtMs: number | null;
+  /** Last read failure, kept alongside (not instead of) the retained lanes. */
+  error: string | null;
+};
+
 export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
@@ -892,6 +921,20 @@ export type AppState = {
   /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
   dismissedMissingAiBannerRoots: SessionDismissMap;
   dismissedGithubBannerRoots: SessionDismissMap;
+  /**
+   * Repo scope the cross-machine union currently describes. Union content is
+   * per-repository (a foreign machine's checkout of *this* project), so
+   * switching project tabs invalidates it wholesale — otherwise two unrelated
+   * repos with a `main` lane would look like the same branch on two machines.
+   */
+  crossMachineLaneScopeKey: string | null;
+  /**
+   * Cross-machine Work union, keyed by machine id. Shared store state on
+   * purpose: every surface that needs it (sidebar markers, the push-divergence
+   * guard) reads it as derived state through a selector rather than opening its
+   * own subscription or fetch.
+   */
+  crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
 
   setProject: (project: ProjectInfo | null) => void;
   setOpenRemoteProjectTabs: (
@@ -918,6 +961,32 @@ export type AppState = {
       | ((prev: Record<string, LaneDeleteProgress>) => Record<string, LaneDeleteProgress>)
   ) => void;
   selectLane: (laneId: string | null) => void;
+  /**
+   * Points the union at a repo scope. Changing scope drops the previous repo's
+   * union; re-applying the same scope is a no-op (identity preserved), so this
+   * is safe to call on every render pass of the sidebar.
+   */
+  applyCrossMachineLaneScope: (scopeKey: string | null) => void;
+  /**
+   * Merges one machine's slice. Omitted `lanes` / `sessions` are RETAINED, which
+   * is what makes a failed read leave the machine's rows on screen instead of
+   * blanking them.
+   */
+  mergeCrossMachineLanes: (entry: {
+    machineId: string;
+    machineName: string;
+    targetId?: string | null;
+    projectId?: string | null;
+    online?: boolean;
+    lanes?: LaneSummary[];
+    sessions?: TerminalSessionSummary[];
+    error?: string | null;
+  }) => void;
+  /**
+   * Marks exactly the listed machines online and every other known machine
+   * offline. Never deletes an entry: an offline machine keeps its lanes, dimmed.
+   */
+  setCrossMachineMachinesOnline: (onlineMachineIds: readonly string[]) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -1198,6 +1267,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   dismissedMissingAiBannerRoots: {},
   dismissedGithubBannerRoots: {},
   openRemoteProjectTabs: [],
+  crossMachineLaneScopeKey: null,
+  crossMachineLanesByMachineId: {},
 
   setProject: (project) =>
     set((prev) => {
@@ -1403,6 +1474,75 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         },
       };
     }),
+  applyCrossMachineLaneScope: (scopeKey) =>
+    set((prev) => {
+      if (prev.crossMachineLaneScopeKey === scopeKey) return {};
+      // Identity matters: consumers select this record straight out of the
+      // store, so a fresh `{}` on every call would re-render the whole sidebar.
+      const alreadyEmpty = Object.keys(prev.crossMachineLanesByMachineId).length === 0;
+      return {
+        crossMachineLaneScopeKey: scopeKey,
+        ...(alreadyEmpty ? {} : { crossMachineLanesByMachineId: {} }),
+      };
+    }),
+
+  mergeCrossMachineLanes: (entry) =>
+    set((prev) => {
+      const machineId = entry.machineId.trim();
+      if (!machineId || machineId === THIS_MACHINE_ID) return {};
+      const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
+      const next: CrossMachineMachineLanes = {
+        machineId,
+        machineName: entry.machineName.trim() || previous?.machineName || machineId,
+        targetId: entry.targetId !== undefined ? entry.targetId : previous?.targetId ?? null,
+        projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
+        online: entry.online !== undefined ? entry.online : previous?.online ?? false,
+        // Retention, stated explicitly rather than left to accident: a read that
+        // returned nothing must not erase what the machine last reported.
+        lanes: entry.lanes ?? previous?.lanes ?? [],
+        sessions: entry.sessions ?? previous?.sessions ?? [],
+        lastSyncedAtMs:
+          entry.lanes || entry.sessions ? Date.now() : previous?.lastSyncedAtMs ?? null,
+        error: entry.error !== undefined ? entry.error : previous?.error ?? null,
+      };
+      if (
+        previous
+        && previous.machineName === next.machineName
+        && previous.targetId === next.targetId
+        && previous.projectId === next.projectId
+        && previous.online === next.online
+        && previous.lanes === next.lanes
+        && previous.sessions === next.sessions
+        && previous.error === next.error
+      ) {
+        return {};
+      }
+      return {
+        crossMachineLanesByMachineId: {
+          ...prev.crossMachineLanesByMachineId,
+          [machineId]: next,
+        },
+      };
+    }),
+
+  setCrossMachineMachinesOnline: (onlineMachineIds) =>
+    set((prev) => {
+      const online = new Set(onlineMachineIds);
+      let changed = false;
+      const nextRecord: Record<string, CrossMachineMachineLanes> = {};
+      for (const [machineId, entry] of Object.entries(prev.crossMachineLanesByMachineId)) {
+        const isOnline = online.has(machineId);
+        if (entry.online === isOnline) {
+          nextRecord[machineId] = entry;
+          continue;
+        }
+        // Dim, never drop. The lanes and sessions carry over verbatim.
+        nextRecord[machineId] = { ...entry, online: isOnline };
+        changed = true;
+      }
+      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+    }),
+
   setLaneInspectorTab: (laneId, tab) =>
     set((prev) => ({
       laneInspectorTabs: {

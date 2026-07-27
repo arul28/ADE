@@ -6,7 +6,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
+import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
 import { SessionListPane } from "./SessionListPane";
 
 vi.mock("./useSessionDelta", () => ({
@@ -772,6 +773,72 @@ describe("SessionListPane", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settle all" }));
     await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ready"]));
+  });
+
+  describe("cross-machine union", () => {
+    afterEach(() => {
+      useAppStore.setState({ crossMachineLanesByMachineId: {}, crossMachineLaneScopeKey: null });
+      resetCrossMachineLaneSyncForTest();
+    });
+
+    function seedForeignMachine(overrides: Partial<CrossMachineMachineLanes> = {}) {
+      useAppStore.setState({
+        crossMachineLanesByMachineId: {
+          "target-studio": {
+            machineId: "target-studio",
+            machineName: "Mac Studio (12)",
+            targetId: "target-studio",
+            projectId: "project-a",
+            online: true,
+            lanes: [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
+            sessions: [
+              makeSession({
+                id: "session-elsewhere",
+                laneId: "lane-elsewhere",
+                laneName: "Elsewhere Lane",
+                title: "Chat on the other machine",
+              }),
+            ],
+            lastSyncedAtMs: 1,
+            error: null,
+            ...overrides,
+          },
+        },
+      });
+    }
+
+    it("marks only lanes that are not on this machine", () => {
+      seedForeignMachine();
+      renderPane();
+
+      expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
+
+      // One marker, on the foreign lane only — the local lanes stay untouched.
+      const markers = document.querySelectorAll("[data-machine-marker-mode]");
+      expect(markers).toHaveLength(1);
+      const foreignHeader = screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header");
+      expect(foreignHeader?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
+      const localHeader = screen.getByText("Mobile-created lane").closest(".ade-lane-group-header");
+      expect(localHeader?.querySelector("[data-machine-marker-mode]")).toBeNull();
+    });
+
+    it("shows a bare glyph for one online foreign machine and the name when it drops", () => {
+      seedForeignMachine();
+      const view = renderPane();
+      expect(document.querySelector("[data-machine-marker-mode]")?.getAttribute("data-machine-marker-mode"))
+        .toBe("glyph");
+      expect(screen.queryByText("Mac Studio (12)")).toBeNull();
+      view.unmount();
+
+      seedForeignMachine({ online: false });
+      renderPane();
+      // Offline: lanes REMAIN, dimmed, and the machine is named outright.
+      expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
+      expect(document.querySelector("[data-machine-marker-mode]")?.getAttribute("data-machine-marker-mode"))
+        .toBe("name");
+      expect(screen.getByText("Mac Studio (12)")).toBeTruthy();
+    });
   });
 
   it("hides Your move bulk settle when every session needs input", () => {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, CircleNotch, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -12,6 +12,11 @@ import {
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import {
+  useCrossMachineLaneUnion,
+  type CrossMachineLaneMarker,
+  type CrossMachineLaneRow,
+} from "../../state/crossMachineLanes";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
@@ -39,6 +44,7 @@ import {
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
+const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -151,10 +157,12 @@ function StickyGroupHeader({
   children,
   subLabel,
   prBadge = null,
+  machineMarker = null,
   headerAction = null,
   variant = "default",
   busyLabel = null,
   heading = false,
+  dimmed = false,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -175,6 +183,13 @@ function StickyGroupHeader({
   subLabel?: string | null;
   /** Compact PR badge shown left of the count for `variant="lane"`. */
   prBadge?: React.ReactNode;
+  /**
+   * Cross-machine marker for `variant="lane"`. Present only when the lane is NOT
+   * on this machine, so local-only setups never render one.
+   */
+  machineMarker?: React.ReactNode;
+  /** Dims the whole group — used for lanes on a machine that has gone offline. */
+  dimmed?: boolean;
   /** Compact action shown next to the count for non-lane headers. */
   headerAction?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
@@ -195,7 +210,7 @@ function StickyGroupHeader({
   const laneTint = laneSurfaceTint(accentColor, isLane ? "pastel" : "soft");
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
-    <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0")}>
+    <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0", dimmed && "opacity-55")}>
       {isLane ? (
         // The lane header is a flex row, NOT one big <button>: the PR badge is
         // itself interactive, and nesting interactive elements inside a native
@@ -253,6 +268,7 @@ function StickyGroupHeader({
             ) : null}
           </button>
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            {machineMarker}
             {prBadge}
             <span className="rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
               {count}
@@ -404,6 +420,79 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
   );
 }
 
+/**
+ * Adaptive machine marker on a lane header.
+ *
+ * Rendered ONLY for lanes that are not on the machine you're sitting at — the
+ * common single-machine case pays nothing. Default form is a bare monochrome
+ * glyph; the name is promoted into the row when a glyph alone would be
+ * ambiguous (machine offline, two or more foreign machines on screen, or the
+ * branch also exists elsewhere). The lane accent owns the color channel, so this
+ * stays monochrome: a tint here would read as a second lane color.
+ */
+function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
+  const title = marker.online
+    ? `On ${marker.machineName}`
+    : `On ${marker.machineName} · offline`;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none",
+        marker.online ? "text-muted-fg/70" : "text-muted-fg/45",
+      )}
+      title={title}
+      aria-label={title}
+      data-machine-id={marker.machineId}
+      data-machine-marker-mode={marker.mode}
+    >
+      <Desktop size={10} weight="regular" className="shrink-0 opacity-70" />
+      {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
+    </span>
+  );
+}
+
+/**
+ * A chat that lives on another machine. Read-only here on purpose: opening it
+ * means moving the tab's execution context, which is what clicking does — it
+ * switches the tab to that machine, after which the normal local path owns the
+ * session. Offline machines render inert rather than lying about what a click
+ * will do.
+ */
+function CrossMachineSessionRow({
+  session,
+  online,
+  machineName,
+  onOpen,
+}: {
+  session: TerminalSessionSummary;
+  online: boolean;
+  machineName: string;
+  onOpen: (() => void) | null;
+}) {
+  const label = primarySessionLabel(session);
+  const canOpen = online && !!onOpen;
+  return (
+    <button
+      type="button"
+      disabled={!canOpen}
+      onClick={canOpen ? onOpen : undefined}
+      title={canOpen ? `${label} — open on ${machineName}` : `${label} — ${machineName} is offline`}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+        canOpen ? "cursor-pointer text-fg/70 hover:bg-white/[0.05]" : "cursor-default text-muted-fg/45",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 shrink-0 rounded-full",
+          session.status === "running" ? "bg-emerald-400/70" : "bg-white/25",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 export const SessionListPane = React.memo(function SessionListPane({
   lanes,
   runningFiltered,
@@ -482,6 +571,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   const navigate = useNavigate();
   const prsByLaneId = useLanePrsByLaneId();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
+  // The Work sidebar is a union across every connected machine, always —
+  // independent of which machine this tab is bound to. That is the whole point:
+  // you see work in flight anywhere without switching tabs.
+  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion();
+  const switchRemoteProject = useAppStore((state) => state.switchRemoteProject);
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
@@ -1034,6 +1128,39 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
+  // Foreign lanes worth a row: ones with chats, after the same search / lane
+  // filter the local list applies. Lanes elsewhere with nothing running stay out
+  // of the sidebar — the union is about work in flight, not an inventory.
+  const visibleForeignRows = useMemo(() => {
+    if (foreignRows.length === 0) return EMPTY_FOREIGN_ROWS;
+    const query = q.trim().toLowerCase();
+    const rows: CrossMachineLaneRow[] = [];
+    for (const row of foreignRows) {
+      if (laneFilterActive && row.lane.id !== normalizedFilterLaneId) continue;
+      const sessions = query
+        ? row.sessions.filter((session) =>
+            `${primarySessionLabel(session)} ${row.lane.name}`.toLowerCase().includes(query))
+        : row.sessions;
+      if (sessions.length === 0) continue;
+      rows.push(sessions === row.sessions ? row : { ...row, sessions });
+    }
+    return rows.length > 0 ? rows : EMPTY_FOREIGN_ROWS;
+  }, [foreignRows, laneFilterActive, normalizedFilterLaneId, q]);
+
+  // "No sessions" must not claim an empty machine when another machine is busy.
+  const hasForeignSessions = visibleForeignRows.length > 0;
+
+  const openForeignLane = useCallback(
+    (row: CrossMachineLaneRow) => {
+      if (!row.targetId || !row.projectId) return;
+      // Opening foreign work moves the tab's execution context to that machine —
+      // the same thing opening a remote project does today. Nothing is executed
+      // across machines behind the user's back.
+      void switchRemoteProject(row.targetId, row.projectId).catch(() => {});
+    },
+    [switchRemoteProject],
+  );
+
   const byLaneList = (
     <div className="space-y-1 px-2 pb-3">
       {orderedLanes.map((lane) => {
@@ -1059,6 +1186,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           />
         ) : null;
         const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
+        // Never populated for a lane on this machine — the marker exists only to
+        // say "this work isn't here".
+        const machineMarker = markersByLaneId.get(lane.id) ?? null;
         return (
           <StickyGroupHeader
             key={lane.id}
@@ -1071,6 +1201,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             collapsed={collapsed}
             accentColor={laneAccent}
             prBadge={prBadge}
+            machineMarker={machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
             busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
             onToggleCollapsed={() => {
               if (!deleteProgress) toggleWorkLaneCollapsed(lane.id);
@@ -1118,6 +1249,42 @@ export const SessionListPane = React.memo(function SessionListPane({
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
             {renderHandoffCards(jobs)}
+          </StickyGroupHeader>
+        );
+      })}
+      {visibleForeignRows.map((row) => {
+        const marker = markersByLaneId.get(row.lane.id) ?? null;
+        const collapsed = workCollapsedLaneIds.includes(row.lane.id);
+        return (
+          <StickyGroupHeader
+            key={`${row.machineId}:${row.lane.id}`}
+            sectionId={row.lane.id}
+            icon={
+              <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-fg/55">
+                <LaneIcon size={12} weight="regular" />
+              </span>
+            }
+            label={row.lane.name}
+            subLabel={branchNameFromRef(row.lane.branchRef)}
+            variant="lane"
+            count={row.sessions.length}
+            collapsed={collapsed}
+            accentColor={row.lane.color ?? null}
+            machineMarker={marker ? <LaneMachineMarker marker={marker} /> : null}
+            // Offline machines keep every lane they last reported, dimmed and
+            // read-only. A wifi blip must never reflow the sidebar.
+            dimmed={!row.online}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(row.lane.id)}
+          >
+            {row.sessions.map((session) => (
+              <CrossMachineSessionRow
+                key={session.id}
+                session={session}
+                online={row.online}
+                machineName={row.machineName}
+                onOpen={() => openForeignLane(row)}
+              />
+            ))}
           </StickyGroupHeader>
         );
       })}
@@ -1356,7 +1523,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pt-2"
         data-tour="work.crossLaneSwitch"
       >
-        {!hasAnySessions ? (
+        {!hasAnySessions && !(isByLane && hasForeignSessions) ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
             <div className="text-[11px] font-medium text-fg/70">No sessions</div>

@@ -6,6 +6,9 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
+import { selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
+
+const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
@@ -646,10 +649,10 @@ export function LaneGitActionsPane({
    * (`LaneListSnapshot` / `lane_state_snapshots`). The single seam into the
    * push guard — there is no registry, no publisher, no second path.
    *
-   * Empty today: the renderer has no cross-machine lane list yet (the
-   * remote-runtime connection snapshot carries projects, not lanes). The guard
-   * short-circuits on an empty list before any work, so the single-machine
-   * path costs nothing, and lights up the moment this prop is filled.
+   * Optional override. When unset the guard reads the cross-machine lane union
+   * (`selectOtherMachineBranchStates`) at click time, so it costs nothing until
+   * you press push and never re-renders this pane. The guard also
+   * short-circuits on an empty list, keeping the single-machine path free.
    */
   otherMachineBranchStates?: readonly MachineBranchState[];
   /** Absolute name for this machine in guard copy. Never "remote". */
@@ -660,6 +663,9 @@ export function LaneGitActionsPane({
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
+  // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
+  // divergence guard below; the slice is reference-stable while unchanged.
+  const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -1350,9 +1356,15 @@ export function LaneGitActionsPane({
   // it is the one moment that interrupts. Resolved at click time (not in a
   // memo) so a single-machine project pays nothing.
   const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
-    const others = otherMachineBranchStates;
-    if (others.length === 0) return null;
     if (!lane) return null;
+    // The union slice keeps a stable reference while unchanged, so subscribing
+    // costs one identity check per store tick and re-renders nothing. The
+    // selector itself is memoized and only runs here, at click time. An
+    // explicit prop still wins so callers can supply their own set.
+    const others = otherMachineBranchStates.length > 0
+      ? otherMachineBranchStates
+      : selectOtherMachineBranchStates({ lanes, crossMachineLanesByMachineId }, lane.id);
+    if (others.length === 0) return null;
     return detectPushDivergence({
       current: {
         machineId: currentMachineId,
