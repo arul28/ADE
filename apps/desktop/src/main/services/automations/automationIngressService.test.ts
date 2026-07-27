@@ -301,8 +301,20 @@ describe("automationIngressService", () => {
             pull_request: { number: 687, title: "Github Auth Checks Failed", merged: true },
           },
         },
+        {
+          cursor: "seq:4",
+          eventId: "delivery-4",
+          githubEvent: "check_run",
+          summary: "GitHub check_run · completed · arul28/ADE · #687",
+          createdAt: receivedAt,
+          payload: {
+            action: "completed",
+            repository: { full_name: "arul28/ADE" },
+            check_run: { pull_requests: [{ number: 687 }] },
+          },
+        },
       ],
-      nextCursor: "seq:3",
+      nextCursor: "seq:4",
     }), { headers: { "content-type": "application/json" } }));
 
     service = createAutomationIngressService({
@@ -344,6 +356,8 @@ describe("automationIngressService", () => {
         pull_request: expect.objectContaining({ number: 687 }),
       }),
     }));
+    expect(ingestGithubWebhook).toHaveBeenCalledTimes(2);
+    expect(onPrStateIngested).toHaveBeenCalledWith(["pr-687"]);
     expect(onPrStateIngested).toHaveBeenCalledTimes(1);
     expect(webSockets.factory).toHaveBeenCalledWith(
       "wss://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/subscribe",
@@ -351,7 +365,7 @@ describe("automationIngressService", () => {
         headers: expect.objectContaining({ authorization: "Bearer ghu_app_user_token" }),
       }),
     );
-    expect(cursors.get("github-relay")).toBe("seq:3");
+    expect(cursors.get("github-relay")).toBe("seq:4");
     expect(service.getStatus()).toBeNull();
     expect(service.listRecentEvents()).toEqual([]);
   });
@@ -706,6 +720,61 @@ describe("automationIngressService", () => {
     expect(dispatchOrder).toEqual(["delivery-3", "delivery-4", "delivery-5"]);
     expect(setIngressCursor.mock.calls.map(([entry]) => entry.cursor)).toEqual(["seq:4", "seq:5"]);
     expect(cursors.get("github-relay")).toBe("seq:5");
+  });
+
+  it("reconciles PRs from committed pages when a later relay page fails", async () => {
+    const logger = makeLogger();
+    const cursors = new Map<string, string | null>([["github-relay", "seq:2"]]);
+    const onPrStateIngested = vi.fn();
+    const ingestGithubWebhook = vi.fn(async () => ({
+      processed: true,
+      duplicate: false,
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubPrNumber: 3,
+      linkedPrIds: ["pr-3"],
+      reason: null,
+    }));
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        events: [
+          { cursor: "seq:3", eventId: "delivery-3", githubEvent: "pull_request", payload: {} },
+        ],
+        nextCursor: "seq:3",
+        hasMore: true,
+      }), { headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response("upstream error", { status: 500 }));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: (source: string) => cursors.get(source) ?? null,
+        setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
+          cursors.set(source, cursor);
+        },
+        getIngressStatus: () => ({}),
+      } as never,
+      prService: { ingestGithubWebhook } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      onPrStateIngested,
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(cursors.get("github-relay")).toBe("seq:3");
+    expect(onPrStateIngested).toHaveBeenCalledOnce();
+    expect(onPrStateIngested).toHaveBeenCalledWith(["pr-3"]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "automations.github_relay_poll_failed",
+      expect.objectContaining({ error: "GitHub relay poll failed (500)" }),
+    );
   });
 
   it("skips a failing event and still advances the relay cursor (poison-event guard)", async () => {

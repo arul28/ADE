@@ -1175,13 +1175,13 @@ export async function createAdeRuntime(args: {
   // webhook-driven PR state updates reach installed (non-source) runtimes.
   // Automation rule dispatch stays gated on automationService being present.
   // The PR poller is constructed below; bind it before starting ingress so
-  // the ingress service's immediate startup poll can poke it.
-  let prPollingServiceForIngress: { poke: () => void } | null = null;
+  // webhook deliveries can schedule targeted PR reconciliation immediately.
+  let prPollingServiceForIngress: { reconcilePrs: (prIds: string[]) => void } | null = null;
   const automationIngressService = createAutomationIngressService({
     logger,
     automationService,
     prService: headlessLinearServices.prService,
-    onPrStateIngested: () => prPollingServiceForIngress?.poke(),
+    onPrStateIngested: (prIds) => prPollingServiceForIngress?.reconcilePrs(prIds),
     secretService: automationSecretService,
     githubService: headlessLinearServices.githubService,
     getAccountAccessToken,
@@ -1341,7 +1341,8 @@ export async function createAdeRuntime(args: {
     onEvent: emitPrEvent,
     onPullRequestsChanged: async ({ changedPrs, changes }) => {
       if (changedPrs.length > 0) {
-        headlessLinearServices.prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+        // Poll results must not start another hot-refresh window; doing so
+        // turns active CI into an unbounded high-frequency GitHub API loop.
         for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
       }
       for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {

@@ -283,6 +283,43 @@ describe("githubService.apiRequest", () => {
     expect(thrownError.rateLimitResetAtMs).toBe(resetTimestamp * 1000);
   });
 
+  it.each([
+    {
+      name: "when GitHub also returns a primary reset",
+      headers: {
+        "retry-after": "30",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "2000000000",
+      },
+    },
+    {
+      name: "when GitHub only returns Retry-After",
+      headers: {
+        "retry-after": "30",
+      },
+    },
+  ] as Array<{ name: string; headers: Record<string, string> }>)(
+    "uses Retry-After for secondary rate limits $name",
+    async ({ headers }) => {
+      const nowMs = Date.parse("2026-07-27T18:00:00.000Z");
+      vi.spyOn(Date, "now").mockReturnValue(nowMs);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse(429, { message: "Too many requests" }, headers),
+      );
+
+      const service = makeService();
+      let thrownError: any;
+      try {
+        await service.apiRequest({ method: "GET", path: "/repos/o/r", token: "ghp_test123" });
+      } catch (err) {
+        thrownError = err;
+      }
+
+      expect(thrownError).toBeInstanceOf(Error);
+      expect(thrownError.rateLimitResetAtMs).toBe(nowMs + 30_000);
+    },
+  );
+
   it("falls back to generic HTTP message when response body has no message field", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(500, { unexpected: true }));
 
@@ -719,6 +756,60 @@ describe("githubService.getStatus", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
+  it("reports an exhausted GitHub API quota as rate limited instead of missing permissions", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(
+        403,
+        { message: "API rate limit exceeded for user ID 123." },
+        {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-used": "5000",
+          "x-ratelimit-reset": "1785179433",
+          "x-ratelimit-resource": "core",
+        },
+      ),
+    );
+
+    const status = await makeService().getStatus();
+
+    expect(status.tokenStored).toBe(true);
+    expect(status.authSource).toBe("environment");
+    expect(status.authFailure).toEqual({
+      kind: "rate_limited",
+      message: "API rate limit exceeded for user ID 123.",
+      retryAt: "2026-07-27T19:10:33.000Z",
+    });
+    expect(status.rateLimit).toEqual({
+      limit: 5000,
+      remaining: 0,
+      used: 5000,
+      resetAt: "2026-07-27T19:10:33.000Z",
+      resource: "core",
+    });
+    expect(status.userLogin).toBeNull();
+    expect(status.scopes).toEqual([]);
+    expect(status.connected).toBe(false);
+  });
+
+  it("classifies a headerless HTTP 429 as rate limited", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    mockFetch.mockResolvedValueOnce(jsonResponse(429, {}));
+
+    const status = await makeService().getStatus();
+
+    expect(status.authFailure).toEqual({
+      kind: "rate_limited",
+      message: "GitHub token validation failed (HTTP 429)",
+      retryAt: null,
+    });
+    expect(status.rateLimit).toBeNull();
+    expect(status.connected).toBe(false);
+  });
+
   it("falls back to gh auth when no PAT or env token is configured", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
@@ -867,12 +958,14 @@ describe("githubService.getStatus", () => {
     resolveAuth(resolvedAuth);
     ghAuthTokenProvider.mockResolvedValue(resolvedAuth);
     const statuses = await Promise.all([firstStatus, secondStatus]);
-    expect(statuses.map((status) => status.repoAccessOk)).toEqual([false, false]);
+    expect(statuses.map((status) => status.repoAccessOk)).toEqual([null, null]);
+    expect(statuses.map((status) => status.authFailure?.kind)).toEqual(["network", "network"]);
     expect(mockFetch).toHaveBeenCalledTimes(2); // one /user + one repo probe total
 
     now.mockReturnValue(baseNow + 31_000);
     const third = await makeService({ ghAuthTokenProvider }).getStatus();
-    expect(third.repoAccessOk).toBe(false);
+    expect(third.repoAccessOk).toBeNull();
+    expect(third.authFailure?.kind).toBe("network");
     expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
     expect(mockFetch).toHaveBeenCalledTimes(4);
     now.mockRestore();
@@ -892,6 +985,7 @@ describe("githubService.getStatus", () => {
 
     const first = await makeService({ ghAuthTokenProvider }).getStatus();
     expect(first.connected).toBe(false);
+    expect(first.authFailure?.kind).toBe("invalid_token");
     expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
@@ -1008,14 +1102,62 @@ describe("githubService.getStatus", () => {
   it("fine-grained token with successful repo probe is connected", async () => {
     stubOriginRemote();
     process.env.GITHUB_TOKEN = "github_pat_finegrained";
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(
+      200,
+      { login: "alice" },
+      {
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": "1",
+        "x-ratelimit-used": "4999",
+      },
+    ));
+    mockFetch.mockResolvedValueOnce(jsonResponse(
+      200,
+      { full_name: "acme/ade" },
+      {
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-used": "5000",
+      },
+    ));
 
     const status = await makeService().getStatus();
 
     expect(status.tokenType).toBe("fine-grained");
     expect(status.repoAccessOk).toBe(true);
+    expect(status.rateLimit).toEqual({
+      limit: 5000,
+      remaining: 0,
+      used: 5000,
+      resetAt: null,
+      resource: null,
+    });
     expect(status.connected).toBe(true);
+  });
+
+  it("reports rate limiting during a fine-grained repo probe instead of missing repo access", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "github_pat_finegrained";
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(
+        403,
+        { message: "API rate limit exceeded." },
+        {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "1785179433",
+        },
+      ),
+    );
+
+    const status = await makeService().getStatus();
+
+    expect(status.authFailure?.kind).toBe("rate_limited");
+    expect(status.authFailure?.retryAt).toBe("2026-07-27T19:10:33.000Z");
+    expect(status.repoAccessOk).toBeNull();
+    expect(status.repoAccessError).toBeNull();
+    expect(status.connected).toBe(false);
   });
 
   it("classic token without required scopes is NOT connected", async () => {

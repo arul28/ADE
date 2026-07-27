@@ -282,6 +282,7 @@ interface BuildServiceOpts {
   conflictService?: any;
   projectConfigService?: any;
   aiIntegrationService?: any;
+  onHotRefreshChanged?: () => void;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -325,6 +326,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
     ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
+    onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
   });
 
@@ -5504,6 +5506,32 @@ describe("prService auto-map by branch", () => {
       expect.stringContaining("insert or replace into pr_auto_link_ignores("),
       expect.arrayContaining([REPO.owner, REPO.name, 777, LANE_ID, AUTO_BRANCH]),
     );
+  });
+});
+
+describe("prService hot refresh", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not re-arm an existing hot-refresh window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const onHotRefreshChanged = vi.fn();
+    const { service } = buildService({ onHotRefreshChanged });
+
+    service.markHotRefresh(["pr-1"]);
+    expect(service.getHotRefreshDelayMs()).toBe(5_000);
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:59.000Z"));
+    service.markHotRefresh(["pr-1"]);
+    vi.setSystemTime(new Date("2026-01-01T00:01:01.000Z"));
+
+    expect(service.getHotRefreshDelayMs()).toBe(15_000);
+
+    vi.setSystemTime(new Date("2026-01-01T00:03:01.000Z"));
+    expect(service.getHotRefreshPrIds()).toEqual([]);
+    expect(onHotRefreshChanged).toHaveBeenCalledTimes(2);
   });
 });
 

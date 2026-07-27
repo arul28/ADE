@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { GitHubAppInstallationStatus } from "../../shared/types";
-import { deriveGithubRepoConnectionState, isGithubRepoAccessPending } from "./githubIntegrationStatus";
+import type { GitHubAppInstallationStatus, GitHubStatus } from "../../shared/types";
+import {
+  deriveGithubRepoConnectionState,
+  describeGithubAuthFailure,
+  describeGithubCliBanner,
+  isGithubRepoAccessPending,
+} from "./githubIntegrationStatus";
 
 function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHubAppInstallationStatus {
   return {
@@ -21,6 +26,28 @@ function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHu
     webhookLastSeenAt: null,
     checkedAt: "2026-07-02T18:39:42.000Z",
     error: "Not Found",
+    ...overrides,
+  };
+}
+
+function makeCliStatus(overrides: Partial<GitHubStatus> = {}): GitHubStatus {
+  return {
+    tokenStored: true,
+    patTokenStored: false,
+    tokenDecryptionFailed: false,
+    storageScope: "app",
+    authSource: "gh",
+    tokenType: "oauth",
+    repo: { owner: "arul28", name: "ADE" },
+    hasOrigin: true,
+    userLogin: null,
+    scopes: [],
+    ghCliPath: "/opt/homebrew/bin/gh",
+    ghAuthError: null,
+    checkedAt: "2026-07-27T18:40:32.503Z",
+    repoAccessOk: null,
+    repoAccessError: null,
+    connected: false,
     ...overrides,
   };
 }
@@ -77,5 +104,58 @@ describe("deriveGithubRepoConnectionState", () => {
     expect(
       deriveGithubRepoConnectionState(makeStatus({ installed: false, state: "not_installed", error: null })),
     ).toBe("not_installed");
+  });
+});
+
+describe("describeGithubCliBanner", () => {
+  it("does not tell a signed-in rate-limited user to reconnect", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      authFailure: {
+        kind: "rate_limited",
+        message: "API rate limit exceeded.",
+        retryAt: "2026-07-27T19:10:33.000Z",
+      },
+    }));
+
+    expect(banner.title).toBe("GitHub API rate limit reached");
+    expect(banner.detail).toContain("No authentication command is needed");
+    expect(banner.action).toBe("View GitHub status");
+    expect(banner.subState).toContain("rate-limited");
+  });
+
+  it("distinguishes an invalid token from missing scopes", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      authFailure: {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      },
+    }));
+
+    expect(banner.title).toBe("GitHub authentication was rejected");
+    expect(banner.action).toBe("Reconnect GitHub");
+  });
+
+  it("uses missing-permissions copy only after GitHub validated the user", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      userLogin: "arul28",
+      scopes: ["repo"],
+    }));
+
+    expect(banner.title).toBe("GitHub token is missing permissions");
+    expect(banner.action).toBe("Fix GitHub auth");
+  });
+
+  it("keeps raw validation errors in Settings without leaking them into the banner", () => {
+    const copy = describeGithubAuthFailure(makeCliStatus({
+      authFailure: {
+        kind: "unknown",
+        message: "GitHub returned an unexpected enterprise policy response.",
+        retryAt: null,
+      },
+    }));
+
+    expect(copy?.detail).toContain("Open Settings for the exact error");
+    expect(copy?.settingsDetail).toBe("GitHub returned an unexpected enterprise policy response.");
   });
 });

@@ -2843,7 +2843,8 @@ app.whenReady().then(async () => {
       onEvent: emitPrEvent,
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
-          prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+          // Poll results must not start another hot-refresh window; doing so
+          // turns active CI into an unbounded high-frequency GitHub API loop.
           for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
         }
         await Promise.all(
@@ -3326,7 +3327,7 @@ app.whenReady().then(async () => {
       prService,
       // Webhook-driven PR changes poke the poller so `prs-updated` reaches the
       // renderer now instead of on the next scheduled tick.
-      onPrStateIngested: () => prPollingServiceRef?.poke(),
+      onPrStateIngested: (prIds) => prPollingServiceRef?.reconcilePrs(prIds),
       secretService: automationSecretService,
       githubService,
       getAccountAccessToken,
