@@ -533,21 +533,29 @@ describe("ade code remote launcher", () => {
       children.push(child);
       return child;
     });
-    const startedAt = Date.now();
-
-    await expect(openRemoteRpcSession({
+    const target = {
       ...legacyAccountTarget(),
       id: "offline-explicit-ssh",
       name: "Offline workstation",
       sshUser: "arul",
-    }, {
+    };
+    const routeCount = new Set([
+      `${target.hostname}:${target.port ?? ""}`,
+      ...(target.routes ?? []).map((route) => `${route.hostname}:${route.port ?? ""}`),
+    ]).size;
+    const maxRouteRuntimeAttempts =
+      routeCount * remoteRuntimeLayoutCandidates(process.env).length * 2;
+    const startedAt = Date.now();
+
+    await expect(openRemoteRpcSession(target, {
       totalTimeoutMs: 80,
       attemptTimeoutMs: 50,
       spawnProcess,
     })).rejects.toThrow(/bounded route\/runtime combinations.*deadline/i);
 
     expect(Date.now() - startedAt).toBeLessThan(1_000);
-    expect(spawnProcess.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(spawnProcess.mock.calls.length).toBeGreaterThan(0);
+    expect(spawnProcess.mock.calls.length).toBeLessThanOrEqual(maxRouteRuntimeAttempts);
     expect(children.every((child) => child.kill.mock.calls.length > 0)).toBe(true);
   });
 

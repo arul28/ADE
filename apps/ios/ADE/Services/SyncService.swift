@@ -2811,6 +2811,11 @@ final class SyncService: ObservableObject {
     let startedAt: TimeInterval
   }
 
+  private struct PendingChatUnsubscribe {
+    let task: Task<Void, Never>
+    let scheduledAt: Date
+  }
+
   private struct PendingOutboundChangeset {
     var payload: SyncChangesetBatchPayload
     var sentAt: TimeInterval
@@ -2918,6 +2923,13 @@ final class SyncService: ObservableObject {
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
+  private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
+  private let chatEventUnsubscribeRetentionLimit = 4
+  private var recentFullChatSnapshotRequestBySession: [
+    String: (uptime: TimeInterval, connectionGeneration: UInt64)
+  ] = [:]
+  private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
+  private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
   private var relayAuthorizationLease: SyncRelayAuthorizationLease?
   private var relayReauthorizationTask: Task<Void, Never>?
@@ -8329,41 +8341,144 @@ final class SyncService: ObservableObject {
     isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
 
-  func subscribeToChatEvents(sessionId: String, requestSnapshot: Bool = false, maxBytes: Int? = nil) async throws {
+  /// Returns true when the requested subscription state is backed by an
+  /// envelope dispatched now or, for a full snapshot, a recently dispatched
+  /// envelope that is still inside the coalescing window.
+  @discardableResult
+  func subscribeToChatEvents(
+    sessionId: String,
+    requestSnapshot: Bool = false,
+    maxBytes: Int? = nil
+  ) async throws -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty else { return }
+    guard !trimmedSessionId.isEmpty else { return false }
     let wasSubscribed = subscribedChatSessionIds.contains(trimmedSessionId)
-    if !wasSubscribed {
-      subscribedChatSessionIds.insert(trimmedSessionId)
-      localStateRevision += 1
+    retainChatEventSubscription(sessionId: trimmedSessionId)
+    let needsRemoteActivation = chatSubscriptionsNeedingRemoteActivation.contains(trimmedSessionId)
+    let requestUptime = ProcessInfo.processInfo.systemUptime
+    let canSendChatSubscription = canSendLiveRequests() && supportsChatStreaming
+    let snapshotRequestWasRecentlySent: Bool
+    if requestSnapshot,
+       canSendChatSubscription,
+       let recentRequest = recentFullChatSnapshotRequestBySession[trimmedSessionId],
+       recentRequest.connectionGeneration == connectionGeneration,
+       requestUptime - recentRequest.uptime < chatSnapshotRequestCoalescingInterval {
+      snapshotRequestWasRecentlySent = true
+    } else {
+      snapshotRequestWasRecentlySent = false
     }
-    if canSendLiveRequests() && supportsChatStreaming && (!wasSubscribed || requestSnapshot) {
+    if snapshotRequestWasRecentlySent {
+      return true
+    }
+    if canSendChatSubscription
+      && (!wasSubscribed || needsRemoteActivation || requestSnapshot) {
       // Explicit snapshot requests must not advertise a resume point — the
       // caller wants the full history, not a delta replay.
       let payload = chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
-      syncChatLog.notice(
-        "chat_subscribe_send session=\(trimmedSessionId, privacy: .public) requestSnapshot=\(requestSnapshot, privacy: .public) wasSubscribed=\(wasSubscribed, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
-      )
-      sendEnvelope(
+      guard sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
+      ) else { return false }
+      if requestSnapshot {
+        recentFullChatSnapshotRequestBySession[trimmedSessionId] = (
+          uptime: requestUptime,
+          connectionGeneration: connectionGeneration
+        )
+      }
+      syncChatLog.notice(
+        "chat_subscribe_send session=\(trimmedSessionId, privacy: .public) requestSnapshot=\(requestSnapshot, privacy: .public) wasSubscribed=\(wasSubscribed, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
       )
+      chatSubscriptionsNeedingRemoteActivation.remove(trimmedSessionId)
+      return true
+    }
+    return false
+  }
+
+  /// Mark a visible chat as locally desired even when the host is unreachable.
+  /// This synchronously cancels pending warm-cache eviction so reconnect
+  /// restoration cannot omit a chat that is still on screen.
+  func retainChatEventSubscription(sessionId: String) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
+    if subscribedChatSessionIds.insert(trimmedSessionId).inserted {
+      chatSubscriptionsNeedingRemoteActivation.insert(trimmedSessionId)
+      localStateRevision += 1
     }
   }
 
-  func requestFullChatEventSnapshot(sessionId: String) async throws {
-    try await subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true, maxBytes: syncChatSubscriptionMaxBytes)
+  @discardableResult
+  func requestFullChatEventSnapshot(sessionId: String) async throws -> Bool {
+    try await subscribeToChatEvents(
+      sessionId: sessionId,
+      requestSnapshot: true,
+      maxBytes: syncChatSubscriptionMaxBytes
+    )
+  }
+
+  func isFullChatEventSnapshotPending(sessionId: String) -> Bool {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canSendLiveRequests(),
+          let recentRequest = recentFullChatSnapshotRequestBySession[trimmedSessionId]
+    else {
+      return false
+    }
+    return recentRequest.connectionGeneration == connectionGeneration
   }
 
   func unsubscribeFromChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    guard subscribedChatSessionIds.contains(trimmedSessionId) else { return }
-    subscribedChatSessionIds.remove(trimmedSessionId)
+    cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
+    performChatEventUnsubscribe(sessionId: trimmedSessionId)
+  }
+
+  /// Keep a recently-viewed project chat warm briefly so switching back can
+  /// reuse its render-ready transcript and sequence watermark. Retention is
+  /// bounded to four chats; older pending subscriptions are released first.
+  func scheduleChatEventUnsubscribe(
+    sessionId: String,
+    delayNanoseconds: UInt64 = 120_000_000_000
+  ) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty,
+          subscribedChatSessionIds.contains(trimmedSessionId)
+    else { return }
+
+    cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
+    while pendingChatUnsubscribesBySession.count >= chatEventUnsubscribeRetentionLimit,
+          let oldestSessionId = pendingChatUnsubscribesBySession.min(by: {
+            $0.value.scheduledAt < $1.value.scheduledAt
+          })?.key {
+      cancelDelayedChatUnsubscribe(sessionId: oldestSessionId)
+      performChatEventUnsubscribe(sessionId: oldestSessionId)
+    }
+
+    let task = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: delayNanoseconds)
+      guard let self, !Task.isCancelled else { return }
+      self.pendingChatUnsubscribesBySession.removeValue(forKey: trimmedSessionId)
+      self.performChatEventUnsubscribe(sessionId: trimmedSessionId)
+    }
+    pendingChatUnsubscribesBySession[trimmedSessionId] = PendingChatUnsubscribe(
+      task: task,
+      scheduledAt: Date()
+    )
+  }
+
+  private func cancelDelayedChatUnsubscribe(sessionId: String) {
+    pendingChatUnsubscribesBySession.removeValue(forKey: sessionId)?.task.cancel()
+  }
+
+  private func performChatEventUnsubscribe(sessionId: String) {
+    guard subscribedChatSessionIds.contains(sessionId) else { return }
+    subscribedChatSessionIds.remove(sessionId)
+    chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
+    recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
     localStateRevision += 1
     if canSendLiveRequests() && supportsChatStreaming {
-      sendEnvelope(type: "chat_unsubscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
+      sendEnvelope(type: "chat_unsubscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
     }
   }
 
@@ -14346,6 +14461,7 @@ final class SyncService: ObservableObject {
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
          subscribedChatSessionIds.contains(snapshot.sessionId) {
+        recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshot.sessionId)
         let resumed = (dict["resumed"] as? Bool) == true
         let previousLastSeq = chatEventLastSeqBySession[snapshot.sessionId]
         if !resumed {
@@ -14731,12 +14847,13 @@ final class SyncService: ObservableObject {
     }
   }
 
+  @discardableResult
   private func sendEnvelope(
     type: String,
     requestId: String?,
     payload: Any,
     projectIdOverride: String? = nil
-  ) {
+  ) -> Bool {
     #if DEBUG
     if capturesOutboundEnvelopesForTesting {
       let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
@@ -14747,12 +14864,12 @@ final class SyncService: ObservableObject {
          let response = capturedRefreshResponseForTesting(type: type, payload: payload) {
         resolve(requestId: requestId, result: .success(response))
       }
-      return
+      return true
     }
     #endif
-    guard let socket else { return }
+    guard let socket else { return false }
     let sendSocket = socket
-    guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return }
+    guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return false }
 
     var envelope: [String: Any]
     if payloadData.count >= compressionThresholdBytes {
@@ -14783,7 +14900,7 @@ final class SyncService: ObservableObject {
 
     guard let data = try? adeJSONData(withJSONObject: envelope),
           let text = String(data: data, encoding: .utf8)
-    else { return }
+    else { return false }
 
     sendSocket.send(.string(text)) { error in
       if let error {
@@ -14792,6 +14909,7 @@ final class SyncService: ObservableObject {
         }
       }
     }
+    return true
   }
 
   private func awaitSocketOpen(_ task: URLSessionWebSocketTask) async throws {
@@ -15771,6 +15889,7 @@ final class SyncService: ObservableObject {
         requestId: nil,
         payload: payload
       )
+      chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     }
   }
 
@@ -16139,7 +16258,13 @@ final class SyncService: ObservableObject {
     // tagging lanes with another project's PRs.
     laneGithubPrItems = []
     laneGithubPrItemsFetchedAt = nil
+    for pendingUnsubscribe in pendingChatUnsubscribesBySession.values {
+      pendingUnsubscribe.task.cancel()
+    }
+    pendingChatUnsubscribesBySession.removeAll()
     subscribedChatSessionIds.removeAll()
+    chatSubscriptionsNeedingRemoteActivation.removeAll()
+    recentFullChatSnapshotRequestBySession.removeAll()
     // Turn-active hints are scoped to the live connection's event stream —
     // a stale "running" hint must not survive a project switch or reconnect.
     chatTurnActiveHintBySession.removeAll()

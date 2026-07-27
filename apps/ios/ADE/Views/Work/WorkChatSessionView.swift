@@ -155,6 +155,7 @@ struct WorkChatSessionView: View {
   @State var latestPinTask: Task<Void, Never>?
   @State var latestPinGeneration = 0
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
+  @State private var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   @State var assistantLineBudgets: [String: Int] = [:]
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
@@ -807,8 +808,10 @@ struct WorkChatSessionView: View {
 
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
-        usageViewModel: workContextUsageViewModel(
+        usageViewModel: contextUsageViewModelCache.value(
+          sessionId: session.id,
           transcript: transcript,
+          transcriptRenderSignature: transcriptRenderSignature,
           provider: chatSummaryContext.provider,
           fallbackContextWindow: chatSummaryContext.contextWindowFallback
         ),

@@ -3563,6 +3563,48 @@ func workContextUsageViewModel(
   )
 }
 
+final class WorkContextUsageViewModelCache {
+  private struct Key: Equatable {
+    let sessionId: String
+    let transcriptRenderSignature: Int
+    let provider: String
+    let fallbackContextWindow: Int?
+  }
+
+  private struct Entry {
+    let key: Key
+    let value: WorkContextUsageViewModel?
+  }
+
+  private var entry: Entry?
+
+  func value(
+    sessionId: String,
+    transcript: [WorkChatEnvelope],
+    transcriptRenderSignature: Int,
+    provider: String,
+    fallbackContextWindow: Int?
+  ) -> WorkContextUsageViewModel? {
+    let key = Key(
+      sessionId: sessionId,
+      transcriptRenderSignature: transcriptRenderSignature,
+      provider: provider,
+      fallbackContextWindow: fallbackContextWindow
+    )
+    if entry?.key == key {
+      return entry?.value
+    }
+
+    let value = workContextUsageViewModel(
+      transcript: transcript,
+      provider: provider,
+      fallbackContextWindow: fallbackContextWindow
+    )
+    entry = Entry(key: key, value: value)
+    return value
+  }
+}
+
 private func makeWorkContextUsageViewModel(
   usage: WorkUsageSummary,
   provider: String,

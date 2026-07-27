@@ -1018,7 +1018,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let laneAhead: Int
   let laneBehind: Int
   let activityTimestamp: String
-  let previewSource: String?
+  let previewText: String?
   let pinned: Bool
   let pullRequestNumber: Int?
   let pullRequestState: String?
@@ -1069,7 +1069,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.laneBehind = lane?.status.behind ?? 0
     self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
     let canonical = workCanonicalSessionState(session: session, summary: chatSummary)
-    self.previewSource = workSessionRowPreviewSource(
+    self.previewText = workSessionRowPreviewSource(
       session: session,
       chatSummary: chatSummary,
       isSettled: canonical.phase == .settled
@@ -1248,13 +1248,13 @@ struct WorkSessionRow: View, Equatable {
             WorkSessionStatusCapsule(badge: badge)
           }
           Spacer(minLength: 6)
-          Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+          Text(relativeTimestampCompact(renderSignature.activityTimestamp))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
 
-        if let preview = workSessionPreviewText(rowPreviewSource) {
+        if let preview = renderSignature.previewText {
           Text(preview)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
@@ -1385,14 +1385,6 @@ struct WorkSessionRow: View, Equatable {
   var snoozeWakeLabel: String? {
     guard session.isSnoozed() else { return nil }
     return workSnoozeWakeLabel(session.snoozedUntil)
-  }
-
-  var rowPreviewSource: String? {
-    workSessionRowPreviewSource(
-      session: session,
-      chatSummary: chatSummary,
-      isSettled: isSettled
-    )
   }
 
   var isPendingSyncCreation: Bool {
