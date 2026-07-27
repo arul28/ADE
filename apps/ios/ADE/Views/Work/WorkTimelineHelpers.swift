@@ -3127,10 +3127,17 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
   var startByTurn: [String: String] = [:]
   var markers: [WorkTurnEndMarker] = []
   var seenEndedTurns = Set<String>()
+  var fallbackStart: String?
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    if fallbackStart == nil {
+      fallbackStart = envelope.timestamp
+    }
     switch envelope.event {
     case .userMessage(_, _, let turnId, _, _, _):
+      // A new visible user turn is also the fallback boundary for providers or
+      // imported transcripts that omit turn ids and terminal events.
+      fallbackStart = envelope.timestamp
       guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
       startByTurn[key] = envelope.timestamp
     case .status(let turnStatus, _, let turnId):
@@ -3142,8 +3149,10 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
         continue
       }
     case .done(let status, _, _, let turnId, let model, let modelId, let terminalReason):
-      guard let key = normalizedWorkTurnId(turnId) else { continue }
-      guard !seenEndedTurns.contains(key), let start = startByTurn[key] else { continue }
+      let explicitKey = normalizedWorkTurnId(turnId)
+      let key = explicitKey ?? "fallback-\(envelope.id)"
+      guard !seenEndedTurns.contains(key) else { continue }
+      let start = explicitKey.flatMap { startByTurn[$0] } ?? fallbackStart ?? envelope.timestamp
       seenEndedTurns.insert(key)
       let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
       markers.append(WorkTurnEndMarker(
@@ -3156,6 +3165,7 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
         modelLabel: metadata.modelLabel,
         modelId: metadata.modelId
       ))
+      fallbackStart = nil
     default:
       guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { continue }
       startByTurn[key] = envelope.timestamp

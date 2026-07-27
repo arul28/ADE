@@ -89,6 +89,7 @@ import {
   groupConsecutiveWorkLogRows,
 } from "./chatTranscriptRows";
 import { ChatPrPaneInsetContext } from "./chatPrPaneInset";
+import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -130,6 +131,7 @@ function renderMessageList(
     showStreamingIndicator?: boolean;
     sessionId?: string | null;
     onInsertDraft?: (text: string) => void;
+    onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
@@ -149,6 +151,7 @@ function renderMessageList(
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionId={options?.sessionId}
         onInsertDraft={options?.onInsertDraft}
+        onRevealChatTerminal={options?.onRevealChatTerminal}
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
@@ -363,9 +366,14 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
           },
         },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /Tool calls/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
     fireEvent.click(screen.getByRole("button", { name: "Open in Work" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/work?sessionId=chat-1::null");
@@ -394,9 +402,14 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
           },
         },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: /Tool calls/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
     fireEvent.click(screen.getByRole("button", { name: "Open lane" }));
 
     expect(screen.getByTestId("location").textContent).toBe("/lanes?laneId=lane-1::null");
@@ -526,8 +539,9 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ]);
+    ], { showStreamingIndicator: true });
 
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
     fireEvent.click(openButton);
 
@@ -582,8 +596,9 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ], { sessionId: "session-1", onInsertDraft });
+    ], { sessionId: "session-1", onInsertDraft, showStreamingIndicator: true });
 
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const logsButton = await screen.findByRole("button", {
       name: "Open terminal logs or ask the agent to run this server in the chat terminal",
     });
@@ -594,6 +609,52 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("http://localhost:5173/"));
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("npm run dev"));
+  });
+
+  it("opens the active chat terminal from completed turn activity", async () => {
+    const onRevealChatTerminal = vi.fn();
+    vi.mocked(globalThis.window.ade.terminal.activeForChat).mockResolvedValue({
+      terminalId: "terminal-1",
+      ptyId: "pty-1",
+      title: "Dev server",
+    } as any);
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "command",
+          command: "npm run dev",
+          cwd: "/repo",
+          output: "Local: http://localhost:5173/",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ], { sessionId: "session-1", onRevealChatTerminal });
+
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    fireEvent.click(await screen.findByRole("button", {
+      name: "Open terminal logs or ask the agent to run this server in the chat terminal",
+    }));
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.terminal.activeForChat).toHaveBeenCalledWith({
+        chatSessionId: "session-1",
+      });
+      expect(onRevealChatTerminal).toHaveBeenCalledWith({
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        label: "Dev server",
+      });
+    });
   });
 
   it("renders queued user messages in-thread when not a steer placeholder", async () => {
@@ -763,9 +824,14 @@ describe("AgentChatMessageList transcript rendering", () => {
           turnId: "turn-1",
         },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
     ]);
 
-    fireEvent.click(findButtonByTextContent(/Tool calls/));
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
     fireEvent.click(findButtonByTextContent(/shell/));
 
     expect(screen.queryByText(/THE_END/)).toBeNull();
@@ -1434,12 +1500,15 @@ describe("AgentChatMessageList transcript rendering", () => {
           turnId: "turn-1",
         },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
     ]);
 
-    const disclosure = findButtonByTextContent(/Tool calls.*\(2\).*PreToolUse:Read error/);
     expect(screen.queryByText("Hook: PreToolUse:Bash error")).toBeNull();
-
-    fireEvent.click(disclosure);
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
 
     expect(screen.getByText("PreToolUse:Bash error")).toBeTruthy();
     expect(screen.getAllByText("PreToolUse:Read error").length).toBeGreaterThan(0);
@@ -2284,7 +2353,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
   });
 
-  it("does not coalesce text fragments across command boundaries", () => {
+  it("does not coalesce text fragments across hidden command boundaries", () => {
     const view = renderMessageList([
       {
         sessionId: "session-1",
@@ -2326,7 +2395,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(view.container.textContent).not.toContain("Grouped output");
     expect(view.container.textContent).toContain("Grouped");
     expect(view.container.textContent).toContain("output");
-    expect(findButtonByTextContent(/echo ok/i)).toBeTruthy();
+    expect(view.container.textContent).not.toContain("echo ok");
   });
 
   it("recomputes virtualization windows when measured heights change", () => {
@@ -2676,6 +2745,71 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcriptOnly.container.textContent).not.toContain("Running command");
   });
 
+  it("keeps narration and file changes inline while completed tool activity moves behind the status line", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "I’ll inspect the renderer first.", itemId: "text-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "npm test",
+          cwd: "/repo",
+          output: "passed",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "file_change",
+          path: "src/chat.tsx",
+          diff: "+ const calmer = true;\n",
+          kind: "modify",
+          itemId: "file-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: { type: "text", text: "The focused tests pass.", itemId: "text-2", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:05.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+
+    expect(rendered.container.textContent).toContain("I’ll inspect the renderer first.");
+    expect(rendered.container.textContent).toContain("The focused tests pass.");
+    expect(rendered.container.textContent).toContain("1 file changed");
+    expect(rendered.container.textContent).not.toContain("npm test");
+    expect(rendered.container.textContent).toContain("Ran for 5.0s");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    expect(rendered.container.textContent).toContain("npm test");
+  });
+
+  it("keeps mixed provider turn ids together while resetting fallback activity at a new user turn", () => {
+    const rendered = renderMessageList(mixedIdToolActivityBoundaryEvents());
+
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+    expect(rendered.container.textContent).toContain("tagged-command");
+    expect(rendered.container.textContent).toContain("untagged-command");
+    expect(rendered.container.textContent).not.toContain("stale-command");
+  });
+
   it("keeps thinking activity visible after a duplicate started status", () => {
     const rendered = renderMessageList(
       [
@@ -2838,8 +2972,9 @@ describe("AgentChatMessageList transcript rendering", () => {
           turnId: "turn-1",
         },
       },
-    ]);
+    ], { showStreamingIndicator: true });
 
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     expect(rendered.container.textContent).toContain("pwd");
     expect(rendered.container.textContent).toContain("shell");
     expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");

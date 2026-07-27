@@ -374,6 +374,7 @@ struct WorkToolCallsPanelView: View {
         Spacer(minLength: 0)
       }
       .padding(.vertical, 2)
+      .frame(minHeight: 44)
     }
     .buttonStyle(.plain)
   }
@@ -420,6 +421,7 @@ struct WorkToolCallsPanelView: View {
         }
       }
       .padding(.vertical, 6)
+      .frame(minHeight: 44)
     }
     .buttonStyle(.plain)
   }
@@ -485,6 +487,28 @@ struct WorkToolCallsPanelView: View {
     case .failed: return ADEColor.danger
     case .running: return ADEColor.textPrimary
     case .completed: return ADEColor.textMuted
+    }
+  }
+}
+
+struct WorkTurnActivitySheet: View {
+  let group: WorkToolGroupModel
+  @State private var expanded = true
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        WorkToolCallsPanelView(
+          group: group,
+          isExpanded: expanded,
+          onToggle: { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } }
+        )
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+      }
+      .background(ADEColor.pageBackground)
+      .navigationTitle("Turn activity")
+      .navigationBarTitleDisplayMode(.inline)
     }
   }
 }

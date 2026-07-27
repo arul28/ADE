@@ -770,52 +770,6 @@ function webSearchResultRows(blockId: string, entry: ToolCallEntry): RenderedCha
   }));
 }
 
-// Tool calls collapse to ONE clickable header row by default — desktop/mobile
-// work-log parity: `▸ Tool calls (N)  ✓ shell <last command>`. The collapsed
-// preview shows the most recent call so live progress stays visible without the
-// turn's calls stacking into a tall block. Clicking the header (see the
-// transcript click handler in app.tsx, keyed off `expandableGroupId`) flips its
-// id in `expandedLineIds`, stacking every call one line each under a `▾` header.
-function toolCallsGroupRows(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
-  spinFrame: string,
-  expandedGroupIds: Set<string>,
-): RenderedChatRow[] {
-  if (!block.entries.length) return [];
-  const expandKey = workGroupExpandKey(block.id);
-  const expanded = expandedGroupIds.has(expandKey);
-  const total = block.entries.length;
-
-  const headerRuns: InlineRun[] = [
-    { text: expanded ? "▾ " : "▸ ", color: theme.color.t3 },
-    { text: "Tool calls", color: theme.color.t2, bold: true },
-    { text: ` (${total})`, color: theme.color.t4 },
-  ];
-  if (!expanded) {
-    const latest = block.entries[block.entries.length - 1]!;
-    const glyph = statusGlyph(latest.status, spinFrame);
-    const arg = latest.arg ? truncateLongLine(latest.arg) : "";
-    headerRuns.push({ text: "  " });
-    headerRuns.push({ text: glyph, color: WORK_STATUS_COLOR[latest.status] });
-    headerRuns.push({ text: ` ${latest.tool}`, color: theme.color.t1 });
-    if (arg) headerRuns.push({ text: `  ${arg}`, color: theme.color.t3 });
-  }
-  const out: RenderedChatRow[] = [{
-    id: block.id,
-    tone: "work",
-    text: runsPlainText(headerRuns),
-    runs: headerRuns,
-    rail: null,
-    expandableGroupId: expandKey,
-  }];
-  if (!expanded) return out;
-  for (const entry of block.entries) {
-    out.push(toolCallEntryRow(block.id, entry, spinFrame));
-    out.push(...webSearchResultRows(block.id, entry));
-  }
-  return out;
-}
-
 function fileBadgeFor(entry: FileChangeEntry): { label: string; color: string } {
   const badges = theme.color.fileBadge as Record<string, string>;
   const lower = entry.path.toLowerCase();
@@ -860,8 +814,8 @@ function fileChangeEntryRow(
   };
 }
 
-// File changes collapse to ONE clickable header row by default, exactly like
-// toolCallsGroupRows — `▸ Files changed (N)  M src/foo.ts  +12 −3` previewing
+// File changes collapse to one clickable header row by default:
+// `▸ Files changed (N)  M src/foo.ts  +12 −3`, previewing
 // the most recent edit. Clicking the header expands every edit one line each.
 function filesChangedGroupRows(
   block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
@@ -1160,16 +1114,53 @@ function workingShimmerRuns(shimmerPos: number): InlineRun[] {
   });
 }
 
-function activeTurnRows(dots: string, showWorkingIndicator = true, shimmerPos = -1): RenderedChatRow[] {
-  if (!showWorkingIndicator) return [];
-  return [{
+function turnActivityEntries(blocks: AggregatedBlock[], liveOnly: boolean): ToolCallEntry[] {
+  const entries = blocks
+    .filter((block): block is Extract<AggregatedBlock, { kind: "tool-calls-group" }> => (
+      block.kind === "tool-calls-group" && (!liveOnly || block.live)
+    ))
+    .flatMap((block) => block.entries);
+  return Array.from(new Map(entries.map((entry) => [entry.itemId, entry])).values());
+}
+
+function activeTurnRows(
+  dots: string,
+  showWorkingIndicator = true,
+  shimmerPos = -1,
+  entries: ToolCallEntry[] = [],
+  spinFrame = "◐",
+  expandedGroupIds: Set<string> = EMPTY_EXPANDED_GROUP_IDS,
+): RenderedChatRow[] {
+  if (!showWorkingIndicator && entries.length === 0) return [];
+  const expandKey = workGroupExpandKey("active-turn-activity");
+  const expanded = expandedGroupIds.has(expandKey);
+  const suffix = entries.length > 0
+    ? `  ${expanded ? "▾" : "▸"} ${entries.length} ${entries.length === 1 ? "action" : "actions"}`
+    : "";
+  const baseRuns = showWorkingIndicator
+    ? workingShimmerRuns(shimmerPos)
+    : [];
+  const baseText = showWorkingIndicator ? `${WORKING_LABEL}${dots}` : "";
+  const rows: RenderedChatRow[] = [{
     id: "model-working",
     tone: "work",
-    runs: [...workingShimmerRuns(shimmerPos), { text: dots, color: theme.color.violet }],
-    text: `${WORKING_LABEL}${dots}`,
-    bold: true,
+    runs: [
+      ...baseRuns,
+      ...(showWorkingIndicator ? [{ text: dots, color: theme.color.violet }] : []),
+      ...(suffix ? [{ text: suffix, color: theme.color.t4 }] : []),
+    ],
+    text: `${baseText}${suffix}`,
+    bold: showWorkingIndicator,
     rail: null,
+    expandableGroupId: entries.length > 0 ? expandKey : undefined,
   }];
+  if (expanded) {
+    for (const entry of entries) {
+      rows.push(toolCallEntryRow("active-turn-activity", entry, spinFrame));
+      rows.push(...webSearchResultRows("active-turn-activity", entry));
+    }
+  }
+  return rows;
 }
 
 function modelInterruptedRows(): RenderedChatRow[] {
@@ -1250,8 +1241,6 @@ function rowsForBlock(
       return passthroughRows(block.line, width);
     case "assistant-text":
       return passthroughRows(block.line, width);
-    case "tool-calls-group":
-      return toolCallsGroupRows(block, spinFrame, expandedGroupIds);
     case "files-changed-group":
       return filesChangedGroupRows(block, width, spinFrame, expandedGroupIds);
     case "runtime-activity":
@@ -1268,9 +1257,51 @@ function rowsForBlock(
       return queuedSteerRows(block, width);
     case "plan":
       return planRows(block, spinFrame);
+    case "turn-end":
+      return turnEndRows(block, spinFrame, expandedGroupIds);
     default:
       return [];
   }
+}
+
+function turnEndRows(
+  block: Extract<AggregatedBlock, { kind: "turn-end" }>,
+  spinFrame: string,
+  expandedGroupIds: Set<string>,
+): RenderedChatRow[] {
+  const expandKey = workGroupExpandKey(block.id);
+  const expanded = expandedGroupIds.has(expandKey);
+  const parsedTime = new Date(block.timestamp);
+  const time = Number.isNaN(parsedTime.getTime())
+    ? "Turn finished"
+    : parsedTime.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const duration = block.durationMs != null ? formatDurationMs(block.durationMs) : "";
+  const status = block.status === "completed" ? "" : ` · ${block.status}`;
+  const terminalReason = block.terminalReasonLabel ? ` · ${block.terminalReasonLabel}` : "";
+  const actionLabel = block.entries.length > 0
+    ? ` · ${block.entries.length} ${block.entries.length === 1 ? "action" : "actions"}`
+    : "";
+  const caret = block.entries.length > 0 ? `${expanded ? "▾" : "▸"} ` : "";
+  const text = `${caret}${time}${duration ? ` · Ran for ${duration}` : ""}${status}${terminalReason}${actionLabel}`;
+  const rows: RenderedChatRow[] = [{
+    id: block.id,
+    tone: "footer",
+    text,
+    color: theme.color.t4,
+    rail: null,
+    expandableGroupId: block.entries.length > 0 ? expandKey : undefined,
+  }];
+  if (expanded) {
+    for (const entry of block.entries) {
+      rows.push(toolCallEntryRow(block.id, entry, spinFrame));
+      rows.push(...webSearchResultRows(block.id, entry));
+    }
+  }
+  return rows;
+}
+
+function isTranscriptBlockVisible(block: AggregatedBlock): boolean {
+  return block.kind !== "tool-calls-group";
 }
 
 function rowsForBlocks(
@@ -1282,7 +1313,7 @@ function rowsForBlocks(
 ): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
   let prevKind: AggregatedBlock["kind"] | null = null;
-  for (const block of blocks) {
+  for (const block of blocks.filter(isTranscriptBlockVisible)) {
     if (prevKind && shouldInsertSpacer(prevKind, block.kind)) {
       rows.push(spacerRow(`${block.id}:spacer`));
     }
@@ -1531,7 +1562,19 @@ function selectableRowsForBlocks({
 }): RenderedChatRow[] {
   const innerWidth = Math.max(24, width - 4);
   const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame, expandedGroupIds);
-  if (streaming) return [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator)];
+  if (streaming) {
+    return [
+      ...baseRows,
+      ...activeTurnRows(
+        dotPulse,
+        showWorkingIndicator,
+        -1,
+        turnActivityEntries(blocks, true),
+        spinFrame,
+        expandedGroupIds,
+      ),
+    ];
+  }
   if (interrupted) return [...baseRows, ...modelInterruptedRows()];
   return baseRows;
 }
@@ -1858,7 +1901,16 @@ export function computeChatScrollMaxOffset({
   if (!hasConversationContent(blocks) && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
   let statusRows = 0;
-  if (streaming) statusRows = activeTurnRows("", showWorkingIndicator).length;
+  if (streaming) {
+    statusRows = activeTurnRows(
+      "",
+      showWorkingIndicator,
+      -1,
+      turnActivityEntries(blocks, true),
+      "◐",
+      expandedLineIds,
+    ).length;
+  }
   else if (interrupted) statusRows = modelInterruptedRows().length;
   const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐", expandedLineIds).length + statusRows;
   return maxScrollOffsetForRows(rowCount, maxRows);
@@ -1935,17 +1987,25 @@ function ChatViewComponent({
   const shimmerTick = useShimmerTick();
   const showWorkingIndicator = provider !== "claude" && activeSession?.provider !== "claude";
   const rowInnerWidth = Math.max(24, width - 4);
+  const presentedBlocks = useMemo(
+    () => blocks.filter(isTranscriptBlockVisible),
+    [blocks],
+  );
+  const activeToolEntries = useMemo(
+    () => turnActivityEntries(blocks, true),
+    [blocks],
+  );
   // Split the transcript at the first live (animating) block. Everything before
   // it is frame-independent, so we memoize those rows on [blocks, width] and the
   // 100ms spinner tick no longer rebuilds the whole transcript — only the few
   // trailing live blocks (the current turn's running tool/plan/compaction groups)
   // are rebuilt per tick.
   const { historicalBlocks, tailBlocks } = useMemo(() => {
-    const idx = blocks.findIndex(isLiveBlock);
+    const idx = presentedBlocks.findIndex(isLiveBlock);
     return idx < 0
-      ? { historicalBlocks: blocks, tailBlocks: [] as AggregatedBlock[] }
-      : { historicalBlocks: blocks.slice(0, idx), tailBlocks: blocks.slice(idx) };
-  }, [blocks]);
+      ? { historicalBlocks: presentedBlocks, tailBlocks: [] as AggregatedBlock[] }
+      : { historicalBlocks: presentedBlocks.slice(0, idx), tailBlocks: presentedBlocks.slice(idx) };
+  }, [presentedBlocks]);
   const historicalRows = useMemo(
     // Pre-index historical rows by their final position (they always occupy
     // slots 0..H-1, before the seam spacer + live tail). sliceRows then reuses
@@ -1979,12 +2039,22 @@ function ChatViewComponent({
       // Sweep a bright cell across the label, with a short gap before repeating.
       const sweepLength = WORKING_LABEL.length + 6;
       const shimmerPos = shimmerTick % sweepLength;
-      withSuffix = [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator, shimmerPos)];
+      withSuffix = [
+        ...baseRows,
+        ...activeTurnRows(
+          dotPulse,
+          showWorkingIndicator,
+          shimmerPos,
+          activeToolEntries,
+          spinFrame,
+          expandedLineIds,
+        ),
+      ];
     } else if (interrupted) {
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
     return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory === "loading");
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds]);
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds, activeToolEntries]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {

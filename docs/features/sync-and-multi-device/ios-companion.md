@@ -2008,6 +2008,16 @@ different machine's cached limits.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
+- **Tool telemetry is disclosed from turn status, not repeated through the
+  mobile transcript.** `WorkChatSessionView` keeps assistant narration,
+  reasoning, provider-specific cards, and `WorkChangedFilesPanelView` rows in
+  chronological order, but filters normalized `toolGroup` rows from the visible
+  timeline. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView`
+  open the corresponding activity in `WorkTurnActivitySheet`. The live row uses
+  `ViewThatFits` so narrow phones retain the activity verb and monospaced elapsed
+  time without squeezing tool details into the same line. The association is
+  data-driven and never invents file changes for providers that did not emit
+  them.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens`. `workContextUsageViewModel` in

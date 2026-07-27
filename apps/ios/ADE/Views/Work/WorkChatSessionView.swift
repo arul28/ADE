@@ -145,6 +145,7 @@ struct WorkChatSessionView: View {
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
+  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
   @State var timelineIncrementalCache = WorkTimelineIncrementalCache()
   @State var timelineSourceKey: String?
   @State var timelineRebuildTask: Task<Void, Never>?
@@ -233,6 +234,7 @@ struct WorkChatSessionView: View {
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
+  @State var toolActivitySheet: WorkToolActivitySheetSelection?
   @State var modelUpdateInFlight = false
   /// Bumped each time a NEW blocking pending input arrives so the body can fire
   /// a single light haptic — keeps a question/plan gate from being missed.
@@ -509,8 +511,13 @@ struct WorkChatSessionView: View {
   @MainActor
   func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
     let timeline = sourceTimeline ?? timelineSnapshot.timeline
+    turnToolActivity = workTurnToolActivityIndex(from: timeline)
+    let presentedTimeline = timeline.filter { entry in
+      if case .toolGroup = entry.payload { return false }
+      return true
+    }
     var nextPresentation = makeWorkTimelinePresentation(
-      timeline: timeline,
+      timeline: presentedTimeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummaryContext,
       transcript: transcript,
@@ -529,7 +536,7 @@ struct WorkChatSessionView: View {
     if prependedHistory {
       visibleTimelineCount += timelineDelta
       nextPresentation = makeWorkTimelinePresentation(
-        timeline: timeline,
+        timeline: presentedTimeline,
         visibleCount: visibleTimelineCount,
         chatSummary: chatSummaryContext,
         transcript: transcript,
@@ -676,7 +683,11 @@ struct WorkChatSessionView: View {
     if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
-        isStreaming: true
+        isStreaming: true,
+        toolCount: turnToolActivity.active?.count ?? 0,
+        onOpenActivity: turnToolActivity.active.map { _ in
+          { toolActivitySheet = .active }
+        }
       )
       .id("chat-streaming-status")
       .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
@@ -1057,6 +1068,8 @@ struct WorkChatSessionView: View {
           cancelScheduledTimelineSnapshotRebuild()
           timelineSnapshot = .empty
           timelinePresentation = .empty
+          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], active: nil)
+          toolActivitySheet = nil
           scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: transcript) { _, _ in
@@ -1132,8 +1145,26 @@ struct WorkChatSessionView: View {
             }
           )
         }
+        .sheet(item: $toolActivitySheet) { selection in
+          if let group = toolActivityGroup(for: selection) {
+            WorkTurnActivitySheet(group: group)
+              .presentationDetents([.medium, .large])
+              .presentationDragIndicator(.visible)
+          }
+        }
       }
     }
+}
+
+private extension WorkChatSessionView {
+  func toolActivityGroup(for selection: WorkToolActivitySheetSelection) -> WorkToolGroupModel? {
+    switch selection {
+    case .active:
+      return turnToolActivity.active
+    case .completed(let turnId):
+      return turnToolActivity.completedByTurnId[turnId]
+    }
+  }
 }
 
 func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArtifactContent]) -> Int {
