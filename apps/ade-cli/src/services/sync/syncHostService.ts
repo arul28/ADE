@@ -531,6 +531,13 @@ type PeerState = {
   changesetRecoveryNotBeforeMs: number;
   remoteAddress: string | null;
   remotePort: number | null;
+  /**
+   * Frames received from this peer. A peer that closes having sent none never
+   * attempted the sync protocol at all — the relay readiness self-probe bridges
+   * in and disconnects like this on every poll — so it must not be logged with
+   * the same weight as a peer that tried to authenticate and was rejected.
+   */
+  framesReceived: number;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   adoptChallenge: {
@@ -3178,6 +3185,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pairingRecord: null,
       connectedAt: nowIso(),
       lastSeenAt: nowIso(),
+      framesReceived: 0,
       lastAppliedAt: null,
       lastKnownServerDbVersion: 0,
       latencyMs: null,
@@ -3232,6 +3240,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
     ws.on("message", (raw) => {
+      peer.framesReceived += 1;
       let envelope: ParsedSyncEnvelope;
       try {
         envelope = parseSyncEnvelope(wsDataToText(raw));
@@ -3281,7 +3290,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // changed.", "The machine took too long to respond.", …) while 1006
       // means the transport died with no close frame at all. Keep this log —
       // it is the primary tool for diagnosing mobile disconnect loops.
-      args.logger.info("sync_host.peer_closed", {
+      const closeDetail = {
         code,
         reason: reason.toString("utf8") || null,
         peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
@@ -3289,7 +3298,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         remoteAddress: peer.remoteAddress ?? null,
         connectedAt: peer.connectedAt ?? null,
         authenticated: peer.authenticated,
-      });
+      };
+      // A peer that never sent a frame never attempted the protocol: the relay
+      // readiness self-probe bridges in and drops on every poll, and so does a
+      // port scan. Logging those at info buried the real signal — a rejected
+      // peer looks identical at a glance — so keep them at debug. Anything that
+      // actually spoke, including every authentication failure, stays at info.
+      if (!peer.authenticated && peer.framesReceived === 0) {
+        args.logger.debug("sync_host.peer_closed_without_frames", closeDetail);
+      } else {
+        args.logger.info("sync_host.peer_closed", closeDetail);
+      }
       if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
         broadcastBrainStatus();
       }

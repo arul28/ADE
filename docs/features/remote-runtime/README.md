@@ -500,6 +500,14 @@ Two logs make a lost pairing diagnosable, both of which were previously silent:
 
 - Host: `sync_host.paired_device_rejected` (`unknown_device` vs
   `secret_mismatch`) and `sync_host.paired_account_owner_mismatch`.
+- Host, for peers that never spoke: `sync_host.peer_closed_without_frames` at
+  **debug**. The relay readiness self-probe bridges in over loopback and
+  disconnects without sending a frame on every poll, and so does a port scan.
+  Those used to land on `sync_host.peer_closed` at info, where routine probe
+  traffic was indistinguishable at a glance from a peer that tried to
+  authenticate and was rejected. Anything that sent at least one frame —
+  including every authentication failure — still logs `sync_host.peer_closed`
+  at info.
 - Desktop: `account.local_machines_removed`, written to
   `<machine ade dir>/runtime/account-trust.jsonl`. Deliberately **not** the
   project logger — dropping a paired secret is a machine-level credential

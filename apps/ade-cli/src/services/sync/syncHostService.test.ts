@@ -7133,6 +7133,40 @@ describe("sync host reliability guards", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
   }
 
+  // The relay readiness self-probe bridges into the sync host and disconnects
+  // without ever speaking the protocol, on every poll. Logging that at info
+  // made routine probe traffic indistinguishable at a glance from a peer that
+  // tried to authenticate and was rejected.
+  it("logs a peer that closed without sending a frame at debug", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const host = createReliabilityHost(projectRoot, { logger });
+    try {
+      const port = await host.waitUntilListening();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      });
+      ws.close(4000, "self probe complete");
+
+      await vi.waitFor(() => expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.peer_closed_without_frames",
+        expect.objectContaining({
+          authenticated: false,
+          reason: "self probe complete",
+        }),
+      ));
+      expect(logger.info).not.toHaveBeenCalledWith(
+        "sync_host.peer_closed",
+        expect.anything(),
+      );
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("serializes project switch handling without deadlocking later peer messages", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const project = createDiscoveryProject({
