@@ -1,8 +1,11 @@
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding, RecentProjectSummary } from "../../../shared/types";
 
-export const LOCAL_MACHINE_ID = "local";
-export const LOCAL_MACHINE_NAME = "This Mac";
+import {
+  THIS_MACHINE_ID as LOCAL_MACHINE_ID,
+  THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
+} from "../../../shared/machineIdentity";
+export { LOCAL_MACHINE_ID, LOCAL_MACHINE_NAME };
 
 export type RemoteProjectTabBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 

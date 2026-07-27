@@ -19,10 +19,11 @@
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types";
 
-/** Stable id for the machine ADE itself is running on. */
-export const THIS_MACHINE_ID = "this-mac";
-/** Absolute display name for the machine ADE itself is running on. */
-export const THIS_MACHINE_NAME = "This Mac";
+// Machine identity is shared, not per-module: five copies of these constants
+// with two different id values is what made the divergence guard able to warn
+// that This Mac diverged from itself. Re-exported here for existing callers.
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+export { THIS_MACHINE_ID, THIS_MACHINE_NAME };
 
 /**
  * Free-disk headroom below which a machine row reads as a warning. Matches the

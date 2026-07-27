@@ -184,12 +184,12 @@ describe("deriveLaneMachineOptions", () => {
         connection({
           id: "studio",
           projects: [
-            {
+            project({
               projectId: "other-api",
               rootPath: "/Users/x/src/api",
               displayName: "api",
               gitOriginUrl: "git@github.com:other/api.git",
-            },
+            }),
           ],
         }),
       ],
