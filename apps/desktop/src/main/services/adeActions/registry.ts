@@ -436,6 +436,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getActionRunsByGithub",
     "getActivity",
     "getActivityByGithub",
+    "getWorkflowGraph",
+    "getCheckLog",
     "getChecks",
     "getChecksByGithub",
     "getStatusByGithub",

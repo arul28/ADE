@@ -2801,6 +2801,122 @@ describe("prService.getActionRuns", () => {
   });
 });
 
+describe("prService.getCheckLog", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("refuses to download a job log that does not belong to the requested PR", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7,
+                name: "CI",
+                status: "completed",
+                conclusion: "failure",
+                head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z",
+                updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111,
+                name: "build",
+                status: "completed",
+                conclusion: "failure",
+                steps: [],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service, logger } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 999 });
+
+      expect(excerpt).toMatchObject({ jobId: 999, jobName: "", lines: [], htmlUrl: null });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith("prs.check_log_job_outside_pr", {
+        prId: "pr-actions",
+        jobId: 999,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("prService.rerunChecks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the Actions job endpoint for jobs and the Checks endpoint for check runs", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({ data: {} })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.rerunChecks({ prId: "pr-actions", actionJobIds: [77] });
+    await service.rerunChecks({ prId: "pr-actions", checkRunIds: [88] });
+
+    const rerunCalls = githubService.apiRequest.mock.calls
+      .map(([request]: [{ method?: string; path?: string; body?: unknown }]) => request)
+      .filter((request: { method?: string; path?: string }) =>
+        request.method === "POST" && (request.path?.includes("/rerun") || request.path?.includes("/rerequest"))
+      );
+    expect(rerunCalls).toEqual([
+      {
+        method: "POST",
+        path: "/repos/test-owner/test-repo/actions/jobs/77/rerun",
+        body: {},
+      },
+      {
+        method: "POST",
+        path: "/repos/test-owner/test-repo/check-runs/88/rerequest",
+        body: {},
+      },
+    ]);
+    expect(rerunCalls.some((request: { path?: string }) => request.path?.includes("check-runs/77"))).toBe(false);
+    expect(rerunCalls.some((request: { path?: string }) => request.path?.includes("actions/jobs/88"))).toBe(false);
+  });
+});
+
 describe("prService coordinate-based detail (unmapped PRs)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

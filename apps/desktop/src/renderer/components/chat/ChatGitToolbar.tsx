@@ -18,8 +18,10 @@ import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { publishLaneOtherMachineBranchStates, useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { EMPTY_MACHINE_BRANCH_STATES, type MachineBranchState } from "../../../shared/laneDivergence";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
+import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { pipelineStateOf } from "../../../shared/prPipelineState";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,12 +108,18 @@ function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; r
   let failed = 0;
   let running = 0;
   for (const c of checks) {
-    if (c.status !== "completed") {
-      running += 1;
-    } else if (c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped") {
-      passed += 1;
-    } else if (c.conclusion === "failure" || c.conclusion === "cancelled") {
-      failed += 1;
+    switch (pipelineStateOf(c)) {
+      case "running":
+      case "queued":
+        running += 1;
+        break;
+      case "passed":
+      case "skipped":
+        passed += 1;
+        break;
+      case "failed":
+        failed += 1;
+        break;
     }
   }
   return { passed, failed, running, total: checks.length };
@@ -262,8 +270,17 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // A PR operation is about to run against this worktree — arm the drift
     // warning strip so a wrong-branch PR is caught before it is opened.
     armLaneBranchDriftWarning(laneId);
+    const openPr = (prId: string) => {
+      navigate(`/prs${buildPrsRouteSearch({
+        activeTab: "normal",
+        selectedPrId: prId,
+        selectedLaneId: laneId,
+        selectedQueueGroupId: null,
+        selectedRebaseItemId: null,
+      })}`);
+    };
     if (linkedPr) {
-      navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
+      openPr(linkedPr.id);
       return;
     }
 
@@ -271,7 +288,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       setPrActionBusy(true);
       const latestPr = await refreshPr().finally(() => setPrActionBusy(false));
       if (latestPr) {
-        navigate(`/prs?tab=normal&prId=${encodeURIComponent(latestPr.id)}`);
+        openPr(latestPr.id);
         return;
       }
     }

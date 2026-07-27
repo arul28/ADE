@@ -2,6 +2,8 @@ import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { AdeCardPayload } from "../../../desktop/src/shared/adeCard";
+import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
@@ -568,9 +570,23 @@ export function renderChatLines(args: {
   const latestQueueRecoveryIndexById = new Map<string, number>();
   const neutralHealthTurnIds = new Set<string>();
   const latestHealthIndexByTurn = new Map<string, number>();
+  // `ade_card` merges by `cardId` like it does on desktop: the row stays at the
+  // position of the FIRST emit and carries the MERGED payload, so a card that
+  // ticks through states does not walk down the transcript.
+  const adeCardsById = new Map<string, { firstIndex: number; card: AdeCardPayload }>();
   for (const entry of timeline) {
     if (entry.kind !== "event") continue;
     const event = entry.envelope.event;
+    if (event.type === "ade_card") {
+      const cardId = event.cardId?.trim();
+      if (!cardId) continue;
+      const existing = adeCardsById.get(cardId);
+      adeCardsById.set(cardId, {
+        firstIndex: existing?.firstIndex ?? entry.index,
+        card: existing ? { ...existing.card, ...event } : event,
+      });
+      continue;
+    }
     if (event.type === "user_message" && event.steerId) {
       latestUserMessageIndexBySteer.set(event.steerId, entry.index);
     } else if (event.type === "user_message_resolution") {
@@ -1025,6 +1041,15 @@ export function renderChatLines(args: {
     }
     if (event.type === "tokens") {
       // Tokens drive the ContextMeter footer; do not render in chat.
+      continue;
+    }
+    if (event.type === "ade_card") {
+      const cardId = event.cardId?.trim();
+      if (!cardId) continue;
+      // Only the first emit renders; it renders the merged payload.
+      const merged = adeCardsById.get(cardId);
+      if (!merged || merged.firstIndex !== index) continue;
+      lines.push({ id, tone: "notice", body: renderAdeCardBody(merged.card) });
       continue;
     }
     if (event.type === "cloud_artifact") {

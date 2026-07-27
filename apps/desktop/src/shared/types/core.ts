@@ -349,6 +349,7 @@ export type AppNavigationTarget =
       prId?: string | null;
       prNumber?: number | null;
       laneId?: string | null;
+      detailTab?: "overview" | "files" | "checks" | null;
       // For inbound deeplinks: when the PR isn't local yet, the renderer needs the
       // owner/name to either jump to the PRs tab pre-filtered or fall back to the
       // create-lane-from-PR-branch modal.

@@ -114,8 +114,10 @@ import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/fil
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import {
+  ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   ADE_OPEN_DEEPLINK_EVENT,
+  type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
 import {
@@ -128,6 +130,7 @@ import {
   isValidRepoRelativePath,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import type {
   AppNavigationRequest,
   AppNavigationTarget,
@@ -1181,16 +1184,17 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "pr") {
-      const params = new URLSearchParams();
-      if (target.prId) params.set("prId", target.prId);
-      if (target.prNumber != null) params.set("pr", String(target.prNumber));
-      if (target.laneId) params.set("laneId", target.laneId);
-      // Forward repo identity so the PRs tab can detect cross-project
-      // deeplinks (and offer to switch projects) instead of silently
-      // showing an empty filter.
-      if (target.repoOwner) params.set("repoOwner", target.repoOwner);
-      if (target.repoName) params.set("repoName", target.repoName);
-      navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
+      navigate(`/prs${buildPrsRouteSearch({
+        activeTab: "normal",
+        selectedPrId: target.prId ?? null,
+        selectedPrNumber: target.prNumber ?? null,
+        selectedLaneId: target.laneId ?? null,
+        repoOwner: target.repoOwner ?? null,
+        repoName: target.repoName ?? null,
+        detailTab: target.detailTab ?? null,
+        selectedQueueGroupId: null,
+        selectedRebaseItemId: null,
+      })}`);
       return true;
     }
 
@@ -1263,6 +1267,19 @@ function AppNavigationBridge() {
     };
     window.addEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);
     return () => window.removeEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);
+  }, [dispatchLatest]);
+
+  // Structured in-app navigation (`ade_card.navTarget`). Same dispatcher as the
+  // deeplink path above — it just skips the URL round-trip, because the emitter
+  // already produced an `AppNavigationTarget`.
+  React.useEffect(() => {
+    const onNavigateTarget = (event: Event) => {
+      const target = (event as CustomEvent<NavigateTargetDetail>).detail?.target;
+      if (!target) return;
+      void dispatchLatest(target);
+    };
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigateTarget);
+    return () => window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigateTarget);
   }, [dispatchLatest]);
 
   if (!inboundTarget) return null;

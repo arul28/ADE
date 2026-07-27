@@ -83,7 +83,10 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prMergeQueue.test.ts` | Merge-queue transition and landing coverage. |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage. |
 | `prPollingService.ts` | 60 s fallback polling loop, fingerprint-based change detection, notification emission, targeted webhook reconciliation, and GitHub rate-limit backoff. `reconcilePrs(prIds)` coalesces webhook-linked PR ids and refreshes only those rows immediately; ordinary `poke()` still requests a normal tick. User/queue-driven hot windows poll affected PRs every 5 s for the first minute and 15 s until the three-minute cap, but poll results cannot start or restart a hot window. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
+| `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
+| `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
+| `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
@@ -120,20 +123,21 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
-| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab. The detail view has four tabs: Overview, Files, CI / Checks, and Activity. |
-| `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: hosts the central `PrTimeline`, the left commit/checks rail, the right merge/metadata rail, the inline comment composer, and the command palette. Seeds the timeline with a synthetic `pr_opened` event followed by description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments) and falls back to `args.checks` for any check that did not appear in the activity stream. `buildTimelineEvents` pins the `description` event to the top after the stable timestamp sort, so an adopted/linked PR with a wrong `createdAt` still renders its description first the way GitHub does. Owns the deep-link scroll behaviour and the merge-bypass plumbing through to the right rail. |
+| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, and resolver flows. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live data. Persists the selected sub-tab (`overview | files | checks`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the selected tab. The old `activity` target remains accepted as an alias for Overview. The failing-log drawer's **Fix in chat** action queues a bounded log excerpt into the lane's most recent Work chat (or a new-chat draft) and then navigates there. |
+| `detail/PrDetailTimelineRails.tsx` | Resizable Timeline+Rails overview: central `PrTimeline`; a left rail with the commit pane plus a capped files-changed card; and a right rail ordered reviewers/metadata → checks (the vertical growth target) → merge readiness pinned at the bottom. Left/right widths are pixel-preserving, drag-resizable, and persisted per project. Seeds the timeline with description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments), and check fallbacks. `buildTimelineEvents` pins the description first after the stable timestamp sort. Owns deep-link scrolling and merge-bypass plumbing. |
+| `detail/PrChecksTab.tsx` | CI workspace with Graph / List / Failures views. Graph nodes come from `PrWorkflowGraph`; unparseable or unmapped PRs degrade to honest workflow swimlanes. Matrix legs collapse to pips, running jobs show live elapsed time and step progress, stale-head runs are called out, and the first failing job auto-opens an on-demand log drawer with copy/full-log/re-run/Fix-in-chat actions. |
 | `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events. Bot review cards (`PrBotReviewCard`) and long bot-authored issue comments render collapsed by default so a late Greptile/Copilot/codex review or a large "## ADE review" summary shows a clamped preview with a Show more/less affordance (`CollapsibleCommentBody`) instead of dumping a wall of text at the end of the thread; `isLongBotCommentBody` gates a comment as long at >12 lines or >900 chars. |
-| `shared/PrDetailLeftRail.tsx` | Left timeline rail. Stacks the commit list (`PrCommitRail` in `layout: "pane"` mode) on top of `PrPushChecksRail`, sharing the same accent gradient that bleeds into the timeline background. |
-| `shared/PrDetailRightRail.tsx` | Right timeline rail. Splits into two resizable panels: a top `PrDetailMergeRail` (merge readiness + actions) and a bottom `PrDetailRightMetadataRail` (reviewers, labels, participants, review-submit affordance). |
 | `shared/PrDetailMergeRail.tsx` | Merge readiness panel. Hosts the GitHub-style `PrMergeChecklist` (one row per requirement, with the inline "Update branch" split button on the behind-base row), the primary "Merge" button that opens the portaled `PrMergeDialog`, the branch-cleanup affordance, and the inline lane-management entry. Owns the per-PR live-status re-poll loop that keeps `mergeStateStatus` fresh and clears the "Checking mergeability…" state. Calls helpers from `prMergeRailUtils.ts` to build the checklist and derive merge-method labels. |
 | `shared/PrMergeDialog.tsx` | Portaled merge dialog (in `LaneDialogShell`, so its method dropdown is never clipped by the rail). Method picker (`squash` / `merge` / `rebase`, remembered default), editable commit title/body seeded from `buildDefaultCommitMessage` with a "reset to GitHub default" affordance (hidden for `rebase`), collapsible command-line instructions, a stale-head guard that re-seeds defaults if the PR head advances while open, and an admin "Override & merge" path (two-click arm/confirm) shown only when the viewer `canBypass` and the merge box is `blocked`. Returns `{ method, commitTitle, commitBody, bypassRules, expectedHeadSha }`. |
 | `shared/PrMergeChecklist.tsx` | GitHub-parity requirement checklist for the merge surface: a header pill (`Checking mergeability…` while `mergeabilityComputing`, `Draft`, `Merging is blocked`, or `Ready to merge`) over a row per requirement (conflicts, behind base, checks, review). Renders approving-review avatars on the review row and the inline update-branch split button (merge commit / rebase) on the behind row. |
-| `shared/PrDetailRightMetadataRail.tsx` | Reviewers / labels / participants metadata strip in the right rail, plus the "Request AI review" affordance (`PrRequestAiReviewDialog`) and the modal-driven review-submit flow (`PrReviewSubmitModal`). |
+| `shared/PrDetailRightMetadataRail.tsx` | Right-rail stack for reviewers/labels/participants plus the checks summary. Review actions are folded into the reviewer section; the checks section grows to consume remaining height instead of leaving a dead lower gutter. Also owns the "Request AI review" and review-submit dialogs. |
 | `shared/PrCommitRail.tsx` | Commit list rail. Reused inside both the left timeline rail (pane layout) and standalone surfaces (rail layout); resolves commit selection via `activeSha` + `onSelectCommit`. |
-| `shared/PrPushChecksRail.tsx` | Compact checks summary inside the left rail; renders the green "checks passing" header strip and a scrollable `PrCheckList`. |
-| `shared/prCheckList.tsx` | Pure check rendering: `PrCheckList` groups checks into `ci` / `security` / `bots` / `other` buckets and `summarizeChecks(checks)` returns the per-bucket counters used by `PrPushChecksRail` and `PrDetailMergeRail`. |
+| `shared/PrFilesChangedCard.tsx` | Capped lower-left summary of changed files and additions/deletions; opens the Files tab without competing with the growing commit pane. |
+| `shared/PrCheckLogDrawer.tsx` | On-demand failing-step log surface shared by the checks workspace: bounded excerpt, failure headline, copy/full-log, job-scoped rerun, and Fix in chat. It never fetches until opened. |
+| `shared/prCheckList.tsx` | Pure compact check rendering and live-duration math shared by PR summary surfaces. |
 | `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildMergeChecklist` (the per-requirement rows driven by `mergeStateStatus` + `reviewDecision`), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge dialog, checklist, metadata rail, and the timeline composer plumbing. |
 | `shared/prUnifiedChecks.ts` | Reconciler between GitHub `PrCheck` rows and `PrActionRun.jobs`. Produces `UnifiedCheckItem[]` so the Checks sub-tab can display Actions jobs and named checks in a single list with steps + duration + details URL. |
+| `apps/desktop/src/shared/prPipelineState.ts` | Canonical status/conclusion → pipeline-state mapping and worst-state ranking used by service graphing, chat cards, and renderer rollups so cancelled/unknown/running jobs cannot be classified differently by surface. |
 | `shared/PrCommentComposer.tsx` | Inline comment composer used at the bottom of the timeline view; thin wrapper around `ChatComposerShell` with Enter-to-submit semantics. |
 | `shared/PrReviewSubmitModal.tsx` | Modal that captures the optional review body and `Approve` / `Request changes` / `Comment` event before submitting through `ade.prs.submitReview`. |
 | `shared/PrRequestAiReviewDialog.tsx` | "Request AI review" launcher rendered from the metadata rail; opens `LaneDialogShell`, picks a default Codex model + reasoning, and dispatches `startReviewRun`. |
@@ -745,6 +749,32 @@ any blocker). The agent is explicitly told not to wait indefinitely
 for CI or advisory review bots — ADE's poller will observe post-push
 comments and launch the next round if new actionable work appears.
 
+### PR episodes in chat
+
+PR state appears in two intentionally different chat surfaces:
+
+- **The PR companion panel answers “what is true now?”** It owns current
+  rollups and may auto-open for high-level lifecycle/push transitions.
+- **An `ade_card` transcript row answers “what happened then?”** It is one
+  bounded episode, live while the episode is running and frozen when terminal.
+  It remains in chronology to explain the surrounding agent conversation.
+
+The polling change hook emits provider-independent, durable cards into the most
+recent non-archived Work chat for the PR's lane. Variants are `pr_ci`,
+`pr_review`, `pr_merge_ready`, `pr_merged`, and `pr_conflict` (conflicts and
+behind-base transitions). CI cards use a stable
+`prId + headSha + runAttempt` identity so all workflows in one attempt roll up
+into one episode and pending → terminal updates merge
+in place rather than append. Review cards include the latest reviewer and
+unresolved-thread count. Every card carries a PR `navTarget`; CI targets include
+`detailTab: "checks"` on desktop, iOS, and TUI/deeplink fallback.
+
+`emitAdeCard` uses the normal durable transcript commit path, including for a
+cold or idle provider session. It never relies on a model emitting special
+prose, and it never uses the live-only envelope path, so cards replay after a
+restart and sync to mobile. Unknown variants degrade to required `fallbackText`
+plus the deeplink.
+
 ## Integration merge target adoption
 
 An integration proposal can target an existing lane instead of always
@@ -773,40 +803,28 @@ cards can display the same state.
 
 ## Timeline + Rails overview (PRs tab redesign)
 
-`PrDetailPane` renders two different layouts for the Overview tab
-depending on `prsTimelineRailsEnabled` in `PrsContext`:
+`PrDetailPane` always renders `PrDetailTimelineRails` for Overview; the
+legacy grid and its feature flag have been removed. The horizontal group has
+three pixel-preserving panels whose left/right widths are drag-resizable and
+persisted per project:
 
-- **Legacy grid** — the original checks/reviews/comments cards.
-- **Timeline + Rails** — `PrDetailTimelineRails` with a central event
-  timeline, a left rail (commits + push-time checks), and a right
-  rail (merge readiness + reviewers/labels/participants metadata).
-
-The right rail is itself split into two resizable panels via
-`react-resizable-panels`:
-
-- **Top: `PrDetailMergeRail`** — hosts the `PrMergeChecklist`
-  (requirement rows + inline update-branch split button), the primary
-  merge button that opens the portaled `PrMergeDialog` (method picker,
-  editable commit message, command-line instructions, admin override),
-  the live-status re-poll loop that clears the "Checking mergeability…"
-  state, the branch cleanup affordance, the lane-management entry, and
-  (for non-open PRs) reopen / close actions. See [Merge flow](#merge-flow).
-- **Bottom: `PrDetailRightMetadataRail`** — reviewers + labels editors,
-  participants list, "Request AI review" entry (`PrRequestAiReviewDialog`),
-  and the review-submit modal launcher (`PrReviewSubmitModal`).
-
-The left rail (`PrDetailLeftRail`) stacks `PrCommitRail` in pane
-layout on top of `PrPushChecksRail`, which renders a compact
-"checks passing" banner over a `PrCheckList` grouped into
-`ci` / `security` / `bots` / `other` buckets.
+- **Left — what changed:** `PrCommitRail` is the growth target and
+  `PrFilesChangedCard` is capped below it.
+- **Center — what happened:** `PrTimeline` owns the chronological thread and
+  the inline comment composer. Author/avatar identity lives inside each
+  comment/review card; the old dedicated avatar gutter is gone.
+- **Right — can this land:** `PrDetailRightMetadataRail` starts with
+  reviewers/labels/participants and lets its checks card consume the available
+  vertical slack. `PrDetailMergeRail` is a separate, shrink-free card pinned at
+  the bottom with enough width for behind-base copy and the update-branch
+  control to wrap cleanly.
 
 Below the timeline column itself, `PrCommentComposer` renders an
 inline shell-of-`ChatComposerShell` text area that posts an issue
 comment without the user having to switch sub-tabs.
 
-Per-PR state (all persisted to `localStorage` under
-`ade:prs:timelineFiltersByPrId`, `ade:prs:dismissedAiSummaries`,
-`ade:prs:timelineRailsEnabled`):
+Per-PR state (persisted to `localStorage` under
+`ade:prs:timelineFiltersByPrId` and `ade:prs:dismissedAiSummaries`):
 
 - `PrTimelineFilters` — which event types to show (description,
   commits, reviews, threads, comments, checks, deployments, labels,
@@ -889,8 +907,7 @@ best-effort — failures log a warning and do not abort the tick.
 - Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so queue/integration/rebase views do not pay full git status cost on render. Conflict analysis also runs as one batch over metadata-only active lanes, preserving overlap warnings against non-PR peer lanes without per-PR conflict calls.
 - `PrsContext` owns PR list, queue states, rebase needs, proposals,
   and the Timeline+Rails UI state
-  (`prsTimelineRailsEnabled`, `timelineFiltersByPrId`,
-  `dismissedAiSummaries`, `viewerLogin`, `detailReviewThreads`,
+  (`timelineFiltersByPrId`, `dismissedAiSummaries`, `viewerLogin`, `detailReviewThreads`,
   `detailDeployments`, `detailAiSummary`). It exposes
   `setTimelineFilters`, `setAiSummaryDismissed`, and
   `regeneratePrAiSummary`.

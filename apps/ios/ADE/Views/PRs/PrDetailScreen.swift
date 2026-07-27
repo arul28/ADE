@@ -15,13 +15,15 @@ struct PrDetailView: View {
     transitionNamespace: Namespace.ID?,
     requestedRepoOwner: String? = nil,
     requestedRepoName: String? = nil,
-    availableLanes: [LaneSummary] = []
+    availableLanes: [LaneSummary] = [],
+    initialTab: PrDetailTab = .overview
   ) {
     self.prId = prId
     self.transitionNamespace = transitionNamespace
     self.requestedRepoOwner = requestedRepoOwner
     self.requestedRepoName = requestedRepoName
     self.availableLanes = availableLanes
+    _selectedTab = State(initialValue: initialTab)
   }
 
   @State private var pr: PullRequestListItem?

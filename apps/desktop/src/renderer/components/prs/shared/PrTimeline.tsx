@@ -38,6 +38,7 @@ import {
 
 import type {
   PrAiSummary,
+  PrCheck,
   PrTimelineEvent,
   PrDeploymentState,
   PrReview,
@@ -691,7 +692,10 @@ function eventVisual(event: PrTimelineEvent): EventVisual {
       };
     case "check_update": {
       const ok = event.status === "completed" && event.conclusion === "success";
-      const bad = event.conclusion === "failure" || event.conclusion === "cancelled";
+      const bad = event.conclusion === "failure"
+        || event.conclusion === "cancelled"
+        || event.conclusion === "timed_out"
+        || event.conclusion === "action_required";
       return {
         icon: ok ? <CheckCircle size={13} weight="fill" /> : bad ? <WarningCircle size={13} weight="fill" /> : <Clock size={13} weight="bold" />,
         color: ok ? COLORS.success : bad ? COLORS.danger : COLORS.warning,
@@ -731,6 +735,12 @@ function eventVisual(event: PrTimelineEvent): EventVisual {
 // Shared rail-node visual gutter. Takes the resolved {icon,color,avatar} so the
 // folded group rows (resolved / commit / checks) can mount a synthetic node and
 // keep the connecting line unbroken across every render-item type.
+//
+// The gutter is a 2px spine, NOT a 24px avatar column: every card header already
+// renders the author avatar (`Card` / `PrReviewCard`), so a second copy on the
+// rail was pure duplication and cost the thread ~34px of horizontal room.
+// Events with no identity (checks, deployments, labels, lifecycle…) still get a
+// node — their small type icon, centered on the spine.
 function TimelineRailGutter({
   visual,
   isFirst,
@@ -744,38 +754,34 @@ function TimelineRailGutter({
 }) {
   const { icon, color, avatar } = visual;
   return (
-    <div className="flex gap-3">
-      <div className="relative flex w-6 shrink-0 justify-center">
-        {/* Continuous connecting line (bridges the 12px row gap top & bottom). */}
+    <div className="flex gap-2.5" data-testid="pr-timeline-rail-gutter">
+      <div className="relative w-0.5 shrink-0">
+        {/* Continuous spine (bridges the 12px row gap top & bottom). */}
         <div
           aria-hidden
-          className="absolute w-px"
+          data-testid="pr-timeline-rail-spine"
+          className="absolute inset-x-0 rounded-full"
           style={{
-            background: COLORS.border,
-            left: "50%",
+            background: COLORS.borderMuted,
             top: isFirst ? 12 : -12,
             bottom: isLast ? "calc(100% - 24px)" : -12,
           }}
         />
-        {avatar ? (
-          // Real avatar node + a tiny corner state badge tinted by `color`.
-          <div aria-hidden className="relative z-10 mt-0.5">
-            <PrUserAvatar user={{ login: avatar.login, avatarUrl: avatar.avatarUrl }} size={22} />
-            <span
-              className="absolute -bottom-0.5 -right-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full"
-              style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.prSurface}`, color }}
-            >
-              <span style={{ display: "inline-flex", lineHeight: 0, transform: "scale(0.62)" }}>{icon}</span>
-            </span>
-          </div>
-        ) : (
-          <div
+        {avatar ? null : (
+          <span
             aria-hidden
-            className="relative z-10 mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full"
-            style={{ background: COLORS.cardBgSolid, border: `1.5px solid ${color}`, color }}
+            data-testid="pr-timeline-rail-icon"
+            className="absolute z-10 inline-flex h-4 w-4 items-center justify-center rounded-full"
+            style={{
+              top: 6,
+              left: 1,
+              transform: "translateX(-50%)",
+              background: COLORS.prSurface,
+              color,
+            }}
           >
-            {icon}
-          </div>
+            <span style={{ display: "inline-flex", lineHeight: 0, transform: "scale(0.78)" }}>{icon}</span>
+          </span>
         )}
       </div>
       <div className="min-w-0 flex-1">{children}</div>
@@ -981,7 +987,7 @@ function ChecksSummaryRow(props: {
     [measure],
   );
   const checks = item.checks;
-  const failed = checks.filter((c) => c.conclusion === "failure" || c.conclusion === "cancelled").length;
+  const failed = checks.filter((check) => isFailedCheckConclusion(check.conclusion)).length;
   const passed = checks.filter((c) => c.status === "completed" && c.conclusion === "success").length;
   const anyFail = failed > 0;
   return (
@@ -2141,11 +2147,18 @@ function PrReviewCard({
   );
 }
 
+function isFailedCheckConclusion(conclusion: PrCheck["conclusion"]): boolean {
+  return conclusion === "failure"
+    || conclusion === "cancelled"
+    || conclusion === "timed_out"
+    || conclusion === "action_required";
+}
+
 function CheckIconForConclusion({
   conclusion,
   status,
 }: {
-  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  conclusion: PrCheck["conclusion"];
   status: "queued" | "in_progress" | "completed";
 }) {
   if (status !== "completed") {
@@ -2154,19 +2167,19 @@ function CheckIconForConclusion({
   if (conclusion === "success") {
     return <CheckCircle size={12} weight="fill" style={{ color: COLORS.success }} />;
   }
-  if (conclusion === "failure" || conclusion === "cancelled") {
+  if (isFailedCheckConclusion(conclusion)) {
     return <WarningCircle size={12} weight="fill" style={{ color: COLORS.danger }} />;
   }
   return <Clock size={12} weight="bold" style={{ color: COLORS.textMuted }} />;
 }
 
 function checkConclusionColor(
-  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null,
+  conclusion: PrCheck["conclusion"],
   status: "queued" | "in_progress" | "completed",
 ): string {
   if (status !== "completed") return COLORS.warning;
   if (conclusion === "success") return COLORS.success;
-  if (conclusion === "failure" || conclusion === "cancelled") return COLORS.danger;
+  if (isFailedCheckConclusion(conclusion)) return COLORS.danger;
   return COLORS.textMuted;
 }
 

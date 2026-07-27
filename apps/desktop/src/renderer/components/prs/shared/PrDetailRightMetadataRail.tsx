@@ -15,6 +15,7 @@ import type {
   PrCheck,
   PrDetail,
   PrReview,
+  PrRerunChecksTarget,
   PrStatus,
   PrTeam,
   PrUser,
@@ -27,8 +28,6 @@ import { PrUserAvatar } from "./PrUserAvatar";
 import { PrChecksCard } from "./PrChecksCard";
 import { isBotLogin, reviewStateForLogin } from "./prMergeRailUtils";
 
-export type RightRailFile = { filename: string; additions: number; deletions: number };
-
 export type PrDetailRightMetadataRailProps = {
   pr: PrWithConflicts;
   lane: LaneSummary | null;
@@ -37,7 +36,6 @@ export type PrDetailRightMetadataRailProps = {
   reviews: PrReview[];
   checks: PrCheck[];
   actionRuns: PrActionRun[];
-  files: RightRailFile[];
   showReviewerEditor: boolean;
   setShowReviewerEditor: (value: boolean) => void;
   reviewerInput: string;
@@ -52,16 +50,13 @@ export type PrDetailRightMetadataRailProps = {
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
-  onRerunChecks?: () => void;
-  onOpenFilesTab?: () => void;
+  onRerunChecks?: (target?: PrRerunChecksTarget) => void;
 };
 
 export type ReviewerRequest = {
   reviewers: string[];
   teamReviewers: string[];
 };
-
-const FILES_PREVIEW_LIMIT = 6;
 
 /** Neutral floating card used for every right-rail section. */
 function RightCard({
@@ -191,71 +186,6 @@ function TeamReviewerRow({ team }: { team: PrTeam }) {
   );
 }
 
-function FilesChangedCard({ files, onOpenFilesTab }: { files: RightRailFile[]; onOpenFilesTab?: () => void }) {
-  const totalAdds = files.reduce((sum, f) => sum + (f.additions || 0), 0);
-  const totalDels = files.reduce((sum, f) => sum + (f.deletions || 0), 0);
-  const preview = files.slice(0, FILES_PREVIEW_LIMIT);
-  const remaining = files.length - preview.length;
-
-  return (
-    <RightCard
-      title={`${files.length} ${files.length === 1 ? "file" : "files"} changed`}
-      action={
-        files.length && onOpenFilesTab ? (
-          <button
-            type="button"
-            onClick={onOpenFilesTab}
-            className="text-[11px]"
-            style={{ color: COLORS.accent, fontFamily: SANS_FONT, background: "none", border: "none", cursor: "pointer" }}
-          >
-            View all
-          </button>
-        ) : undefined
-      }
-    >
-      {files.length ? (
-        <div className="flex flex-col gap-1">
-          <div className="mb-0.5 flex items-center gap-2 text-[11px]" style={{ fontFamily: MONO_FONT }}>
-            <span style={{ color: COLORS.checkPass }}>+{totalAdds}</span>
-            <span style={{ color: COLORS.danger }}>−{totalDels}</span>
-          </div>
-          {preview.map((file) => {
-            const name = file.filename.split("/").pop() || file.filename;
-            return (
-              <button
-                key={file.filename}
-                type="button"
-                onClick={onOpenFilesTab}
-                className="flex items-center gap-2 rounded py-0.5 text-left transition-colors"
-                style={{ background: "none", border: "none", cursor: onOpenFilesTab ? "pointer" : "default" }}
-                title={file.filename}
-              >
-                <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
-                  {name}
-                </span>
-                <span className="text-[10px]" style={{ color: COLORS.checkPass, fontFamily: MONO_FONT }}>+{file.additions}</span>
-                <span className="text-[10px]" style={{ color: COLORS.danger, fontFamily: MONO_FONT }}>−{file.deletions}</span>
-              </button>
-            );
-          })}
-          {remaining > 0 ? (
-            <button
-              type="button"
-              onClick={onOpenFilesTab}
-              className="mt-0.5 text-left text-[11px]"
-              style={{ color: COLORS.accent, fontFamily: SANS_FONT, background: "none", border: "none", cursor: "pointer" }}
-            >
-              +{remaining} more
-            </button>
-          ) : null}
-        </div>
-      ) : (
-        <EmptyValue>No files</EmptyValue>
-      )}
-    </RightCard>
-  );
-}
-
 function parseReviewerRequestInput(input: string): ReviewerRequest {
   const reviewers: string[] = [];
   const teamReviewers: string[] = [];
@@ -289,7 +219,6 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   reviews,
   checks,
   actionRuns,
-  files,
   showReviewerEditor,
   setShowReviewerEditor,
   reviewerInput,
@@ -305,15 +234,14 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   onSelectCheck,
   onOpenChecksTab,
   onRerunChecks,
-  onOpenFilesTab,
 }: PrDetailRightMetadataRailProps) {
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
   const [reviewBody, setReviewBody] = useState("");
   const [reviewEvent, setReviewEvent] = useState<PrReviewEvent>("APPROVE");
 
-  const requestReviewEnabled = Boolean(pr.laneId && lane && (pr.state === "open" || pr.state === "draft"));
   const isOpenOrDraft = pr.state === "open" || pr.state === "draft";
+  const requestReviewEnabled = Boolean(pr.laneId && lane && isOpenOrDraft);
   const requestedReviewers = detail?.requestedReviewers ?? [];
   const requestedTeams = detail?.requestedTeams ?? [];
   const requestReviewers = () => {
@@ -328,12 +256,17 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   return (
     <div
       data-testid="pr-detail-right-metadata-rail"
-      className="flex h-full min-h-0 w-full flex-col gap-2 overflow-y-auto p-2"
+      // "Can this land", read top-to-bottom: who → what's running. The column
+      // itself no longer scrolls — the Checks card is the single growth target
+      // (`flex-1 min-h-0`) and scrolls its own list, so the rail can't end in a
+      // band of dead air under a stack of intrinsic-height cards.
+      className="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden"
     >
       {/* Combined people box: Reviewers, Labels, Assignees — one card, three
           headers separated by hairline dividers. */}
       <section
         style={floatingPane({ padding: 0, overflow: "hidden" })}
+        className="shrink-0"
         data-testid="pr-metadata-section-people"
       >
         {/* Reviewers */}
@@ -372,6 +305,46 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
                   borderRadius: 6,
                 }}
               />
+            </div>
+          ) : null}
+
+          {/* Review actions fold in here as a compact two-up row. A standalone
+              pane holding nothing but these two buttons used to be the last card
+              in the rail — i.e. the thing that absorbed all the column's slack. */}
+          {isOpenOrDraft ? (
+            <div className="mt-2 flex gap-1.5" data-testid="pr-detail-metadata-actions">
+              <button
+                type="button"
+                onClick={() => setReviewDialogOpen(true)}
+                disabled={!requestReviewEnabled}
+                className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-md text-[10.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  fontFamily: SANS_FONT,
+                  color: COLORS.accent,
+                  background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+                  border: `1px solid ${COLORS.accentBorder}`,
+                }}
+                data-tour="prs.requestAiReview"
+              >
+                <Sparkle size={11} weight="fill" />
+                ADE review
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubmitReviewOpen(true)}
+                disabled={actionBusy || !pr.laneId}
+                title={!pr.laneId ? "Map this PR to a lane to review" : undefined}
+                className="inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-md text-[10.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  fontFamily: SANS_FONT,
+                  color: COLORS.textSecondary,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                }}
+              >
+                <CheckCircle size={11} weight="bold" />
+                Submit review
+              </button>
             </div>
           ) : null}
         </div>
@@ -450,7 +423,24 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
         </div>
       </section>
 
+      {detail?.linkedIssues?.length ? (
+        <div className="shrink-0">
+          <RightCard title="Development">
+            <div className="flex flex-col gap-1">
+              {detail.linkedIssues.map((issue) => (
+                <span key={issue.number} className="text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                  #{issue.number} {issue.title}
+                </span>
+              ))}
+            </div>
+          </RightCard>
+        </div>
+      ) : null}
+
+      {/* THE growth target: checks are the one genuinely variable-length list in
+          this column, so they take the slack and scroll internally. */}
       <PrChecksCard
+        fill
         checks={checks}
         actionRuns={actionRuns}
         onSelectCheck={onSelectCheck}
@@ -458,59 +448,6 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
         onRerunChecks={onRerunChecks}
         actionBusy={actionBusy}
       />
-
-      <FilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} />
-
-      {detail?.linkedIssues?.length ? (
-        <RightCard title="Development">
-          <div className="flex flex-col gap-1">
-            {detail.linkedIssues.map((issue) => (
-              <span key={issue.number} className="text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                #{issue.number} {issue.title}
-              </span>
-            ))}
-          </div>
-        </RightCard>
-      ) : null}
-
-      {isOpenOrDraft ? (
-        <RightCard testId="pr-detail-metadata-actions">
-          <div className="flex flex-col gap-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setReviewDialogOpen(true)}
-              disabled={!requestReviewEnabled}
-              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-              style={{
-                fontFamily: SANS_FONT,
-                color: COLORS.accent,
-                background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--color-accent) 35%, transparent)",
-              }}
-              data-tour="prs.requestAiReview"
-            >
-              <Sparkle size={13} weight="fill" />
-              ADE review
-            </button>
-            <button
-              type="button"
-              onClick={() => setSubmitReviewOpen(true)}
-              disabled={actionBusy || !pr.laneId}
-              title={!pr.laneId ? "Map this PR to a lane to review" : undefined}
-              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-              style={{
-                fontFamily: SANS_FONT,
-                color: COLORS.textPrimary,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <CheckCircle size={13} weight="bold" />
-              Submit review
-            </button>
-          </div>
-        </RightCard>
-      ) : null}
 
       <PrReviewSubmitModal
         open={submitReviewOpen}

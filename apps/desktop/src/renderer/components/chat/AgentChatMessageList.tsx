@@ -86,6 +86,7 @@ import {
   deriveWebSearchResultDisplay,
   formatStructuredValue,
   groupChatTranscriptRows,
+  mergeAdjacentActivityBundleRows,
   readRecord,
   shouldCollapseUserMessageText,
   summarizeDiffStats,
@@ -104,6 +105,7 @@ import {
   type ChatWorkLogEntry,
 } from "./chatTranscriptRows";
 import { BackgroundFinishChip, SubagentResultCard, SubagentSpawnCard, SubagentStoppedGroupCard } from "./SubagentActivityCards";
+import { AdeCard } from "./AdeCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
@@ -929,16 +931,7 @@ function UnprocessedMessageAction({
 type RenderEnvelope = {
   key: string;
   timestamp: string;
-  event: AgentChatEvent | {
-    type: "tool_invocation";
-    tool: string;
-    args: unknown;
-    itemId: string;
-    parentItemId?: string;
-    turnId?: string;
-    result?: unknown;
-    status: "running" | "completed" | "failed";
-  }
+  event: AgentChatEvent
   | SubagentSpawnAnchorRenderEvent
   | SubagentResultCardRenderEvent
   | SubagentStoppedGroupEvent
@@ -4204,68 +4197,6 @@ function renderEvent(
     return null;
   }
 
-  /* ── Tool call ── */
-  if (event.type === "tool_invocation") {
-    const meta = getToolMeta(event.tool);
-    const ToolIcon = meta.icon;
-    const toolDisplay = describeToolIdentifier(event.tool);
-    const args = readRecord(event.args) ?? {};
-    const resultText = event.result === undefined ? null : formatStructuredValue(event.result);
-    const targetLine = meta.getTarget ? meta.getTarget(args) : null;
-    const label = targetLine
-      ? `${meta.label} ${targetLine}`
-      : toolDisplay.secondaryLabel
-        ? `${meta.label} ${toolDisplay.secondaryLabel}`
-        : meta.label;
-    const argCount = Object.keys(args).length;
-
-    return (
-      <CollapsibleCard
-        defaultOpen={event.status === "failed"}
-        summary={
-          <div className="flex items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*12/14)] text-fg/50">
-            {event.status === "running" ? (
-              <ThinkingDots />
-            ) : event.status === "failed" ? (
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/70" />
-            ) : (
-              <CaretRight size={10} weight="bold" className="text-fg/30" />
-            )}
-            <ToolIcon size={13} weight="regular" className="text-fg/40" />
-            <span className="truncate">{label}</span>
-          </div>
-        }
-        className={cn(
-          WORK_LOG_CARD_CLASS,
-          event.parentItemId ? "ml-5" : null,
-        )}
-      >
-        <div className="space-y-3">
-          <div>
-            <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em] text-muted-fg/35">Arguments</div>
-            {argCount ? (
-              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-                {formatStructuredValue(args)}
-              </pre>
-            ) : (
-              <div className="rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border border-white/[0.04] bg-black/20 px-4 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
-                No arguments
-              </div>
-            )}
-          </div>
-          {resultText ? (
-            <div>
-              <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em] text-muted-fg/35">Result</div>
-              <pre className={cn("max-h-52", RECESSED_BLOCK_CLASS)}>
-                {resultText}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      </CollapsibleCard>
-    );
-  }
-
   if (event.type === "tool_call") {
     const meta = getToolMeta(event.tool);
     const ToolIcon = meta.icon;
@@ -4588,6 +4519,11 @@ function renderEvent(
         ) : null}
       </div>
     );
+  }
+
+  /* ── ade_card (generic ADE-emitted card; unknown variants degrade in-place) ── */
+  if (event.type === "ade_card") {
+    return <AdeCard card={event} />;
   }
 
   /* ── Cloud artifact (auto-pulled into lane) ── */
@@ -5930,9 +5866,11 @@ function AgentChatMessageListMain({
     [allGroupedRows],
   );
   const groupedRows = useMemo(
-    () => allGroupedRows.filter((row) => (
-      row.event.type !== "work_log_group" || chatWorkLogHasFileChanges(row.event.entries)
-    )),
+    () => mergeAdjacentActivityBundleRows(
+      allGroupedRows.filter((row) => (
+        row.event.type !== "work_log_group" || chatWorkLogHasFileChanges(row.event.entries)
+      )),
+    ),
     [allGroupedRows],
   );
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);

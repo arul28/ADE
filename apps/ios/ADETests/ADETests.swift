@@ -639,12 +639,13 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     SyncService.shared = service
 
-    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://pr/arul28/ADE/729")))
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://pr/arul28/ADE/729?tab=checks")))
 
     XCTAssertEqual(
       service.requestedPrNavigation?.target,
       .githubNumber(729, repoOwner: "arul28", repoName: "ADE")
     )
+    XCTAssertEqual(service.requestedPrNavigation?.detailTab, .checks)
   }
 
   @MainActor
@@ -669,24 +670,24 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testDeepLinkRouterSendsHttpsAdePrLinksToMac() throws {
-    let expected = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"
-    let received = expectation(description: "send to Mac request posted")
-    var postedURL: String?
-    let token = NotificationCenter.default.addObserver(
-      forName: .adeSendToMacRequested,
-      object: nil,
-      queue: nil
-    ) { note in
-      postedURL = note.userInfo?["url"] as? String
-      received.fulfill()
-    }
-    defer { NotificationCenter.default.removeObserver(token) }
+  func testDeepLinkRouterRoutesHttpsAdePrLinksLocally() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
 
-    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: expected)))
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
 
-    wait(for: [received], timeout: 1)
-    XCTAssertEqual(postedURL, expected)
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42&tab=files"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(42, repoOwner: "arul", repoName: "ADE")
+    )
+    XCTAssertEqual(service.requestedPrNavigation?.detailTab, .files)
   }
 
   func testSendToMacTargetParsesHttpsAdePrLinks() throws {
@@ -706,23 +707,23 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testDeepLinkRouterStillAcceptsLegacyHttpsAdeLinks() throws {
-    let expected = "https://ade.app/open?type=pr&repo=arul/ADE&number=42"
-    let received = expectation(description: "legacy send to Mac request posted")
-    var postedURL: String?
-    let token = NotificationCenter.default.addObserver(
-      forName: .adeSendToMacRequested,
-      object: nil,
-      queue: nil
-    ) { note in
-      postedURL = note.userInfo?["url"] as? String
-      received.fulfill()
-    }
-    defer { NotificationCenter.default.removeObserver(token) }
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
 
-    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: expected)))
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
 
-    wait(for: [received], timeout: 1)
-    XCTAssertEqual(postedURL, expected)
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade.app/open?type=pr&repo=arul/ADE&number=42&tab=activity"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(42, repoOwner: "arul", repoName: "ADE")
+    )
+    XCTAssertEqual(service.requestedPrNavigation?.detailTab, .overview)
   }
 
   func testDeepLinkRepoParserRejectsMalformedRepoValues() throws {

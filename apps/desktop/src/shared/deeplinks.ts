@@ -9,13 +9,17 @@
 //   ade://commit/<sha>[?lane=<uuid>]
 //   ade://artifact/<id>
 //   ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
-//   ade://pr/<owner>/<repo>/<number>
+//   ade://pr/<owner>/<repo>/<number>[?tab=overview|files|checks]
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
-//    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number;
+//    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number[+tab];
 //    linear-issue→issue[+branch])
+//
+// PR links may name the detail sub-tab to land on (`?tab=`). The value is
+// parsed leniently: an unknown tab is dropped, never failing the whole link,
+// so a link minted by a newer ADE still opens on an older one.
 //
 // The HTTPS form lives on apps/web; it attempts the ade:// upgrade in the
 // browser and falls back to an install/marketing card if no handler is
@@ -75,11 +79,32 @@ export type DeeplinkBranchTarget = {
   branch: string;
   prNumber?: number;
 };
+/**
+ * PR detail sub-tab a deeplink can land on. Structurally identical to the PRs
+ * page's `PrDetailRouteTab` (`components/prs/prsRouteState.ts`) — kept here so
+ * `shared/` stays free of renderer imports; the two are assignable both ways.
+ */
+export type DeeplinkPrDetailTab = "overview" | "files" | "checks";
+
+const PR_DETAIL_TABS: ReadonlySet<string> = new Set<DeeplinkPrDetailTab>(["overview", "files", "checks"]);
+
+/** Lenient: an unrecognized tab is dropped rather than failing the deeplink. */
+export function parsePrDetailTabParam(raw: string | null | undefined): DeeplinkPrDetailTab | undefined {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  // `activity` is a PRs-page-only tab that predates the deeplink grammar; it
+  // collapses to overview so an old copied URL still lands somewhere sane.
+  if (normalized === "activity") return "overview";
+  return PR_DETAIL_TABS.has(normalized) ? (normalized as DeeplinkPrDetailTab) : undefined;
+}
+
 export type DeeplinkPrTarget = {
   kind: "pr";
   repoOwner: string;
   repoName: string;
   prNumber: number;
+  /** Detail sub-tab to open on. Omitted → the PRs page picks its own default. */
+  detailTab?: DeeplinkPrDetailTab;
 };
 /**
  * Linear hand-off form: Linear's "Open in coding tool" passes us the issue
@@ -240,12 +265,14 @@ export function buildAdePrUrl(pr: {
   repoOwner: string;
   repoName: string;
   githubPrNumber: number;
+  detailTab?: DeeplinkPrDetailTab;
 }): string {
   return buildDeeplink({
     kind: "pr",
     repoOwner: pr.repoOwner,
     repoName: pr.repoName,
     prNumber: pr.githubPrNumber,
+    ...(pr.detailTab ? { detailTab: pr.detailTab } : {}),
   });
 }
 
@@ -295,8 +322,13 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://repo/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/branch/${encodeBranchSegment(target.branch)}`;
       return target.prNumber ? `${base}?pr=${target.prNumber}` : base;
     }
-    case "pr":
-      return `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`;
+    case "pr": {
+      const params = new URLSearchParams();
+      if (target.detailTab) params.set("tab", target.detailTab);
+      const base = `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`;
+      const qs = params.toString();
+      return qs ? `${base}?${qs}` : base;
+    }
     case "linear-issue": {
       const base = `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
@@ -347,6 +379,7 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       params.set("type", "pr");
       params.set("repo", `${target.repoOwner}/${target.repoName}`);
       params.set("number", String(target.prNumber));
+      if (target.detailTab) params.set("tab", target.detailTab);
       break;
     case "linear-issue":
       params.set("type", "linear-issue");
@@ -445,7 +478,13 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     if (pathSegments.length !== 3) {
       return { ok: false, error: { kind: "malformed", reason: "expected pr/<owner>/<repo>/<number>" }, rawUrl };
     }
-    return buildPrTarget(safeDecode(pathSegments[0]), safeDecode(pathSegments[1]), pathSegments[2], rawUrl);
+    return buildPrTarget(
+      safeDecode(pathSegments[0]),
+      safeDecode(pathSegments[1]),
+      pathSegments[2],
+      url.searchParams.get("tab"),
+      rawUrl,
+    );
   }
 
   if (host === "linear-issue") {
@@ -499,7 +538,13 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     if (type === "branch") {
       return buildBranchTarget(owner, repo, url.searchParams.get("branch") ?? "", url.searchParams.get("pr"), rawUrl);
     }
-    return buildPrTarget(owner, repo, url.searchParams.get("number") ?? "", rawUrl);
+    return buildPrTarget(
+      owner,
+      repo,
+      url.searchParams.get("number") ?? "",
+      url.searchParams.get("tab"),
+      rawUrl,
+    );
   }
   if (type === "linear-issue") {
     const issueIdentifier = url.searchParams.get("issue") ?? "";
@@ -538,14 +583,31 @@ function buildBranchTarget(
 }
 
 /** Shared pr-target assembly for the ade:// and https:// parse paths. */
-function buildPrTarget(owner: string, repo: string, numberRaw: string, rawUrl: string): ParseResult {
+function buildPrTarget(
+  owner: string,
+  repo: string,
+  numberRaw: string,
+  detailTabRaw: string | null,
+  rawUrl: string,
+): ParseResult {
   if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
   if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
   const number = Number(numberRaw);
   if (!Number.isInteger(number) || number < 1) {
     return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
   }
-  return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
+  const detailTab = parsePrDetailTabParam(detailTabRaw);
+  return {
+    ok: true,
+    target: {
+      kind: "pr",
+      repoOwner: owner,
+      repoName: repo,
+      prNumber: number,
+      ...(detailTab ? { detailTab } : {}),
+    },
+    rawUrl,
+  };
 }
 
 function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
@@ -714,6 +776,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         prNumber: target.prNumber,
         repoOwner: target.repoOwner,
         repoName: target.repoName,
+        ...(target.detailTab ? { detailTab: target.detailTab } : {}),
       };
     case "branch":
       return {

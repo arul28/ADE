@@ -2196,7 +2196,101 @@ enum AgentChatEvent: Decodable, Equatable {
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
   case promptSuggestion(suggestion: String, turnId: String?)
   case planText(text: String, turnId: String?, itemId: String?)
+  /// Generic emittable chat card (`apps/desktop/src/shared/adeCard.ts`). The
+  /// whole payload rides in one already-normalized model so this union member
+  /// never has to grow when the wire contract adds a field.
+  case adeCard(card: WorkAdeCardModel)
   case unknown(type: String)
+}
+
+/// Wire DTO for the `ade_card` event body.
+///
+/// Every field is optional and every container decode is guarded: an
+/// unrecognized `variant`, a malformed metric, or an entirely new field must
+/// degrade to fallback text, never fail the event and drop the row.
+struct AgentChatAdeCardPayload: Decodable, Equatable {
+  var cardId: String? = nil
+  var variant: String? = nil
+  var state: String? = nil
+  var title: String? = nil
+  var subtitle: String? = nil
+  var metrics: [AgentChatAdeCardMetric]? = nil
+  var rows: [AgentChatAdeCardRow]? = nil
+  var progress: AgentChatAdeCardProgress? = nil
+  var navTarget: AgentChatAdeCardNavTarget? = nil
+  var actions: [AgentChatAdeCardAction]? = nil
+  var fallbackText: String? = nil
+  var turnId: String? = nil
+
+  /// Last-resort body for a payload that could not be decoded at all.
+  static let empty = AgentChatAdeCardPayload()
+
+  private enum CodingKeys: String, CodingKey {
+    case cardId, variant, state, title, subtitle
+    case metrics, rows, progress, navTarget, actions, fallbackText, turnId
+  }
+
+  init() {}
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    cardId = try? container.decodeIfPresent(String.self, forKey: .cardId)
+    variant = try? container.decodeIfPresent(String.self, forKey: .variant)
+    state = try? container.decodeIfPresent(String.self, forKey: .state)
+    title = try? container.decodeIfPresent(String.self, forKey: .title)
+    subtitle = try? container.decodeIfPresent(String.self, forKey: .subtitle)
+    metrics = try? container.decodeIfPresent([AgentChatAdeCardMetric].self, forKey: .metrics)
+    rows = try? container.decodeIfPresent([AgentChatAdeCardRow].self, forKey: .rows)
+    progress = try? container.decodeIfPresent(AgentChatAdeCardProgress.self, forKey: .progress)
+    navTarget = try? container.decodeIfPresent(AgentChatAdeCardNavTarget.self, forKey: .navTarget)
+    actions = try? container.decodeIfPresent([AgentChatAdeCardAction].self, forKey: .actions)
+    fallbackText = try? container.decodeIfPresent(String.self, forKey: .fallbackText)
+    turnId = try? container.decodeIfPresent(String.self, forKey: .turnId)
+  }
+}
+
+struct AgentChatAdeCardMetric: Decodable, Equatable {
+  var label: String?
+  var value: String?
+  var tone: String?
+}
+
+struct AgentChatAdeCardRow: Decodable, Equatable {
+  var icon: String?
+  var text: String?
+  var detail: String?
+  var tone: String?
+}
+
+struct AgentChatAdeCardProgress: Decodable, Equatable {
+  var passed: Int?
+  var failed: Int?
+  var running: Int?
+  var queued: Int?
+}
+
+struct AgentChatAdeCardAction: Decodable, Equatable {
+  var id: String?
+  var label: String?
+  var kind: String?
+}
+
+/// Mirrors the `AppNavigationTarget` shapes the desktop emits. Flat rather than
+/// an enum so an unknown `kind` still decodes and is simply dropped later.
+struct AgentChatAdeCardNavTarget: Decodable, Equatable {
+  var kind: String?
+  var sessionId: String?
+  var laneId: String?
+  var path: String?
+  var line: Int?
+  var sha: String?
+  var artifactId: String?
+  var repoOwner: String?
+  var repoName: String?
+  var prNumber: Int?
+  var detailTab: String?
+  var branch: String?
+  var issueIdentifier: String?
 }
 
 extension AgentChatEvent {
@@ -2868,6 +2962,13 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
         itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
       )
+    case "ade_card":
+      // Decoded off the same container: the card payload is flat inside
+      // `event`. A payload too broken to decode at all still becomes a card
+      // rather than an `unknown`, because the contract guarantees a visible
+      // fallback row on every surface.
+      let payload = (try? AgentChatAdeCardPayload(from: decoder)) ?? AgentChatAdeCardPayload.empty
+      self = .adeCard(card: makeWorkAdeCardModel(from: payload))
     default:
       self = .unknown(type: type)
     }
@@ -2927,6 +3028,7 @@ extension AgentChatEvent {
     case .autoApprovalReview: return "auto_approval_review"
     case .promptSuggestion: return "prompt_suggestion"
     case .planText: return "plan_text"
+    case .adeCard: return "ade_card"
     case .unknown(let type): return type
     }
   }

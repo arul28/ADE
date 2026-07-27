@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   CaretDown,
   CheckCircle,
@@ -32,6 +32,13 @@ export type PrMergeChecklistProps = {
   /** Transient inline message rendered under the "behind" row (result toast / conflict notice). */
   updateBranchNotice?: { tone: "success" | "error"; text: string } | null;
 };
+
+/**
+ * Readable floor for a checklist label that shares its row with an inline
+ * action. Below this the row wraps and the button drops to its own line — the
+ * label truncates, it never re-wraps into a four-line stack.
+ */
+const LABEL_MIN_PX = 120;
 
 const STATE_ICON = {
   pass: { Icon: CheckCircle, color: COLORS.success },
@@ -192,14 +199,17 @@ function ChecklistRow({
   const { Icon, color } = STATE_ICON[item.state];
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
+      {/* A row carrying an inline action wraps: the label keeps a readable floor
+          (LABEL_MIN_PX) and the button drops to a second line indented under it,
+          instead of squeezing the label into a four-line stack. */}
+      <div className={`flex items-center gap-2${behindRow ? " flex-wrap" : ""}`}>
         <Icon size={14} weight={item.state === "neutral" ? "regular" : "fill"} style={{ color, flexShrink: 0 }} />
-        <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium leading-tight" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+        <div className="min-w-0 flex-1" style={behindRow ? { flex: "1 1 auto", minWidth: LABEL_MIN_PX } : undefined}>
+          <div className="truncate text-[11px] font-medium leading-tight" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }} title={item.label}>
             {item.label}
           </div>
           {item.detail ? (
-            <div className="text-[10px] leading-tight" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+            <div className="truncate text-[10px] leading-tight" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} title={item.detail}>
               {item.detail}
             </div>
           ) : null}
@@ -218,7 +228,13 @@ function ChecklistRow({
           </div>
         ) : null}
         {behindRow ? (
-          <UpdateBranchSplitButton onUpdateBranch={behindRow.onUpdateBranch} busy={behindRow.busy} />
+          <UpdateBranchSplitButton
+            onUpdateBranch={behindRow.onUpdateBranch}
+            busy={behindRow.busy}
+            // Indent to the label's text column once the button has wrapped
+            // (14px icon + 8px gap); harmless while it still sits inline.
+            style={{ marginLeft: 22, marginTop: 5 }}
+          />
         ) : null}
       </div>
       {behindRow?.notice ? (
@@ -240,9 +256,11 @@ function ChecklistRow({
 function UpdateBranchSplitButton({
   onUpdateBranch,
   busy,
+  style,
 }: {
   onUpdateBranch?: (strategy: UpdateBranchStrategy) => void;
   busy: boolean;
+  style?: CSSProperties;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -267,7 +285,7 @@ function UpdateBranchSplitButton({
   if (!onUpdateBranch) return null;
 
   return (
-    <div className="relative flex shrink-0 items-stretch" ref={ref}>
+    <div className="relative flex shrink-0 items-stretch" style={style} ref={ref}>
       <button
         type="button"
         disabled={busy}

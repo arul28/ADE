@@ -679,12 +679,151 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     // distinct raw IDs (see agentChatService `patch` handling). Collapsing to
     // `logicalItemId` would overwrite earlier paths in `buildWorkFileChangeCards`.
     return .fileChange(path: path, diff: diff, kind: kind.rawValue, status: toolStatus(from: status ?? "running"), itemId: itemId, turnId: turnId)
+  case .adeCard(let card):
+    // `timestamp` is stamped later by `buildWorkAdeCards` from the envelope —
+    // this decoder has no envelope context.
+    return .adeCard(card)
   case .stepBoundary:
     return .unknown(type: "step_boundary")
   case .delegationState:
     return .unknown(type: "delegation_state")
   case .unknown(let type):
     return .unknown(type: type)
+  }
+}
+
+/// Normalize a decoded `ade_card` wire payload into the render model.
+///
+/// Deliberately total: anything missing or unrecognized is filled with a safe
+/// default rather than rejected, because a card that cannot be understood must
+/// still show its fallback text. `cardId` is the one field with real
+/// consequences — without it a card cannot merge, so an id-less payload gets a
+/// content-derived one and simply renders once.
+func makeWorkAdeCardModel(from payload: AgentChatAdeCardPayload) -> WorkAdeCardModel {
+  let variant = payload.variant?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let title = payload.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let subtitle = payload.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let isTerminal = payload.state?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "terminal"
+
+  let metrics: [WorkAdeCardMetric] = (payload.metrics ?? []).compactMap { metric in
+    let label = metric.label ?? ""
+    let value = metric.value ?? ""
+    guard !label.isEmpty || !value.isEmpty else { return nil }
+    return WorkAdeCardMetric(label: label, value: value, tone: workAdeCardTone(from: metric.tone))
+  }
+
+  let rows: [WorkAdeCardRow] = (payload.rows ?? []).compactMap { row in
+    guard let text = row.text, !text.isEmpty else { return nil }
+    return WorkAdeCardRow(
+      icon: row.icon.flatMap { WorkAdeCardIcon(rawValue: $0.lowercased()) },
+      text: text,
+      detail: row.detail,
+      tone: workAdeCardTone(from: row.tone)
+    )
+  }
+
+  let progress: WorkAdeCardProgress? = payload.progress.flatMap { raw in
+    let value = WorkAdeCardProgress(
+      passed: raw.passed ?? 0,
+      failed: raw.failed ?? 0,
+      running: raw.running ?? 0,
+      queued: raw.queued ?? 0
+    )
+    return value.total > 0 ? value : nil
+  }
+
+  let actions: [WorkAdeCardAction] = (payload.actions ?? []).compactMap { action in
+    guard let label = action.label, !label.isEmpty else { return nil }
+    return WorkAdeCardAction(
+      id: action.id ?? label,
+      label: label,
+      isPrimary: action.kind?.lowercased() == "primary"
+    )
+  }
+
+  let fallbackText = workAdeCardFallbackText(
+    provided: payload.fallbackText,
+    variant: variant,
+    title: title,
+    subtitle: subtitle,
+    metrics: metrics,
+    rowCount: rows.count,
+    isTerminal: isTerminal
+  )
+
+  let cardId = payload.cardId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return WorkAdeCardModel(
+    id: cardId.isEmpty
+      ? "ade-card-\(workStableDigest([variant, title, fallbackText].joined(separator: "|")))"
+      : cardId,
+    variant: variant,
+    isTerminal: isTerminal,
+    title: title.isEmpty ? (variant.isEmpty ? "Card" : variant) : title,
+    subtitle: subtitle?.isEmpty == true ? nil : subtitle,
+    metrics: metrics,
+    rows: rows,
+    progress: progress,
+    navTarget: makeWorkAdeCardNavTarget(from: payload.navTarget),
+    actions: actions,
+    fallbackText: fallbackText,
+    turnId: payload.turnId
+  )
+}
+
+private func makeWorkAdeCardNavTarget(from target: AgentChatAdeCardNavTarget?) -> WorkAdeCardNavTarget? {
+  guard let target else { return nil }
+  let laneId = target.laneId
+  switch target.kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "work", "chat":
+    guard let sessionId = target.sessionId, !sessionId.isEmpty else { return nil }
+    return .session(sessionId: sessionId, laneId: laneId)
+  case "file":
+    guard let path = target.path, !path.isEmpty else { return nil }
+    return .file(path: path, line: target.line, laneId: laneId)
+  case "commit":
+    guard let sha = target.sha, !sha.isEmpty else { return nil }
+    return .commit(sha: sha, laneId: laneId)
+  case "artifact":
+    guard let artifactId = target.artifactId, !artifactId.isEmpty else { return nil }
+    return .artifact(artifactId: artifactId)
+  case "lane":
+    guard let laneId, !laneId.isEmpty else { return nil }
+    return .lane(laneId: laneId)
+  case "pr":
+    guard let owner = target.repoOwner, !owner.isEmpty,
+          let repo = target.repoName, !repo.isEmpty,
+          let number = target.prNumber
+    else {
+      return nil
+    }
+    let detailTab: PrDetailTab?
+    switch target.detailTab?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "overview", "activity": detailTab = .overview
+    case "files": detailTab = .files
+    case "checks": detailTab = .checks
+    default: detailTab = nil
+    }
+    return .pr(
+      repoOwner: owner,
+      repoName: repo,
+      prNumber: number,
+      detailTab: detailTab
+    )
+  case "branch":
+    guard let owner = target.repoOwner, !owner.isEmpty,
+          let repo = target.repoName, !repo.isEmpty,
+          let branch = target.branch, !branch.isEmpty
+    else {
+      return nil
+    }
+    return .branch(repoOwner: owner, repoName: repo, branch: branch, prNumber: target.prNumber)
+  case "linear-issue":
+    guard let identifier = target.issueIdentifier, !identifier.isEmpty else { return nil }
+    return .linearIssue(issueIdentifier: identifier, branch: target.branch)
+  default:
+    // `route` / `files-external` and anything a newer host invents have no URL
+    // form: the card keeps its fallback text, just without a link.
+    return nil
   }
 }
 

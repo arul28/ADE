@@ -3,6 +3,7 @@ import { ArrowSquareOut } from "@phosphor-icons/react";
 import type { PrCheck } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, healthColor } from "../../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../../lib/format";
+import { checkElapsedMs, pipelineStateOf, summarizePipelineStates } from "./prUnifiedChecks";
 
 type CheckGroup = "ci" | "security" | "bots" | "other";
 
@@ -20,27 +21,19 @@ function groupCheck(check: PrCheck): CheckGroup {
 }
 
 function checkDotColor(check: PrCheck): string {
-  if (check.status !== "completed") return COLORS.warning;
-  switch (check.conclusion) {
-    case "success":
+  switch (pipelineStateOf(check)) {
+    case "passed":
       return healthColor("healthy");
-    case "failure":
-    case "cancelled":
+    case "failed":
       return healthColor("unhealthy");
-    case "neutral":
+    case "running":
+    case "queued":
+      return COLORS.warning;
     case "skipped":
       return COLORS.textDim;
     default:
       return COLORS.textMuted;
   }
-}
-
-function durationMs(check: PrCheck): number | null {
-  if (!check.startedAt) return null;
-  const end = check.completedAt ? Date.parse(check.completedAt) : Date.now();
-  const start = Date.parse(check.startedAt);
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
-  return Math.max(0, end - start);
 }
 
 export type PrCheckListSummary = {
@@ -50,22 +43,20 @@ export type PrCheckListSummary = {
   pending: number;
 };
 
+/**
+ * Coarse 4-way view of {@link summarizePipelineStates} for the merge rails.
+ * Skipped/neutral checks are deliberately in none of passing/failing/pending
+ * (they gate nothing), so this shape does not sum to `total` — callers that
+ * need a partition should use `summarizePipelineStates` directly.
+ */
 export function summarizeChecks(checks: PrCheck[]): PrCheckListSummary {
-  let passing = 0;
-  let failing = 0;
-  let pending = 0;
-  for (const check of checks) {
-    if (check.status !== "completed") {
-      pending += 1;
-      continue;
-    }
-    if (check.conclusion === "failure" || check.conclusion === "cancelled") {
-      failing += 1;
-    } else if (check.conclusion === "success") {
-      passing += 1;
-    }
-  }
-  return { total: checks.length, passing, failing, pending };
+  const buckets = summarizePipelineStates(checks);
+  return {
+    total: buckets.total,
+    passing: buckets.passed,
+    failing: buckets.failed + buckets.unknown,
+    pending: buckets.running + buckets.queued,
+  };
 }
 
 export type PrCheckListProps = {
@@ -173,7 +164,7 @@ function CheckRow({
   onOpenLog: (check: PrCheck) => void;
   onSelectCheck?: (check: PrCheck) => void;
 }) {
-  const duration = durationMs(check);
+  const duration = checkElapsedMs(check);
   const rowInteractive = Boolean(onSelectCheck);
   return (
     <div

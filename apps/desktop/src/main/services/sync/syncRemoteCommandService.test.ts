@@ -978,23 +978,28 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ ok: true });
     });
 
-    it("prs.rerunChecks parses optional checkRunIds", async () => {
+    it("prs.rerunChecks parses optional action-job and check-run ids", async () => {
       const result = await service.execute(makePayload("prs.rerunChecks", {
         prId: "pr-1",
+        actionJobIds: [303],
         checkRunIds: [101, 202],
       }));
       expect(prService.rerunChecks).toHaveBeenCalledWith({
         prId: "pr-1",
+        actionJobIds: [303],
         checkRunIds: [101, 202],
       });
       expect(result).toEqual({ ok: true });
     });
 
-    it("prs.rerunChecks rejects invalid checkRunIds", async () => {
+    it.each([
+      ["actionJobIds", [101, "bad"]],
+      ["checkRunIds", [101, "bad"]],
+    ] as const)("prs.rerunChecks rejects invalid %s", async (key, value) => {
       await expect(service.execute(makePayload("prs.rerunChecks", {
         prId: "pr-1",
-        checkRunIds: [101, "bad"],
-      }))).rejects.toThrow("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+        [key]: value,
+      }))).rejects.toThrow(`prs.rerunChecks requires ${key} to be an array of numbers when provided.`);
     });
 
     it("prs.addComment parses body and optional reply target", async () => {

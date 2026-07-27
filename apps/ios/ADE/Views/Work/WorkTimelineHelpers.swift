@@ -385,6 +385,10 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(status.rawValue)
     hasher.combine(itemId)
     combineOptional(turnId, into: &hasher)
+  case .adeCard(let card):
+    hasher.combine(card.id)
+    combineLongTextSignature(workAdeCardContentMergeKey(card), into: &hasher)
+    combineOptional(card.turnId, into: &hasher)
   case .unknown(let type):
     hasher.combine(type)
   }
@@ -1526,6 +1530,17 @@ func buildWorkTimeline(
     WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card))
   })
 
+  // Derived from the transcript rather than passed in: `ade_card` merges by
+  // `cardId`, so there is no per-envelope card list for a caller to hold.
+  entries.append(contentsOf: buildWorkAdeCards(from: transcript).enumerated().map { index, card in
+    WorkTimelineEntry(
+      id: "ade-card-\(card.id)",
+      timestamp: card.timestamp,
+      rank: 1_600 + index,
+      payload: .adeCard(card)
+    )
+  })
+
   // Pending inputs (approval / question / permission / plan-approval /
   // model-selection) are no longer emitted as inline transcript entries. They
   // render in the single consolidated pending-input strip pinned above the
@@ -2219,6 +2234,29 @@ func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileC
       status: status,
       timestamp: envelope.timestamp
     )
+  }
+  return order.compactMap { byId[$0] }
+}
+
+/// Collapse `ade_card` envelopes into one card per `cardId` — the same
+/// keyed-upsert shape as `buildWorkFileChangeCards`, except the later emit is
+/// MERGED over the earlier one instead of replacing it, so a terse progress
+/// ping cannot erase rows an earlier emit established. First-seen order and the
+/// first emit's timestamp are preserved so an updating card keeps its place in
+/// the conversation.
+func buildWorkAdeCards(from transcript: [WorkChatEnvelope]) -> [WorkAdeCardModel] {
+  var byId: [String: WorkAdeCardModel] = [:]
+  var order: [String] = []
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    guard case .adeCard(let card) = envelope.event else { continue }
+    if let existing = byId[card.id] {
+      byId[card.id] = existing.merging(card)
+    } else {
+      var seeded = card
+      seeded.timestamp = envelope.timestamp
+      order.append(card.id)
+      byId[card.id] = seeded
+    }
   }
   return order.compactMap { byId[$0] }
 }
@@ -3308,6 +3346,8 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
     return turnId
   case .done(_, _, _, let turnId, _, _, _):
     return turnId
+  case .adeCard(let card):
+    return card.turnId
   case .unknown:
     return nil
   }

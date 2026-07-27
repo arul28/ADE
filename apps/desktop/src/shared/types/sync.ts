@@ -1628,6 +1628,8 @@ export type SyncRemoteCommandAction =
   | "prs.getReviewThreads"
   | "prs.getActionRuns"
   | "prs.getActivity"
+  | "prs.getWorkflowGraph"
+  | "prs.getCheckLog"
   | "prs.getDeployments"
   | "prs.getDetailByGithub"
   | "prs.getFilesByGithub"

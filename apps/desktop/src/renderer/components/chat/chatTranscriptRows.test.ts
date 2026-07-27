@@ -7,6 +7,7 @@ import {
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
+  collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
   deriveTurnDividerData,
   deriveWebSearchResultDisplay,
@@ -14,6 +15,7 @@ import {
   eventHasPayload,
   formatStructuredValue,
   groupChatTranscriptRows,
+  mergeAdjacentActivityBundleRows,
   groupConsecutiveWorkLogRows,
   readRecord,
   shouldCollapseUserMessageText,
@@ -1906,6 +1908,57 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[1]!.event.items).toHaveLength(1);
   });
 
+  it("rejoins same-turn task cards after a hidden tool-only row is filtered", () => {
+    const grouped = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "todo_update",
+          turnId: "turn-1",
+          items: [{ id: "task-1", description: "Inspect", status: "completed" }],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "todo_update",
+          turnId: "turn-1",
+          items: [{ id: "task-2", description: "Implement", status: "in_progress" }],
+        },
+      },
+    ]);
+
+    expect(grouped.map((row) => row.event.type)).toEqual([
+      "activity_bundle",
+      "work_log_group",
+      "activity_bundle",
+    ]);
+    const visible = mergeAdjacentActivityBundleRows(
+      grouped.filter((row) => row.event.type !== "work_log_group"),
+    );
+    expect(visible).toHaveLength(1);
+    expect(visible[0]!.key).toBe(grouped[0]!.key);
+    expect(visible[0]!.timestamp).toBe("2026-03-17T10:00:02.000Z");
+    if (visible[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
+    expect(visible[0]!.event.items.map((item) => item.event.type)).toEqual([
+      "todo_update",
+      "todo_update",
+    ]);
+  });
+
   it("batches Claude PreToolUse hook errors into compact work-log groups", () => {
     const grouped = groupEvents([
       {
@@ -2848,5 +2901,132 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(resultCards).toHaveLength(1);
     if (resultCards[0]!.event.type !== "subagent_result_card") throw new Error("Expected result card");
     expect(resultCards[0]!.event.status).toBe("stopped");
+  });
+});
+
+describe("ade_card transcript rows", () => {
+  const card = (over: Partial<Extract<AgentChatEventEnvelope["event"], { type: "ade_card" }>>) => ({
+    type: "ade_card" as const,
+    cardId: "run-42",
+    variant: "proof_artifact",
+    state: "live" as const,
+    title: "Pulling cloud artifacts",
+    fallbackText: "1 cloud artifact pulled into the lane",
+    ...over,
+  });
+
+  it("merges repeat emits of one cardId into a single row, in place, under the same key", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", { type: "text", text: "before", messageId: "m-1" }),
+      env("2026-07-27T10:00:01.000Z", card({ metrics: [{ label: "files", value: "1" }] })),
+      env("2026-07-27T10:00:02.000Z", { type: "text", text: "after", messageId: "m-2" }),
+      env("2026-07-27T10:00:03.000Z", card({
+        state: "terminal",
+        title: "Cloud artifacts pulled",
+        metrics: [{ label: "files", value: "3" }],
+      })),
+    ]);
+
+    // Still THREE rows: the card did not append a second time, and it stayed at
+    // its original chronological position (index 1), ahead of "after".
+    expect(rows.map((row) => row.event.type)).toEqual(["text", "ade_card", "text"]);
+    expect(rows[1]!.key).toBe("ade-card:run-42");
+    const merged = rows[1]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.state).toBe("terminal");
+    expect(merged.title).toBe("Cloud artifacts pulled");
+    expect(merged.metrics).toEqual([{ label: "files", value: "3" }]);
+    // Row timestamp advances to the latest update.
+    expect(rows[1]!.timestamp).toBe("2026-07-27T10:00:03.000Z");
+  });
+
+  it("merges partial updates rather than blanking omitted fields", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({
+        rows: [{ icon: "file", text: "report.md" }],
+        metrics: [{ label: "files", value: "1" }],
+      })),
+      // An update that only flips state must not erase rows/metrics.
+      env("2026-07-27T10:00:01.000Z", card({ state: "terminal" })),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.state).toBe("terminal");
+    expect(merged.rows).toEqual([{ icon: "file", text: "report.md" }]);
+    expect(merged.metrics).toEqual([{ label: "files", value: "1" }]);
+  });
+
+  it("keeps distinct cardIds as distinct rows", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({ cardId: "run-1" })),
+      env("2026-07-27T10:00:01.000Z", card({ cardId: "run-2" })),
+      env("2026-07-27T10:00:02.000Z", card({ cardId: "run-1", state: "terminal" })),
+    ]);
+
+    expect(rows.map((row) => row.key)).toEqual(["ade-card:run-1", "ade-card:run-2"]);
+  });
+
+  it("is a permanent chronological row — never folded into an activity phase", () => {
+    const grouped = groupEvents([
+      env("2026-07-27T10:00:00.000Z", { type: "reasoning", text: "thinking a", turnId: "turn-1", itemId: "r-1" }),
+      env("2026-07-27T10:00:01.000Z", card({})),
+      env("2026-07-27T10:00:02.000Z", { type: "reasoning", text: "thinking b", turnId: "turn-1", itemId: "r-2" }),
+      env("2026-07-27T10:00:03.000Z", { type: "reasoning", text: "thinking c", turnId: "turn-1", itemId: "r-3" }),
+    ]);
+
+    const collapsed = collapseGroupedActivityPhaseRows(grouped);
+    const cardIndex = collapsed.findIndex((row) => row.event.type === "ade_card");
+    expect(cardIndex).toBeGreaterThanOrEqual(0);
+    // The card breaks the phase: reasoning before it cannot merge with reasoning after.
+    expect(collapsed[cardIndex - 1]?.event.type).toBe("reasoning");
+    expect(collapsed[cardIndex + 1]?.event.type).toBe("reasoning");
+  });
+
+  it("keeps incremental and full-recompute output identical across card updates", () => {
+    const stream: AgentChatEventEnvelope[] = [
+      env("2026-07-27T10:00:00.000Z", { type: "text", text: "kick off", messageId: "m-1" }),
+      env("2026-07-27T10:00:01.000Z", card({ metrics: [{ label: "files", value: "1" }] })),
+      env("2026-07-27T10:00:02.000Z", card({ cardId: "run-99", title: "Other" })),
+      env("2026-07-27T10:00:03.000Z", card({ metrics: [{ label: "files", value: "2" }] })),
+      env("2026-07-27T10:00:04.000Z", { type: "text", text: "mid", messageId: "m-2" }),
+      env("2026-07-27T10:00:05.000Z", card({ state: "terminal", metrics: [{ label: "files", value: "3" }] })),
+    ];
+
+    const full = collapseChatTranscriptEvents(stream);
+
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prevRows = collapseChatTranscriptEventsWithContext(prevEvents).rows;
+    let prevContext = collapseChatTranscriptEventsWithContext(prevEvents).context;
+    for (let index = 1; index <= stream.length; index += 1) {
+      const nextEvents = stream.slice(0, index);
+      const result = collapseChatTranscriptEventsIncrementalWithContext(
+        nextEvents,
+        prevEvents,
+        prevRows,
+        prevContext,
+      );
+      prevEvents = nextEvents;
+      prevRows = result.rows;
+      prevContext = result.context;
+    }
+
+    expect(prevRows).toEqual(full);
+    expect(prevRows.map((row) => row.key)).toEqual(full.map((row) => row.key));
+  });
+
+  it("repairs the card row position after an earlier text row is retracted", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", { type: "text", text: "retract me", messageId: "m-x" }),
+      env("2026-07-27T10:00:01.000Z", card({ metrics: [{ label: "files", value: "1" }] })),
+      env("2026-07-27T10:00:02.000Z", { type: "transcript_retraction", messageIds: ["m-x"] }),
+      env("2026-07-27T10:00:03.000Z", card({ state: "terminal", metrics: [{ label: "files", value: "9" }] })),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.metrics).toEqual([{ label: "files", value: "9" }]);
   });
 });

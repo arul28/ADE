@@ -274,6 +274,8 @@ import type {
   PrCommit,
   PrComment,
   PrGithubCoords,
+  GetPrWorkflowGraphArgs,
+  GetPrCheckLogArgs,
   PrReviewThread,
   PrHealth,
   PrMergeContext,
@@ -9658,6 +9660,14 @@ export function registerIpc({
   ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getActivity(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetWorkflowGraph, (_e, args: GetPrWorkflowGraphArgs) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getWorkflowGraph(args);
+  });
+  ipcMain.handle(IPC.prsGetCheckLog, (_e, args: GetPrCheckLogArgs) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getCheckLog(args);
   });
   ipcMain.handle(IPC.prsGetDetailByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getDetailByGithub(coords);

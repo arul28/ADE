@@ -1,131 +1,171 @@
-import { memo, useCallback, useEffect } from "react";
-import { ArrowSquareOut, X } from "@phosphor-icons/react";
+import React from "react";
+import {
+  ArrowSquareOut,
+  ArrowsClockwise,
+  Copy,
+  GithubLogo,
+  Sparkle,
+  XCircle,
+} from "@phosphor-icons/react";
 
-import type { PrCheck } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
-import { healthColor } from "../../lanes/laneDesignTokens";
+import type { PrCheckLogExcerpt, PrWorkflowGraphNode } from "../../../../shared/types";
+import {
+  COLORS,
+  MONO_FONT,
+  RADII,
+  SANS_FONT,
+  floatingPane,
+} from "../../lanes/laneDesignTokens";
 
-function openExternalUrl(url: string | undefined | null) {
-  if (!url) return;
-  const bridge = typeof window !== "undefined" ? window.ade?.app?.openExternal : undefined;
-  if (bridge) void bridge(url).catch(() => {});
+function tint(color: string, pct: number): string {
+  return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
 }
 
-function checkDotColor(check: PrCheck): string {
-  if (check.status !== "completed") return COLORS.warning;
-  switch (check.conclusion) {
-    case "success":
-      return healthColor("healthy");
-    case "failure":
-    case "cancelled":
-      return healthColor("unhealthy");
-    case "neutral":
-    case "skipped":
-      return COLORS.textDim;
-    default:
-      return COLORS.textMuted;
-  }
-}
-
-export type PrCheckLogDrawerProps = {
-  check: PrCheck | null;
-  onClose: () => void;
-};
-
-export const PrCheckLogDrawer = memo(function PrCheckLogDrawer({
-  check,
-  onClose,
-}: PrCheckLogDrawerProps) {
-  useEffect(() => {
-    if (!check) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [check, onClose]);
-
-  const handleOpenExternal = useCallback(() => {
-    if (!check?.detailsUrl) return;
-    openExternalUrl(check.detailsUrl);
-  }, [check]);
-
-  if (!check) return null;
-
+function SmallButton({
+  onClick,
+  children,
+  tone = "neutral",
+  disabled = false,
+  testId,
+  title,
+}: {
+  onClick?: () => void;
+  children: React.ReactNode;
+  tone?: "neutral" | "warn";
+  disabled?: boolean;
+  testId?: string;
+  title?: string;
+}) {
+  const color = tone === "warn" ? COLORS.warning : COLORS.textSecondary;
   return (
-    <div
-      role="dialog"
-      aria-label={`Logs for ${check.name}`}
-      data-testid="pr-check-log-drawer"
-      className="absolute inset-y-0 right-0 z-20 flex w-[380px] max-w-full flex-col"
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      data-testid={testId}
+      className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2.5 text-[11px] font-medium"
       style={{
-        background: COLORS.cardBgSolid,
-        borderLeft: `1px solid ${COLORS.border}`,
-        boxShadow: "-12px 0 32px rgba(0,0,0,0.35)",
+        borderRadius: RADII.sm,
+        fontFamily: SANS_FONT,
+        color,
+        background: COLORS.cardBg,
+        border: `1px solid ${tone === "warn" ? tint(COLORS.warning, 38) : COLORS.outlineBorder}`,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.55 : 1,
       }}
     >
-      <div
-        className="flex items-center gap-2 px-3"
-        style={{ borderBottom: `1px solid ${COLORS.border}`, height: 40 }}
-      >
-        <span
-          className="inline-block h-2 w-2 shrink-0 rounded-full"
-          style={{ background: checkDotColor(check) }}
-        />
-        <div className="min-w-0 flex-1 truncate text-[12px]" style={{ color: COLORS.textPrimary }}>
-          {check.name}
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close log drawer"
-          className="p-1 transition-colors"
-          style={{ color: COLORS.textMuted }}
-        >
-          <X size={14} weight="regular" />
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-auto p-3">
-        <div
-          className="text-[10px] uppercase tracking-[0.8px]"
-          style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
-        >
-          Logs
-        </div>
-        <pre
-          className="mt-1.5 whitespace-pre-wrap break-words rounded-[4px] p-2 text-[11px] leading-[1.5]"
-          style={{
-            fontFamily: MONO_FONT,
-            color: COLORS.textSecondary,
-            background: "rgba(0,0,0,0.35)",
-            border: `1px solid ${COLORS.border}`,
-          }}
-        >
-          Inline log preview isn’t wired up yet. Use “Open full logs” to view the
-          complete run on GitHub.
-        </pre>
-      </div>
-
-      <div className="p-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-        <button
-          type="button"
-          onClick={handleOpenExternal}
-          disabled={!check.detailsUrl}
-          className="inline-flex h-8 w-full items-center justify-center gap-2 text-[12px] font-medium transition-colors"
-          style={{
-            color: check.detailsUrl ? COLORS.accent : COLORS.textDim,
-            background: check.detailsUrl ? COLORS.accentSubtle : "transparent",
-            border: `1px solid ${check.detailsUrl ? COLORS.accentBorder : COLORS.border}`,
-            cursor: check.detailsUrl ? "pointer" : "not-allowed",
-          }}
-        >
-          Open full logs
-          <ArrowSquareOut size={12} weight="regular" />
-        </button>
-      </div>
-    </div>
+      {children}
+    </button>
   );
-});
+}
 
-export default PrCheckLogDrawer;
+export type PrCheckLogDrawerState = {
+  node: PrWorkflowGraphNode;
+  jobId: number | null;
+};
+
+export function PrCheckLogDrawer({
+  drawer,
+  excerpt,
+  loading,
+  error,
+  elapsedLabel,
+  onCopy,
+  copied,
+  onRerunJob,
+  onFixInChat,
+  onClose,
+}: {
+  drawer: PrCheckLogDrawerState;
+  excerpt: PrCheckLogExcerpt | null;
+  loading: boolean;
+  error: string | null;
+  elapsedLabel: string | null;
+  onCopy: () => void;
+  copied: boolean;
+  onRerunJob: (() => void) | undefined;
+  onFixInChat: (() => void) | undefined;
+  onClose: () => void;
+}) {
+  const stepLine = excerpt?.failingStepName
+    ? `failed at step ${excerpt.failingStepNumber ?? "?"}/${excerpt.stepTotal ?? "?"} · ${excerpt.failingStepName}`
+    : null;
+
+  return (
+    <section
+      data-testid="pr-checks-log-drawer"
+      data-job-id={drawer.jobId ?? undefined}
+      className="mt-2 overflow-hidden"
+      style={floatingPane({ padding: 0, border: `1px solid ${tint(COLORS.danger, 30)}` })}
+    >
+      <div
+        className="flex items-center gap-2 px-3 py-2.5"
+        style={{ borderBottom: `1px solid ${COLORS.borderMuted}`, background: tint(COLORS.danger, 7) }}
+      >
+        <XCircle size={13} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} />
+        <span className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+          {drawer.node.displayName}
+        </span>
+        <span className="min-w-0 truncate text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+          {[stepLine, elapsedLabel].filter(Boolean).join(" · ")}
+        </span>
+        <span className="flex-1" />
+        {onRerunJob ? (
+          <SmallButton tone="warn" onClick={onRerunJob} testId="pr-checks-drawer-rerun-job">
+            <ArrowsClockwise size={12} /> Re-run this job
+          </SmallButton>
+        ) : null}
+        {drawer.node.detailsUrl ? (
+          <SmallButton onClick={() => void window.ade.app.openExternal(drawer.node.detailsUrl!)}>
+            <GithubLogo size={12} /> GitHub
+          </SmallButton>
+        ) : null}
+        <SmallButton onClick={onClose} testId="pr-checks-drawer-close" title="Close log">✕</SmallButton>
+      </div>
+
+      {excerpt?.headline ? (
+        <div
+          className="px-3 py-2 text-[11.5px]"
+          style={{ color: COLORS.danger, fontFamily: MONO_FONT, borderBottom: `1px solid ${COLORS.borderMuted}` }}
+          data-testid="pr-checks-log-headline"
+        >
+          {excerpt.headline}
+        </div>
+      ) : null}
+
+      <pre
+        className="m-0 max-h-[220px] overflow-auto whitespace-pre-wrap px-3 py-2.5 text-[11px] leading-[1.55]"
+        style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT, background: COLORS.recessedBg }}
+        data-testid="pr-checks-log-body"
+      >
+        {loading
+          ? "Fetching the failing step's output…"
+          : error
+            ? error
+            : excerpt
+              ? excerpt.lines.join("\n")
+              : "No log excerpt available for this job."}
+      </pre>
+
+      <div className="flex items-center gap-[7px] px-3 py-2" style={{ borderTop: `1px solid ${COLORS.borderMuted}` }}>
+        <SmallButton onClick={onCopy} disabled={!excerpt} testId="pr-checks-drawer-copy">
+          <Copy size={12} /> {copied ? "Copied" : "Copy excerpt"}
+        </SmallButton>
+        <SmallButton
+          onClick={excerpt?.htmlUrl ? () => void window.ade.app.openExternal(excerpt.htmlUrl!) : undefined}
+          disabled={!excerpt?.htmlUrl}
+          testId="pr-checks-drawer-full-log"
+        >
+          <ArrowSquareOut size={12} /> Full log
+        </SmallButton>
+        <SmallButton onClick={onFixInChat} disabled={!onFixInChat} testId="pr-checks-drawer-fix-in-chat">
+          <Sparkle size={12} /> Fix in chat
+        </SmallButton>
+        <span className="ml-auto text-[10.5px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>
+          tail of the failing step · fetched on open
+        </span>
+      </div>
+    </section>
+  );
+}

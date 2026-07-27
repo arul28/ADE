@@ -675,6 +675,9 @@ export const IPC = {
   prsGetCommits: "ade.prs.getCommits",
   prsGetActionRuns: "ade.prs.getActionRuns",
   prsGetActivity: "ade.prs.getActivity",
+  // Reconstructed CI pipeline graph + failing-step log excerpt.
+  prsGetWorkflowGraph: "ade.prs.getWorkflowGraph",
+  prsGetCheckLog: "ade.prs.getCheckLog",
   // Coordinate-based detail fetches (unmapped PRs: no DB row).
   prsGetDetailByGithub: "ade.prs.getDetailByGithub",
   prsGetFilesByGithub: "ade.prs.getFilesByGithub",

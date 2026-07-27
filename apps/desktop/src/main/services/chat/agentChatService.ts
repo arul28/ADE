@@ -252,6 +252,7 @@ import type {
   AgentChatMessageSessionKind,
   AgentChatMessageSessionResult,
   AgentChatMarkCrossMachineHandoffArgs,
+  AgentChatEmitAdeCardArgs,
   AgentChatCursorModelSource,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -424,6 +425,12 @@ import {
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
+import {
+  adeCardFallbackText,
+  adeCardFingerprint,
+  type AdeCardPayload,
+  type AdeCardRow,
+} from "../../../shared/adeCard";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -2466,6 +2473,14 @@ type ManagedChatSession = {
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
+  /**
+   * `ade_card` identity cache: cardId → last emitted content fingerprint and the
+   * card's original `createdAt`. Lets `emitAdeCard` answer "is this a no-op
+   * re-emit?" without re-reading and re-parsing the whole transcript on every
+   * tick of a live card. Optional/lazily created; the durable transcript is
+   * still the source of truth on the first emit of a card id in this process.
+   */
+  adeCards?: Map<string, { fingerprint: string; createdAt: string }>;
   bufferedReasoning: {
     text: string;
     turnId?: string;
@@ -2747,7 +2762,10 @@ function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
 }
 
-function flushQueuedTranscriptWrite(filePath: string): Promise<void> {
+function flushQueuedTranscriptWrite(
+  filePath: string,
+  options?: { throwOnError?: boolean },
+): Promise<void> {
   const normalizedPath = normalizeTranscriptWritePath(filePath);
   const pending = pendingTranscriptWrites.get(normalizedPath);
   if (!pending) return transcriptWriteFlushInFlight.get(normalizedPath) ?? Promise.resolve();
@@ -2793,16 +2811,21 @@ function flushQueuedTranscriptWrite(filePath: string): Promise<void> {
       // append that threw (e.g. ENOSPC) can leave the file without a trailing
       // newline, so the next flush must re-check and heal it.
       checkedTranscriptTails.add(normalizedPath);
-    } catch {
+    } catch (error) {
       // Transcript persistence is best effort; callers still receive live events.
+      if (options?.throwOnError) throw error;
     }
   });
   transcriptWriteFlushInFlight.set(normalizedPath, flush);
-  void flush.finally(() => {
+  const clearInFlight = () => {
     if (transcriptWriteFlushInFlight.get(normalizedPath) === flush) {
       transcriptWriteFlushInFlight.delete(normalizedPath);
     }
-  });
+  };
+  // `finally()` creates a second rejecting promise when a durable caller asks
+  // errors to propagate. Use both `then` branches so cleanup cannot become an
+  // unhandled rejection separate from the returned `flush` promise.
+  void flush.then(clearInFlight, clearInFlight);
   return flush;
 }
 
@@ -30462,6 +30485,85 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  /**
+   * Emit (or update) an `ade_card` row in a chat transcript.
+   *
+   * Deliberately modelled on `markCrossMachineHandoff` above, for three reasons
+   * that are each a bug someone already shipped:
+   *
+   * - `ensureManagedSession` is UNCONDITIONAL. `managedSessions.get()` returns
+   *   undefined for a cold session, and a host emitter that early-returns on
+   *   that silently drops the card for every chat the user has not opened this
+   *   run — which is most of them.
+   * - The event goes through `emitChatEvent`, whose `default:` branch falls
+   *   through to `commitChatEvent`. That is what mints the transcript sequence.
+   *   Hand-building an envelope re-mints sequences that already exist in the
+   *   file, and consumers treating `sessionId + sequence` as an identity then
+   *   drop the new events as replays — the exact mechanism that made
+   *   AskUserQuestion cards vanish on iOS (see `readTranscriptHydrationState`).
+   * - NOT `emitTransientChatEnvelope` / `emitLiveOnlyChatEvent`: those skip
+   *   `writeTranscript`, so the card would never replay on reopen and never
+   *   reach mobile.
+   *
+   * Idempotent: a repeat emit whose payload is byte-identical to the most
+   * recent card with the same `cardId` is skipped (same guard shape as
+   * `markCrossMachineHandoff`'s `alreadyMarked`). A CHANGED payload with the
+   * same `cardId` is emitted and merges into the existing row client-side.
+   */
+  const emitAdeCard = async (args: AgentChatEmitAdeCardArgs): Promise<void> => {
+    const sessionId = args.sessionId?.trim();
+    if (!sessionId) throw new Error("A chat session is required to emit a card.");
+    const cardId = args.card?.cardId?.trim();
+    if (!cardId) throw new Error("An ade_card requires a stable cardId.");
+    const card: AdeCardPayload = {
+      ...args.card,
+      cardId,
+      // `fallbackText` is the whole degradation contract; never let an emitter
+      // ship an empty one.
+      fallbackText: adeCardFallbackText(args.card),
+    };
+
+    const managed = ensureManagedSession(sessionId);
+
+    const cache = managed.adeCards ?? (managed.adeCards = new Map());
+    let previous = cache.get(cardId) ?? null;
+    if (!previous) {
+      // Cold for this card in this process — consult the durable transcript
+      // once so the guard survives a restart. Subsequent ticks hit the cache
+      // instead of re-parsing the (potentially very large) transcript file.
+      for (const entry of readTranscriptEnvelopes(managed)) {
+        if (entry.event.type === "ade_card" && entry.event.cardId === cardId) {
+          previous = {
+            fingerprint: adeCardFingerprint(entry.event),
+            createdAt: entry.event.createdAt ?? nowIso(),
+          };
+        }
+      }
+    }
+
+    const fingerprint = adeCardFingerprint(card);
+    if (previous && previous.fingerprint === fingerprint) return;
+
+    const createdAt = previous?.createdAt ?? card.createdAt ?? nowIso();
+    emitChatEvent(managed, {
+      type: "ade_card",
+      ...card,
+      createdAt,
+      updatedAt: nowIso(),
+    });
+    // Cards are host-authored chronology, not ephemeral provider output. Flush
+    // the uncapped transcript before acknowledging the emit so a disk failure
+    // cannot turn a visible live card into one that disappears on reload.
+    await flushQueuedTranscriptWrite(
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+      { throwOnError: true },
+    );
+    // Update the no-op guard only AFTER that durable flush succeeds. A retry
+    // after ENOSPC must not be mistaken for an already-persisted card.
+    cache.set(cardId, { fingerprint, createdAt });
+    persistChatState(managed);
+  };
+
   type ExternalChatImportErrorCode =
     | "EXTERNAL_CHAT_SESSION_NOT_FOUND"
     | "EXTERNAL_CHAT_SESSION_INVALID_ARGS"
@@ -32915,6 +33017,41 @@ export function createAgentChatService(args: {
     if (!Array.isArray(artifacts) || !artifacts.length) return;
 
     const destDir = cloudArtifactsDirFor(managed, args.agentId, args.runId);
+    // Keep one navigable card per run while retaining the legacy per-file chips.
+    const proofCardId = `cloud-artifacts:${args.runId}`;
+    const pulledRows: AdeCardRow[] = [];
+    const emitProofCard = async (state: "live" | "terminal"): Promise<void> => {
+      if (!pulledRows.length) return;
+      const first = pulledRows[0]!;
+      try {
+        await emitAdeCard({
+          sessionId: managed.session.id,
+          card: {
+            cardId: proofCardId,
+            variant: "proof_artifact",
+            state,
+            title: state === "live" ? "Pulling cloud artifacts" : "Cloud artifacts pulled",
+            subtitle: args.runId,
+            metrics: [
+              { label: pulledRows.length === 1 ? "file" : "files", value: String(pulledRows.length), tone: "accent" },
+            ],
+            rows: pulledRows.slice(-5),
+            navTarget: first.detail
+              ? { kind: "file", path: first.detail, laneId: managed.session.laneId ?? null }
+              : null,
+            fallbackText: `${pulledRows.length} cloud artifact${pulledRows.length === 1 ? "" : "s"} pulled into the lane`,
+            turnId: args.turnId,
+          },
+        });
+      } catch (error) {
+        logger.warn("agent_chat.ade_card_emit_failed", {
+          sessionId: managed.session.id,
+          cardId: proofCardId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     for (const descriptor of artifacts) {
       if (typeof descriptor?.sizeBytes === "number" && descriptor.sizeBytes > CURSOR_CLOUD_ARTIFACT_MAX_BYTES) {
         logger.info("agent_chat.cursor_cloud_artifact_skipped_large", {
@@ -32953,6 +33090,7 @@ export function createAgentChatService(args: {
         }
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.writeFileSync(destPath, buffer);
+        const lanePath = path.relative(managed.laneWorktreePath, destPath);
         emitChatEvent(managed, {
           type: "cloud_artifact",
           turnId: args.turnId,
@@ -32960,10 +33098,17 @@ export function createAgentChatService(args: {
           agentId: args.agentId,
           runId: args.runId,
           path: descriptor.path,
-          lanePath: path.relative(managed.laneWorktreePath, destPath),
+          lanePath,
           ...(download.mimeType ? { mimeType: download.mimeType } : {}),
           sizeBytes: buffer.byteLength,
         });
+        pulledRows.push({
+          icon: "file",
+          text: safeRel.split(/[\\/]/).pop() || safeRel,
+          detail: lanePath,
+          tone: "neutral",
+        });
+        await emitProofCard("live");
       } catch (error) {
         logger.warn("agent_chat.cursor_cloud_artifact_download_failed", {
           sessionId: managed.session.id,
@@ -32974,6 +33119,7 @@ export function createAgentChatService(args: {
         });
       }
     }
+    await emitProofCard("terminal");
   };
 
   const resolveCloudRepoUrl = async (
@@ -42073,6 +42219,7 @@ export function createAgentChatService(args: {
     fastForwardCrossMachineHandoffLane,
     acceptCrossMachineHandoff,
     markCrossMachineHandoff,
+    emitAdeCard,
     sendMessage,
     messageSession,
     createScheduledWork,

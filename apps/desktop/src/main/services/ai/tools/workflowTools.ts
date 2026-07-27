@@ -370,6 +370,47 @@ export function createWorkflowTools(
       },
     });
 
+    // ── pr_get_check_log ──────────────────────────────────────────────
+    tools.prGetCheckLog = tool({
+      description:
+        "Read the tail of a failing GitHub Actions job's log for a pull request. " +
+        "Use this after prGetChecks or prRefreshIssueInventory reports a failing job, to see the actual error output instead of guessing.",
+      inputSchema: z.object({
+        prId: z.string().describe("The ADE PR ID the job belongs to"),
+        jobId: z
+          .number()
+          .int()
+          .positive()
+          .describe("The GitHub Actions job id (from prRefreshIssueInventory's failingJobs[].id)"),
+        maxLines: z
+          .number()
+          .int()
+          .min(1)
+          .max(2_000)
+          .optional()
+          .describe("Max lines from the tail of the failing step. Defaults to 200."),
+      }),
+      execute: async ({ prId, jobId, maxLines }) => {
+        try {
+          const excerpt = await prService.getCheckLog({ prId, jobId, maxLines });
+          return {
+            success: true,
+            jobId: excerpt.jobId,
+            jobName: excerpt.jobName,
+            failingStep: excerpt.failingStepName,
+            failingStepNumber: excerpt.failingStepNumber,
+            stepTotal: excerpt.stepTotal,
+            headline: excerpt.headline,
+            truncated: excerpt.truncated,
+            url: excerpt.htmlUrl,
+            log: excerpt.lines.join("\n"),
+          };
+        } catch (err) {
+          return formatToolError("Failed to get check log", err);
+        }
+      },
+    });
+
     tools.prRefreshIssueInventory = tool({
       description:
         "Refresh the current pull request issue inventory, including checks, failing workflow details, unresolved review threads, and advisory issue comments. " +

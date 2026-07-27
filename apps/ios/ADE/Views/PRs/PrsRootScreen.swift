@@ -35,6 +35,7 @@ struct PRsTabView: View {
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @State private var prDetailRouteScopes: [String: PrDetailRouteScope] = [:]
+  @State private var prDetailInitialTabs: [String: PrDetailTab] = [:]
   /// Memoized GitHub-list derivations (filter/sort/counts). Recomputed only
   /// when the snapshot or a filter input changes — see `recomputeGitHubDerived`
   /// — instead of on every `body` pass.
@@ -485,7 +486,8 @@ struct PRsTabView: View {
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
           requestedRepoOwner: routeScope?.repoOwner,
           requestedRepoName: routeScope?.repoName,
-          availableLanes: lanes
+          availableLanes: lanes,
+          initialTab: prDetailInitialTabs[prId] ?? .overview
         )
           .environmentObject(syncService)
       }
@@ -957,8 +959,12 @@ struct PRsTabView: View {
   }
 
   @MainActor
-  private func openGitHubDetail(_ item: GitHubPrListItem) {
+  private func openGitHubDetail(
+    _ item: GitHubPrListItem,
+    initialTab: PrDetailTab = .overview
+  ) {
     let routeId = prSyntheticGitHubId(for: item)
+    prDetailInitialTabs[routeId] = initialTab
     if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
       prDetailRouteScopes[routeId] = routeScope
     }
@@ -1391,6 +1397,7 @@ struct PRsTabView: View {
     case .detail(let prId, let laneId, let repoScope):
       selectedPrTransitionId = prId
       laneContextLaneId = laneId
+      prDetailInitialTabs[prId] = request.detailTab ?? .overview
       if let repoScope {
         prDetailRouteScopes[prId] = repoScope
       } else {
@@ -1398,7 +1405,7 @@ struct PRsTabView: View {
       }
       path.append(prId)
     case .github(let item):
-      openGitHubDetail(item)
+      openGitHubDetail(item, initialTab: request.detailTab ?? .overview)
     case .unresolved:
       errorMessage = "That pull request is not available on this phone yet."
     }

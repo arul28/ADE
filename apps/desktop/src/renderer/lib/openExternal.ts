@@ -1,3 +1,5 @@
+import type { AppNavigationTarget } from "../../shared/types/core";
+
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
 export type OpenBuiltInBrowserDetail = {
@@ -26,6 +28,27 @@ export const ADE_OPEN_DEEPLINK_EVENT = "ade:open-deeplink";
 export type OpenDeeplinkDetail = {
   url: string;
 };
+
+// Same internal navigation as `ADE_OPEN_DEEPLINK_EVENT`, entered one step later:
+// with an already-resolved `AppNavigationTarget` instead of a URL to parse. Chat
+// surfaces that carry a structured target (`ade_card.navTarget`) use this so they
+// do not have to round-trip through a string only for App.tsx to parse it back.
+export const ADE_NAVIGATE_TARGET_EVENT = "ade:navigate-target";
+
+export type NavigateTargetDetail = {
+  target: AppNavigationTarget;
+};
+
+export function navigateToAppTarget(target: AppNavigationTarget | null | undefined): void {
+  if (!target || typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent<NavigateTargetDetail>(ADE_NAVIGATE_TARGET_EVENT, { detail: { target } }),
+    );
+  } catch {
+    /* no-op */
+  }
+}
 
 export function openAdeDeeplink(url: string | undefined | null): void {
   const trimmed = (url ?? "").trim();

@@ -3027,20 +3027,24 @@ function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrRev
 }
 
 function parseRerunPrChecksArgs(value: Record<string, unknown>): RerunPrChecksArgs {
-  const checkRunIds = (() => {
-    if (value.checkRunIds == null) return undefined;
-    if (!Array.isArray(value.checkRunIds)) {
-      throw new Error("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+  const parseIds = (key: "actionJobIds" | "checkRunIds"): number[] | undefined => {
+    const candidate = value[key];
+    if (candidate == null) return undefined;
+    if (!Array.isArray(candidate)) {
+      throw new Error(`prs.rerunChecks requires ${key} to be an array of numbers when provided.`);
     }
-    return value.checkRunIds.map((entry) => {
+    return candidate.map((entry) => {
       if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry <= 0) {
-        throw new Error("prs.rerunChecks requires checkRunIds to be an array of numbers when provided.");
+        throw new Error(`prs.rerunChecks requires ${key} to be an array of numbers when provided.`);
       }
       return entry;
     });
-  })();
+  };
+  const actionJobIds = parseIds("actionJobIds");
+  const checkRunIds = parseIds("checkRunIds");
   return {
     prId: requirePrId(value, "prs.rerunChecks"),
+    ...(actionJobIds?.length ? { actionJobIds } : {}),
     ...(checkRunIds?.length ? { checkRunIds } : {}),
   };
 }
@@ -5137,6 +5141,22 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getActionRuns", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
   register("prs.getActivity", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
   register("prs.getDeployments", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
+  register("prs.getWorkflowGraph", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getWorkflowGraph({
+    prId: requirePrId(payload, "prs.getWorkflowGraph"),
+    force: payload.force === true,
+  }));
+  register("prs.getCheckLog", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const jobId = asOptionalNumber(payload.jobId);
+    if (jobId == null || !Number.isInteger(jobId) || jobId <= 0) {
+      throw new Error("prs.getCheckLog requires a positive integer jobId.");
+    }
+    const maxLines = asOptionalNumber(payload.maxLines);
+    return args.prService.getCheckLog({
+      prId: requirePrId(payload, "prs.getCheckLog"),
+      jobId,
+      ...(maxLines != null ? { maxLines } : {}),
+    });
+  });
   // Coordinate-based PR reads for PRs that are not mapped to an ADE lane (no DB
   // row). The preload sends these `*ByGithub` runtime actions before falling
   // back to IPC, so the socket runtime must register them alongside the

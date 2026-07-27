@@ -80,7 +80,7 @@ TUI, and iOS actually draw. `isTranscriptContentEvent` is an allowlist of
 *content* types on purpose: a new event type defaults to "does not break the
 run", which at worst drops a paragraph break, whereas the inverse default
 corrupts words. Keep genuinely rendered rows (`todo_update`, the `subagent_*`
-cards, `done`) in that list — they are not chrome.
+cards, `ade_card`, `done`) in that list — they are not chrome.
 
 A user message clears every open entry, so a stream key reused in a later turn
 cannot merge backwards into text that preceded the user.
@@ -248,6 +248,21 @@ implements a two-layer transform:
      virtualizer's measured heights survive; a `transcript_retraction`
      splice repairs each stored row index. Raw lifecycle events are then
      hidden.
+   - `ade_card` collapses per `cardId` into ONE permanent chronological row
+     keyed `ade-card:<cardId>`. A repeat emit mutates that row in place — a new
+     object under the same key, merged over the previous payload, so an update
+     that omits `rows`/`metrics` patches rather than blanks them — which keeps
+     the row at its original position and preserves the virtualizer's measured
+     height as a long-running card (CI, a build, an artifact pull) progresses.
+     It is deliberately NOT activity: it is never classified by
+     `classifyActivityPhaseRow` and never bundled, so an interleaved
+     reasoning/work phase cannot swallow it. The payload contract and its
+     helpers live in `apps/desktop/src/shared/adeCard.ts`, shared with the TUI;
+     iOS mirrors it. Every surface renders `fallbackText` + the `navTarget`
+     deeplink for a `variant` it does not recognize, which is what makes one
+     wire contract safe across three independent release trains. There is no
+     red tone in the vocabulary — failures are amber, per the house policy in
+     `SubagentActivityCards.tsx`.
    - `pending_input_resolved`, `activity`, `step_boundary`, raw tool/
      command/file-change events, standalone reasoning events, and
      `scheduled_work_update` are hidden (consumed by other derivations).

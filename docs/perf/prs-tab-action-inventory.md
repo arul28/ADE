@@ -74,7 +74,7 @@ Evidence run ids used so far:
 | prs.detail.files.expand | Expand a changed file diff | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.files.expand` |
 | prs.detail.ci | Open CI / Checks tab | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.ci` |
 | prs.detail.ci.open-log | Open check log drawer | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.ci.open-log`; Checks-tab button opened no drawer, Overview timeline log button did |
-| prs.detail.ci.open-full-log | Open full CI log | external-skip | `PrCheckLogDrawer.tsx` |
+| prs.detail.ci.open-full-log | Open full CI log | external-skip | `detail/PrChecksTab.tsx` |
 | prs.detail.ci.rerun | Rerun checks | prompt-only | `PrDetailPane.tsx` |
 | prs.detail.activity | Open Activity tab | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.detail.activity` |
 | prs.detail.comment | Add PR comment | prompt-only | `ActivityTab` |

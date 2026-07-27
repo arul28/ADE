@@ -72,22 +72,25 @@ enum LaneDeeplinkHelpers {
     repoOwner: String,
     repoName: String,
     number: Int,
+    detailTab: PrDetailTab? = nil,
     form: ADEDeeplinkForm = .https
   ) -> String {
     switch form {
     case .ade:
-      return [
+      let base = [
         "ade://pr",
         ADEDeepLinkURLParsing.encodedPathSegment(repoOwner),
         ADEDeepLinkURLParsing.encodedPathSegment(repoName),
         String(number),
       ].joined(separator: "/")
+      return appendQuery(to: base, items: [("tab", detailTab?.rawValue)])
     case .https:
       return httpsOpenURL(
         items: [
           ("type", "pr"),
           ("repo", "\(repoOwner)/\(repoName)"),
           ("number", String(number)),
+          ("tab", detailTab?.rawValue),
         ]
       )
     }

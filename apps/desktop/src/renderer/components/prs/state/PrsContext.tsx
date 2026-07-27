@@ -158,6 +158,10 @@ type PrsContextValue = PrsState & {
   setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
   regeneratePrAiSummary: (prId: string) => Promise<void>;
   setViewerLogin: (login: string | null) => void;
+  /** True while the shared GitHub rate-limit backoff is in effect. */
+  isGithubRateLimited: () => boolean;
+  /** Records a GitHub rate-limit hit, pausing polling for the shared window. */
+  noteGithubRateLimit: () => void;
 };
 
 const PrsContext = createContext<PrsContextValue | null>(null);
@@ -167,6 +171,7 @@ const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
 const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
+const GITHUB_RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
 const PRS_DETAIL_CACHE_TTL_MS = 60_000;
 const PRS_CONTEXT_DEFAULT_CACHE_KEY = "__default_project__";
@@ -917,6 +922,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
   const rateLimitedUntilRef = React.useRef(0);
+  // Shared with any other PR surface that polls GitHub (e.g. the detail pane's
+  // adaptive checks refresh) so they all back off together.
+  const isGithubRateLimited = useCallback(() => Date.now() < rateLimitedUntilRef.current, []);
+  const noteGithubRateLimit = useCallback(() => {
+    rateLimitedUntilRef.current = Date.now() + GITHUB_RATE_LIMIT_BACKOFF_MS;
+  }, []);
   const refreshDetailSilently = useCallback((prId: string) => {
     if (detailFetchInProgress.current) return;
     // Bail if the PR we were asked to refresh is no longer the active one
@@ -942,7 +953,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           if (result.status === "rejected") {
             const msg = String(result.reason?.message ?? result.reason);
             if (msg.includes("rate limit") || msg.includes("API rate")) {
-              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              noteGithubRateLimit();
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
               return; // Don't apply partial results during rate limiting
             }
@@ -986,7 +997,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       .finally(() => {
         detailFetchInProgress.current = false;
       });
-  }, []);
+  }, [noteGithubRateLimit]);
 
   const refreshSelectedPrDetail = useCallback(async (prId: string) => {
     if (selectedPrIdRef.current !== prId) return;
@@ -1007,7 +1018,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         if (result.status === "rejected") {
           const msg = String(result.reason?.message ?? result.reason);
           if (msg.includes("rate limit") || msg.includes("API rate")) {
-            rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+            noteGithubRateLimit();
             console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
             return;
           }
@@ -1028,7 +1039,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     } finally {
       detailFetchInProgress.current = false;
     }
-  }, []);
+  }, [noteGithubRateLimit]);
 
   const refresh = useCallback(async (args: PrRefreshArgs = {}) => {
     const githubRefreshArgs = normalizePrRefreshArgs(args);
@@ -1233,7 +1244,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
             if (cancelled || selectedPrIdRef.current !== prId) return;
             if (isPrRateLimitError(error)) {
               rateLimited = true;
-              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              noteGithubRateLimit();
               console.warn("[PrsContext] GitHub rate limit hit - pausing detail polling for 5 min");
               if (snapshotForRequest?.prId === prId) {
                 setDetailStatus(snapshotForRequest.status);
@@ -1367,7 +1378,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           if (cancelled || selectedPrIdRef.current !== prId) return;
           if (isRateLimitError(error)) {
             rateLimited = true;
-            rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+            noteGithubRateLimit();
             console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
             if (snapshotForRequest?.prId === prId) {
               setDetailStatus(snapshotForRequest.status);
@@ -1417,7 +1428,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       // Reset rate-limit backoff on cleanup so remounts start fresh
       rateLimitedUntilRef.current = 0;
     };
-  }, [active, selectedPrId, refreshDetailSilently]);
+  }, [active, noteGithubRateLimit, refreshDetailSilently, selectedPrId]);
 
   useEffect(() => {
     if (!active || !selectedPrId) return;
@@ -1682,6 +1693,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setAiSummaryDismissed,
       regeneratePrAiSummary,
       setViewerLogin,
+      isGithubRateLimited,
+      noteGithubRateLimit,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
     // setMergeMethod, setInlineTerminal, and setViewerLogin are intentionally excluded from this dependency
@@ -1730,6 +1743,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setTimelineFilters,
       setAiSummaryDismissed,
       regeneratePrAiSummary,
+      isGithubRateLimited,
+      noteGithubRateLimit,
     ],
   );
 

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import type { PrCheck } from "../../../../shared/types/prs";
+import type { PrActionRun, PrCheck } from "../../../../shared/types/prs";
 import { PrChecksCard } from "./PrChecksCard";
 
 afterEach(cleanup);
@@ -73,6 +73,22 @@ describe("PrChecksCard summary + bucketing", () => {
     expect(rowNames()).toContain("stuck");
   });
 
+  it("lists every check in fill mode so the right rail's growth target is never an empty stretch", () => {
+    render(
+      <PrChecksCard
+        fill
+        checks={[
+          check({ name: "build", conclusion: "success" }),
+          check({ name: "lint", conclusion: "success" }),
+          check({ name: "e2e", conclusion: "failure" }),
+        ]}
+        actionRuns={[]}
+      />,
+    );
+    // Failing first (buildUnifiedChecks already orders failure → running → done).
+    expect(rowNames()).toEqual(["e2e", "build", "lint"]);
+  });
+
   it("buckets neutral/skipped as skip — counted in total but excluded from the attention list", () => {
     render(
       <PrChecksCard
@@ -88,5 +104,53 @@ describe("PrChecksCard summary + bucketing", () => {
     expect(screen.getByTestId("pr-checks-card").textContent).toContain("1/3 passed");
     // … and they do not appear in the needs-attention rows.
     expect(screen.queryAllByTestId("pr-checks-card-row")).toHaveLength(0);
+  });
+
+  it("re-runs the selected check when its check-run id is available", () => {
+    const onRerunChecks = vi.fn();
+    render(
+      <PrChecksCard
+        checks={[check({ id: 42, name: "e2e", conclusion: "failure" })]}
+        actionRuns={[]}
+        onRerunChecks={onRerunChecks}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run e2e" }));
+    expect(onRerunChecks).toHaveBeenCalledWith({ checkRunIds: [42] });
+  });
+
+  it("re-runs an Actions job with its job id instead of its backing check-run id", () => {
+    const onRerunChecks = vi.fn();
+    const actionRun: PrActionRun = {
+      id: 7,
+      name: "CI",
+      status: "completed",
+      conclusion: "failure",
+      headSha: "abc123",
+      htmlUrl: "https://github.com/ade-dev/ade/actions/runs/7",
+      createdAt: "2026-07-27T11:55:00.000Z",
+      updatedAt: "2026-07-27T11:59:00.000Z",
+      jobs: [{
+        id: 77,
+        checkRunId: 88,
+        name: "e2e",
+        status: "completed",
+        conclusion: "failure",
+        startedAt: null,
+        completedAt: null,
+        steps: [],
+      }],
+    };
+    render(
+      <PrChecksCard
+        checks={[]}
+        actionRuns={[actionRun]}
+        onRerunChecks={onRerunChecks}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run CI / e2e" }));
+    expect(onRerunChecks).toHaveBeenCalledWith({ actionJobIds: [77] });
   });
 });

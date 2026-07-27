@@ -484,6 +484,53 @@ describe("prPollingService", () => {
     }));
   });
 
+  it("does not announce merge readiness while the PR is conflicted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let summary = createSummary({
+      title: "Conflicted PR",
+      checksStatus: "pending",
+      reviewStatus: "approved",
+      mergeConflicts: true,
+    });
+    let refreshCount = 0;
+    const events: any[] = [];
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => {
+        refreshCount += 1;
+        if (refreshCount >= 2) {
+          summary = {
+            ...summary,
+            checksStatus: "passing" as const,
+            updatedAt: new Date(Date.now()).toISOString(),
+          };
+        }
+        return [summary];
+      }),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "pr-notification",
+      kind: "merge_ready",
+    }));
+  });
+
   it("notification title no longer includes the PR number", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
@@ -577,6 +624,8 @@ describe("prPollingService", () => {
     expect(changedCalls[0].changedPrs).toHaveLength(1);
     expect(changedCalls[0].changes[0]).toEqual(expect.objectContaining({
       previousChecksStatus: "passing",
+      previousMergeConflicts: null,
+      previousBehindBaseBy: null,
     }));
     expect(changedCalls[0].changes[0].pr.checksStatus).toBe("failing");
   });
