@@ -60,6 +60,24 @@ describe("resolveThisMachineProjectRoot", () => {
     ).toEqual({ ok: true, rootPath: "/Users/admin/Projects/ADE" });
   });
 
+  it("accepts the same absolute checkout path when it belongs to another machine", () => {
+    expect(
+      resolveThisMachineProjectRoot({
+        projectBinding: remoteBinding,
+        openProjectTabRoots: [remoteBinding.rootPath],
+        localProjectRootPath: null,
+        boundRepoOriginUrl: "git@github.com:acme/ADE.git",
+        recentProjects: [{
+          rootPath: remoteBinding.rootPath,
+          displayName: "ADE",
+          exists: true,
+          lastOpenedAt: "2026-07-27T00:00:00.000Z",
+          gitOriginUrl: "https://github.com/acme/ADE.git",
+        }],
+      }),
+    ).toEqual({ ok: true, rootPath: remoteBinding.rootPath });
+  });
+
   it("rejects an open same-name checkout whose verified origin differs", () => {
     expect(
       resolveThisMachineProjectRoot({
@@ -108,7 +126,7 @@ describe("resolveThisMachineProjectRoot", () => {
     ).toEqual({ ok: false, message: THIS_MACHINE_PROJECT_MISSING_MESSAGE });
   });
 
-  it("never treats the bound machine's own root path as a local checkout", () => {
+  it("does not trust a matching absolute path without verified origin identity", () => {
     expect(
       resolveThisMachineProjectRoot({
         projectBinding: remoteBinding,

@@ -15,6 +15,8 @@ import {
   startCrossMachineLaneSync,
 } from "./crossMachineLanes";
 
+const originalAde = globalThis.window.ade;
+
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
     id: "lane-1",
@@ -76,6 +78,12 @@ beforeEach(() => {
 
 afterEach(() => {
   resetCrossMachineLaneSyncForTest();
+  vi.useRealTimers();
+  if (originalAde === undefined) {
+    delete (globalThis.window as any).ade;
+  } else {
+    globalThis.window.ade = originalAde;
+  }
 });
 
 describe("offline machines keep their lanes", () => {
@@ -129,6 +137,7 @@ describe("offline machines keep their lanes", () => {
   });
 
   it("keeps identity stable when nothing changed, so selectors don't re-render", () => {
+    vi.useFakeTimers();
     const lane = makeLane();
     vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
     useAppStore.getState().mergeCrossMachineLanes({
@@ -151,7 +160,6 @@ describe("offline machines keep their lanes", () => {
     const before = useAppStore.getState().crossMachineLanesByMachineId;
     useAppStore.getState().setCrossMachineMachinesOnline(["target-studio"]);
     expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(before);
-    vi.useRealTimers();
   });
 
   it("reuses decoded lane and session arrays when their content is unchanged", () => {
@@ -443,7 +451,6 @@ describe("cross-machine refresh scheduling", () => {
     const callAction = vi.fn(
       () => new Promise<{ result: unknown }>((resolve) => pending.push(resolve)),
     );
-    const originalAde = window.ade;
     window.ade = {
       remoteRuntime: {
         callAction,
@@ -462,7 +469,7 @@ describe("cross-machine refresh scheduling", () => {
         })),
         onConnectionSnapshotChanged: vi.fn(() => () => {}),
       },
-    } as typeof window.ade;
+    } as unknown as typeof window.ade;
 
     const stop = startCrossMachineLaneSync({
       scopeKey: "local:/repo-a",
@@ -492,7 +499,5 @@ describe("cross-machine refresh scheduling", () => {
     expect(callAction).toHaveBeenCalledTimes(4);
 
     stop();
-    window.ade = originalAde;
-    vi.useRealTimers();
   });
 });

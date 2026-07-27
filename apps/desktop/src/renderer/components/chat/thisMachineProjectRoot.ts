@@ -74,7 +74,6 @@ export function resolveThisMachineProjectRoot(input: {
     recent.kind !== "remote"
     && recent.exists
     && openRoots.has(recent.rootPath)
-    && recent.rootPath !== projectBinding.rootPath
     && normalizeGitRemoteIdentity(recent.gitOriginUrl) === boundIdentity);
   return matched
     ? { ok: true, rootPath: matched.rootPath }
@@ -87,21 +86,22 @@ export async function switchToThisMachineProject(input: {
   localProjectRootPath: string | null;
   switchProjectToPath: (rootPath: string) => Promise<unknown>;
 }): Promise<string | null> {
+  const projectBinding = input.projectBinding;
   let identityInput: Pick<
     Parameters<typeof resolveThisMachineProjectRoot>[0],
     "boundRepoOriginUrl" | "recentProjects"
   > = {};
-  if (input.projectBinding?.kind === "remote") {
+  if (projectBinding?.kind === "remote") {
     try {
       const [snapshot, recentProjects] = await Promise.all([
         window.ade.remoteRuntime.getConnectionSnapshot(),
         window.ade.project.listRecent(),
       ]);
       const connection = snapshot.connections.find(
-        (candidate) => candidate.target.id === input.projectBinding?.targetId,
+        (candidate) => candidate.target.id === projectBinding.targetId,
       );
       const project = connection?.projects.find(
-        (candidate) => candidate.projectId === input.projectBinding?.projectId,
+        (candidate) => candidate.projectId === projectBinding.projectId,
       );
       identityInput = {
         boundRepoOriginUrl: project?.gitOriginUrl ?? null,

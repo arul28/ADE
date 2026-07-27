@@ -6828,6 +6828,10 @@ function AgentChatMessageListMain({
           anchored={anchored}
           onScrollToRowKey={scrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
+          staleInterruptReceipts={staleInterruptReceipts}
+          onCancelQueuedMessage={onCancelQueuedMessage}
+          onRestoreCancelledQueue={onRestoreCancelledQueue}
+          settledQueueRecoveryIds={settledQueueRecoveryIds}
         />
       );
     }

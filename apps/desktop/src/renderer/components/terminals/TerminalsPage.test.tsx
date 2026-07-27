@@ -410,6 +410,12 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("switches to a foreign shell's owning project before selecting it", async () => {
+    let resolveSwitch!: () => void;
+    workMocks.fns.switchRemoteProject.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveSwitch = resolve;
+      }),
+    );
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
@@ -430,8 +436,12 @@ describe("TerminalsPage chat session activation", () => {
       [session.id],
     );
 
+    expect(workMocks.fns.switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
+    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
+
+    resolveSwitch();
     await waitFor(() => {
-      expect(workMocks.fns.switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
       expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-foreign");
       expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-foreign");
     });

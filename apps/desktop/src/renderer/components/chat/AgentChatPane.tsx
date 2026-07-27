@@ -8961,7 +8961,15 @@ export function AgentChatPane({
   ]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
-    if (parallelLaunchBusy || projectTransitionBlocksChat) {
+    // Machine selection starts the store transition synchronously, before React
+    // can publish a fresh `projectTransitionBlocksChat` render. Read the store
+    // at the mutation boundary too so foreground and background launches cannot
+    // capture the checkout that was active one event earlier.
+    if (
+      parallelLaunchBusy
+      || projectTransitionBlocksChat
+      || rootAppStoreApi.getState().projectTransition != null
+    ) {
       return;
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
@@ -9450,7 +9458,13 @@ export function AgentChatPane({
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
     armLaneBranchDriftWarning(laneId);
-    if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) {
+    if (
+      submitInFlightRef.current
+      || busy
+      || parallelLaunchBusy
+      || projectTransitionBlocksChat
+      || rootAppStoreApi.getState().projectTransition != null
+    ) {
       if (submitInFlightRef.current) {
         setError("Still sending the previous message. Wait a moment and try again.");
       }

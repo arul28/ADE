@@ -6356,7 +6356,7 @@ describe("per-chat runtime routing", () => {
   };
 
   async function mountBridge() {
-    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+    const invoke = vi.fn(async (channel: string, arg?: unknown): Promise<unknown> => {
       if (channel === IPC.appGetWindowSession) {
         return {
           windowId: 1,
@@ -6470,5 +6470,90 @@ describe("per-chat runtime routing", () => {
       IPC.localRuntimeCallAction,
       expect.anything(),
     );
+  });
+
+  it("resets a pinned chat event cursor when the remote runtime epoch changes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge();
+      const oldEnvelope = {
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:00:00.000Z",
+        event: { type: "text", text: "before restart" },
+      };
+      const newEnvelope = {
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:01:00.000Z",
+        event: { type: "text", text: "after restart" },
+      };
+      const streamRequests: unknown[] = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push(arg);
+        if (streamRequests.length === 1) {
+          return {
+            events: [{
+              id: 12,
+              timestamp: oldEnvelope.timestamp,
+              category: "chat",
+              payload: oldEnvelope,
+            }],
+            nextCursor: 12,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        if (streamRequests.length === 2) {
+          return {
+            events: [],
+            nextCursor: 12,
+            hasMore: false,
+            eventEpoch: "epoch-b",
+          };
+        }
+        return {
+          events: [{
+            id: 1,
+            timestamp: newEnvelope.timestamp,
+            category: "chat",
+            payload: newEnvelope,
+          }],
+          nextCursor: 1,
+          hasMore: false,
+          eventEpoch: "epoch-b",
+        };
+      });
+
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineB);
+      await vi.advanceTimersByTimeAsync(750);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(streamRequests).toEqual([
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 0, limit: 200 },
+        },
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 12, limit: 200 },
+        },
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 0, limit: 200 },
+        },
+      ]);
+      expect(callback).toHaveBeenCalledWith(oldEnvelope);
+      expect(callback).toHaveBeenCalledWith(newEnvelope);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

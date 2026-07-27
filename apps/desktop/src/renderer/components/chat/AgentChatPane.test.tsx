@@ -5072,6 +5072,85 @@ describe("AgentChatPane submit recovery", () => {
     expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
   });
 
+  it("blocks every draft launch path until a cross-machine auto-create switch settles", async () => {
+    const { create } = installAdeMocks({ sessions: [] });
+    const localBinding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+    };
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/Volumes/work/project-under-test",
+      displayName: "project-under-test",
+    };
+    let finishSwitch!: () => void;
+    const switchRemoteProject = vi.fn(() => new Promise<typeof remoteBinding>((resolve) => {
+      finishSwitch = () => {
+        useAppStore.setState({
+          project: {
+            rootPath: remoteBinding.rootPath,
+            displayName: remoteBinding.displayName,
+          } as any,
+          projectBinding: remoteBinding,
+          projectTransition: null,
+        });
+        resolve(remoteBinding);
+      };
+    }));
+    useAppStore.setState({
+      project: {
+        rootPath: localBinding.rootPath,
+        displayName: localBinding.displayName,
+      } as any,
+      projectBinding: localBinding,
+      openProjectTabRoots: [localBinding.rootPath],
+      openRemoteProjectTabs: [remoteBinding],
+      switchRemoteProject,
+    });
+    window.ade.remoteRuntime = {
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [{
+          state: "connected",
+          target: {
+            id: remoteBinding.targetId,
+            name: remoteBinding.runtimeName,
+            hostname: "studio",
+          },
+          projects: [{
+            projectId: remoteBinding.projectId,
+            rootPath: remoteBinding.rootPath,
+            displayName: remoteBinding.displayName,
+            gitOriginUrl: null,
+          }],
+        }],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      }),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    } as any;
+
+    renderAutoCreateDraftPane();
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Create this on the studio." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    const machineRows = await screen.findAllByText("Auto-create lane here");
+    fireEvent.click(machineRows.at(-1)!);
+
+    expect(switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Auto-create in background" }));
+    expect(create).not.toHaveBeenCalled();
+
+    finishSwitch();
+    await Promise.resolve();
+  });
+
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {
     const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
 

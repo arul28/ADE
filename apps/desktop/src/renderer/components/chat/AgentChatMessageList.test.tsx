@@ -135,6 +135,7 @@ function renderMessageList(
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
+    onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
     hasOlderHistory?: boolean;
     loadingOlderHistory?: boolean;
@@ -155,6 +156,7 @@ function renderMessageList(
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
+        onRestoreCancelledQueue={options?.onRestoreCancelledQueue}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
         hasOlderHistory={options?.hasOlderHistory}
         loadingOlderHistory={options?.loadingOlderHistory}
@@ -2414,6 +2416,84 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
+  });
+
+  it("keeps queue recovery actions available in virtualized transcript rows", async () => {
+    const onRestoreCancelledQueue = vi.fn().mockResolvedValue(true);
+    const events = Array.from({ length: 64 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+      event: {
+        type: "user_message",
+        text: `message ${index}`,
+        messageId: `user-${index}`,
+        turnId: `turn-${index}`,
+      },
+    }));
+    events.push({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T11:05:00.000Z",
+      event: {
+        type: "queue_recovery",
+        recoveryId: "recovery-1",
+        state: "available",
+        messageCount: 2,
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        stopMode: "stop_and_clear",
+      },
+    });
+
+    renderMessageList(events, { onRestoreCancelledQueue });
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+
+    await waitFor(() => {
+      expect(onRestoreCancelledQueue).toHaveBeenCalledWith("recovery-1");
+    });
+  });
+
+  it("hides settled queue recovery cards in virtualized transcript rows", () => {
+    const events = Array.from({ length: 63 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+      event: {
+        type: "user_message",
+        text: `message ${index}`,
+        messageId: `user-${index}`,
+        turnId: `turn-${index}`,
+      },
+    }));
+    events.push(
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T11:04:00.000Z",
+        event: {
+          type: "queue_recovery",
+          recoveryId: "recovery-1",
+          state: "available",
+          messageCount: 2,
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          stopMode: "stop_and_clear",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T11:05:00.000Z",
+        event: {
+          type: "queue_recovery",
+          recoveryId: "recovery-1",
+          state: "restored",
+          messageCount: 2,
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          stopMode: "stop_and_clear",
+        },
+      },
+    );
+
+    renderMessageList(events, {
+      onRestoreCancelledQueue: vi.fn().mockResolvedValue(true),
+    });
+
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
   });
 
   it("anchors the follow-bottom window to the last row regardless of stale estimates", () => {
