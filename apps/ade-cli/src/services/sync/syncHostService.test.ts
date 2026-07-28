@@ -7989,6 +7989,10 @@ describe("chat_subscribe snapshots", () => {
   it("advertises the snapshot cursor and pages the subscribed chat without another runtime route", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const transcriptPath = path.join(projectRoot, "transcripts", "chat-page.chat.jsonl");
+    const foreignTranscriptPath = path.join(projectRoot, "transcripts", "foreign-chat-page.chat.jsonl");
+    const missingForeignTranscriptPath = path.join(projectRoot, "transcripts", "missing-foreign-chat.chat.jsonl");
+    const foreignRootA = path.join(projectRoot, "registered-foreign-a");
+    const foreignRootB = path.join(projectRoot, "registered-foreign-b");
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
     fs.writeFileSync(transcriptPath, "", "utf8");
     const session = {
@@ -8005,6 +8009,13 @@ describe("chat_subscribe snapshots", () => {
       sequence: 1,
       event: { type: "user_message", text: "older prompt" },
     };
+    const foreignEvent: AgentChatEventEnvelope = {
+      sessionId: session.id,
+      timestamp: "2026-07-28T10:01:00.000Z",
+      sequence: 1,
+      event: { type: "user_message", text: "foreign project prompt" },
+    };
+    fs.writeFileSync(foreignTranscriptPath, `${JSON.stringify(foreignEvent)}\n`, "utf8");
     const getChatEventHistoryPage = vi.fn().mockResolvedValue({
       sessionId: session.id,
       events: [olderEvent],
@@ -8016,6 +8027,8 @@ describe("chat_subscribe snapshots", () => {
     const host = createSyncHostService({
       ...base,
       projectId: "project-1",
+      projectIdAliases: ["project-1-alias"],
+      pollIntervalMs: 100,
       db: {
         sync: {
           getSiteId: () => "site-host-chat-page",
@@ -8048,6 +8061,33 @@ describe("chat_subscribe snapshots", () => {
         }),
         getChatEventHistoryPage,
         getSessionSummary: vi.fn().mockResolvedValue({ status: "idle" }),
+      },
+      foreignChatProvider: {
+        resolveTranscriptPath: vi.fn((scope: {
+          projectId?: string | null;
+          projectRootPath?: string | null;
+          sessionId: string;
+        }) => {
+          const requestedProjectId = scope.projectId?.trim() || null;
+          const requestedRoot = scope.projectRootPath?.trim()
+            ? path.resolve(scope.projectRootPath)
+            : null;
+          if (
+            scope.sessionId === session.id
+            && (requestedProjectId != null || requestedRoot != null)
+            && (requestedProjectId == null || requestedProjectId === "foreign-project-a")
+            && (requestedRoot == null || requestedRoot === path.resolve(foreignRootA))
+          ) {
+            return foreignTranscriptPath;
+          }
+          if (
+            scope.sessionId === "missing-foreign-chat"
+            && scope.projectId === "foreign-project-missing"
+          ) {
+            return missingForeignTranscriptPath;
+          }
+          return null;
+        }),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
@@ -8129,6 +8169,30 @@ describe("chat_subscribe snapshots", () => {
       expect(getChatEventHistoryPage).toHaveBeenCalledTimes(2);
 
       peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-page-history-conflicting-host-scope",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "project-1",
+          projectRootPath: foreignRootB,
+          beforeOffset: 2_048,
+        },
+      }));
+      const conflictingHostScope = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "chat-page-history-conflicting-host-scope",
+      );
+      expect(conflictingHostScope.payload).toMatchObject({
+        sessionId: session.id,
+        startOffset: 2_048,
+        sessionFound: false,
+        unavailable: true,
+      });
+      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(2);
+
+      peer.ws.send(encodeSyncEnvelope({
         type: "chat_unsubscribe",
         projectId: "project-1",
         payload: {
@@ -8180,6 +8244,184 @@ describe("chat_subscribe snapshots", () => {
         sessionFound: true,
       });
       expect(getChatEventHistoryPage).toHaveBeenCalledTimes(3);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "foreign-chat-page-subscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project-a",
+        },
+      }));
+      const foreignSnapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "foreign-chat-page-subscribe",
+      );
+      expect(foreignSnapshot.payload).toMatchObject({
+        sessionId: session.id,
+        events: [foreignEvent],
+      });
+
+      const foreignTranscriptSize = Buffer.byteLength(`${JSON.stringify(foreignEvent)}\n`, "utf8");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "foreign-chat-page-wrong-root",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project-a",
+          projectRootPath: foreignRootB,
+          beforeOffset: foreignTranscriptSize,
+        },
+      }));
+      const wrongForeignRoot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "foreign-chat-page-wrong-root",
+      );
+      expect(wrongForeignRoot.payload).toMatchObject({
+        sessionId: session.id,
+        startOffset: foreignTranscriptSize,
+        sessionFound: false,
+        unavailable: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_unsubscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project-b",
+          projectRootPath: foreignRootA,
+        },
+      }));
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "foreign-chat-page-after-mismatched-unsubscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectRootPath: `${foreignRootA}/.`,
+          beforeOffset: foreignTranscriptSize,
+        },
+      }));
+      const exactForeignPage = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "foreign-chat-page-after-mismatched-unsubscribe",
+      );
+      expect(exactForeignPage.payload).toMatchObject({
+        sessionId: session.id,
+        events: [foreignEvent],
+        startOffset: 0,
+        sessionFound: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_unsubscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id },
+      }));
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "foreign-chat-page-after-legacy-unsubscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project-a",
+          projectRootPath: foreignRootA,
+          beforeOffset: foreignTranscriptSize,
+        },
+      }));
+      const afterLegacyUnsubscribe = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "foreign-chat-page-after-legacy-unsubscribe",
+      );
+      expect(afterLegacyUnsubscribe.payload).toMatchObject({
+        sessionId: session.id,
+        sessionFound: false,
+        unavailable: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "rejected-foreign-chat-subscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "unregistered-foreign-project",
+        },
+      }));
+      const rejectedForeignSnapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "rejected-foreign-chat-subscribe",
+      );
+      expect(rejectedForeignSnapshot.payload).toMatchObject({
+        sessionId: session.id,
+        events: [],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "rejected-foreign-chat-history",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "unregistered-foreign-project",
+          beforeOffset: foreignTranscriptSize,
+        },
+      }));
+      const rejectedForeignHistory = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "rejected-foreign-chat-history",
+      );
+      expect(rejectedForeignHistory.payload).toMatchObject({
+        sessionId: session.id,
+        sessionFound: false,
+        unavailable: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "missing-foreign-chat-subscribe",
+        projectId: "project-1-alias",
+        payload: {
+          sessionId: "missing-foreign-chat",
+          projectId: "foreign-project-missing",
+        },
+      }));
+      const missingForeignSnapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "missing-foreign-chat-subscribe",
+      );
+      expect(missingForeignSnapshot.payload).toMatchObject({
+        sessionId: "missing-foreign-chat",
+        events: [],
+        truncated: false,
+        tailStartOffset: 0,
+        hasOlderHistory: false,
+      });
+
+      const appearedEvent: AgentChatEventEnvelope = {
+        sessionId: "missing-foreign-chat",
+        timestamp: "2026-07-28T10:02:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "transcript appeared after subscribe" },
+      };
+      fs.writeFileSync(missingForeignTranscriptPath, `${JSON.stringify(appearedEvent)}\n`, "utf8");
+      const appearedEventEnvelope = await waitForValue(
+        () => peer?.envelopes.find((entry) =>
+          entry.type === "chat_event"
+          && (entry.payload as AgentChatEventEnvelope).sessionId === "missing-foreign-chat"
+        ),
+        "foreign transcript event after the file appears",
+      );
+      expect(appearedEventEnvelope.payload).toMatchObject(appearedEvent);
     } finally {
       peer?.ws.close();
       await host.dispose();

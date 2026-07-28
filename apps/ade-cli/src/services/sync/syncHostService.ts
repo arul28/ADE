@@ -523,6 +523,13 @@ type LanePresenceEntry = {
 };
 
 type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
+type ChatSubscriptionBinding =
+  | { scope: "project" }
+  | { scope: "personal" }
+  | {
+      scope: "foreign-project";
+      transcriptPath: string;
+    };
 type ChatScopeRequest = Pick<
   SyncChatSubscribePayload,
   "chatScope" | "projectId" | "projectRootPath"
@@ -593,7 +600,7 @@ type PeerState = {
   nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
   hydratingChatSessionIds: Set<string>;
-  chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
+  chatSubscriptionBindings: Map<string, ChatSubscriptionBinding>;
   chatTranscriptOffsets: Map<string, number>;
   // Progress while scanning one JSONL record that exceeded a normal bounded
   // transcript-delta read. The durable offset above still advances only after
@@ -3245,7 +3252,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
       hydratingChatSessionIds: new Set(),
-      chatSubscriptionScopes: new Map(),
+      chatSubscriptionBindings: new Map(),
       chatTranscriptOffsets: new Map(),
       chatTranscriptScanOffsets: new Map(),
       chatEventIdsSent: new Map(),
@@ -3518,7 +3525,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ...(typeof turnActive === "boolean" ? { turnActive } : {}),
           } satisfies SyncChatSubscribeSnapshotPayload);
           peer.subscribedChatSessionIds.add(sessionId);
-          peer.chatSubscriptionScopes.set(sessionId, scope);
+          peer.chatSubscriptionBindings.set(sessionId, { scope });
         }
         peer.rosterSubscribed = snapshot.rosterSubscribed === true;
         peer.productAnalyticsEnabled = snapshot.productAnalyticsEnabled === true;
@@ -5208,34 +5215,47 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     truncated: boolean;
     tailStartOffset: number;
   }> {
-    const size = await readHistoryFileSize(transcriptPath);
-    const start = Math.max(0, size - Math.max(1_024, maxBytes));
-    if (size <= start) {
-      return { events: [], transcriptSize: size, truncated: false, tailStartOffset: 0 };
+    try {
+      const size = await readHistoryFileSize(transcriptPath);
+      const start = Math.max(0, size - Math.max(1_024, maxBytes));
+      if (size <= start) {
+        return { events: [], transcriptSize: size, truncated: false, tailStartOffset: 0 };
+      }
+      const out = await readHistoryFileRange(
+        transcriptPath,
+        start,
+        size - start,
+        signal,
+      );
+      // Drop a leading partial line when starting mid-file so the parser never
+      // sees a truncated JSON object as the first record. The first complete
+      // line's logical offset becomes the paging seam; a page ending there can
+      // recover the dropped straddling record without a gap.
+      let sliceStart = 0;
+      if (start > 0) {
+        const firstNewline = out.indexOf(0x0a);
+        sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
+      }
+      const raw = out.subarray(sliceStart).toString("utf8");
+      const tailStartOffset = start + sliceStart;
+      return {
+        events: parseAgentChatTranscript(raw),
+        transcriptSize: size,
+        truncated: tailStartOffset > 0,
+        tailStartOffset,
+      };
+    } catch (error) {
+      signal?.throwIfAborted();
+      const code = (error as NodeJS.ErrnoException | null)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        // The provider already authorized and sandboxed this path. A session
+        // may be registered just before its transcript is created (or rotate
+        // between stat/read), so keep the subscription live and let the pump
+        // discover the file when it appears.
+        return { events: [], transcriptSize: 0, truncated: false, tailStartOffset: 0 };
+      }
+      throw error;
     }
-    const out = await readHistoryFileRange(
-      transcriptPath,
-      start,
-      size - start,
-      signal,
-    );
-    // Drop a leading partial line when starting mid-file so the parser never
-    // sees a truncated JSON object as the first record. The first complete
-    // line's logical offset becomes the paging seam; a page ending there can
-    // recover the dropped straddling record without a gap.
-    let sliceStart = 0;
-    if (start > 0) {
-      const firstNewline = out.indexOf(0x0a);
-      sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
-    }
-    const raw = out.subarray(sliceStart).toString("utf8");
-    const tailStartOffset = start + sliceStart;
-    return {
-      events: parseAgentChatTranscript(raw),
-      transcriptSize: size,
-      truncated: tailStartOffset > 0,
-      tailStartOffset,
-    };
   }
 
   async function readTranscriptLogicalSize(transcriptPath: string | null): Promise<number> {
@@ -5260,26 +5280,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const requestedProjectId = toOptionalString(payload?.projectId);
     const requestedRootPath = toOptionalString(payload?.projectRootPath);
     if (!requestedProjectId && !requestedRootPath) return "project";
-    if (
-      requestedProjectId
-      && projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases)
-    ) {
-      return "project";
-    }
-    if (
-      !requestedProjectId
-      && requestedRootPath
-      && path.resolve(requestedRootPath) === path.resolve(args.projectRoot)
-    ) {
-      return "project";
-    }
-    return "foreign-project";
+    const projectIdMatches = !requestedProjectId
+      || projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases);
+    const projectRootMatches = !requestedRootPath
+      || path.resolve(requestedRootPath) === path.resolve(args.projectRoot);
+    return projectIdMatches && projectRootMatches ? "project" : "foreign-project";
   }
 
   function requestedChatSubscriptionScope(
     payload: ChatScopeRequest | null,
   ): ChatSubscriptionScope {
     return payload?.chatScope === "personal" ? "personal" : requestedProjectChatScope(payload);
+  }
+
+  function chatSubscriptionMatchesRequest(
+    binding: ChatSubscriptionBinding | undefined,
+    payload: ChatScopeRequest | null,
+    sessionId: string,
+  ): boolean {
+    if (!binding) return false;
+    const requestedScope = requestedChatSubscriptionScope(payload);
+    if (binding.scope !== requestedScope) return false;
+    if (binding.scope !== "foreign-project") {
+      // Every host id alias and the host root normalize to the same local
+      // project binding; personal scope is machine-wide.
+      return true;
+    }
+    // The provider is the project identity/security boundary. Compare its
+    // canonical transcript target rather than raw selector fields so project
+    // id and root aliases for the same registered project remain equivalent,
+    // while colliding session ids from different projects stay isolated.
+    const requestedForeignScope = resolveForeignChatScope(payload, sessionId);
+    return requestedForeignScope.kind === "foreign"
+      && path.resolve(requestedForeignScope.transcriptPath) === binding.transcriptPath;
   }
 
   function hasExplicitChatSubscriptionScope(
@@ -5432,7 +5465,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Personal and foreign-project subscriptions get events from their
       // resolved transcript paths — never the active project's live broadcast,
       // even when a local session shares the session id.
-      if (peer.chatSubscriptionScopes.get(event.sessionId) !== "project") continue;
+      if (peer.chatSubscriptionBindings.get(event.sessionId)?.scope !== "project") continue;
       sendChatEvent(peer, event, seq);
     }
     // A chat lifecycle event for the host project updates its roster status
@@ -7678,15 +7711,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           sessionFound: false,
           unavailable: true,
         });
-        const subscribedScope = peer.chatSubscriptionScopes.get(sessionId);
+        const subscribedBinding = peer.chatSubscriptionBindings.get(sessionId);
         const requestedScope = requestedChatSubscriptionScope(payload);
         if (
           !peer.subscribedChatSessionIds.has(sessionId)
-          || subscribedScope !== requestedScope
+          || !chatSubscriptionMatchesRequest(subscribedBinding, payload, sessionId)
         ) {
           args.logger.warn("sync.chat_history_unsubscribed_or_scope_mismatch", {
             sessionId,
-            subscribedScope: subscribedScope ?? null,
+            subscribedScope: subscribedBinding?.scope ?? null,
             requestedScope,
           });
           sendRequired(peer, "chat_history", unavailablePage(), envelope.requestId);
@@ -7742,7 +7775,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const personalChatRequested = requestedScope === "personal";
         const priorSubscription = {
           subscribed: peer.subscribedChatSessionIds.has(sessionId),
-          scope: peer.chatSubscriptionScopes.get(sessionId),
+          binding: peer.chatSubscriptionBindings.get(sessionId),
           transcriptPath: peer.resolvedChatTranscriptPaths.get(sessionId),
           offset: peer.chatTranscriptOffsets.get(sessionId),
           scanOffset: peer.chatTranscriptScanOffsets.get(sessionId),
@@ -7777,10 +7810,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
         if (foreignScope.kind === "rejected") {
           peer.subscribedChatSessionIds.delete(sessionId);
-          peer.chatSubscriptionScopes.delete(sessionId);
+          peer.chatSubscriptionBindings.delete(sessionId);
         } else {
           peer.subscribedChatSessionIds.add(sessionId);
-          peer.chatSubscriptionScopes.set(sessionId, requestedScope);
+          if (foreignScope.kind === "foreign" && requestedScope === "foreign-project") {
+            peer.chatSubscriptionBindings.set(sessionId, {
+              scope: "foreign-project",
+              transcriptPath: path.resolve(foreignScope.transcriptPath),
+            });
+          } else if (requestedScope === "personal") {
+            peer.chatSubscriptionBindings.set(sessionId, { scope: "personal" });
+          } else {
+            peer.chatSubscriptionBindings.set(sessionId, { scope: "project" });
+          }
         }
         if (foreignTranscriptPath) {
           peer.resolvedChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
@@ -7928,10 +7970,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // silently disconnect a client that was already receiving events.
             if (priorSubscription.subscribed) peer.subscribedChatSessionIds.add(sessionId);
             else peer.subscribedChatSessionIds.delete(sessionId);
-            if (priorSubscription.scope !== undefined) {
-              peer.chatSubscriptionScopes.set(sessionId, priorSubscription.scope);
+            if (priorSubscription.binding !== undefined) {
+              peer.chatSubscriptionBindings.set(sessionId, priorSubscription.binding);
             } else {
-              peer.chatSubscriptionScopes.delete(sessionId);
+              peer.chatSubscriptionBindings.delete(sessionId);
             }
             if (priorSubscription.transcriptPath !== undefined) {
               peer.resolvedChatTranscriptPaths.set(sessionId, priorSubscription.transcriptPath);
@@ -7960,18 +8002,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "chat_unsubscribe": {
         const payload = envelope.payload as SyncChatUnsubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
-        const subscribedScope = sessionId ? peer.chatSubscriptionScopes.get(sessionId) : undefined;
-        const requestedScope = requestedChatSubscriptionScope(payload);
+        const subscribedBinding = sessionId ? peer.chatSubscriptionBindings.get(sessionId) : undefined;
         if (
           sessionId
           && (
             !hasExplicitChatSubscriptionScope(payload)
-            || subscribedScope === requestedScope
+            || chatSubscriptionMatchesRequest(subscribedBinding, payload, sessionId)
           )
         ) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.hydratingChatSessionIds.delete(sessionId);
-          peer.chatSubscriptionScopes.delete(sessionId);
+          peer.chatSubscriptionBindings.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatTranscriptScanOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
@@ -8361,7 +8402,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             continue;
           }
           const chatSubscriptions = [...peer.subscribedChatSessionIds].flatMap((sessionId) => {
-            const scope = peer.chatSubscriptionScopes.get(sessionId) ?? "project";
+            const scope = peer.chatSubscriptionBindings.get(sessionId)?.scope ?? "project";
             return scope === "foreign-project" ? [] : [{ sessionId, scope }];
           });
           const handedOffChatSessionIds = new Set(chatSubscriptions.map(({ sessionId }) => sessionId));
