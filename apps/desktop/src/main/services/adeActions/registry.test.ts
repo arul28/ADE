@@ -501,8 +501,45 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
     expect(archiveAndReclaim).toHaveBeenCalledWith(
       { laneId: "lane-1", confirmation: "RECLAIM", forceDirty: true },
-      { teardownEnv: undefined },
+      {
+        onArchived: expect.any(Function),
+        teardownEnv: undefined,
+      },
     );
+  });
+
+  it("releases lane runtime resources after archive even when reclaim later fails", async () => {
+    const removeRoute = vi.fn();
+    const release = vi.fn();
+    const archiveAndReclaim = vi.fn(async (
+      _args: unknown,
+      options?: { onArchived?: () => void },
+    ) => {
+      options?.onArchived?.();
+      throw new Error("disk is busy");
+    });
+    const services = getAdeActionDomainServices({
+      laneService: { archiveAndReclaim },
+      laneProxyService: { removeRoute },
+      portAllocationService: {
+        getLease: () => ({ status: "active" }),
+        release,
+      },
+    } as never);
+    const laneActions = services.lane as {
+      archiveAndReclaim: (args: {
+        laneId: string;
+        confirmation: "RECLAIM";
+      }) => Promise<unknown>;
+    };
+
+    await expect(laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/disk is busy/i);
+
+    expect(removeRoute).toHaveBeenCalledWith("lane-1");
+    expect(release).toHaveBeenCalledWith("lane-1");
   });
 
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {

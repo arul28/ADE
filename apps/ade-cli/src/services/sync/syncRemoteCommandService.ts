@@ -259,6 +259,7 @@ import type { createGithubService } from "../../../../desktop/src/main/services/
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
+import { restoreRecreatedLaneRuntime } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -3447,18 +3448,11 @@ async function unarchiveLaneWithRuntimeSetup(
 ): Promise<{ ok: true }> {
   const archiveArgs = parseArchiveLaneArgs(payload, "lanes.unarchive");
   const result = await args.laneService.unarchive(archiveArgs);
-  if (!result.worktreeRecreated || !args.laneEnvironmentService) {
+  if (!result.worktreeRecreated) {
     return { ok: true };
   }
   try {
-    const context = await resolveLaneOverlayContext(args, archiveArgs.laneId);
-    if (context.envInitConfig) {
-      await args.laneEnvironmentService.initLaneEnvironment(
-        context.lane,
-        context.envInitConfig,
-        context.overrides,
-      );
-    }
+    await restoreRecreatedLaneRuntime(args, archiveArgs.laneId);
   } catch (error) {
     // Keep the established mobile command response stable. The worktree was
     // restored successfully; environment setup can be retried separately.

@@ -5828,9 +5828,10 @@ export function registerIpc({
             await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
           }
         : undefined;
-      const result = await ctx.laneService.archiveAndReclaim(arg, { teardownEnv });
-      releaseLaneRuntimeResources(ctx, arg.laneId);
-      return result;
+      return await ctx.laneService.archiveAndReclaim(arg, {
+        onArchived: () => releaseLaneRuntimeResources(ctx, arg.laneId),
+        teardownEnv,
+      });
     },
   );
 

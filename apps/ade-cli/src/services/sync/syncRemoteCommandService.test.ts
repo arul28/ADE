@@ -2486,21 +2486,32 @@ describe("lanes.unarchive", () => {
     });
     const list = vi.fn().mockResolvedValue([lane]);
     const envInitConfig = { dependencies: ["npm install"] };
+    const lease = {
+      laneId: "lane-1",
+      rangeStart: 4100,
+      rangeEnd: 4199,
+      status: "active",
+    };
+    const getLease = vi.fn().mockReturnValue(null);
+    const acquire = vi.fn().mockReturnValue(lease);
+    const getEffective = vi.fn().mockReturnValue({
+      laneEnvInit: null,
+      laneOverlayPolicies: [],
+    });
+    const resolveEnvInitConfig = vi.fn().mockReturnValue(envInitConfig);
     const initLaneEnvironment = vi.fn().mockResolvedValue({ state: "ready" });
     const { service } = createService({
       laneService: { unarchive, list },
       projectConfigService: {
-        getEffective: vi.fn().mockReturnValue({
-          laneEnvInit: null,
-          laneOverlayPolicies: [],
-        }),
+        getEffective,
       },
       laneEnvironmentService: {
-        resolveEnvInitConfig: vi.fn().mockReturnValue(envInitConfig),
+        resolveEnvInitConfig,
         initLaneEnvironment,
       },
       portAllocationService: {
-        getLease: vi.fn().mockReturnValue(null),
+        getLease,
+        acquire,
       },
     });
 
@@ -2508,8 +2519,13 @@ describe("lanes.unarchive", () => {
       service.execute(makePayload("lanes.unarchive", { laneId: "lane-1" })),
     ).resolves.toEqual({ ok: true });
     expect(unarchive).toHaveBeenCalledWith({ laneId: "lane-1" });
-    expect(list).toHaveBeenCalledWith({ includeStatus: false });
-    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig, {});
+    expect(list).toHaveBeenCalledWith({ includeArchived: false, includeStatus: false });
+    expect(acquire).toHaveBeenCalledWith("lane-1");
+    expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(getEffective.mock.invocationCallOrder[0]!);
+    expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(resolveEnvInitConfig.mock.invocationCallOrder[0]!);
+    const overrides = { portRange: { start: 4100, end: 4199 } };
+    expect(resolveEnvInitConfig).toHaveBeenCalledWith(null, overrides);
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig, overrides);
   });
 });
 

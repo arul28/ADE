@@ -2348,9 +2348,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           confirmation: "RECLAIM",
           ...(args.forceDirty === true ? { forceDirty: true } : {}),
         },
-        { teardownEnv },
+        {
+          onArchived: () => releaseLaneRuntimeResources(runtime, laneId),
+          teardownEnv,
+        },
       );
-      releaseLaneRuntimeResources(runtime, laneId);
       return result;
     },
     unarchive: async (args?: { laneId?: string }) => {

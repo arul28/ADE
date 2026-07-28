@@ -5331,7 +5331,10 @@ export function createLaneService({
 
     async archiveAndReclaim(
       args: ArchiveAndReclaimLaneArgs,
-      runtimeOpts?: { teardownEnv?: () => Promise<void> },
+      runtimeOpts?: {
+        onArchived?: () => void;
+        teardownEnv?: () => Promise<void>;
+      },
     ): Promise<ArchiveAndReclaimLaneResult> {
       if (args.confirmation !== "RECLAIM") {
         throw new Error('Type "RECLAIM" to confirm removing this lane folder.');
@@ -5380,6 +5383,7 @@ export function createLaneService({
       const startedAtMs = Date.now();
       try {
         laneServiceApi.archive({ laneId: args.laneId });
+        runtimeOpts?.onArchived?.();
         db.run(
           `insert into local_lane_storage_state(
              lane_id, project_id, worktree_path, reclaim_state, last_known_bytes,

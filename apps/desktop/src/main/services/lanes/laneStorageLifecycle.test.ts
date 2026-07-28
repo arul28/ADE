@@ -130,6 +130,7 @@ afterEach(() => {
 describe("lane storage lifecycle", () => {
   it("does not reclaim a dirty lane without the explicit dirty confirmation", async () => {
     const { db, service, worktreePath } = await fixture();
+    const onArchived = vi.fn();
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "changed.txt"), "keep me");
     installGitStub({ dirty: true });
@@ -137,8 +138,9 @@ describe("lane storage lifecycle", () => {
     await expect(service.archiveAndReclaim({
       laneId: "12345678-lane",
       confirmation: "RECLAIM",
-    })).rejects.toThrow(/uncommitted files/i);
+    }, { onArchived })).rejects.toThrow(/uncommitted files/i);
 
+    expect(onArchived).not.toHaveBeenCalled();
     expect(fs.existsSync(worktreePath)).toBe(true);
     expect(db.get<{ status: string }>("select status from lanes where id = ?", ["12345678-lane"])?.status).toBe("active");
     db.close();
@@ -325,7 +327,8 @@ describe("lane storage lifecycle", () => {
   });
 
   it("records a failed reclaim for safe retry", async () => {
-    const { db, service, worktreePath } = await fixture({ status: "archived" });
+    const { db, service, worktreePath } = await fixture();
+    const onArchived = vi.fn();
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "file.bin"), "data");
     installGitStub();
@@ -341,15 +344,19 @@ describe("lane storage lifecycle", () => {
     });
     const originalRm = fs.promises.rm.bind(fs.promises);
     vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
-      if (path.resolve(String(target)) === path.resolve(worktreePath)) throw new Error("disk is busy");
+      if (path.resolve(String(target)) === path.resolve(worktreePath)) {
+        expect(onArchived).toHaveBeenCalledTimes(1);
+        throw new Error("disk is busy");
+      }
       return originalRm(target, options);
     });
 
     await expect(service.archiveAndReclaim({
       laneId: "12345678-lane",
       confirmation: "RECLAIM",
-    })).rejects.toThrow(/disk is busy/i);
+    }, { onArchived })).rejects.toThrow(/disk is busy/i);
 
+    expect(onArchived).toHaveBeenCalledTimes(1);
     expect(db.get("select reclaim_state, attempts, last_error from local_lane_storage_state where lane_id = ?", ["12345678-lane"]))
       .toMatchObject({ reclaim_state: "failed", attempts: 1, last_error: "disk is busy" });
     expect(db.get<{ status: string }>("select status from lanes where id = ?", ["12345678-lane"])?.status).toBe("archived");
@@ -462,6 +469,7 @@ describe("lane storage lifecycle", () => {
 
   it("holds the persistent lifecycle lock while deleting a lane", async () => {
     const { root, db, service, projectId, worktreesDir, worktreePath } = await fixture();
+    const onArchived = vi.fn();
     const secondService = createLaneService({
       db,
       projectRoot: root,
@@ -482,7 +490,8 @@ describe("lane storage lifecycle", () => {
     await expect(secondService.archiveAndReclaim({
       laneId: "12345678-lane",
       confirmation: "RECLAIM",
-    })).rejects.toThrow(/blocked by delete.*before changing or restoring this lane/i);
+    }, { onArchived })).rejects.toThrow(/blocked by delete.*before changing or restoring this lane/i);
+    expect(onArchived).not.toHaveBeenCalled();
     release();
     await deletion;
     db.close();
