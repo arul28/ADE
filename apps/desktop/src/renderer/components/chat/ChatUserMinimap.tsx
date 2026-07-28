@@ -56,8 +56,8 @@ function tickToneClass(
   if (outcome === "failed") return "bg-red-400/80";
   if (outcome === "interrupted") return "bg-amber-400/70";
   if (isActive) return "bg-[var(--chat-accent)]";
-  if (isLensCentre) return "bg-fg/75";
-  return "bg-fg/30";
+  if (isLensCentre) return "bg-[var(--color-fg)]/75";
+  return "bg-[var(--color-fg)]/30";
 }
 
 /** Human label for a non-`completed` turn; `null` means nothing to surface. */
@@ -222,6 +222,7 @@ export function ChatUserMinimap({
               <span
                 key={entry.key}
                 aria-hidden="true"
+                data-minimap-tick=""
                 data-outcome={outcome ?? undefined}
                 className={cn(
                   "pointer-events-none absolute left-0 -translate-y-1/2 rounded-full transition-[background-color,width] duration-150",
