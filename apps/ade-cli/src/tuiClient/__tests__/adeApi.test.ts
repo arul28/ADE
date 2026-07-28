@@ -1666,6 +1666,28 @@ describe("steer helpers", () => {
     }, { allowLegacyCodexFallback: true })).rejects.toThrow("Relay disconnected");
   });
 
+  it("does not treat a cross-session scope denial as an old-host compatibility error", async () => {
+    const calls: string[] = [];
+    const connection = {
+      action: async (_domain: string, action: string) => {
+        calls.push(action);
+        throw new Error(
+          "run_ade_action:chat.recoverTurn is not permitted for this caller: "
+          + "chat access is limited to the caller's own chat session. "
+          + "Caller session is chat-1; requested session was chat-2. "
+          + "To message another session, use chat.messageSession.",
+        );
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(recoverTurn(connection, {
+      sessionId: "chat-2",
+      turnId: "turn-1",
+      action: "wait",
+    }, { allowLegacyCodexFallback: true })).rejects.toThrow("is not permitted for this caller");
+    expect(calls).toEqual(["recoverTurn"]);
+  });
+
   it("never applies the Codex fallback to another provider", async () => {
     const calls: string[] = [];
     const connection = {

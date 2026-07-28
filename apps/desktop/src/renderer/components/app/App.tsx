@@ -107,6 +107,7 @@ import {
   AppStoreProvider,
   createProjectAppStore,
   hydrateProjectAppStore,
+  releaseProjectAppStore,
   retainProjectAppStoreState,
   selectActiveProjectRoot,
   useAppStore,
@@ -906,6 +907,7 @@ function ProjectTabHost() {
         if (store && binding && openKeys.has(key)) {
           retainProjectAppStoreState(store, binding);
         }
+        if (store && binding) releaseProjectAppStore(store, binding);
         storesRef.current.delete(key);
         bindingsRef.current.delete(key);
         // Release the evicted surface's Files roster/tree caches with it —

@@ -90,6 +90,10 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let sessions: [TerminalSessionSummary]
   let laneColor: String?
   let laneIcon: LaneIcon?
+  /// Every session in this lane is settled (snoozed rows are already lifted into
+  /// the `status:snoozed` tail, so they can't be here). The section renders as a
+  /// single thin row instead of a full header over nothing.
+  let isQuiet: Bool
 
   enum Icon: Equatable {
     case statusDot
@@ -104,7 +108,8 @@ struct WorkSessionGroup: Identifiable, Equatable {
     tint: Color,
     sessions: [TerminalSessionSummary],
     laneColor: String? = nil,
-    laneIcon: LaneIcon? = nil
+    laneIcon: LaneIcon? = nil,
+    isQuiet: Bool = false
   ) {
     self.id = id
     self.label = label
@@ -113,7 +118,13 @@ struct WorkSessionGroup: Identifiable, Equatable {
     self.sessions = sessions
     self.laneColor = laneColor
     self.laneIcon = laneIcon
+    self.isQuiet = isQuiet
   }
+
+  /// Inverted collapse marker: a quiet lane starts collapsed, and only an
+  /// explicit expand is recorded, so it re-quiets on its own instead of leaving
+  /// a stale "expanded" entry behind. Mirrors the desktop sidebar.
+  var quietOpenSectionId: String { "lane-open:\(laneId ?? id)" }
 
   /// Lane id for by-lane sections (id is `lane:<laneId>`); nil for status/time
   /// groupings whose headers span multiple lanes and carry no single PR tag.
@@ -128,6 +139,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
       && lhs.tint == rhs.tint
       && lhs.laneColor == rhs.laneColor
       && lhs.laneIcon == rhs.laneIcon
+      && lhs.isQuiet == rhs.isQuiet
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
 }
@@ -298,6 +310,7 @@ func buildWorkRootSessionPresentation(
   let sessionGroups = workSessionGroups(
     organization: organization,
     sessions: displaySessions,
+    quietReferenceSessions: mergedSessions,
     chatSummaries: chatSummaries,
     statusBySessionId: statusBySessionId,
     archivedSessionIds: archivedSessionIds,
@@ -526,6 +539,7 @@ private let workSessionISO8601FormatterNoFractional: ISO8601DateFormatter = {
 func workSessionGroups(
   organization: WorkSessionOrganization,
   sessions: [TerminalSessionSummary],
+  quietReferenceSessions: [TerminalSessionSummary]? = nil,
   chatSummaries: [String: AgentChatSessionSummary],
   statusBySessionId: [String: String] = [:],
   archivedSessionIds: Set<String>,
@@ -557,7 +571,17 @@ func workSessionGroups(
       sessions: awake,
       orderedLanes: orderedLanes,
       deletingLaneIds: deletingLaneIds
-    )
+    ).map { group in
+      group.markingQuiet(
+        workLaneGroupIsQuiet(
+          group,
+          referenceSessions: quietReferenceSessions,
+          chatSummaries: chatSummaries,
+          archivedSessionIds: archivedSessionIds,
+          now: now
+        )
+      )
+    }
   case .byTime:
     groups = workSessionGroupsByTime(sessions: awake)
   }
@@ -577,6 +601,68 @@ func workSessionGroups(
 /// Stable id for the snoozed tail so its collapse state persists like any other
 /// section, independent of the active organization.
 let workSnoozedSectionId = "status:snoozed"
+
+extension WorkSessionGroup {
+  func markingQuiet(_ quiet: Bool) -> WorkSessionGroup {
+    guard quiet != isQuiet else { return self }
+    return WorkSessionGroup(
+      id: id,
+      label: label,
+      icon: icon,
+      tint: tint,
+      sessions: sessions,
+      laneColor: laneColor,
+      laneIcon: laneIcon,
+      isQuiet: quiet
+    )
+  }
+}
+
+/// A lane section holding nothing but settled work.
+///
+/// Archived rows count as quiet too — they are equally "not what you're working
+/// on". A lane with anything running, ended-but-unsettled, or waiting on the
+/// user is never quiet, which is what keeps an attention row from being folded
+/// away behind a thin header.
+func workLaneGroupIsQuiet(
+  _ group: WorkSessionGroup,
+  referenceSessions: [TerminalSessionSummary]? = nil,
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String>,
+  now: Date
+) -> Bool {
+  guard let laneId = group.laneId else { return false }
+  return workLaneSessionsAreQuiet(
+    laneId: laneId,
+    sessions: referenceSessions ?? group.sessions,
+    chatSummaries: chatSummaries,
+    archivedSessionIds: archivedSessionIds,
+    now: now
+  )
+}
+
+func workLaneSessionsAreQuiet(
+  laneId: String,
+  sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String>,
+  now: Date
+) -> Bool {
+  let laneSessions = sessions.filter { $0.laneId == laneId }
+  guard !laneSessions.isEmpty else { return false }
+  return laneSessions.allSatisfy { session in
+    if archivedSessionIds.contains(session.id) { return true }
+    if session.isFiledAsSnoozed(summary: chatSummaries[session.id], now: now) {
+      return true
+    }
+    let canonical = workCanonicalSessionState(
+      session: session,
+      summary: chatSummaries[session.id],
+      now: now
+    )
+    return canonical.phase == .settled
+  }
+}
 
 func workSessionGroupsByStatus(
   sessions: [TerminalSessionSummary],
@@ -742,4 +828,80 @@ func workParseCollapsedSectionIds(_ raw: String) -> Set<String> {
 
 func workSerializeCollapsedSectionIds(_ ids: Set<String>) -> String {
   ids.sorted().joined(separator: ",")
+}
+
+/// Frames a lane deeplink for both collapse conventions: ordinary lane groups
+/// open when their `lane:` marker is absent, while quiet lane groups open only
+/// when their inverted `lane-open:` marker is present.
+func workCollapsedSectionIdsFramingLane(_ ids: Set<String>, laneId: String) -> Set<String> {
+  var framed = ids
+  framed.remove("lane:\(laneId)")
+  framed.insert("lane-open:\(laneId)")
+  return framed
+}
+
+// MARK: - Scoped Work view state
+
+/// The Work tab's per-project view state.
+///
+/// These used to be flat global `@AppStorage` keys, which meant one shared set
+/// of filters and collapsed sections across every project *and* every host:
+/// switching projects carried the previous project's filters over, and because
+/// section ids are `lane:<laneId>`, one project's collapse state could silently
+/// apply to another's lanes. Scoping fixes both, and makes the state survive a
+/// project or machine switch instead of reading as "reset".
+struct WorkProjectViewState: Codable, Equatable {
+  var searchText: String = ""
+  var laneFilter: String = "all"
+  var statusFilter: String = WorkSessionStatusFilter.all.rawValue
+  var organization: String = WorkSessionOrganization.byLane.rawValue
+  var collapsedSectionIds: String = ""
+
+  static let empty = WorkProjectViewState()
+}
+
+/// Returns the persisted base when a user takes control back from transient
+/// deeplink framing. Falling back to the current state keeps ordinary,
+/// non-deeplink edits unchanged.
+func workViewStateRestoringUserControl(
+  savedBase: WorkProjectViewState?,
+  current: WorkProjectViewState
+) -> WorkProjectViewState {
+  savedBase ?? current
+}
+
+/// Versioned `scopeKey → WorkProjectViewState` store in the shared app group.
+///
+/// Scoped by host identity as well as project id: the same project id can exist
+/// on two paired machines, and the user's view of each is their own. Mirrors the
+/// host-scoping already used for hidden projects in `SyncService`.
+enum WorkViewStateStore {
+  private static let storageKey = "ade.work.viewStateByScope.v1"
+  private static var defaults: UserDefaults { ADESharedContainer.defaults }
+
+  /// `nil` when the project is unknown — callers then keep the in-memory state
+  /// rather than writing it somewhere it could clobber a real project's record.
+  static func scopeKey(projectId: String?, hostIdentity: String?) -> String? {
+    let project = (projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !project.isEmpty else { return nil }
+    let host = (hostIdentity ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return host.isEmpty ? project : "\(host)::\(project)"
+  }
+
+  static func load(scope: String?) -> WorkProjectViewState {
+    guard let scope else { return .empty }
+    guard
+      let map = defaults.dictionary(forKey: storageKey) as? [String: Data],
+      let raw = map[scope],
+      let decoded = try? JSONDecoder().decode(WorkProjectViewState.self, from: raw)
+    else { return .empty }
+    return decoded
+  }
+
+  static func save(_ state: WorkProjectViewState, scope: String?) {
+    guard let scope, let encoded = try? JSONEncoder().encode(state) else { return }
+    var map = (defaults.dictionary(forKey: storageKey) as? [String: Data]) ?? [:]
+    map[scope] = encoded
+    defaults.set(map, forKey: storageKey)
+  }
 }

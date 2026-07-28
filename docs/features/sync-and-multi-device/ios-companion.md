@@ -1450,9 +1450,21 @@ The iOS pieces:
   `isSessionFiledAsSnoozed`. `WorkSessionGrouping.swift`'s `workSessionGroups`
   grows a snoozed tail, and `WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, and `WorkRootComponents.swift` render the
-  chips and menus and dispatch snooze / wake / settle / keep-active.
+  chips and menus and dispatch snooze / wake / settle / keep-active. By-lane
+  groups whose full unfiltered roster is quiet use a thin collapsed header and
+  an inverted `lane-open:<laneId>` expansion marker; expanding renders compact
+  rows, and active work removes the marker so the next quiet spell collapses.
+  The snooze helper yields to canonical `needs_you`, so a lane waiting on the
+  user can never be folded into this quiet presentation.
+- `WorkSessionGrouping.swift` also owns `WorkViewStateStore`, a versioned
+  App-Group map keyed by project id plus host identity. `WorkRootScreen` swaps
+  search, lane/status filters, organization, and collapsed ids when either
+  scope component changes and saves the outgoing scope first. Lane deeplinks
+  frame those fields transiently: persistence is suppressed until the user
+  takes control, at which point edits resume from the saved base rather than
+  making notification routing a permanent preference change.
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation
-  parity.
+  and scoped view-state parity.
 
 Two invariants govern changes here. The Swift derivation must stay
 behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts` —

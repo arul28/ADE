@@ -324,20 +324,24 @@ struct WorkSidebarSectionHeader: View {
   /// harnesses don't have to wire it.
   var onOpenPullRequest: (LanePrTag) -> Void = { _ in }
 
+  /// Collapsed and holding only settled work: render one thin muted row with the
+  /// count folded in, instead of a full-weight header over nothing.
+  private var isQuietRow: Bool { group.isQuiet && collapsed }
+
   var body: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: isQuietRow ? 6 : 8) {
       Button(action: onToggle) {
-        HStack(spacing: 8) {
+        HStack(spacing: isQuietRow ? 6 : 8) {
           Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted)
+            .font(.system(size: isQuietRow ? 8 : 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(isQuietRow ? 0.55 : 1))
             .frame(width: 10, alignment: .center)
 
           sectionIcon
 
           Text(group.label)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(group.laneColor != nil ? group.tint : ADEColor.textPrimary)
+            .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+            .foregroundStyle(quietAwareLabelColor)
             .lineLimit(1)
 
           Spacer(minLength: 0)
@@ -345,7 +349,8 @@ struct WorkSidebarSectionHeader: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("\(group.label), \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s"). Tap to \(collapsed ? "expand" : "collapse").")
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .accessibilityLabel(accessibilityLabelText)
 
       if let pullRequest {
         Button {
@@ -354,18 +359,50 @@ struct WorkSidebarSectionHeader: View {
           WorkLanePrIndicator(tag: pullRequest)
         }
         .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityHint("Opens in the PRs tab")
       }
 
-      Text("\(group.sessions.count)")
-        .font(.caption2.monospacedDigit().weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
+      if isQuietRow {
+        // Hollow ring + count: the settled tier's own language, matching the
+        // desktop sidebar's inline quiet counts.
+        HStack(spacing: 3) {
+          Circle()
+            .strokeBorder(ADEColor.textMuted.opacity(0.45), lineWidth: 1)
+            .frame(width: 6, height: 6)
+          Text("\(group.sessions.count)")
+            .font(.caption2.monospacedDigit().weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted.opacity(0.6))
+        .accessibilityHidden(true)
+      } else {
+        Text("\(group.sessions.count)")
+          .font(.caption2.monospacedDigit().weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 2)
+          .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
+          .accessibilityHidden(true)
+      }
     }
     .padding(.horizontal, 4)
-    .padding(.vertical, 8)
+    .padding(.vertical, isQuietRow ? 3 : 8)
+    .opacity(isQuietRow ? 0.72 : 1)
+  }
+
+  private var quietAwareLabelColor: Color {
+    if isQuietRow { return ADEColor.textSecondary }
+    return group.laneColor != nil ? group.tint : ADEColor.textPrimary
+  }
+
+  private var accessibilityLabelText: String {
+    let count = group.sessions.count
+    let noun = "session\(count == 1 ? "" : "s")"
+    let action = collapsed ? "expand" : "collapse"
+    if isQuietRow {
+      return "\(group.label), \(count) settled \(noun). Tap to \(action)."
+    }
+    return "\(group.label), \(count) \(noun). Tap to \(action)."
   }
 
   @ViewBuilder

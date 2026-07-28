@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import {
+  createDefaultWorkProjectViewState,
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
   useAppStore,
@@ -27,29 +28,7 @@ import {
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
 
-const EMPTY_WORK_STATE: WorkProjectViewState = {
-  openItemIds: [],
-  activeItemId: null,
-  selectedItemId: null,
-  gridSets: [],
-  activeGridSetId: null,
-  draftKind: "chat",
-  orchestratorEnabled: false,
-  draftLaneId: null,
-  draftMachineId: null,
-  laneFilter: "all",
-  search: "",
-  sessionListOrganization: "by-lane",
-  workCollapsedLaneIds: [],
-  workCollapsedSectionIds: ["status:settled"],
-  workCollapsedTabGroupIds: [],
-  workFocusSessionsHidden: false,
-  workSidebarOpen: false,
-  workSidebarTab: "git",
-  workSidebarWidthPct: 36,
-  laneSessionOrder: {},
-  pinnedSessionIds: [],
-};
+const EMPTY_WORK_STATE: WorkProjectViewState = createDefaultWorkProjectViewState();
 
 const laneSessionsCacheByScope = new Map<string, TerminalSessionSummary[]>();
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;

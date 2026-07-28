@@ -101,6 +101,8 @@ vi.mock("../../state/appStore", async () => {
       store.setState(partial);
     }),
     retainProjectAppStoreState: vi.fn(),
+    releaseProjectAppStore: vi.fn(),
+    workViewStoreForProject: vi.fn(() => ({ getState: () => appStoreState })),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
     selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
   };

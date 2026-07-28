@@ -28,7 +28,7 @@ import {
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, workViewStoreForProject } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
@@ -296,7 +296,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const closeProject = useAppStore((s) => s.closeProject);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
-  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
@@ -1531,17 +1530,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-300 px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110"
                           onClick={() => {
                             if (currentProjectRoot) {
+                              // AppShell renders above AppStoreProvider, so this
+                              // must go through the store that owns the project —
+                              // writing to the root store would leave the mounted
+                              // Work surface showing its own older view state.
+                              const workStore = workViewStoreForProject(currentProjectRoot);
                               // Reset the lane filter too so stale sessions across
                               // *all* lanes are visible, not just the active one.
-                              setWorkViewState(currentProjectRoot, {
+                              workStore.getState().setWorkViewState(currentProjectRoot, (current) => ({
+                                ...current,
                                 laneFilter: "all",
                                 sessionListOrganization: "all-lanes-by-status",
-                                workCollapsedSectionIds: useAppStore
-                                  .getState()
-                                  .getWorkViewState(currentProjectRoot)
-                                  .workCollapsedSectionIds
+                                workCollapsedSectionIds: current.workCollapsedSectionIds
                                   .filter((sectionId) => sectionId !== "status:running"),
-                              });
+                              }));
                             }
                             navigate("/work");
                             dismissStaleCliNotice();

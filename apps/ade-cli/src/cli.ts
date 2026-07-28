@@ -1681,6 +1681,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because it owns provider/session state.
 
+  Session scope: when you are an ADE-launched agent (ADE_CHAT_SESSION_ID is set),
+  reads are limited to your OWN chat — "ade chat read <other-session>" is denied
+  by design, because transcripts are not shared across workers. Sending is not
+  restricted: "ade chat send <session>" reaches any session, which is how a
+  subagent reports back to its spawner.
+
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat actions --personal --text            List machine personal-chat actions

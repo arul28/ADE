@@ -2629,7 +2629,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
   @Published private(set) var activeProjectRootPath: String?
-  private var activeProjectHostIdentity: String?
+  /// Published so per-project UI state can be scoped by host: the same project
+  /// id can exist on two paired machines and each deserves its own view.
+  @Published private(set) var activeProjectHostIdentity: String?
   @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(

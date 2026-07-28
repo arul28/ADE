@@ -59,43 +59,47 @@ vi.mock("../../lib/sessions", () => ({
   })),
 }));
 
-vi.mock("../../state/appStore", () => ({
-  selectActiveProjectRoot: (state: Record<string, unknown>) => {
-    const binding = state.projectBinding as { kind?: string; rootPath?: string | null } | null | undefined;
-    if (binding?.kind === "remote") return binding.rootPath?.trim() || null;
-    const project = state.project as { rootPath?: string | null } | null | undefined;
-    return project?.rootPath?.trim() || null;
-  },
-  selectActiveProjectStateKey: (state: Record<string, unknown>) => {
-    const binding = state.projectBinding as { kind?: string; key?: string | null } | null | undefined;
-    if (binding?.kind === "remote") return binding.key?.trim() || null;
-    const project = state.project as { rootPath?: string | null } | null | undefined;
-    return project?.rootPath?.trim() || null;
-  },
-  useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
-    const fakeState: Record<string, unknown> = {
-      project: { rootPath: fakeProjectRoot },
-      projectBinding: fakeProjectBinding,
-      lanes: [{ id: "lane-1", name: "Lane 1" }],
-      focusSession: focusSessionSpy,
-      focusedSessionId: null,
-      selectLane: selectLaneSpy,
-      laneWorkViewByScope: {},
-      setLaneWorkViewState: setLaneWorkViewStateSpy,
-      workViewByProject: {},
-      setWorkViewState: setWorkViewStateSpy,
-    };
-    return selector(fakeState);
-  }),
-  useAppStoreApi: vi.fn(() => ({
-    getState: () => ({
-      project: { rootPath: fakeProjectRoot },
-      projectBinding: fakeProjectBinding,
+vi.mock("../../state/appStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/appStore")>();
+  return {
+    createDefaultWorkProjectViewState: actual.createDefaultWorkProjectViewState,
+    selectActiveProjectRoot: (state: Record<string, unknown>) => {
+      const binding = state.projectBinding as { kind?: string; rootPath?: string | null } | null | undefined;
+      if (binding?.kind === "remote") return binding.rootPath?.trim() || null;
+      const project = state.project as { rootPath?: string | null } | null | undefined;
+      return project?.rootPath?.trim() || null;
+    },
+    selectActiveProjectStateKey: (state: Record<string, unknown>) => {
+      const binding = state.projectBinding as { kind?: string; key?: string | null } | null | undefined;
+      if (binding?.kind === "remote") return binding.key?.trim() || null;
+      const project = state.project as { rootPath?: string | null } | null | undefined;
+      return project?.rootPath?.trim() || null;
+    },
+    useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
+      const fakeState: Record<string, unknown> = {
+        project: { rootPath: fakeProjectRoot },
+        projectBinding: fakeProjectBinding,
+        lanes: [{ id: "lane-1", name: "Lane 1" }],
+        focusSession: focusSessionSpy,
+        focusedSessionId: null,
+        selectLane: selectLaneSpy,
+        laneWorkViewByScope: {},
+        setLaneWorkViewState: setLaneWorkViewStateSpy,
+        workViewByProject: {},
+        setWorkViewState: setWorkViewStateSpy,
+      };
+      return selector(fakeState);
     }),
-    setState: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  })),
-}));
+    useAppStoreApi: vi.fn(() => ({
+      getState: () => ({
+        project: { rootPath: fakeProjectRoot },
+        projectBinding: fakeProjectBinding,
+      }),
+      setState: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+    })),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Import the hook under test (after mocks are declared)

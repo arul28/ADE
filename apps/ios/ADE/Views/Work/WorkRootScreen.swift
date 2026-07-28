@@ -6,6 +6,34 @@ import AVKit
 let workDateFormatter = ISO8601DateFormatter()
 private let workRootBottomTabBarScrollMargin: CGFloat = 24
 
+/// Keeps the Work view state attached to the active project+host scope and
+/// writes it back as it changes.
+///
+/// Packaged as one `ViewModifier` rather than four inline `.onChange`s plus a
+/// `.task`: `WorkRootScreen.body` is a long enough chain that adding five more
+/// modifiers to it exceeds the Swift type-checker's budget and fails the build.
+private struct WorkViewStateScopeModifier: ViewModifier {
+  let hostIdentity: String?
+  let filterPanelOpen: Bool
+  let signature: WorkProjectViewState
+  let applyScope: () -> Void
+  let onFiltersOpened: () -> Void
+  let persist: () -> Void
+
+  func body(content: Content) -> some View {
+    content
+      // A machine switch changes the scope without changing the project id.
+      .onChange(of: hostIdentity) { _, _ in applyScope() }
+      // Opening the filters is the user taking the view back from a deeplink;
+      // from here on their choices are theirs and get persisted again.
+      .onChange(of: filterPanelOpen) { _, isOpen in
+        if isOpen { onFiltersOpened() }
+      }
+      .onChange(of: signature) { _, _ in persist() }
+      .task { applyScope() }
+  }
+}
+
 func resolvedWorkArchivedSessionIds(
   localStorage: String,
   chatSummaries: [String: AgentChatSessionSummary],
@@ -107,9 +135,12 @@ struct WorkRootScreen: View {
   @State var snoozeEpoch = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
-  @AppStorage("ade.work.searchText") var searchText = ""
-  @AppStorage("ade.work.laneFilter") var selectedLaneId = "all"
-  @AppStorage("ade.work.statusFilter") private var selectedStatusRawValue = WorkSessionStatusFilter.all.rawValue
+  // Scoped per project+host through `WorkViewStateStore` rather than held in
+  // flat global `@AppStorage`, so switching projects or machines restores that
+  // scope's view instead of carrying the previous one over.
+  @State var searchText = ""
+  @State var selectedLaneId = "all"
+  @State private var selectedStatusRawValue = WorkSessionStatusFilter.all.rawValue
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var stopRuntimeTarget: TerminalSessionSummary?
@@ -136,14 +167,93 @@ struct WorkRootScreen: View {
   /// the new project's live roster while the database reload catches up.
   @State var loadedProjectionProjectId: String?
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
-  @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
-  @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
+  @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+  @State var collapsedSectionIdsStorage = ""
+  /// The project+host scope the five view-state properties above currently hold.
+  @State private var workViewStateScopeKey: String?
+  /// True while a lane deeplink is framing the view. Its filter reset is shown
+  /// but never persisted, so following a notification cannot permanently
+  /// overwrite the filters and grouping the user chose. Cleared once the user
+  /// touches the filters themselves or the scope changes.
+  @State var workViewStateDeeplinkActive = false
+  /// Persisted base hidden beneath the current deeplink framing. User edits
+  /// restore it first so changing one filter cannot save unrelated deeplink
+  /// resets for grouping or collapsed sections.
+  @State var workViewStateBeforeDeeplink: WorkProjectViewState?
   @State var filterPanelOpen = false
   @State var addLaneSheetPresented = false
 
   var selectedStatus: WorkSessionStatusFilter {
     get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
     nonmutating set { selectedStatusRawValue = newValue.rawValue }
+  }
+
+  /// Scope the Work view state belongs to. Nil while no project is active, in
+  /// which case nothing is written — a nil scope must never clobber a real
+  /// project's saved view.
+  private var currentWorkViewScopeKey: String? {
+    WorkViewStateStore.scopeKey(
+      projectId: syncService.activeProjectId,
+      hostIdentity: syncService.activeProjectHostIdentity
+    )
+  }
+
+  var currentWorkViewState: WorkProjectViewState {
+    WorkProjectViewState(
+      searchText: searchText,
+      laneFilter: selectedLaneId,
+      statusFilter: selectedStatusRawValue,
+      organization: sessionOrganizationRaw,
+      collapsedSectionIds: collapsedSectionIdsStorage
+    )
+  }
+
+  /// Swaps the in-memory view state over to the active project+host, saving the
+  /// outgoing scope first so switching away never drops what the user had.
+  func applyWorkViewStateScope() {
+    let nextScope = currentWorkViewScopeKey
+    guard nextScope != workViewStateScopeKey else { return }
+    if workViewStateScopeKey != nil { persistWorkViewState() }
+    let restored = WorkViewStateStore.load(scope: nextScope)
+    workViewStateScopeKey = nextScope
+    workViewStateDeeplinkActive = false
+    workViewStateBeforeDeeplink = nil
+    searchText = restored.searchText
+    selectedLaneId = restored.laneFilter
+    selectedStatusRawValue = restored.statusFilter
+    sessionOrganizationRaw = restored.organization
+    collapsedSectionIdsStorage = restored.collapsedSectionIds
+  }
+
+  func persistWorkViewState() {
+    guard let scope = workViewStateScopeKey, !workViewStateDeeplinkActive else { return }
+    WorkViewStateStore.save(
+      WorkProjectViewState(
+        searchText: searchText,
+        laneFilter: selectedLaneId,
+        statusFilter: selectedStatusRawValue,
+        organization: sessionOrganizationRaw,
+        collapsedSectionIds: collapsedSectionIdsStorage
+      ),
+      scope: scope
+    )
+  }
+
+  /// Ends transient deeplink framing without treating its reset values as user
+  /// preferences. The next user mutation is applied on top of the saved base.
+  func restoreWorkViewStateAfterDeeplink() {
+    guard workViewStateDeeplinkActive else { return }
+    let restored = workViewStateRestoringUserControl(
+      savedBase: workViewStateBeforeDeeplink,
+      current: currentWorkViewState
+    )
+    searchText = restored.searchText
+    selectedLaneId = restored.laneFilter
+    selectedStatusRawValue = restored.statusFilter
+    sessionOrganizationRaw = restored.organization
+    collapsedSectionIdsStorage = restored.collapsedSectionIds
+    workViewStateDeeplinkActive = false
+    workViewStateBeforeDeeplink = nil
   }
 
   var workStatus: SyncDomainStatus {
@@ -236,14 +346,40 @@ struct WorkRootScreen: View {
   var sessionOrganizationBinding: Binding<WorkSessionOrganization> {
     Binding(
       get: { WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus },
-      set: { sessionOrganizationRaw = $0.rawValue }
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        sessionOrganizationRaw = $0.rawValue
+      }
     )
   }
 
   var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
     Binding(
       get: { selectedStatus },
-      set: { selectedStatus = $0 }
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        selectedStatus = $0
+      }
+    )
+  }
+
+  var searchTextBinding: Binding<String> {
+    Binding(
+      get: { searchText },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        searchText = $0
+      }
+    )
+  }
+
+  var selectedLaneBinding: Binding<String> {
+    Binding(
+      get: { selectedLaneId },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        selectedLaneId = $0
+      }
     )
   }
 
@@ -252,6 +388,7 @@ struct WorkRootScreen: View {
   }
 
   func toggleCollapsed(_ id: String) {
+    restoreWorkViewStateAfterDeeplink()
     var ids = collapsedSectionIds
     if ids.contains(id) {
       ids.remove(id)
@@ -259,6 +396,37 @@ struct WorkRootScreen: View {
       ids.insert(id)
     }
     collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(ids)
+  }
+
+  /// A quiet expansion belongs only to the current quiet spell. Once a lane
+  /// contains real work again, discard its inverted marker so the next
+  /// all-quiet transition returns to the thin collapsed row.
+  func pruneStaleQuietOpenMarkers(sessions: [TerminalSessionSummary]) {
+    var ids = collapsedSectionIds
+    var removedMarkers = Set<String>()
+    for marker in ids.filter({ $0.hasPrefix("lane-open:") }) {
+      let laneId = String(marker.dropFirst("lane-open:".count))
+      guard sessions.contains(where: { $0.laneId == laneId }) else { continue }
+      if !workLaneSessionsAreQuiet(
+        laneId: laneId,
+        sessions: sessions,
+        chatSummaries: chatSummaries,
+        archivedSessionIds: archivedSessionIds,
+        now: Date()
+      ) {
+        ids.remove(marker)
+        removedMarkers.insert(marker)
+      }
+    }
+    if !removedMarkers.isEmpty {
+      collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(ids)
+      if var base = workViewStateBeforeDeeplink {
+        var baseIds = workParseCollapsedSectionIds(base.collapsedSectionIds)
+        baseIds.subtract(removedMarkers)
+        base.collapsedSectionIds = workSerializeCollapsedSectionIds(baseIds)
+        workViewStateBeforeDeeplink = base
+      }
+    }
   }
 
   func pushNewChatRoute() {
@@ -360,8 +528,8 @@ struct WorkRootScreen: View {
             .listRowSeparator(.hidden)
           }
           WorkFiltersSection(
-            searchText: $searchText,
-            selectedLaneId: $selectedLaneId,
+            searchText: searchTextBinding,
+            selectedLaneId: selectedLaneBinding,
             selectedStatus: selectedStatusBinding,
             organization: sessionOrganizationBinding,
             filterOpen: $filterPanelOpen,
@@ -507,6 +675,7 @@ struct WorkRootScreen: View {
           lanes: lanes,
           onLaneCreated: { createdLaneId in
             addLaneSheetPresented = false
+            restoreWorkViewStateAfterDeeplink()
             selectedLaneId = createdLaneId
             await reload(refreshRemote: true)
           }
@@ -536,8 +705,17 @@ struct WorkRootScreen: View {
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .onChange(of: syncService.activeProjectId) { _, projectId in
+        applyWorkViewStateScope()
         resetWorkProjectionForProjectChange(projectId)
       }
+      .modifier(WorkViewStateScopeModifier(
+        hostIdentity: syncService.activeProjectHostIdentity,
+        filterPanelOpen: filterPanelOpen,
+        signature: currentWorkViewState,
+        applyScope: applyWorkViewStateScope,
+        onFiltersOpened: restoreWorkViewStateAfterDeeplink,
+        persist: persistWorkViewState
+      ))
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
         guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }
@@ -706,15 +884,25 @@ struct WorkRootScreen: View {
       }
   }
 
+  /// A quiet lane is collapsed unless explicitly expanded; every other section
+  /// is expanded unless explicitly collapsed.
+  private func workGroupIsCollapsed(_ group: WorkSessionGroup) -> Bool {
+    group.isQuiet
+      ? !collapsedSectionIds.contains(group.quietOpenSectionId)
+      : collapsedSectionIds.contains(group.id)
+  }
+
   @ViewBuilder
   private func workSessionGroupRows(_ group: WorkSessionGroup) -> some View {
     let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
+    let collapsed = workGroupIsCollapsed(group)
+    let isQuietRow = group.isQuiet && collapsed
     WorkSidebarSectionHeader(
       group: group,
-      collapsed: collapsedSectionIds.contains(group.id),
+      collapsed: collapsed,
       onToggle: {
         withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          toggleCollapsed(group.id)
+          toggleCollapsed(group.isQuiet ? group.quietOpenSectionId : group.id)
         }
       },
       pullRequest: group.laneId.flatMap { lanePrTagsByLaneId[$0] },
@@ -727,17 +915,28 @@ struct WorkRootScreen: View {
     .id(group.id)
     .listRowBackground(Color.clear)
     .listRowSeparator(.hidden)
-    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
+    .listRowInsets(EdgeInsets(
+      top: isQuietRow ? 2 : 8,
+      leading: 16,
+      bottom: isQuietRow ? 0 : 2,
+      trailing: 16
+    ))
 
-    if !collapsedSectionIds.contains(group.id) {
+    if !collapsed {
       ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in
-        workSessionRows(session)
+        // An expanded quiet lane holds only settled rows: the full card's
+        // preview line and meta row are about work in flight, of which there is
+        // none here.
+        workSessionRows(session, compact: group.isQuiet)
       }
     }
   }
 
   @ViewBuilder
-  private func workSessionRows(_ session: TerminalSessionSummary) -> some View {
+  private func workSessionRows(
+    _ session: TerminalSessionSummary,
+    compact: Bool = false
+  ) -> some View {
     WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
@@ -750,6 +949,7 @@ struct WorkRootScreen: View {
       transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion)
         ? sessionTransitionNamespace
         : nil,
+      compact: compact,
       isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
@@ -854,6 +1054,7 @@ struct WorkRootScreen: View {
   }
 
   func clearWorkFilters() {
+    restoreWorkViewStateAfterDeeplink()
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all

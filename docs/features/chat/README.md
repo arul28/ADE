@@ -775,7 +775,15 @@ happen to begin with `User request:`.
    `chat.sendMessage` and `chat.readTranscript` actions are scoped to that
    caller's own chat session; `chat.messageSession` is the reviewed peer-control
    primitive for deliberately messaging another ADE chat through ADE's routing
-   contract.
+   contract. The same self-session rule covers the other trusted bound-agent
+   chat/session reads and writes (history, scheduling, attention, status, and
+   lifecycle); a plain unbound human/dev CLI retains its wider read surface.
+   A cross-session target fails with JSON-RPC `policyDenied` and structured
+   `session_scope_denied` data rather than `methodNotFound` or an
+   `Unsupported chat method` message. The structured payload names the method,
+   caller session, requested session, and `chat.messageSession` alternative, so
+   clients can distinguish authorization from host-version skew without parsing
+   presentation text.
    Interactive chat sends are not wall-clock bounded by the service; the turn
    runs until the provider
    completes or the user/app interrupts it. The blocking `runSessionTurn`
