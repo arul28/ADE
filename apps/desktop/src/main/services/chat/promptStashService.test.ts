@@ -6,8 +6,10 @@ import { openKvDb, type AdeDb } from "../state/kvDb";
 import {
   createPromptStash,
   deletePromptStash,
+  listPromptStashAttachmentPaths,
   listPromptStashes,
   MAX_PROMPT_STASHES,
+  MAX_PROMPT_STASH_ATTACHMENTS,
   MAX_PROMPT_STASH_TEXT_CHARS,
 } from "./promptStashService";
 
@@ -50,11 +52,54 @@ describe("promptStashService", () => {
     expect(listPromptStashes(db)).toEqual([created]);
   });
 
-  it("rejects empty and excessively large prompts", () => {
+  it("persists runtime-owned attachments for connected desktops", () => {
+    const attachments = [
+      { path: "/project/.ade/attachments/design.png", type: "image" as const },
+      { path: "https://example.com/reference.png", type: "image-url" as const, url: "https://example.com/reference.png" },
+    ];
+
+    const created = createPromptStash(db, { text: "", attachments });
+
+    expect(created.attachments).toEqual(attachments);
+    expect(listPromptStashes(db)).toEqual([created]);
+    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set([attachments[0]!.path]));
+  });
+
+  it("does not expose or consume machine-bound image paths on another synced runtime", () => {
+    const image = { path: "/source/.ade/attachments/design.png", type: "image" as const };
+    const created = createPromptStash(db, { text: "Use this design", attachments: [image] });
+    db.run(
+      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
+      ["different-runtime", created.id],
+    );
+
+    expect(listPromptStashes(db)).toEqual([
+      expect.objectContaining({
+        id: created.id,
+        attachments: [],
+        attachmentCount: 1,
+        attachmentsAvailable: false,
+      }),
+    ]);
+    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set());
+  });
+
+  it("rejects empty, excessively large, and malformed stashes", () => {
     expect(() => createPromptStash(db, { text: " \n\t " })).toThrow("cannot be empty");
     expect(() => createPromptStash(db, {
       text: "x".repeat(MAX_PROMPT_STASH_TEXT_CHARS + 1),
     })).toThrow("too large");
+    expect(() => createPromptStash(db, {
+      text: "bad attachment",
+      attachments: [{ path: "javascript:alert(1)", type: "image-url", url: "javascript:alert(1)" }],
+    })).toThrow("image URL is invalid");
+    expect(() => createPromptStash(db, {
+      text: "too many",
+      attachments: Array.from({ length: MAX_PROMPT_STASH_ATTACHMENTS + 1 }, (_, index) => ({
+        path: `/project/image-${index}.png`,
+        type: "image" as const,
+      })),
+    })).toThrow("at most");
     expect(listPromptStashes(db)).toEqual([]);
   });
 

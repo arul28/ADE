@@ -4644,12 +4644,16 @@ export function AgentChatComposer({
           <ComposerPromptStash
             ref={promptStashRef}
             draft={draft}
+            attachments={attachments}
             provider={sessionProvider}
             modelId={modelId}
             active={isActive}
             buttonVisible={promptStashButtonEnabled && !parallelChatMode}
             shortcutLabel={`${modifierKeyLabel}+S`}
+            disabled={pendingImageAttachments.length > 0}
             onDraftChange={onDraftChange}
+            onAddAttachment={onAddAttachment}
+            onRemoveAttachment={handleRemoveAttachment}
           />
 
           {!parallelChatMode && usageViewModel ? (

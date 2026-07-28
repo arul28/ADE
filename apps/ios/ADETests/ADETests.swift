@@ -7718,21 +7718,79 @@ final class ADETests: XCTestCase {
     let siteId = "b00e9b92c864a27958669c1595fcb2c3"
     let result = try database.applyChanges([
       CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "text", val: .string("  preserve this draft\n"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
-      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "provider", val: .string("codex"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
-      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "model_id", val: .string("gpt-5"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
-      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "created_at", val: .string("2026-07-28T12:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "attachments_json", val: .string("[{\"path\":\"/project/.ade/attachments/design.png\",\"type\":\"image\"}]"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "attachment_origin_site_id", val: .string(siteId), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "provider", val: .string("codex"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "model_id", val: .string("gpt-5"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 4),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "created_at", val: .string("2026-07-28T12:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 5),
     ])
 
-    XCTAssertEqual(result.appliedCount, 4)
+    XCTAssertEqual(result.appliedCount, 6)
     XCTAssertEqual(result.touchedTables, ["prompt_stashes"])
     XCTAssertFalse(database.skippedUnknownSyncTables.contains("prompt_stashes"))
 
     let promptChanges = database.exportChangesSince(version: 0).filter { $0.table == "prompt_stashes" }
-    XCTAssertEqual(promptChanges.count, 4)
+    XCTAssertEqual(promptChanges.count, 6)
     XCTAssertTrue(promptChanges.allSatisfy { $0.pk == packedPk })
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "text" })?.val, .string("  preserve this draft\n"))
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachments_json" })?.val, .string("[{\"path\":\"/project/.ade/attachments/design.png\",\"type\":\"image\"}]"))
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachment_origin_site_id" })?.val, .string(siteId))
 
     database.close()
+  }
+
+  func testDatabaseBootstrapMigratesExistingPromptStashesForAttachmentChanges() throws {
+    let baseURL = makeTemporaryDirectory()
+    let legacyDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists prompt_stashes (
+        id text primary key,
+        text text not null,
+        provider text,
+        model_id text,
+        created_at text not null
+      );
+    """)
+    XCTAssertNil(legacyDatabase.initializationError)
+    legacyDatabase.close()
+
+    let upgradedDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists prompt_stashes (
+        id text primary key,
+        text text not null,
+        attachments_json text not null default '[]',
+        attachment_origin_site_id text,
+        provider text,
+        model_id text,
+        created_at text not null
+      );
+      alter table prompt_stashes add column attachments_json text not null default '[]';
+      alter table prompt_stashes add column attachment_origin_site_id text;
+    """)
+    XCTAssertNil(upgradedDatabase.initializationError)
+
+    let stashId = "stash-upgraded-mobile-schema"
+    let packedPk = packedDesktopTextPrimaryKey(stashId)
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let attachmentJson = "[{\"path\":\"/project/.ade/attachments/design.png\",\"type\":\"image\"}]"
+    let result = try upgradedDatabase.applyChanges([
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "text", val: .string("preserve this draft"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "attachments_json", val: .string(attachmentJson), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "attachment_origin_site_id", val: .string(siteId), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "provider", val: .string("codex"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "model_id", val: .string("gpt-5"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 4),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "created_at", val: .string("2026-07-28T12:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 5),
+    ])
+
+    XCTAssertEqual(result.appliedCount, 6)
+    XCTAssertEqual(result.touchedTables, ["prompt_stashes"])
+    XCTAssertFalse(upgradedDatabase.skippedUnknownSyncTables.contains("prompt_stashes"))
+
+    let promptChanges = upgradedDatabase.exportChangesSince(version: 0).filter { $0.table == "prompt_stashes" }
+    XCTAssertEqual(promptChanges.count, 6)
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachments_json" })?.val, .string(attachmentJson))
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachment_origin_site_id" })?.val, .string(siteId))
+
+    upgradedDatabase.close()
   }
 
   func testDatabaseApplyChangesDoesNotTrapOnOutOfRangeIntegralDouble() throws {
