@@ -85,6 +85,12 @@ class SqliteD1Database {
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
+      this.native.exec(
+        readFileSync(
+          new URL("../schema/attention_triggers.sql", import.meta.url),
+          "utf8",
+        ),
+      );
     }
   }
 

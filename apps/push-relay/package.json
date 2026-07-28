@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm run validate:migrations && npm run d1:migrate:remote && wrangler deploy",
-    "d1:migrate:local": "wrangler d1 migrations apply ade-push-relay --local",
-    "d1:migrate:remote": "wrangler d1 migrations apply ade-push-relay --remote",
+    "d1:migrations:local": "wrangler d1 migrations apply ade-push-relay --local",
+    "d1:migrations:remote": "wrangler d1 migrations apply ade-push-relay --remote",
+    "d1:migrate:local": "npm run d1:migrations:local && npm run d1:triggers:local",
+    "d1:migrate:remote": "npm run d1:migrations:remote && npm run d1:triggers:remote",
+    "d1:triggers:local": "wrangler d1 execute ade-push-relay --local --file=./schema/attention_triggers.sql --yes",
+    "d1:triggers:remote": "wrangler d1 execute ade-push-relay --remote --file=./schema/attention_triggers.sql --yes",
     "test": "npm run validate:migrations && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate:migrations": "node scripts/validate-d1-migrations.mjs"

@@ -125,7 +125,8 @@ npm install
 # One-time: create the D1 database and paste the id into wrangler.jsonc
 npx wrangler d1 create ade-push-relay
 
-npm run d1:migrate:remote
+# Validates the schema, applies D1 migrations and trigger enforcement, then
+# deploys the Worker.
 npm run deploy
 ```
 
