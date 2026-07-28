@@ -7790,6 +7790,16 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachments_json" })?.val, .string(attachmentJson))
     XCTAssertEqual(promptChanges.first(where: { $0.cid == "attachment_origin_site_id" })?.val, .string(siteId))
 
+    let updatedAttachmentJson = "[{\"path\":\"https://example.com/reference.png\",\"type\":\"image-url\",\"url\":\"https://example.com/reference.png\"}]"
+    try upgradedDatabase.executeSqlForTesting("""
+      update prompt_stashes
+         set attachments_json = '\(updatedAttachmentJson)'
+       where id = '\(stashId)'
+    """)
+    let upgradedPromptChanges = upgradedDatabase.exportChangesSince(version: 0)
+      .filter { $0.table == "prompt_stashes" && $0.cid == "attachments_json" }
+    XCTAssertEqual(upgradedPromptChanges.last?.val, .string(updatedAttachmentJson))
+
     upgradedDatabase.close()
   }
 

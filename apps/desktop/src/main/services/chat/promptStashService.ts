@@ -81,17 +81,23 @@ function parseAttachments(json: string): AgentChatFileRef[] {
 
 type PromptStashSiteDb = Pick<AdeDb, "get"> & Partial<Pick<AdeDb, "sync">>;
 
+function normalizeSiteId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized || null;
+}
+
 function currentSiteId(db: PromptStashSiteDb): string | null {
   try {
-    const siteId = db.sync?.getSiteId().trim().toLowerCase();
+    const siteId = normalizeSiteId(db.sync?.getSiteId());
     if (siteId) return siteId;
   } catch {
     // Fall through to the SQL read for narrow test/runtime adapters.
   }
   try {
-    return db.get<{ site_id: string }>(
+    return normalizeSiteId(db.get<{ site_id: string }>(
       "select lower(hex(crsql_site_id())) as site_id",
-    )?.site_id ?? null;
+    )?.site_id);
   } catch {
     return null;
   }
@@ -99,15 +105,19 @@ function currentSiteId(db: PromptStashSiteDb): string | null {
 
 function fromRow(row: PromptStashRow, localSiteId: string | null): PromptStashEntry {
   const storedAttachments = parseAttachments(row.attachments_json);
-  const hasMachineBoundImages = storedAttachments.some((attachment) => attachment.type === "image");
-  const attachmentsAvailable = !hasMachineBoundImages
-    || Boolean(localSiteId && row.attachment_origin_site_id === localSiteId);
+  const originMatches = Boolean(
+    localSiteId
+    && normalizeSiteId(row.attachment_origin_site_id) === localSiteId,
+  );
+  const attachments = storedAttachments.filter((attachment) => (
+    attachment.type !== "image" || originMatches
+  ));
   return {
     id: row.id,
     text: row.text,
-    attachments: attachmentsAvailable ? storedAttachments : [],
+    attachments,
     attachmentCount: storedAttachments.length,
-    attachmentsAvailable,
+    attachmentsAvailable: attachments.length === storedAttachments.length,
     provider: row.provider,
     modelId: row.model_id,
     createdAt: row.created_at,
@@ -151,14 +161,14 @@ export function listPromptStashAttachmentPaths(
     `
       select attachments_json, attachment_origin_site_id
       from prompt_stashes
-      where attachment_origin_site_id = ?
     `,
-    [localSiteId],
   );
   return new Set(rows.flatMap((row) => (
-    parseAttachments(row.attachments_json)
+    normalizeSiteId(row.attachment_origin_site_id) === localSiteId
+      ? parseAttachments(row.attachments_json)
       .filter((attachment) => attachment.type === "image")
       .map((attachment) => attachment.path)
+      : []
   )));
 }
 

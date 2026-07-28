@@ -84,6 +84,52 @@ describe("promptStashService", () => {
     expect(listPromptStashAttachmentPaths(db)).toEqual(new Set());
   });
 
+  it("normalizes site ids before deciding whether machine-bound images are local", () => {
+    const image = { path: "/source/.ade/attachments/design.png", type: "image" as const };
+    const created = createPromptStash(db, { text: "Use this design", attachments: [image] });
+    db.run(
+      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
+      [` \n${db.sync.getSiteId().toUpperCase()}\t `, created.id],
+    );
+
+    expect(listPromptStashes(db)).toEqual([
+      expect.objectContaining({
+        id: created.id,
+        attachments: [image],
+        attachmentCount: 1,
+        attachmentsAvailable: true,
+      }),
+    ]);
+    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set([image.path]));
+  });
+
+  it("keeps portable image URLs while withholding cross-site image paths", () => {
+    const localImage = { path: "/source/.ade/attachments/design.png", type: "image" as const };
+    const portableImage = {
+      path: "https://example.com/reference.png",
+      type: "image-url" as const,
+      url: "https://example.com/reference.png",
+    };
+    const created = createPromptStash(db, {
+      text: "Compare these designs",
+      attachments: [localImage, portableImage],
+    });
+    db.run(
+      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
+      ["different-runtime", created.id],
+    );
+
+    expect(listPromptStashes(db)).toEqual([
+      expect.objectContaining({
+        id: created.id,
+        attachments: [portableImage],
+        attachmentCount: 2,
+        attachmentsAvailable: false,
+      }),
+    ]);
+    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set());
+  });
+
   it("rejects empty, excessively large, and malformed stashes", () => {
     expect(() => createPromptStash(db, { text: " \n\t " })).toThrow("cannot be empty");
     expect(() => createPromptStash(db, {

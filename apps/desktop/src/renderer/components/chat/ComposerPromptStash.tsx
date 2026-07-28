@@ -290,7 +290,14 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     updatePosition();
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updatePosition);
+    if (resizeObserver && menuRef.current) {
+      resizeObserver.observe(menuRef.current);
+    }
     return () => {
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };

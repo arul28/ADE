@@ -377,6 +377,97 @@ describe("ComposerPromptStash", () => {
     expect(menu.className).toContain("fixed");
   });
 
+  it("repositions the portal when asynchronous menu content changes its height", async () => {
+    let resizeCallback: ResizeObserverCallback | null = null;
+    const observedElements: Element[] = [];
+    const disconnected = vi.fn();
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalInnerHeight = window.innerHeight;
+    const originalInnerWidth = window.innerWidth;
+    class TestResizeObserver implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+
+      observe(target: Element) {
+        observedElements.push(target);
+      }
+
+      unobserve() {}
+
+      disconnect() {
+        disconnected();
+      }
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: TestResizeObserver,
+    });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1_000 });
+
+    try {
+      installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
+      const view = render(
+        <ComposerPromptStash
+          draft=""
+          active
+          buttonVisible
+          shortcutLabel="⌘+S"
+          onDraftChange={vi.fn()}
+        />,
+      );
+
+      const openButton = await screen.findByRole("button", { name: "Open 1 stashed prompt" });
+      const anchor = view.container.firstElementChild as HTMLElement;
+      vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({
+        bottom: 728,
+        height: 28,
+        left: 872,
+        right: 900,
+        top: 700,
+        width: 28,
+        x: 872,
+        y: 700,
+        toJSON: () => ({}),
+      });
+      fireEvent.click(openButton);
+
+      const menu = await screen.findByRole("dialog", { name: "Stashed prompts" });
+      expect(observedElements).toContain(menu);
+      vi.spyOn(menu, "getBoundingClientRect").mockReturnValue({
+        bottom: 300,
+        height: 300,
+        left: 0,
+        right: 380,
+        top: 0,
+        width: 380,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+
+      resizeCallback?.([], {} as ResizeObserver);
+
+      await waitFor(() => expect(menu.style.top).toBe("390px"));
+      view.unmount();
+      expect(disconnected).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        value: originalResizeObserver,
+      });
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+    }
+  });
+
   it("closes the stash menu without consuming an entry when the user starts a new draft", async () => {
     const remove = vi.fn().mockResolvedValue(true);
     installBridge({

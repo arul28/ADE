@@ -3242,7 +3242,9 @@ final class DatabaseService {
     }
 
     do {
-      try run(sql)
+      // Keep bootstrap ADD COLUMN migrations on existing CRRs inside the same
+      // begin/commit alter path used by the rest of the database adapter.
+      try exec(sql)
     } catch {
       let lowered = sql.lowercased()
       let message = (error as NSError).localizedDescription.lowercased()
