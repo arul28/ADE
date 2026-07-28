@@ -391,6 +391,104 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("retries a failed alert target when another target is relay-suppressed", async () => {
+    const secondDevice = {
+      ...device,
+      deviceId: "dev-2",
+      apnsToken: "c".repeat(64),
+      pushToStartToken: "d".repeat(64),
+    };
+    const { publisher, publish, emit, store } = makeHarness([device, secondDevice]);
+    publish
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 0,
+        suppressed: 3,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "alert",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "alert",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        suppressed: 1,
+        failed: 0,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "alert",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "alert",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      });
+
+    await publisher.start();
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0].notifications?.[0]).toMatchObject({
+      deviceIds: ["dev-1", "dev-2"],
+      dedupeKey: "alert:s-1:approval",
+    });
+    expect(store.recordPublishResult).toHaveBeenLastCalledWith(
+      expect.objectContaining({ error: "relay failed 1 alert target" }),
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1]?.[0].notifications?.[0]).toMatchObject({
+      deviceIds: ["dev-1", "dev-2"],
+      dedupeKey: "alert:s-1:approval",
+    });
+    expect(store.recordPublishResult).toHaveBeenLastCalledWith(
+      { at: expect.any(String) },
+    );
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(publish).toHaveBeenCalledTimes(2);
+
+    publisher.dispose();
+  });
+
   it("restarts only the re-enabled device without duplicating other Live Activities", async () => {
     const secondDevice = {
       ...device,

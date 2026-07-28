@@ -1147,21 +1147,42 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const delivered = readOutcomeCount(result, "delivered");
       const suppressed = readOutcomeCount(result, "suppressed");
       const failed = readOutcomeCount(result, "failed");
-      if (delivered === 0 && suppressed === 0 && failed > 0) {
+      const alertOutcomes = readAlertOutcomes(result);
+      if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
         pendingAlerts = [...consumedAlerts, ...pendingAlerts];
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();
         return;
       }
-      for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
+      const failedAlertCount = alertOutcomes?.filter(
+        (outcome) => !outcome.delivered && !outcome.suppressed,
+      ).length ?? 0;
+      if (failedAlertCount > 0) {
+        // A suppressed target is already up to date, but it must not mask a
+        // different alert target that failed in the same relay response.
+        // Requeue the batch and leave its fingerprints uncommitted; relay-side
+        // suppression makes the resend harmless for targets that already
+        // landed while the failed target remains eligible for retry.
+        pendingAlerts = [...consumedAlerts, ...pendingAlerts];
+        deps.store.recordPublishResult({
+          at: new Date().toISOString(),
+          error: `relay failed ${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"}`,
+        });
+        logWarn(
+          "push.publish_undelivered",
+          new Error(`${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"} failed`),
+        );
+        scheduleRetry();
+      } else {
+        for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
+      }
       // Every alert item (including the badge-only sync) carries this flush's
       // badge count. Commit it per device from the relay's outcomes: a device
       // whose send failed transiently must stay unsynced so the next flush
       // retries its badge. Suppressed counts as synced (identical content was
       // already delivered); a legacy/mock response without outcomes commits
       // all targeted devices, mirroring the Live Activity commit rule.
-      const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null) {
         for (const item of alertItems) {
           for (const deviceId of item.deviceIds ?? []) {
@@ -1208,7 +1229,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           scheduleRetry();
         }
       }
-      deps.store.recordPublishResult({ at: new Date().toISOString() });
+      if (failedAlertCount === 0) {
+        deps.store.recordPublishResult({ at: new Date().toISOString() });
+      }
     } catch (error) {
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
