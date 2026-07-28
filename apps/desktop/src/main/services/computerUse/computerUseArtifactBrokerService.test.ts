@@ -298,6 +298,36 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
+  it("removes every staged file when a later batch input fails validation", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const firstCapture = path.join(projectRoot, "first.png");
+    const secondCapture = path.join(projectRoot, "second.png");
+    const rejectedCapture = path.join(projectRoot, "rejected.bin");
+    fs.writeFileSync(firstCapture, "first", "utf8");
+    fs.writeFileSync(secondCapture, "second", "utf8");
+    fs.writeFileSync(rejectedCapture, "rejected", "utf8");
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [
+          { kind: "screenshot", title: "First proof", path: firstCapture },
+          { kind: "screenshot", title: "Second proof", path: secondCapture },
+          { kind: "screenshot", title: "Rejected proof", path: rejectedCapture },
+        ],
+      }),
+    ).toThrow(/not importable as proof/);
+
+    const stagedDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    expect(fs.existsSync(stagedDir) ? fs.readdirSync(stagedDir) : []).toEqual([]);
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+  });
+
   it("deletes an artifact's rows and its stored file, and stays idempotent", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,

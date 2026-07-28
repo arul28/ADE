@@ -88,6 +88,13 @@ type ComputerUseArtifactRecordInsert = Omit<ComputerUseArtifactRecord, "id" | "c
   backendStyle?: ComputerUseBackendStyle | null;
 };
 
+type ResolvedStoredArtifact = {
+  uri: string;
+  storageKind: "file" | "url";
+  mimeType: string | null;
+  stagedFilePath: string | null;
+};
+
 type StoredLinkRow = {
   id: string;
   artifact_id: string;
@@ -347,7 +354,11 @@ export function createComputerUseArtifactBrokerService(args: {
     }
   };
 
-  const materializeInlineContent = (input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind, title: string): string => {
+  const materializeInlineContent = (
+    input: ComputerUseArtifactInput,
+    kind: ComputerUseArtifactKind,
+    title: string,
+  ): { uri: string; stagedFilePath: string } => {
     const extension = inferArtifactExtension(input, kind);
     const artifactPath = createComputerUseArtifactPath(projectRoot, title, extension);
     if (input.json != null) {
@@ -355,7 +366,10 @@ export function createComputerUseArtifactBrokerService(args: {
     } else {
       writeTextAtomic(artifactPath, input.text ?? "");
     }
-    return toProjectArtifactUri(projectRoot, artifactPath);
+    return {
+      uri: toProjectArtifactUri(projectRoot, artifactPath),
+      stagedFilePath: artifactPath,
+    };
   };
 
   /**
@@ -378,10 +392,15 @@ export function createComputerUseArtifactBrokerService(args: {
     kind: ComputerUseArtifactKind,
     title: string,
     callerRoot: string | null,
-  ): { uri: string; storageKind: "file" | "url"; mimeType: string | null } => {
+  ): ResolvedStoredArtifact => {
     const directUri = toOptionalString(input.uri);
     if (directUri && isHttpUrl(directUri)) {
-      return { uri: directUri, storageKind: "url", mimeType: toOptionalString(input.mimeType) };
+      return {
+        uri: directUri,
+        storageKind: "url",
+        mimeType: toOptionalString(input.mimeType),
+        stagedFilePath: null,
+      };
     }
 
     const pathLike = toOptionalString(input.path) ?? (directUri && !isHttpUrl(directUri) ? directUri : null);
@@ -437,6 +456,7 @@ export function createComputerUseArtifactBrokerService(args: {
           uri: toProjectArtifactUri(projectRoot, existingArtifactPath),
           storageKind: "file",
           mimeType: toOptionalString(input.mimeType),
+          stagedFilePath: null,
         };
       } catch {
         // Fall through to external import handling.
@@ -451,13 +471,16 @@ export function createComputerUseArtifactBrokerService(args: {
         uri: toProjectArtifactUri(projectRoot, targetPath),
         storageKind: "file",
         mimeType: toOptionalString(input.mimeType),
+        stagedFilePath: targetPath,
       };
     }
 
+    const materialized = materializeInlineContent(input, kind, title);
     return {
-      uri: materializeInlineContent(input, kind, title),
+      uri: materialized.uri,
       storageKind: "file",
       mimeType: toOptionalString(input.mimeType),
+      stagedFilePath: materialized.stagedFilePath,
     };
   };
 
@@ -916,11 +939,31 @@ export function createComputerUseArtifactBrokerService(args: {
       // now throws (missing file, non-importable type, denied source), and a
       // half-committed batch would leave the agent's retry inserting the
       // already-stored inputs a second time.
-      const resolved = request.inputs.map((input) => {
-        const kind = normalizeInputKind(input);
-        const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
-        return { input, kind, title, stored: resolveStoredUri(input, kind, title, callerRoot) };
-      });
+      const resolved: Array<{
+        input: ComputerUseArtifactInput;
+        kind: ComputerUseArtifactKind;
+        title: string;
+        stored: ResolvedStoredArtifact;
+      }> = [];
+      const stagedFilePaths: string[] = [];
+      try {
+        for (const input of request.inputs) {
+          const kind = normalizeInputKind(input);
+          const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
+          const stored = resolveStoredUri(input, kind, title, callerRoot);
+          if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
+          resolved.push({ input, kind, title, stored });
+        }
+      } catch (error) {
+        for (const stagedFilePath of stagedFilePaths) {
+          try {
+            fs.rmSync(stagedFilePath, { force: true });
+          } catch {
+            // Preserve the validation error; cleanup is best-effort.
+          }
+        }
+        throw error;
+      }
       const artifacts = resolved.map(({ input, kind, title, stored }) => {
         const { uri, storageKind, mimeType } = stored;
         const metadata = {
