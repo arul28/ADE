@@ -9,8 +9,6 @@ ai:
     commit_messages: true
     pr_descriptions: true
     terminal_summaries: true
-    memory_consolidation: true
-    mission_planning: true
     orchestrator: true
     initial_context: true
   featureModelOverrides:
