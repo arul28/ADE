@@ -47,6 +47,7 @@ import {
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
   MAX_PROMPT_STASHES,
+  type PromptStashCreateArgs,
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
@@ -86,6 +87,8 @@ const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
   error: "Browser preview cannot manage Xcode.",
   checkedAt: "1970-01-01T00:00:00.000Z",
 } as const;
+const BROWSER_MOCK_IMAGE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l5mS9QAAAABJRU5ErkJggg==";
 
 const BUILTIN_MOCK_PROJECT = {
   id: "browser-mock",
@@ -3244,7 +3247,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       hasClipboardImage: resolved(false),
       readClipboardImage: resolved(null),
       saveClipboardImageAttachment: resolved(null),
-      getImageDataUrl: resolvedArg({ dataUrl: "" }),
+      getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       writeClipboardImage: resolvedArg(undefined),
       openPath: resolvedArg(undefined),
       openPathInEditor: resolvedArg(undefined),
@@ -4857,11 +4860,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         set: resolvedArg(undefined),
       },
       promptStashes: {
-        list: async () => [...browserMockPromptStashes],
-        create: async (args: { text: string; provider?: string | null; modelId?: string | null }) => {
+        list: async () => browserMockPromptStashes.map((entry) => ({
+          ...entry,
+          attachments: entry.attachments?.map((attachment) => ({ ...attachment })),
+        })),
+        create: async (args: PromptStashCreateArgs) => {
+          const attachments = (args.attachments ?? []).map((attachment) => ({ ...attachment }));
           const entry: PromptStashEntry = {
             id: globalThis.crypto.randomUUID(),
             text: args.text,
+            attachments,
+            attachmentCount: attachments.length,
+            attachmentsAvailable: true,
             provider: args.provider ?? null,
             modelId: args.modelId ?? null,
             createdAt: new Date().toISOString(),
@@ -5042,7 +5052,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
-      getImageDataUrl: resolvedArg({ dataUrl: "" }),
+      getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       getEventHistory: async (arg: {
         sessionId: string;

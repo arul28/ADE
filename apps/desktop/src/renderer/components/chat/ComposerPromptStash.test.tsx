@@ -378,7 +378,9 @@ describe("ComposerPromptStash", () => {
   });
 
   it("repositions the portal when asynchronous menu content changes its height", async () => {
-    let resizeCallback: ResizeObserverCallback | null = null;
+    let resizeCallback: ResizeObserverCallback = () => {
+      throw new Error("ResizeObserver callback was not installed");
+    };
     const observedElements: Element[] = [];
     const disconnected = vi.fn();
     const originalResizeObserver = globalThis.ResizeObserver;
@@ -447,7 +449,7 @@ describe("ComposerPromptStash", () => {
         toJSON: () => ({}),
       });
 
-      resizeCallback?.([], {} as ResizeObserver);
+      resizeCallback([], {} as ResizeObserver);
 
       await waitFor(() => expect(menu.style.top).toBe("390px"));
       view.unmount();
