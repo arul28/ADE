@@ -13495,6 +13495,7 @@ final class ADETests: XCTestCase {
     )
   }
 
+  @MainActor
   func testMobileHistoryRoutingRequiresScopedProgressingCursors() {
     XCTAssertTrue(workChatOlderTranscriptPageAdvances(
       beforeOffset: 4_096,
@@ -13512,6 +13513,10 @@ final class ADETests: XCTestCase {
       beforeOffset: 4_096,
       nextCursor: -1
     ))
+    XCTAssertFalse(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: 8_192
+    ))
     XCTAssertTrue(workChatHasOlderTranscriptHistory(
       chatEventCursor: 2_048,
       canonicalTranscriptCursor: nil,
@@ -13527,6 +13532,113 @@ final class ADETests: XCTestCase {
       canonicalTranscriptCursor: 2_048,
       allowsCanonicalFallback: true
     ))
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.seedChatHistoryCursorForTesting(sessionId: "chat-1", cursor: 4_096)
+    let firstPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 2_048,
+      hasMore: true,
+      sessionFound: true,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 4_096,
+      page: firstPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A delayed ordinary subscribe ack cannot resurrect a consumed page.
+    service.seedChatHistoryCursorForTesting(
+      sessionId: "chat-1",
+      cursor: 4_096,
+      allowForward: false
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A duplicate response for the consumed cursor cannot repeat the page.
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 4_096,
+      page: firstPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var unavailablePage = firstPage
+    unavailablePage.startOffset = 1_024
+    unavailablePage.unavailable = true
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: unavailablePage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var mismatchedPage = firstPage
+    mismatchedPage.sessionId = "different-chat"
+    mismatchedPage.startOffset = 1_024
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: mismatchedPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var nonProgressingPage = firstPage
+    nonProgressingPage.startOffset = 4_096
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: nonProgressingPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A live event rebuild reads this service cursor into the destination.
+    // Recording the event must not restore the original subscribe cursor.
+    service.recordChatEventEnvelope(AgentChatEventEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-07-28T10:00:00.000Z",
+      event: .text(text: "live", messageId: "message-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 1
+    ))
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    let secondPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 1_024,
+      hasMore: false,
+      sessionFound: true,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: secondPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 0)
+
+    // A later authoritative full snapshot may legitimately re-arm paging after
+    // a previously small transcript grows beyond the bounded tail.
+    service.seedChatHistoryCursorForTesting(sessionId: "chat-1", cursor: 8_192)
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 8_192)
+
+    let missingPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 8_192,
+      hasMore: false,
+      sessionFound: false,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 8_192,
+      page: missingPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 0)
   }
 
   func testMobileHistoryPayloadsDecodeCursorAndUnavailableState() throws {

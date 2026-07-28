@@ -1025,31 +1025,40 @@ describe("brain project actions fallback handler", () => {
       keyMaterialProvider: () => null,
     });
     credentialStore.setSync("test.bootstrap", "bootstrap-token");
+    const logger = createDiscoveryLogger();
     const personalChatScope: PersonalChatScopeContract = {
       capabilities: vi.fn(() => ({
         version: 1 as const,
         actions: ["list", "terminalCreate", "saveTempAttachment"],
       })),
-      call: vi.fn(async (action: unknown) => ({
-        action: action as PersonalChatAction,
-        result: action === "getEventHistory"
-          ? { events: [], truncated: false }
-          : action === "getEventHistoryPage"
-            ? {
-                sessionId: "personal-1",
-                events: [],
-                startOffset: 1_024,
-                hasMore: true,
-                sessionFound: true,
-              }
-          : [{ sessionId: "personal-1", surface: "personal" }],
-      })),
+      call: vi.fn(async (action: unknown, args: unknown) => {
+        if (
+          action === "getEventHistoryPage"
+          && (args as { beforeOffset?: number } | null)?.beforeOffset === 4_096
+        ) {
+          throw new Error("personal history unavailable");
+        }
+        return {
+          action: action as PersonalChatAction,
+          result: action === "getEventHistory"
+            ? { events: [], truncated: false }
+            : action === "getEventHistoryPage"
+              ? {
+                  sessionId: "personal-1",
+                  events: [],
+                  startOffset: 1_024,
+                  hasMore: true,
+                  sessionFound: true,
+                }
+              : [{ sessionId: "personal-1", surface: "personal" }],
+        };
+      }),
       streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false })),
       transcriptPath: vi.fn(async () => transcriptPath),
       isTurnActive: vi.fn(async () => true),
     };
     const handler = createBrainProjectActionsSyncHandler({
-      logger: createDiscoveryLogger(),
+      logger,
       projectCatalogProvider: {
         listProjects: vi.fn(async () => ({ projects: [] })),
         prepareProjectConnection: vi.fn(async () => ({ ok: false, message: "No projects." })),
@@ -1145,6 +1154,31 @@ describe("brain project actions fallback handler", () => {
         startOffset: 1_024,
         hasMore: true,
         sessionFound: true,
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "personal-history-failed",
+        payload: {
+          sessionId: "personal-1",
+          chatScope: "personal",
+          beforeOffset: 4_096,
+        },
+      }));
+      const failedHistoryPage = await waitForEnvelope(
+        envelopes,
+        "chat_history",
+        "personal-history-failed",
+      );
+      expect(failedHistoryPage.payload).toMatchObject({
+        sessionId: "personal-1",
+        startOffset: 4_096,
+        unavailable: true,
+      });
+      expect(logger.warn).toHaveBeenCalledWith("sync_brain.chat_history_failed", {
+        sessionId: "personal-1",
+        beforeOffset: 4_096,
+        error: "personal history unavailable",
       });
 
       client.send(encodeSyncEnvelope({
@@ -8025,7 +8059,11 @@ describe("chat_subscribe snapshots", () => {
         type: "chat_subscribe",
         requestId: "chat-page-subscribe",
         projectId: "project-1",
-        payload: { sessionId: session.id, maxBytes: 256 * 1_024 },
+        payload: {
+          sessionId: session.id,
+          projectId: "project-1",
+          maxBytes: 256 * 1_024,
+        },
       }));
       const snapshot = await waitForEnvelope(
         peer.envelopes,
@@ -8045,6 +8083,7 @@ describe("chat_subscribe snapshots", () => {
         projectId: "project-1",
         payload: {
           sessionId: session.id,
+          projectId: "project-1",
           beforeOffset: 4_096,
           maxBytes: 256 * 1_024,
         },
@@ -8069,6 +8108,36 @@ describe("chat_subscribe snapshots", () => {
 
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_history",
+        requestId: "chat-page-history-host-root",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectRootPath: projectRoot,
+          beforeOffset: 2_048,
+        },
+      }));
+      const rootScopedPage = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "chat-page-history-host-root",
+      );
+      expect(rootScopedPage.payload).toMatchObject({
+        sessionId: session.id,
+        startOffset: 2_048,
+        sessionFound: true,
+      });
+      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(2);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_unsubscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project",
+        },
+      }));
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
         requestId: "chat-page-wrong-scope",
         projectId: "project-1",
         payload: {
@@ -8088,7 +8157,29 @@ describe("chat_subscribe snapshots", () => {
         sessionFound: false,
         unavailable: true,
       });
-      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(1);
+      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(2);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-page-history-after-mismatched-unsubscribe",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "project-1",
+          beforeOffset: 2_048,
+        },
+      }));
+      const pageAfterMismatchedUnsubscribe = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "chat-page-history-after-mismatched-unsubscribe",
+      );
+      expect(pageAfterMismatchedUnsubscribe.payload).toMatchObject({
+        sessionId: session.id,
+        startOffset: 2_048,
+        sessionFound: true,
+      });
+      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(3);
     } finally {
       peer?.ws.close();
       await host.dispose();

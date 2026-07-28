@@ -1118,6 +1118,8 @@ struct WorkChatSessionView: View {
         .onDisappear {
           olderHistoryLoadTask?.cancel()
           olderHistoryLoadTask = nil
+          olderHistoryLoadInFlight = false
+          olderHistoryLoadError = nil
           cancelScheduledTimelineSnapshotRebuild()
         }
         .onChange(of: chatSummaryTimelineKey) { _, _ in

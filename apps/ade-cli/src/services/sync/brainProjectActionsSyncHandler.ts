@@ -918,7 +918,13 @@ export function createBrainProjectActionsSyncHandler(
             ...(typeof payload.maxBytes === "number" ? { maxBytes: payload.maxBytes } : {}),
           })).result;
           page = normalizeChatHistoryPage(rawPage, sessionId, beforeOffset);
-        } catch {}
+        } catch (error) {
+          args.logger.warn("sync_brain.chat_history_failed", {
+            sessionId,
+            beforeOffset,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         if (!isCurrent()) return;
         send(peer.ws, "chat_history", page, envelope.requestId);
         break;

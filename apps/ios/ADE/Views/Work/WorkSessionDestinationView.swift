@@ -2103,16 +2103,26 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func seedOlderChatEventHistoryCursor(from page: AgentChatEventHistoryPage) {
-    if page.unavailable == true { return }
+    guard page.unavailable != true,
+          page.sessionId == sessionId
+    else { return }
     guard page.sessionFound else {
       olderChatEventHistoryCursor = 0
       return
     }
+    guard page.startOffset >= 0,
+          (!page.hasMore || page.startOffset > 0)
+    else { return }
     updateOlderChatEventHistoryCursor(page.hasMore ? page.startOffset : nil)
   }
 
   @MainActor
-  func updateOlderChatEventHistoryCursor(_ cursor: Int?) {
+  func updateOlderChatEventHistoryCursor(_ cursor: Int?, authoritative: Bool = false) {
+    let normalizedCursor = cursor.flatMap { $0 > 0 ? $0 : nil } ?? 0
+    if authoritative {
+      olderChatEventHistoryCursor = normalizedCursor
+      return
+    }
     if let existing = olderChatEventHistoryCursor {
       // Zero is an explicit exhausted sentinel. Periodic tail refreshes must
       // not re-seed already-consumed history and download the same pages again.
@@ -2124,7 +2134,7 @@ struct WorkSessionDestinationView: View {
       olderChatEventHistoryCursor = min(existing, cursor)
       return
     }
-    olderChatEventHistoryCursor = cursor.flatMap { $0 > 0 ? $0 : nil } ?? 0
+    olderChatEventHistoryCursor = normalizedCursor
   }
 
   @MainActor
@@ -2227,11 +2237,22 @@ struct WorkSessionDestinationView: View {
         }
       }
       guard let page = loadedPage else { return .failed }
+      guard page.unavailable != true,
+            page.sessionId == sessionId
+      else {
+        return .failed
+      }
       guard page.sessionFound else {
         olderChatEventHistoryCursor = 0
         return .loaded
       }
-      guard page.startOffset >= 0, page.startOffset < cursor else {
+      guard
+            workChatOlderTranscriptPageAdvances(
+              beforeOffset: cursor,
+              nextCursor: page.startOffset
+            ),
+            (!page.hasMore || page.startOffset > 0)
+      else {
         return .failed
       }
       olderChatEventHistoryCursor = page.hasMore && page.startOffset > 0 ? page.startOffset : 0
@@ -2466,7 +2487,10 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func syncTranscriptFromLiveEvents() {
     if let subscribedCursor = syncService.chatOlderHistoryCursorState(sessionId: sessionId) {
-      updateOlderChatEventHistoryCursor(subscribedCursor > 0 ? subscribedCursor : nil)
+      updateOlderChatEventHistoryCursor(
+        subscribedCursor > 0 ? subscribedCursor : nil,
+        authoritative: true
+      )
     }
     let liveTranscript = liveTranscriptCache.transcript(
       for: sessionId,

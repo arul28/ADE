@@ -523,6 +523,10 @@ type LanePresenceEntry = {
 };
 
 type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
+type ChatScopeRequest = Pick<
+  SyncChatSubscribePayload,
+  "chatScope" | "projectId" | "projectRootPath"
+>;
 
 type PendingTerminalSnapshotEvent =
   | {
@@ -5250,6 +5254,45 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return 0;
   }
 
+  function requestedProjectChatScope(
+    payload: ChatScopeRequest | null,
+  ): "project" | "foreign-project" {
+    const requestedProjectId = toOptionalString(payload?.projectId);
+    const requestedRootPath = toOptionalString(payload?.projectRootPath);
+    if (!requestedProjectId && !requestedRootPath) return "project";
+    if (
+      requestedProjectId
+      && projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases)
+    ) {
+      return "project";
+    }
+    if (
+      !requestedProjectId
+      && requestedRootPath
+      && path.resolve(requestedRootPath) === path.resolve(args.projectRoot)
+    ) {
+      return "project";
+    }
+    return "foreign-project";
+  }
+
+  function requestedChatSubscriptionScope(
+    payload: ChatScopeRequest | null,
+  ): ChatSubscriptionScope {
+    return payload?.chatScope === "personal" ? "personal" : requestedProjectChatScope(payload);
+  }
+
+  function hasExplicitChatSubscriptionScope(
+    payload: ChatScopeRequest | null,
+  ): boolean {
+    return (
+      payload?.chatScope === "project"
+      || payload?.chatScope === "personal"
+      || toOptionalString(payload?.projectId) != null
+      || toOptionalString(payload?.projectRootPath) != null
+    );
+  }
+
   // Resolve a foreign-project subscription's transcript path via the provider
   // (the security boundary — validates the project is registered and confines
   // the path to that project's `.ade` transcripts). `kind: "local"` means the
@@ -5258,20 +5301,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // the provider could not confirm — the caller must fail closed rather than
   // fall back to serving whichever local session shares the sessionId.
   function resolveForeignChatScope(
-    payload: { projectId?: string | null; projectRootPath?: string | null } | null,
+    payload: ChatScopeRequest | null,
     sessionId: string,
   ): { kind: "local" } | { kind: "foreign"; transcriptPath: string } | { kind: "rejected" } {
     const requestedProjectId = toOptionalString(payload?.projectId);
     const requestedRootPath = toOptionalString(payload?.projectRootPath);
-    if (!requestedProjectId && !requestedRootPath) return { kind: "local" };
-    // A payload that names THIS host's project (by id, or by rootPath alone)
-    // is an ordinary subscribe — let the local sessionService path serve it.
-    if (requestedProjectId && projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases)) {
-      return { kind: "local" };
-    }
-    if (!requestedProjectId && requestedRootPath && path.resolve(requestedRootPath) === path.resolve(args.projectRoot)) {
-      return { kind: "local" };
-    }
+    if (requestedProjectChatScope(payload) === "project") return { kind: "local" };
     const transcriptPath = args.foreignChatProvider?.resolveTranscriptPath({
       projectId: requestedProjectId,
       projectRootPath: requestedRootPath,
@@ -7644,11 +7679,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           unavailable: true,
         });
         const subscribedScope = peer.chatSubscriptionScopes.get(sessionId);
-        const requestedScope = payload?.chatScope === "personal"
-          ? "personal"
-          : toOptionalString(payload?.projectId) || toOptionalString(payload?.projectRootPath)
-            ? "foreign-project"
-            : "project";
+        const requestedScope = requestedChatSubscriptionScope(payload);
         if (
           !peer.subscribedChatSessionIds.has(sessionId)
           || subscribedScope !== requestedScope
@@ -7707,7 +7738,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
-        const personalChatRequested = payload?.chatScope === "personal";
+        const requestedScope = requestedChatSubscriptionScope(payload);
+        const personalChatRequested = requestedScope === "personal";
         const priorSubscription = {
           subscribed: peer.subscribedChatSessionIds.has(sessionId),
           scope: peer.chatSubscriptionScopes.get(sessionId),
@@ -7748,14 +7780,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatSubscriptionScopes.delete(sessionId);
         } else {
           peer.subscribedChatSessionIds.add(sessionId);
-          peer.chatSubscriptionScopes.set(
-            sessionId,
-            personalChatRequested
-              ? "personal"
-              : foreignScope.kind === "foreign"
-                ? "foreign-project"
-                : "project",
-          );
+          peer.chatSubscriptionScopes.set(sessionId, requestedScope);
         }
         if (foreignTranscriptPath) {
           peer.resolvedChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
@@ -7935,7 +7960,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "chat_unsubscribe": {
         const payload = envelope.payload as SyncChatUnsubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
-        if (sessionId) {
+        const subscribedScope = sessionId ? peer.chatSubscriptionScopes.get(sessionId) : undefined;
+        const requestedScope = requestedChatSubscriptionScope(payload);
+        if (
+          sessionId
+          && (
+            !hasExplicitChatSubscriptionScope(payload)
+            || subscribedScope === requestedScope
+          )
+        ) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.hydratingChatSessionIds.delete(sessionId);
           peer.chatSubscriptionScopes.delete(sessionId);

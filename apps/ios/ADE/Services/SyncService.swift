@@ -2292,6 +2292,31 @@ func syncChatSubscribeHistoryCursor(
   return tailStartOffset
 }
 
+/// Resolve the next stored cursor from a validated history page.
+///
+/// `nil` means preserve the existing cursor because the response is
+/// unavailable, mismatched, or non-progressing. A returned `0` is the
+/// authoritative exhausted sentinel.
+func syncChatHistoryPageCursor(
+  requestedSessionId: String,
+  beforeOffset: Int,
+  page: AgentChatEventHistoryPage
+) -> Int? {
+  guard page.unavailable != true,
+        page.sessionId == requestedSessionId,
+        beforeOffset > 0
+  else { return nil }
+  guard page.sessionFound else { return 0 }
+  guard page.startOffset >= 0,
+        page.startOffset < beforeOffset
+  else { return nil }
+  if page.hasMore {
+    guard page.startOffset > 0 else { return nil }
+    return page.startOffset
+  }
+  return 0
+}
+
 /// Lane ids that must be hydrated before a `work.listSessions` snapshot can be
 /// installed safely. The database deliberately rejects sessions whose lane is
 /// absent, so replacing Work first would silently discard a newly-created
@@ -2749,6 +2774,7 @@ final class SyncService: ObservableObject {
   #endif
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private var chatHistoryCursorBySession: [String: Int] = [:]
+  private var chatHistoryCursorAdvancedByPageSessionIds = Set<String>()
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   /// Highest host-assigned `seq` applied per chat session. Sent back as
   /// `sinceSeq` on re-subscribe so the host can replay exactly the missed
@@ -8413,6 +8439,10 @@ final class SyncService: ObservableObject {
         requestId: nil,
         payload: payload
       ) else { return false }
+      // This subscribe establishes a fresh snapshot generation. If a history
+      // page lands before its ack, recording that page re-arms the stale-ack
+      // guard below.
+      chatHistoryCursorAdvancedByPageSessionIds.remove(trimmedSessionId)
       if requestSnapshot {
         recentFullChatSnapshotRequestBySession[trimmedSessionId] = (
           uptime: requestUptime,
@@ -9774,8 +9804,11 @@ final class SyncService: ObservableObject {
       beforeOffset: syncChatHistoryTailPageProbeOffset,
       maxBytes: syncChatHistoryTailPageMaxBytes
     )
-    guard page.sessionFound != false else { return page }
-    mergeChatEventHistory(sessionId: page.sessionId, events: page.events)
+    guard page.unavailable != true,
+          page.sessionFound,
+          page.sessionId == sessionId
+    else { return page }
+    mergeChatEventHistory(sessionId: sessionId, events: page.events)
     return page
   }
 
@@ -9804,14 +9837,20 @@ final class SyncService: ObservableObject {
       ) {
         self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
       }
-      return try decode(raw, as: AgentChatEventHistoryPage.self)
+      let page = try decode(raw, as: AgentChatEventHistoryPage.self)
+      recordChatHistoryPageCursor(
+        requestedSessionId: sessionId,
+        beforeOffset: beforeOffset,
+        page: page
+      )
+      return page
     }
     var args: [String: Any] = ["sessionId": sessionId, "beforeOffset": beforeOffset]
     if let maxBytes, maxBytes > 0 {
       args["maxBytes"] = maxBytes
     }
     let scope = chatCommandScope(for: sessionId)
-    return try await sendDecodableCommand(
+    let page = try await sendDecodableCommand(
       action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
       args: args,
       disconnectOnTimeout: false,
@@ -9820,6 +9859,12 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistoryPage.self
     )
+    recordChatHistoryPageCursor(
+      requestedSessionId: sessionId,
+      beforeOffset: beforeOffset,
+      page: page
+    )
+    return page
   }
 
   func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
@@ -13947,6 +13992,30 @@ final class SyncService: ObservableObject {
     completesCapturedRefreshRequestsForTesting = false
   }
 
+  func seedChatHistoryCursorForTesting(
+    sessionId: String,
+    cursor: Int,
+    allowForward: Bool = true
+  ) {
+    updateChatHistoryCursor(
+      sessionId: sessionId,
+      cursor: cursor,
+      allowForward: allowForward
+    )
+  }
+
+  func recordChatHistoryPageCursorForTesting(
+    requestedSessionId: String,
+    beforeOffset: Int,
+    page: AgentChatEventHistoryPage
+  ) {
+    recordChatHistoryPageCursor(
+      requestedSessionId: requestedSessionId,
+      beforeOffset: beforeOffset,
+      page: page
+    )
+  }
+
   private func capturedRefreshResponseForTesting(type: String, payload: Any) -> Any? {
     if type == "project_catalog_request" {
       return ["projects": [Any]()] as [String: Any]
@@ -14549,7 +14618,11 @@ final class SyncService: ObservableObject {
             tailStartOffset: snapshot.tailStartOffset,
             cursorKind: snapshot.cursorKind
           ) {
-            updateChatHistoryCursor(sessionId: snapshot.sessionId, cursor: cursor)
+            updateChatHistoryCursor(
+              sessionId: snapshot.sessionId,
+              cursor: cursor,
+              allowForward: !chatHistoryCursorAdvancedByPageSessionIds.contains(snapshot.sessionId)
+            )
           }
         }
         if resumed {
@@ -16043,8 +16116,17 @@ final class SyncService: ObservableObject {
     markChatEventsChanged(immediate: true)
   }
 
-  private func updateChatHistoryCursor(sessionId: String, cursor: Int) {
+  private func updateChatHistoryCursor(
+    sessionId: String,
+    cursor: Int,
+    allowForward: Bool = false
+  ) {
     let normalizedCursor = max(0, cursor)
+    if let existingCursor = chatHistoryCursorBySession[sessionId],
+       normalizedCursor > existingCursor,
+       !allowForward {
+      return
+    }
     guard chatHistoryCursorBySession[sessionId] != normalizedCursor else { return }
     chatHistoryCursorBySession[sessionId] = normalizedCursor
     // The destination's live observation task owns both transcript events and
@@ -16052,6 +16134,26 @@ final class SyncService: ObservableObject {
     // tail was identical to the cached window.
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     markChatEventsChanged(immediate: true)
+  }
+
+  private func recordChatHistoryPageCursor(
+    requestedSessionId: String,
+    beforeOffset: Int,
+    page: AgentChatEventHistoryPage
+  ) {
+    guard let cursor = syncChatHistoryPageCursor(
+      requestedSessionId: requestedSessionId,
+      beforeOffset: beforeOffset,
+      page: page
+    ) else { return }
+    // Only the page for the cursor we still own may advance it. A duplicate or
+    // delayed response must not overwrite a newer page or full snapshot.
+    if let currentCursor = chatHistoryCursorBySession[requestedSessionId],
+       currentCursor != beforeOffset {
+      return
+    }
+    chatHistoryCursorAdvancedByPageSessionIds.insert(requestedSessionId)
+    updateChatHistoryCursor(sessionId: requestedSessionId, cursor: cursor)
   }
 
   private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
@@ -16357,6 +16459,7 @@ final class SyncService: ObservableObject {
     chatSubscriptionsNeedingRemoteActivation.removeAll()
     recentFullChatSnapshotRequestBySession.removeAll()
     chatHistoryCursorBySession.removeAll()
+    chatHistoryCursorAdvancedByPageSessionIds.removeAll()
     // Turn-active hints are scoped to the live connection's event stream —
     // a stale "running" hint must not survive a project switch or reconnect.
     chatTurnActiveHintBySession.removeAll()
