@@ -276,7 +276,9 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme and chat appearance preferences. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore` (font size,
-  transcript density, chrome tint, shell geometry, user minimap).
+  transcript density, chrome tint, shell geometry, user minimap, and the
+  default-on prompt-stash bookmark visibility; hiding the bookmark leaves
+  Cmd/Ctrl+S active).
 - `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
   — voice input settings. Persists `voiceInputEnabled`, shows whether
   the bundled on-device transcription model is installed, and gates the
@@ -756,7 +758,7 @@ changing rather than which service backs it:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `GeneralSection.tsx` (GitHub/Linear connections, product analytics, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. Product analytics exposes only status and the machine-wide opt-out. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
-| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, and the user-message minimap toggle. Persisted to `localStorage` under `ade.userPreferences.v1`. |
+| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, the user-message minimap toggle, and the default-on prompt-stash bookmark visibility. Hiding the bookmark does not disable Cmd/Ctrl+S. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | AI Connections | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Two groups: **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access** (models.dev catalog freshness + Subscriptions/OAuth & Kimi, API Provider Keys incl. Moonshot AI, a searchable ~160-provider chip cloud, Local Model Servers, and Advanced custom providers/model slugs). Subscription connects run through `OAuthConnectModal`; custom providers/slugs persist to `ai.customProviders` / `ai.customModelSlugs`. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus project-wide scheduled-work recovery. **Pause all scheduled work** keeps Claude wakeups, cron tasks, and loops armed while suppressing `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. **Active scheduled work** lists KV-backed durable jobs from every chat with per-job Cancel and an explicit unavailable/error state. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |

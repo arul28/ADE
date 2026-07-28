@@ -55,6 +55,11 @@ import {
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import {
+  createPromptStash,
+  deletePromptStash,
+  listPromptStashes,
+} from "../chat/promptStashService";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import {
   parseProductAnalyticsCapture,
@@ -359,6 +364,9 @@ import type {
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSuggestLaneNameArgs,
+  PromptStashCreateArgs,
+  PromptStashDeleteArgs,
+  PromptStashEntry,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
@@ -6873,6 +6881,24 @@ export function registerIpc({
     const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
     const nextState = normalizeAgentChatParallelLaunchState(arg?.state ?? null, parentLaneId);
     ctx.db.setJson(key, nextState);
+  });
+
+  ipcMain.handle(IPC.agentChatPromptStashesList, async (): Promise<PromptStashEntry[]> => {
+    return listPromptStashes(ensureDbContext().db);
+  });
+
+  ipcMain.handle(IPC.agentChatPromptStashesCreate, async (
+    _event,
+    arg: PromptStashCreateArgs,
+  ): Promise<PromptStashEntry> => {
+    return createPromptStash(ensureDbContext().db, arg);
+  });
+
+  ipcMain.handle(IPC.agentChatPromptStashesDelete, async (
+    _event,
+    arg: PromptStashDeleteArgs,
+  ): Promise<boolean> => {
+    return deletePromptStash(ensureDbContext().db, arg?.id ?? "");
   });
 
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {

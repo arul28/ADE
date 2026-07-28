@@ -253,6 +253,15 @@ export function buildLocalRuntimeNodeEnv(
     ELECTRON_RUN_AS_NODE: "1",
     ADE_CLI_VERSION: appVersion,
   };
+  // The desktop owns this runtime as the human/operator surface. A development
+  // app can itself be launched from an agent-bound ADE terminal, but that
+  // caller context must not leak into the child daemon and silently clamp every
+  // desktop RPC connection back down to the agent role.
+  delete env.ADE_CHAT_SESSION_ID;
+  delete env.ADE_RUN_ID;
+  delete env.ADE_STEP_ID;
+  delete env.ADE_ATTEMPT_ID;
+  delete env.ADE_OWNER_ID;
   const nodePath = buildLocalRuntimeNodePath({ ...nodePathOptions, existingNodePath: baseEnv.NODE_PATH });
   if (nodePath) env.NODE_PATH = nodePath;
   return env;

@@ -178,6 +178,9 @@ import type {
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  PromptStashCreateArgs,
+  PromptStashDeleteArgs,
+  PromptStashEntry,
   AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
@@ -1643,6 +1646,11 @@ declare global {
           args: AgentChatFileSearchArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatFileSearchResult[]>;
+        promptStashes: {
+          list: () => Promise<PromptStashEntry[]>;
+          create: (args: PromptStashCreateArgs) => Promise<PromptStashEntry>;
+          delete: (args: PromptStashDeleteArgs) => Promise<boolean>;
+        };
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
           pin?: OpenProjectBinding | null,

@@ -1286,6 +1286,21 @@ describe("adeRpcServer", () => {
       const names = (listed.actions ?? []).map((tool: any) => tool.name);
       expect(names).not.toContain("get_cto_state");
       expect(names).not.toContain("getLinearSyncDashboard");
+      const chatActionInventory = await callTool(handler, "list_ade_actions", { domain: "chat" });
+      const chatActionNames = (chatActionInventory.structuredContent?.actions ?? [])
+        .map((action: { name?: string }) => action.name);
+      expect(chatActionNames).not.toContain("chat.listPromptStashes");
+      expect(chatActionNames).not.toContain("chat.createPromptStash");
+      expect(chatActionNames).not.toContain("chat.deletePromptStash");
+      const stashReadAttempt = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "listPromptStashes",
+        args: {},
+      });
+      expect(stashReadAttempt.isError).toBe(true);
+      expect(stashReadAttempt.error).toMatchObject({
+        message: expect.stringContaining("requires elevated role"),
+      });
       runtime.sessionService.get.mockReturnValue({
         id: "chat-1",
         toolType: "codex-chat",

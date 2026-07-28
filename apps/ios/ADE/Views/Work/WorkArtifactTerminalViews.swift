@@ -891,7 +891,6 @@ private struct WorkArtifactSelectedPreview: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      WorkArtifactReviewStateView(artifact: artifact)
     }
     .padding(14)
     .background(ADEColor.surfaceBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -1135,11 +1134,6 @@ private struct WorkArtifactListRow: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
-        if let reviewState = artifact.reviewState?.trimmingCharacters(in: .whitespacesAndNewlines), !reviewState.isEmpty {
-          Text(workArtifactReviewLabel(reviewState))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(workArtifactReviewTint(reviewState))
-        }
       }
 
       Spacer(minLength: 0)
@@ -1150,40 +1144,6 @@ private struct WorkArtifactListRow: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(selected ? ADEColor.accent.opacity(0.38) : ADEColor.border.opacity(0.24), lineWidth: 0.8)
     )
-  }
-}
-
-private struct WorkArtifactReviewStateView: View {
-  let artifact: ComputerUseArtifactSummary
-
-  @ViewBuilder
-  var body: some View {
-    let reviewState = artifact.reviewState?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let workflowState = artifact.workflowState?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let reviewNote = artifact.reviewNote?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-    if reviewState?.isEmpty == false || workflowState?.isEmpty == false || reviewNote?.isEmpty == false {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 8) {
-          if let reviewState, !reviewState.isEmpty {
-            ADEStatusPill(text: workArtifactReviewLabel(reviewState), tint: workArtifactReviewTint(reviewState))
-          }
-          if let workflowState, !workflowState.isEmpty {
-            ADEStatusPill(text: workArtifactWorkflowLabel(workflowState), tint: ADEColor.textSecondary)
-          }
-        }
-
-        if let reviewNote, !reviewNote.isEmpty {
-          Text(reviewNote)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      .padding(10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
   }
 }
 
@@ -1276,37 +1236,6 @@ func workArtifactKindLabel(_ kind: String) -> String {
     .split(separator: " ")
     .map { $0.capitalized }
     .joined(separator: " ")
-}
-
-func workArtifactReviewLabel(_ value: String) -> String {
-  switch value {
-  case "needs_more":
-    return "Needs more"
-  default:
-    return workArtifactKindLabel(value)
-  }
-}
-
-func workArtifactWorkflowLabel(_ value: String) -> String {
-  switch value {
-  case "evidence_only":
-    return "Evidence only"
-  default:
-    return workArtifactKindLabel(value)
-  }
-}
-
-func workArtifactReviewTint(_ value: String) -> Color {
-  switch value {
-  case "accepted":
-    return ADEColor.success
-  case "needs_more":
-    return ADEColor.warning
-  case "dismissed":
-    return ADEColor.danger
-  default:
-    return ADEColor.textSecondary
-  }
 }
 
 func workArtifactExternalURL(_ uri: String) -> URL? {

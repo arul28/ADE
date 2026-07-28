@@ -3,13 +3,13 @@
 ADE has two intentionally separate computer-use responsibilities:
 
 1. **Provider execution wiring.** On macOS, opted-in Codex sessions receive the signed standalone Codex Computer Use client as the canonical `computer_use` MCP server. This works in native Work chats and tracked Codex CLI sessions, including resume/fork paths.
-2. **Proof ingestion.** Any agent can intentionally register a screenshot, video, trace, verification output, or console log. ADE stores it, links it to an owner (chat, lane, PR, Linear issue), and renders it in the review drawer.
+2. **Proof ingestion.** Any agent can intentionally register a screenshot, video, trace, verification output, or console log. ADE stores it, links it to an owner (chat, lane, PR, Linear issue), and renders the collected set in chat.
 
 Execution does not imply proof. ADE never passively promotes every Computer Use tool result into a durable artifact.
 
-The previous proof control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. The proof side is now a thin broker backed by a single table; direct Codex execution is the provider-native MCP path described below.
+The previous proof control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. The proof side is now a thin broker backed by canonical artifact and owner-link tables; direct Codex execution is the provider-native MCP path described below.
 
-See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof capture` / `attach` / `list`) and the drawer UI contract.
+See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof capture` / `attach` / `list`) and the chat collection UI contract.
 
 ## Runtime ownership
 
@@ -18,13 +18,18 @@ The artifact broker is owned by the ADE runtime that owns the project. Ingest, l
 - **Local runtime:** artifacts on the user's machine, under the local project root.
 - **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface; raw artifact bytes are not synced back to the desktop machine.
 
-The desktop renderer is a viewer: it edits review state, navigates owners, and displays previews. It does not own storage. The headless ADE CLI (`ade proof capture` / `attach` / `list`) writes through the same broker via JSON-RPC, so a CLI invocation from a Mac targeting a remote runtime stores artifacts on the remote host.
+The desktop renderer is a viewer: it lists collected proof and displays
+runtime-fetched previews inline in the chat and in the drawer. It does not own
+storage or expose artifact review-state controls. The headless ADE CLI (`ade
+proof capture` / `attach` / `list`) writes through the same broker via JSON-RPC,
+so a CLI invocation from a Mac targeting a remote runtime stores artifacts on
+the remote host.
 
 ## Source file map
 
 ### Services (apps/desktop/src/main/services/computerUse/)
 
-- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingestArtifacts`), listing (`listArtifacts`), review-state management (`reviewArtifact`), routing (`routeArtifact`), backend status (`getBackendStatus`). Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
+- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingestArtifacts`), listing (`listArtifacts`), compatibility review-state management (`reviewArtifact`), routing (`routeArtifact`), backend status (`getBackendStatus`), and bounded preview reads (`readArtifactPreview`, 10 MiB maximum). Image previews cover BMP/GIF/JPEG/PNG/SVG/WebP; video previews cover M4V/MOV/MP4/OGV/WebM. Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
 - `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities). Pure assembly layer over the broker.
 - `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
 
@@ -56,11 +61,15 @@ Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUs
 
 Each channel routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
 
-The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's review drawer go through the same broker instance.
+The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's transcript/drawer collections go through the same broker instance.
 
 ### Renderer
 
-- `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — proof drawer mounted under the chat composer. Shows the `ComputerUseOwnerSnapshot` scoped to the active chat session.
+- `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — shared
+  proof card, transcript-tail collection, in-app lightbox, and full drawer for
+  the active chat session. Local files use ADE's range-capable artifact protocol;
+  remote files use `ade.proof.readArtifactPreview`. Neither path falls back to
+  Finder.
 - `apps/desktop/src/renderer/lib/computerUse.ts`, `renderer/lib/proof.ts` — renderer helpers that call `window.ade.proof.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.

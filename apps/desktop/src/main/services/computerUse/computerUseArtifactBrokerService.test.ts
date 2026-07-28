@@ -123,6 +123,13 @@ describe("computerUseArtifactBrokerService", () => {
       uri: "ade-artifact://project/.ade/artifacts/computer-use/preview.png",
     })).resolves.toBe(`data:image/png;base64,${bytes.toString("base64")}`);
 
+    const videoPath = path.join(artifactDir, "preview.mp4");
+    const videoBytes = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]);
+    fs.writeFileSync(videoPath, videoBytes);
+    await expect(broker.readArtifactPreview({
+      uri: "ade-artifact://project/.ade/artifacts/computer-use/preview.mp4",
+    })).resolves.toBe(`data:video/mp4;base64,${videoBytes.toString("base64")}`);
+
     const outsidePath = path.join(projectRoot, "outside.png");
     fs.writeFileSync(outsidePath, bytes);
     await expect(broker.readArtifactPreview({ uri: outsidePath })).resolves.toBeNull();

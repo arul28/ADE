@@ -70,6 +70,7 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.restart",
   "chat.handoff",
   "chat.rewindFiles",
+  "chat.createPromptStash",
   "chat.createScheduledWork",
   "chat.cancelScheduledWork",
   "chat.delete",
@@ -142,6 +143,7 @@ export function usageActionFromIpcChannel(channel: string): string {
   if (action.startsWith("agentChat.")) {
     const chatAction = action.slice("agentChat.".length);
     const aliases: Record<string, string> = {
+      "promptStashes.create": "createPromptStash",
       "scheduledWork.create": "createScheduledWork",
       "scheduledWork.cancel": "cancelScheduledWork",
     };

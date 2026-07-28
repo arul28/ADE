@@ -8,6 +8,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  ComputerUseArtifactView,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
 
@@ -143,6 +144,8 @@ function renderMessageList(
     olderHistoryError?: string | null;
     onLoadOlderHistory?: () => void;
     onReturnToLatest?: () => void;
+    proofArtifacts?: ComputerUseArtifactView[];
+    onOpenProofDrawer?: () => void;
   },
 ) {
   return render(
@@ -165,11 +168,33 @@ function renderMessageList(
         olderHistoryError={options?.olderHistoryError}
         onLoadOlderHistory={options?.onLoadOlderHistory}
         onReturnToLatest={options?.onReturnToLatest}
+        proofArtifacts={options?.proofArtifacts}
+        onOpenProofDrawer={options?.onOpenProofDrawer}
       />
       <LocationProbe />
     </MemoryRouter>,
   );
 }
+
+const transcriptProofArtifact: ComputerUseArtifactView = {
+  id: "proof-only",
+  kind: "console_logs",
+  backendStyle: "manual",
+  backendName: "ade-cli",
+  sourceToolName: "attach",
+  originalType: "log",
+  title: "Focused tests passed",
+  description: "381 focused tests passed.",
+  uri: ".ade/artifacts/proof.log",
+  storageKind: "file",
+  mimeType: "text/plain",
+  metadata: {},
+  createdAt: "2026-07-28T12:00:00.000Z",
+  links: [],
+  reviewState: "pending",
+  workflowState: "evidence_only",
+  reviewNote: null,
+};
 
 /** The message list under a floating PR pane publishing `prPaneBottomViewportPx`. */
 function renderMessageListUnderPrPane(
@@ -422,6 +447,14 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
+  it("renders collected proof even before transcript rows arrive", () => {
+    renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
+
+    expect(screen.getByText("Proof collected in this chat")).toBeTruthy();
+    expect(screen.getByText("Focused tests passed")).toBeTruthy();
+    expect(screen.getByText("381 focused tests passed.")).toBeTruthy();
+  });
+
   it("keeps turn file-change summaries visible without a session id", () => {
     renderMessageList([
       {

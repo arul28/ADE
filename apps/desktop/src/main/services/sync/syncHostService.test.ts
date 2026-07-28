@@ -924,7 +924,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(host.getTailnetDiscoveryStatus().state).toBe("published");
     host.refreshLanDiscovery();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(execFileMock).toHaveBeenCalledTimes(2);
+    const publishCalls = execFileMock.mock.calls.filter(([, args]) => args.includes("--bg"));
+    expect(publishCalls).toHaveLength(2);
   });
 
   it("rejects host startup quickly when the requested port is already taken", async () => {

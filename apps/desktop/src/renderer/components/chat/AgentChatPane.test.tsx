@@ -1369,7 +1369,7 @@ describe("AgentChatPane companion drawers", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
-    expect(screen.getByText("No artifacts captured yet.")).toBeTruthy();
+    expect(screen.getByText("No proof collected yet")).toBeTruthy();
 
     // Chat actions is an info pane: it floats over the right gutter created by
     // the centered transcript, so it does NOT get a resizable split divider.

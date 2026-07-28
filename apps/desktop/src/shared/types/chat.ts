@@ -2705,6 +2705,26 @@ export type AgentChatFileSearchResult = {
   score?: number;
 };
 
+export type PromptStashEntry = {
+  id: string;
+  text: string;
+  provider: string | null;
+  modelId: string | null;
+  createdAt: string;
+};
+
+export const MAX_PROMPT_STASHES = 20;
+
+export type PromptStashCreateArgs = {
+  text: string;
+  provider?: string | null;
+  modelId?: string | null;
+};
+
+export type PromptStashDeleteArgs = {
+  id: string;
+};
+
 export type TurnDiffFile = {
   path: string;
   additions: number;

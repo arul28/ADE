@@ -9,6 +9,7 @@ import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   THEME_IDS,
   useAppStore,
+  useRootAppStore,
 } from "../../state/appStore";
 import type {
   ChatChromeTint,
@@ -203,6 +204,8 @@ export function AppearanceSection() {
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
+  const promptStashButtonEnabled = useRootAppStore((s) => s.promptStashButtonEnabled);
+  const setPromptStashButtonEnabled = useRootAppStore((s) => s.setPromptStashButtonEnabled);
 
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
@@ -398,6 +401,31 @@ export function AppearanceSection() {
                 aria-pressed={!chatUserMinimapEnabled}
                 onClick={() => setChatUserMinimapEnabled(false)}
                 style={{ ...pillToggleStyle(!chatUserMinimapEnabled), height: 36, minWidth: 100, padding: "0 14px" }}
+              >
+                Hide
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Prompt stash button</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+              Show the bookmark control beside the context meter. Hiding it keeps the composer quieter; Cmd/Ctrl+S still saves and opens stashed prompts.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                aria-pressed={promptStashButtonEnabled}
+                onClick={() => setPromptStashButtonEnabled(true)}
+                style={{ ...pillToggleStyle(promptStashButtonEnabled), height: 36, minWidth: 100, padding: "0 14px" }}
+              >
+                Show
+              </button>
+              <button
+                type="button"
+                aria-pressed={!promptStashButtonEnabled}
+                onClick={() => setPromptStashButtonEnabled(false)}
+                style={{ ...pillToggleStyle(!promptStashButtonEnabled), height: 36, minWidth: 100, padding: "0 14px" }}
               >
                 Hide
               </button>

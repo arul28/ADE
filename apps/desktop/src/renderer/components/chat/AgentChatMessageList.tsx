@@ -48,6 +48,7 @@ import type {
   FilesWorkspace,
   ChatSurfaceProfile,
   ChatSurfaceMode,
+  ComputerUseArtifactView,
   OperatorNavigationSuggestion,
   TurnDiffSummary,
 } from "../../../shared/types";
@@ -133,6 +134,7 @@ import { ContextCompactDivider } from "./ContextCompactDivider";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
+import { ChatProofTimeline } from "./ChatComputerUsePanel";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -5638,6 +5640,9 @@ function AgentChatMessageListMain({
   onReturnToLatest,
   mosaic,
   scrollToRowKeyRequest,
+  proofArtifacts = [],
+  allowLocalProofArtifactProtocol = false,
+  onOpenProofDrawer,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -5681,6 +5686,11 @@ function AgentChatMessageListMain({
   mosaic?: MosaicRenderContext;
   /** Imperative jump request used by the while-you-were-away wake digest. */
   scrollToRowKeyRequest?: { key: string; requestId: number } | null;
+  /** Intentional proof linked to this chat, rendered at the transcript tail. */
+  proofArtifacts?: ComputerUseArtifactView[];
+  /** Local Electron can stream larger artifacts through its range protocol. */
+  allowLocalProofArtifactProtocol?: boolean;
+  onOpenProofDrawer?: () => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
@@ -6959,7 +6969,7 @@ function AgentChatMessageListMain({
               ) : null}
             </div>
           ) : null}
-          {rows.length === 0 && !streamingIndicator ? (
+          {rows.length === 0 && !streamingIndicator && proofArtifacts.length === 0 ? (
             null
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
@@ -6977,6 +6987,11 @@ function AgentChatMessageListMain({
               </div>
               {streamingIndicator}
               {turnDivider}
+              <ChatProofTimeline
+                artifacts={proofArtifacts}
+                onOpenDrawer={onOpenProofDrawer}
+                allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
+              />
             </div>
           ) : (
             /* ── Non-virtualized path: render all rows (small conversation) ── */
@@ -6984,6 +6999,11 @@ function AgentChatMessageListMain({
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {streamingIndicator}
               {turnDivider}
+              <ChatProofTimeline
+                artifacts={proofArtifacts}
+                onOpenDrawer={onOpenProofDrawer}
+                allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
+              />
             </div>
           )}
         </div>

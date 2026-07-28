@@ -90,8 +90,12 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
-import { useAppStore, rootAppStoreApi } from "../../state/appStore";
+import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
+import {
+  ComposerPromptStash,
+  type ComposerPromptStashHandle,
+} from "./ComposerPromptStash";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
@@ -1515,6 +1519,8 @@ export function AgentChatComposer({
   /** Overrides the default rebind-this-tab behaviour of the machine picker. */
   onMachineChange?: (machineId: string) => void;
 }) {
+  const promptStashRef = useRef<ComposerPromptStashHandle>(null);
+  const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -3376,6 +3382,20 @@ export function AgentChatComposer({
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
+    if (
+      event.key.toLowerCase() === "s"
+      && commandModified
+      && !event.altKey
+      && !event.shiftKey
+    ) {
+      event.preventDefault();
+      promptStashRef.current?.activate();
+      return;
+    }
+    if (promptStashRef.current?.handleMenuKeyDown(event)) {
+      event.preventDefault();
+      return;
+    }
     if (composerInputLocked) {
       if (event.key === "Escape" && pendingInput) {
         event.preventDefault();
@@ -4609,6 +4629,17 @@ export function AgentChatComposer({
               />
             ) : null}
           </div>
+
+          <ComposerPromptStash
+            ref={promptStashRef}
+            draft={draft}
+            provider={sessionProvider}
+            modelId={modelId}
+            active={isActive}
+            buttonVisible={promptStashButtonEnabled && !parallelChatMode}
+            shortcutLabel={`${modifierKeyLabel}+S`}
+            onDraftChange={onDraftChange}
+          />
 
           {!parallelChatMode && usageViewModel ? (
             <ContextUsageDial
