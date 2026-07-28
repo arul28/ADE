@@ -1046,15 +1046,20 @@ pipeline (Cloudflare relay, brain publisher, APNs, content-state
 contract) is documented in
 [`push-notifications.md`](./push-notifications.md); the phone-side pieces:
 
-- **Account registration does not require pairing.** After notification
-  authorization, a signed-in phone registers its APNs and push-to-start tokens
-  directly with the account Attention relay. `AccountService` serializes
+- **Account registration does not require pairing or alert permission.** A
+  signed-in or paired phone registers ActivityKit's push-to-start token even
+  when ordinary notification permission is denied and no alert APNs token
+  exists. Signed-in phones send APNs and push-to-start routing directly to the
+  account Attention relay. `AccountService` serializes
   account device PUTs, coalesces queued token/preferences refreshes, and sends a
   persisted monotonic `ownershipEpoch` on every device PUT/DELETE. Sign-out
   commits an unowned epoch before revocation; a direct account switch commits
   `account A → unowned → account B`, so a delayed old-account request cannot
   reclaim the install. Relay `409` means a newer boundary already won and is
-  not retried. The older `push.registerDevice` / `push.setPrefs` /
+  not retried. Turning Live Activities off sends an explicit token-clear
+  mutation through both account and paired-machine routes; an omitted token
+  preserves the current relay target so ordinary preference refreshes cannot
+  disable delivery accidentally. The older `push.registerDevice` / `push.setPrefs` /
   `push.reportLiveActivityToken` commands remain as a paired-machine
   compatibility path.
 - **Alert payloads deep-link.** A default tap carries a top-level
@@ -1101,7 +1106,16 @@ contract) is documented in
   shows registration state, token suffix, APNs environment, last push
   received, and relay reachability (from `push.getStatus`), plus the
   notification / Live-Activity toggles, per-session mutes, and quiet
-  hours. The snapshot (`SettingsPushDeliverySnapshot`) is a pure
+  hours. Those controls update the signed-in account's explicit
+  `devices[attentionDeviceId]` preference override through the relay's scoped
+  atomic mutation, preserving account defaults, other devices, projects, and
+  unknown fields even when another client saves at the same time. Failed
+  mutations remain visibly unsynced and retry with capped exponential backoff;
+  sign-out or a newer edit cancels the older retry.
+  Live Activity diagnostics distinguish iOS authorization off, waiting
+  for a push-to-start token, a token whose relay registration is pending, and
+  a registered push-to-start target. The snapshot
+  (`SettingsPushDeliverySnapshot`) is a pure
   Equatable value mirrored from `PushNotificationService`. When the
   paired machine is not reachable enough to answer runtime-scoped
   `push.*` commands, the panel preserves the last known relay status,

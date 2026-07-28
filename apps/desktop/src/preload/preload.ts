@@ -4761,6 +4761,12 @@ contextBridge.exposeInMainWorld("ade", {
       return () =>
         ipcRenderer.removeListener(IPC.attentionNotchAcknowledgeRequested, listener);
     },
+    onRefreshRequested: (cb: () => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.attentionNotchRefreshRequested, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.attentionNotchRefreshRequested, listener);
+    },
   },
   usage: {
     getAdeStats: async (args: GetAdeUsageStatsArgs = {}): Promise<AdeUsageStats | null> => {

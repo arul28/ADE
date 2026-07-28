@@ -41,6 +41,7 @@ export const IPC = {
   attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
   attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
   attentionNotchAcknowledgeRequested: "ade.attentionNotch.acknowledgeRequested",
+  attentionNotchRefreshRequested: "ade.attentionNotch.refreshRequested",
   attentionGetSnapshot: "ade.attention.getSnapshot",
   attentionAcknowledge: "ade.attention.acknowledge",
   attentionReportPresence: "ade.attention.reportPresence",

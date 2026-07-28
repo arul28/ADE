@@ -132,6 +132,8 @@ export type PrLiveActivityState = {
 type PendingAlert = {
   sessionId: string | null;
   dedupeKey: string;
+  /** Restricts a retry to phones whose prior delivery did not land. */
+  targetDeviceIds?: string[];
   /** Rendered at flush time so run title/lane/agent reflect resolved metadata. */
   render: () => { title: string; body: string | null };
   deepLink?: string | null;
@@ -367,9 +369,20 @@ function readOutcomeCount(result: Record<string, unknown> | null | undefined, ke
   return Number.isFinite(value) ? value : 0;
 }
 
-type RelayLiveActivityOutcome = { delivered: boolean; suppressed: boolean; skipped: boolean };
+type RelayLiveActivityOutcome = {
+  deviceId: string;
+  delivered: boolean;
+  suppressed: boolean;
+  skipped: boolean;
+};
 
 type RelayAlertOutcome = { deviceId: string; delivered: boolean; suppressed: boolean };
+
+type AlertDeliveryAttempt = {
+  alert: PendingAlert | null;
+  deviceId: string;
+  fingerprint: string | null;
+};
 
 /**
  * The relay's per-target `outcomes[]` entries filtered to alert items, keyed
@@ -397,12 +410,17 @@ function readLiveActivityOutcomes(result: Record<string, unknown> | null | undef
   if (!Array.isArray(raw)) return null;
   return raw
     .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
-    .filter((entry) => entry.kind === "liveactivity")
+    .filter((entry) => entry.kind === "liveactivity" && typeof entry.deviceId === "string")
     .map((entry) => ({
+      deviceId: entry.deviceId as string,
       delivered: entry.delivered === true,
       suppressed: entry.suppressed === true,
       skipped: typeof entry.skipped === "string" && entry.skipped.length > 0,
     }));
+}
+
+function deviceScopedAlertDedupeKey(dedupeKey: string, deviceId: string): string {
+  return `alert-device:${deviceId.length}:${deviceId}:${dedupeKey}`;
 }
 
 function providerDisplayName(provider: string | null | undefined): string | null {
@@ -474,11 +492,17 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
   let pendingAlerts: PendingAlert[] = [];
-  const lastAlertFingerprintByKey = new Map<string, string>();
-  let lastLiveActivityFingerprint: string | null = null;
+  const lastAlertFingerprintByKey = new Map<string, Map<string, string>>();
   let lastAttentionFingerprint: string | null = null;
   let lastAttentionPublishedAt = 0;
-  let liveActivityStarted = false;
+  /** Last Live Activity content confirmed per phone. Absence means start. */
+  const liveActivityFingerprintByDevice = new Map<string, string>();
+  /**
+   * Invalidates in-flight commits after an explicit token clear/unregister.
+   * Keep the epoch even after deleting state so a stale publish cannot
+   * resurrect the cleared phone when its relay response arrives.
+   */
+  const liveActivityEpochByDevice = new Map<string, number>();
   /**
    * Last app-icon badge count delivered per device (absent = never sent).
    * Per-device because a flush can legitimately exclude some devices (quiet
@@ -857,7 +881,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const planLiveActivity = (
     deviceIds: string[],
     nowMs: number,
-  ): { item: PushRelayLiveActivityItem; commit: () => void } | null => {
+  ): {
+    items: PushRelayLiveActivityItem[];
+    commit: (landedDeviceIds?: ReadonlySet<string>) => void;
+  } | null => {
     if (deviceIds.length === 0) return null;
     prunePrActivities(nowMs);
     schedulePrActivityExpiry(nowMs);
@@ -875,14 +902,32 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // roster ends the aggregate.
     const dormantCount = allRuns.filter((run) => run.phase === "stale").length;
 
-    let event: "start" | "update" | "end";
-    if ((activeCount > 0 || prActivityCount > 0) && !liveActivityStarted) event = "start";
-    else if (activeCount === 0 && dormantCount === 0 && prActivityCount === 0 && liveActivityStarted) event = "end";
-    else if (!liveActivityStarted) return null; // nothing live to report (stale-only never starts)
-    else event = "update";
-
     const fingerprint = JSON.stringify({ ...contentState, updatedAt: 0 });
-    if (event === "update" && fingerprint === lastLiveActivityFingerprint) return null;
+    const hasLiveContent = activeCount > 0 || prActivityCount > 0;
+    const shouldEnd = !hasLiveContent && dormantCount === 0;
+    const deviceIdsByEvent: Record<"start" | "update" | "end", string[]> = {
+      start: [],
+      update: [],
+      end: [],
+    };
+    for (const deviceId of deviceIds) {
+      const deliveredFingerprint = liveActivityFingerprintByDevice.get(deviceId);
+      if (hasLiveContent) {
+        if (deliveredFingerprint == null) deviceIdsByEvent.start.push(deviceId);
+        else if (deliveredFingerprint !== fingerprint) deviceIdsByEvent.update.push(deviceId);
+      } else if (shouldEnd) {
+        if (deliveredFingerprint != null) deviceIdsByEvent.end.push(deviceId);
+      } else if (deliveredFingerprint != null && deliveredFingerprint !== fingerprint) {
+        // A quiet CLI is stale, not terminal. Existing activities receive the
+        // stale row, but a newly registered phone must not start stale-only UI.
+        deviceIdsByEvent.update.push(deviceId);
+      }
+    }
+    if (
+      deviceIdsByEvent.start.length === 0
+      && deviceIdsByEvent.update.length === 0
+      && deviceIdsByEvent.end.length === 0
+    ) return null;
 
     const anyWaiting = allRuns.some(
       (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
@@ -897,42 +942,65 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         ? "running"
         : "terminal";
 
-    const item: PushRelayLiveActivityItem = {
-      deviceIds,
-      event,
-      activityId: AGENT_RUNS_ACTIVITY_ID,
-      contentState,
-      dedupeKey: AGENT_RUNS_DEDUPE_KEY,
-      phase,
+    const mostRecent = allRuns.sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
+    const mostRecentPr = allPrActivities.sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    const startAlert = {
+      title: activeCount > 0
+        ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`)
+        : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
+      body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
     };
-
-    if (event === "start") {
-      item.attributesType = AGENT_RUNS_ATTRIBUTES_TYPE;
-      item.attributes = { machineName: deps.machineName };
-      const mostRecent = allRuns.sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
-      const mostRecentPr = allPrActivities.sort((left, right) => right.updatedAt - left.updatedAt)[0];
-      item.alert = {
-        title: activeCount > 0
-          ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`)
-          : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
-        body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
-      };
-    }
-    if (event === "end") {
-      item.dismissalDate = Math.floor(nowMs / 1000) + 300;
-    }
-
-    const commit = (): void => {
-      lastLiveActivityFingerprint = fingerprint;
-      if (event === "start") liveActivityStarted = true;
-      if (event === "end") {
-        liveActivityStarted = false;
-        lastLiveActivityFingerprint = null;
+    const items = (["start", "update", "end"] as const)
+      .filter((event) => deviceIdsByEvent[event].length > 0)
+      .map((event): PushRelayLiveActivityItem => ({
+        deviceIds: deviceIdsByEvent[event],
+        event,
+        activityId: AGENT_RUNS_ACTIVITY_ID,
+        contentState,
+        dedupeKey: AGENT_RUNS_DEDUPE_KEY,
+        phase,
+        ...(event === "start"
+          ? {
+            attributesType: AGENT_RUNS_ATTRIBUTES_TYPE,
+            attributes: { machineName: deps.machineName },
+            alert: startAlert,
+          }
+          : {}),
+        ...(event === "end"
+          ? { dismissalDate: Math.floor(nowMs / 1000) + 300 }
+          : {}),
+      }));
+    const plannedEpochByDevice = new Map(
+      deviceIds.map((deviceId) => [
+        deviceId,
+        liveActivityEpochByDevice.get(deviceId) ?? 0,
+      ]),
+    );
+    const commit = (landedDeviceIds?: ReadonlySet<string>): void => {
+      const landed = landedDeviceIds ?? new Set(
+        items.flatMap((item) => item.deviceIds ?? []),
+      );
+      for (const item of items) {
+        for (const deviceId of item.deviceIds ?? []) {
+          if (
+            !landed.has(deviceId)
+            || (liveActivityEpochByDevice.get(deviceId) ?? 0) !== plannedEpochByDevice.get(deviceId)
+          ) {
+            continue;
+          }
+          if (item.event === "end") {
+            liveActivityFingerprintByDevice.delete(deviceId);
+          } else {
+            liveActivityFingerprintByDevice.set(deviceId, fingerprint);
+          }
+        }
+      }
+      if (shouldEnd && liveActivityFingerprintByDevice.size === 0) {
         dropTerminalRuns();
       }
     };
 
-    return { item, commit };
+    return { items, commit };
   };
 
   const publishAttentionSnapshot = async (
@@ -997,12 +1065,16 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const badgeCount = countAwaitingAttentionRuns([...runs.values()]);
 
     const alertItems: PushRelayAlertItem[] = [];
-    const alertCommits: Array<[string, string]> = [];
+    const alertAttempts: AlertDeliveryAttempt[] = [];
     for (const alert of accountAttentionPublished ? [] : consumedAlerts) {
-      const eligibleIds = devices
-        .filter((device) => Boolean(device.apnsToken) && shouldDeliverAlertForPrefs(device.prefs, alert.sessionId, nowMs))
-        .map((device) => device.deviceId);
-      if (eligibleIds.length === 0) continue;
+      const retryTargets = alert.targetDeviceIds ? new Set(alert.targetDeviceIds) : null;
+      const eligibleDevices = devices.filter(
+        (device) =>
+          Boolean(device.apnsToken)
+          && (!retryTargets || retryTargets.has(device.deviceId))
+          && shouldDeliverAlertForPrefs(device.prefs, alert.sessionId, nowMs),
+      );
+      if (eligibleDevices.length === 0) continue;
       const copy = alert.render();
       // itemId is part of the fingerprint: a new approval with identical
       // rendered copy must still publish, or the phone's Approve/Deny action
@@ -1016,22 +1088,30 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         category: alert.category ?? null,
         salt: alert.fingerprintSalt ?? null,
       });
-      if (lastAlertFingerprintByKey.get(alert.dedupeKey) === fingerprint) continue;
-      alertCommits.push([alert.dedupeKey, fingerprint]);
-      alertItems.push({
-        deviceIds: eligibleIds,
-        title: copy.title,
-        body: copy.body,
-        deepLink: alert.deepLink ?? null,
-        threadId: alert.threadId ?? null,
-        dedupeKey: alert.dedupeKey,
-        phase: alert.phase,
-        interruptionLevel: alert.interruptionLevel ?? null,
-        sessionId: alert.sessionId ?? null,
-        itemId: alert.itemId ?? null,
-        category: alert.category ?? null,
-        badge: badgeCount,
-      });
+      for (const device of eligibleDevices) {
+        if (lastAlertFingerprintByKey.get(alert.dedupeKey)?.get(device.deviceId) === fingerprint) {
+          continue;
+        }
+        alertItems.push({
+          deviceIds: [device.deviceId],
+          title: copy.title,
+          body: copy.body,
+          deepLink: alert.deepLink ?? null,
+          threadId: alert.threadId ?? null,
+          dedupeKey: deviceScopedAlertDedupeKey(alert.dedupeKey, device.deviceId),
+          phase: alert.phase,
+          interruptionLevel: alert.interruptionLevel ?? null,
+          sessionId: alert.sessionId ?? null,
+          itemId: alert.itemId ?? null,
+          category: alert.category ?? null,
+          badge: badgeCount,
+        });
+        alertAttempts.push({
+          alert,
+          deviceId: device.deviceId,
+          fingerprint,
+        });
+      }
     }
 
     // The badge must also track *drops* (an approval answered on the Mac), which
@@ -1055,13 +1135,16 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // deviceIds, so a shared key would suppress the same count for a device
       // that never received it (fresh registration, quiet hours just ended).
       // The per-device map above is the only dedupe this item needs.
-      alertItems.push({
-        deviceIds: badgeSyncDeviceIds,
-        title: "",
-        sound: null,
-        phase: "terminal",
-        badge: badgeCount,
-      });
+      for (const deviceId of badgeSyncDeviceIds) {
+        alertItems.push({
+          deviceIds: [deviceId],
+          title: "",
+          sound: null,
+          phase: "terminal",
+          badge: badgeCount,
+        });
+        alertAttempts.push({ alert: null, deviceId, fingerprint: null });
+      }
     }
 
     const liveActivityDeviceIds = devices
@@ -1079,7 +1162,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const payload: { notifications?: PushRelayAlertItem[]; liveActivity?: PushRelayLiveActivityItem[] } = {};
     if (alertItems.length > 0) payload.notifications = alertItems;
-    if (laPlan) payload.liveActivity = [laPlan.item];
+    if (laPlan) payload.liveActivity = laPlan.items;
 
     try {
       const result = await deps.relayClient.publish(payload);
@@ -1089,57 +1172,131 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // and retry instead of committing dedupe/Live-Activity state, which would
       // drop the content and locally suppress the identical resend.
       const delivered = readOutcomeCount(result, "delivered");
+      const suppressed = readOutcomeCount(result, "suppressed");
       const failed = readOutcomeCount(result, "failed");
-      if (delivered === 0 && failed > 0) {
+      const alertOutcomes = readAlertOutcomes(result);
+      if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
         pendingAlerts = [...consumedAlerts, ...pendingAlerts];
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
         logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
         scheduleRetry();
         return;
       }
-      for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
+      const alertVerdicts = alertOutcomes == null
+        ? null
+        : alertAttempts.map((attempt, index) => {
+          const outcome = alertOutcomes[index];
+          return outcome?.deviceId === attempt.deviceId ? outcome : null;
+        });
+      const failedAlertCount = alertVerdicts?.filter(
+        (outcome) => !outcome?.delivered && !outcome?.suppressed,
+      ).length ?? 0;
+      if (failedAlertCount > 0) {
+        // Retain only failed phone targets. Each successful/suppressed
+        // alert-device pair commits independently below, and its phone-scoped
+        // relay key cannot suppress the failed phone's retry.
+        const retryByKey = new Map<string, { alert: PendingAlert; deviceIds: string[] }>();
+        for (const [index, outcome] of alertVerdicts?.entries() ?? []) {
+          const attempt = alertAttempts[index];
+          if (outcome?.delivered || outcome?.suppressed || !attempt.alert) continue;
+          const existing = retryByKey.get(attempt.alert.dedupeKey);
+          if (existing) existing.deviceIds.push(attempt.deviceId);
+          else retryByKey.set(attempt.alert.dedupeKey, {
+            alert: attempt.alert,
+            deviceIds: [attempt.deviceId],
+          });
+        }
+        const newerPendingKeys = new Set(pendingAlerts.map((alert) => alert.dedupeKey));
+        const retryAlerts = [...retryByKey.values()]
+          .filter(({ alert }) => !newerPendingKeys.has(alert.dedupeKey))
+          .map(({ alert, deviceIds }) => ({ ...alert, targetDeviceIds: deviceIds }));
+        pendingAlerts = [...retryAlerts, ...pendingAlerts];
+        logWarn(
+          "push.publish_undelivered",
+          new Error(`${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"} failed`),
+        );
+        scheduleRetry();
+      }
+      for (const [index, attempt] of alertAttempts.entries()) {
+        const outcome = alertVerdicts?.[index];
+        if (
+          attempt.alert
+          && attempt.fingerprint
+          && (alertVerdicts == null || outcome?.delivered || outcome?.suppressed)
+        ) {
+          const byDevice = lastAlertFingerprintByKey.get(attempt.alert.dedupeKey) ?? new Map<string, string>();
+          byDevice.set(attempt.deviceId, attempt.fingerprint);
+          lastAlertFingerprintByKey.set(attempt.alert.dedupeKey, byDevice);
+        }
+      }
       // Every alert item (including the badge-only sync) carries this flush's
       // badge count. Commit it per device from the relay's outcomes: a device
       // whose send failed transiently must stay unsynced so the next flush
       // retries its badge. Suppressed counts as synced (identical content was
       // already delivered); a legacy/mock response without outcomes commits
       // all targeted devices, mirroring the Live Activity commit rule.
-      const alertOutcomes = readAlertOutcomes(result);
-      if (alertOutcomes == null) {
-        for (const item of alertItems) {
-          for (const deviceId of item.deviceIds ?? []) {
-            lastSentBadgeByDevice.set(deviceId, badgeCount);
-          }
-        }
-      } else {
-        for (const outcome of alertOutcomes) {
-          if (outcome.delivered || outcome.suppressed) {
-            lastSentBadgeByDevice.set(outcome.deviceId, badgeCount);
-          }
+      for (const [index, attempt] of alertAttempts.entries()) {
+        const outcome = alertVerdicts?.[index];
+        if (alertVerdicts == null || outcome?.delivered || outcome?.suppressed) {
+          lastSentBadgeByDevice.set(attempt.deviceId, badgeCount);
         }
       }
+      let hardLiveActivityFailureCount = 0;
       if (laPlan) {
-        // Commit the Live Activity plan only if its own targets landed. A mixed
-        // publish can report delivered>0 from the alert while the LA push-to-start
-        // failed; committing then would flip `liveActivityStarted` and the phone
-        // would never get the start (later flushes send updates instead).
+        // Commit each phone only if its own Live Activity target landed. A
+        // mixed publish can report delivered>0 from alerts or other phones;
+        // those successes must not advance a failed target's fingerprint.
         const laOutcomes = readLiveActivityOutcomes(result);
         // ZERO liveactivity outcomes in a real outcomes array means the relay
         // had no APNs target (e.g. an update/end before the phone reported its
         // per-activity token) — nothing landed, so committing would dedupe the
         // new state and strand the Lock Screen on stale content. A missing
         // outcomes array (legacy relay / tests) keeps the commit.
-        const landed = laOutcomes == null || laOutcomes.some((o) => o.delivered || o.suppressed);
+        const landedDeviceIds = laOutcomes == null
+          ? null
+          : new Set(
+            laOutcomes
+              .filter((outcome) => outcome.delivered || outcome.suppressed)
+              .map((outcome) => outcome.deviceId),
+          );
+        const landed = landedDeviceIds == null || landedDeviceIds.size > 0;
+        hardLiveActivityFailureCount = laOutcomes?.filter(
+          (outcome) => !outcome.delivered && !outcome.suppressed && !outcome.skipped,
+        ).length ?? 0;
         if (landed) {
-          laPlan.commit();
-        } else if (laOutcomes.some((o) => !o.delivered && !o.suppressed && !o.skipped)) {
+          laPlan.commit(landedDeviceIds ?? undefined);
+        }
+        if (hardLiveActivityFailureCount > 0) {
           // Hard failure (not merely a missing push-to-start token) — retry the
-          // start; an all-skipped or target-less LA is left for the next
-          // event-driven flush (token arrival pokes one).
+          // affected devices. Per-device fingerprints keep successful phones
+          // committed while failed start/update/end targets remain eligible.
+          // An all-skipped or target-less LA is left for the next event-driven
+          // flush (token arrival pokes one).
           scheduleRetry();
+          logWarn(
+            "push.publish_undelivered",
+            new Error(
+              `${hardLiveActivityFailureCount} Live Activity target${hardLiveActivityFailureCount === 1 ? "" : "s"} failed`,
+            ),
+          );
         }
       }
-      deps.store.recordPublishResult({ at: new Date().toISOString() });
+      const failureMessages = [
+        ...(failedAlertCount > 0
+          ? [`relay failed ${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"}`]
+          : []),
+        ...(hardLiveActivityFailureCount > 0
+          ? [`relay failed ${hardLiveActivityFailureCount} Live Activity target${hardLiveActivityFailureCount === 1 ? "" : "s"}`]
+          : []),
+      ];
+      if (failureMessages.length === 0) {
+        deps.store.recordPublishResult({ at: new Date().toISOString() });
+      } else {
+        deps.store.recordPublishResult({
+          at: new Date().toISOString(),
+          error: failureMessages.join("; "),
+        });
+      }
     } catch (error) {
       // Re-queue the alerts we attempted so a transient relay failure retries;
       // the relay's dedupeKey suppression makes a resend idempotent.
@@ -1651,6 +1808,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       await deps.relayClient.claim();
       await deps.relayClient.registerDevice(registration);
       deps.store.upsertDevice(registration);
+      if (registration.clearPushToStartToken) {
+        liveActivityEpochByDevice.set(
+          registration.deviceId,
+          (liveActivityEpochByDevice.get(registration.deviceId) ?? 0) + 1,
+        );
+        liveActivityFingerprintByDevice.delete(registration.deviceId);
+      }
       deps.store.recordRelayContact(new Date().toISOString());
       // A freshly registered device should pick up any live run immediately.
       this.poke();
@@ -1677,6 +1841,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         logWarn("push.unregister_failed", error);
       }
       deps.store.removeDevice(deviceId);
+      liveActivityEpochByDevice.set(
+        deviceId,
+        (liveActivityEpochByDevice.get(deviceId) ?? 0) + 1,
+      );
+      liveActivityFingerprintByDevice.delete(deviceId);
       lastSentBadgeByDevice.delete(deviceId);
     },
 
@@ -1745,11 +1914,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = null;
       flushFireAt = 0;
-      if (!disposed && liveActivityStarted && !isGated()) {
+      if (!disposed && liveActivityFingerprintByDevice.size > 0 && !isGated()) {
         try {
           const nowMs = now();
           const deviceIds = deps.store.listDevices()
-            .filter((device) => Boolean(device.pushToStartToken) && shouldDeliverLiveActivityForPrefs(device.prefs))
+            .filter((device) =>
+              liveActivityFingerprintByDevice.has(device.deviceId)
+              && Boolean(device.pushToStartToken)
+              && shouldDeliverLiveActivityForPrefs(device.prefs))
             .map((device) => device.deviceId);
           if (deviceIds.length > 0) {
             // Mark still-active runs stale — the machine is gone, not the agent done.

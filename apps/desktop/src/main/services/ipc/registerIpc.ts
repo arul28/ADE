@@ -1655,6 +1655,29 @@ export function registerIpc({
     }
     return accountOwnerId;
   };
+  let loggedAttentionRuntimeCompatibilityFailure = false;
+  const describeAttentionRuntimeCompatibilityFailure = (
+    error: unknown,
+  ): string | null => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      !/method attention\.call failed.*code -32601|method not found|domain ['"]attention['"] is unavailable|action ['"]attention\./i
+        .test(message)
+    ) {
+      return null;
+    }
+    if (!loggedAttentionRuntimeCompatibilityFailure) {
+      loggedAttentionRuntimeCompatibilityFailure = true;
+      getCtx().logger.warn("attention.runtime_incompatible", {
+        reason: message.slice(0, 2_000),
+        recovery: "update_and_restart_ade_brain",
+      });
+    }
+    return (
+      "Account Attention requires a newer connected ADE brain. "
+      + "Update and restart ADE on the host machine so the notch can receive account-wide work."
+    );
+  };
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -3205,19 +3228,21 @@ export function registerIpc({
         ? record.streamId.trim()
         : null;
     if (!localRuntimeConnectionPool) {
-      return {
-        contractVersion: ATTENTION_CONTRACT_VERSION,
-        streamId: null,
-        revision: 0,
-        generatedAt: new Date().toISOString(),
-        items: [],
-        tombstones: [],
-      } satisfies AttentionSnapshot;
+      throw new Error(
+        "Account Attention cannot reach the connected ADE brain. "
+        + "Restart ADE on the host machine, then try again.",
+      );
     }
-    return await localRuntimeConnectionPool.callAttention<AttentionSnapshot>(
-      "getSnapshot",
-      { since, streamId },
-    );
+    try {
+      return await localRuntimeConnectionPool.callAttention<AttentionSnapshot>(
+        "getSnapshot",
+        { since, streamId },
+      );
+    } catch (error) {
+      const compatibilityMessage = describeAttentionRuntimeCompatibilityFailure(error);
+      if (compatibilityMessage) throw new Error(compatibilityMessage);
+      throw error;
+    }
   });
 
   ipcMain.handle(IPC.attentionAcknowledge, async (_event, input: unknown) => {

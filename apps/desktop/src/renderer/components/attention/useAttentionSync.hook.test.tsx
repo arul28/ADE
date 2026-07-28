@@ -21,6 +21,10 @@ import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { refreshAttentionSnapshot, useAttentionSync } from "./useAttentionSync";
 
 const originalAde = window.ade;
+const originalVisibilityState = Object.getOwnPropertyDescriptor(
+  document,
+  "visibilityState",
+);
 
 function liveItem(): AttentionItem {
   return {
@@ -59,6 +63,8 @@ function Harness() {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   resetAttentionStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   Object.defineProperty(window, "ade", {
@@ -66,6 +72,11 @@ afterEach(() => {
     writable: true,
     value: originalAde,
   });
+  if (originalVisibilityState) {
+    Object.defineProperty(document, "visibilityState", originalVisibilityState);
+  } else {
+    delete (document as unknown as { visibilityState?: string }).visibilityState;
+  }
 });
 
 describe("useAttentionSync", () => {
@@ -386,5 +397,77 @@ describe("useAttentionSync", () => {
         && presence.visibleItemIds.includes("live-account-item")
       )).toBe(true);
     });
+  });
+
+  it("keeps refreshing the native notch snapshot while ADE is hidden", async () => {
+    publishAccountStatus({
+      signedIn: true,
+      userId: "user-background-notch",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    });
+    const getSnapshot = vi.fn(async (): Promise<AttentionSnapshot> => ({
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      streamId: "account-background",
+      revision: getSnapshot.mock.calls.length,
+      generatedAt: "2026-07-28T14:05:00.000Z",
+      items: [],
+      tombstones: [],
+    }));
+    let requestRefresh: (() => void) | null = null;
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot,
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(),
+          updateSettings: vi.fn(),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+          onRefreshRequested: vi.fn((callback: () => void) => {
+            requestRefresh = callback;
+            return () => {};
+          }),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => {
+      expect(getSnapshot).toHaveBeenCalledTimes(1);
+      expect(requestRefresh).not.toBeNull();
+    });
+
+    await act(async () => {
+      requestRefresh?.();
+      await Promise.resolve();
+    });
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    await act(async () => {
+      requestRefresh?.();
+      await Promise.resolve();
+    });
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
   });
 });

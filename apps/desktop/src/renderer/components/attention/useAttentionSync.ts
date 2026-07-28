@@ -363,6 +363,11 @@ export function useAttentionSync(ambientSurfaceVisible: boolean): void {
         void acknowledgeAttentionItem(request.itemId, request.mode)
           .finally(publishNotchIfChanged);
       }) ?? (() => {});
+    const removeNotchRefreshListener =
+      window.ade?.attentionNotch?.onRefreshRequested?.(() => {
+        if (document.visibilityState === "visible") return;
+        void refreshAttentionSnapshot();
+      }) ?? (() => {});
     void refreshAttentionSnapshot();
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") void refreshAttentionSnapshot();
@@ -382,6 +387,7 @@ export function useAttentionSync(ambientSurfaceVisible: boolean): void {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       removeNotchAcknowledgeListener();
+      removeNotchRefreshListener();
       unsubscribe();
     };
   }, [accountLoading, accountUserId]);

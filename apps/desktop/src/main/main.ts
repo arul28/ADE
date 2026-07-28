@@ -6644,6 +6644,15 @@ app.whenReady().then(async () => {
     target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
   };
 
+  const requestAttentionNotchRefresh = (): void => {
+    const target =
+      BrowserWindow.getFocusedWindow()
+      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+      ?? null;
+    if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
+    target.webContents.send(IPC.attentionNotchRefreshRequested);
+  };
+
   const matchingRemoteAttentionWindow = (
     item: AttentionItem,
     targetId?: string | null,
@@ -6822,6 +6831,7 @@ app.whenReady().then(async () => {
     }),
     logger: getActiveContext().logger,
     onOutput: handleAttentionNotchOutput,
+    onRefreshRequested: requestAttentionNotchRefresh,
   });
 
   attentionIpcBridge = registerIpc({

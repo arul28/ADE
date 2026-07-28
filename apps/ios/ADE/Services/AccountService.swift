@@ -344,9 +344,16 @@ private struct AccountAttentionDeviceRegistrationRequest {
   let ownershipEpoch: Int
   let apnsToken: String?
   let pushToStartToken: String?
+  let clearPushToStartToken: Bool
   let bundleId: String
   let apsEnvironment: String
   let preferences: [String: Any]
+}
+
+private struct AccountAttentionDevicePreferencesRequest {
+  let authorization: AccountPairingAuthorization
+  let deviceId: String
+  let devicePreferences: [String: Any]
 }
 
 /// Serializes account device PUTs while coalescing queued refreshes to the most
@@ -490,6 +497,8 @@ final class AccountService: ObservableObject {
   private var isEndingAccountOwnership = false
   private let accountRegistrationQueue =
     LatestAccountRegistrationQueue<AccountAttentionDeviceRegistrationRequest>()
+  private let accountPreferencesQueue =
+    LatestAccountRegistrationQueue<AccountAttentionDevicePreferencesRequest>()
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
@@ -578,6 +587,7 @@ final class AccountService: ObservableObject {
         switchCredential = lastRelayCredential
         lastRelayCredential = nil
         accountRegistrationQueue.discardPending()
+        accountPreferencesQueue.discardPending()
         cancelAttentionRefresh()
         LiveActivityService.shared.prepareForAccountSignOut()
       }
@@ -640,6 +650,7 @@ final class AccountService: ObservableObject {
     }
     lastRelayCredential = nil
     accountRegistrationQueue.discardPending()
+    accountPreferencesQueue.discardPending()
     cancelAttentionRefresh()
     invalidatePairingAuthorization()
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
@@ -766,6 +777,7 @@ final class AccountService: ObservableObject {
     // committed before the bounded Relay request begins.
     isEndingAccountOwnership = true
     accountRegistrationQueue.discardPending()
+    accountPreferencesQueue.discardPending()
     let revocation = await prepareAttentionDeviceRevocationForSignOut()
     // Make the user's local choice authoritative before Clerk revocation. If
     // that request fails, cached Clerk state and subsequent auth events still
@@ -1069,6 +1081,7 @@ final class AccountService: ObservableObject {
     deviceId: String,
     apnsToken: String?,
     pushToStartToken: String?,
+    clearPushToStartToken: Bool = false,
     bundleId: String,
     apsEnvironment: String,
     preferences: [String: Any]
@@ -1087,6 +1100,7 @@ final class AccountService: ObservableObject {
       ownershipEpoch: ownership.ownershipEpoch,
       apnsToken: apnsToken,
       pushToStartToken: pushToStartToken,
+      clearPushToStartToken: clearPushToStartToken,
       bundleId: bundleId,
       apsEnvironment: apsEnvironment,
       preferences: preferences
@@ -1094,6 +1108,60 @@ final class AccountService: ObservableObject {
     return await accountRegistrationQueue.submit(request) { [weak self] request in
       guard let self else { return false }
       return await self.performAttentionDeviceRegistration(request)
+    }
+  }
+
+  func updateAttentionDevicePreferences(
+    deviceId: String,
+    devicePreferences: [String: Any]
+  ) async -> Bool {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          AccountConfig.attentionRelayBaseURL != nil,
+          let authorization = currentPairingAuthorization,
+          authorization.ownerId == requestedOwnerId else {
+      return false
+    }
+    let request = AccountAttentionDevicePreferencesRequest(
+      authorization: authorization,
+      deviceId: deviceId,
+      devicePreferences: devicePreferences
+    )
+    return await accountPreferencesQueue.submit(request) { [weak self] request in
+      guard let self else { return false }
+      return await self.performAttentionDevicePreferencesUpdate(request)
+    }
+  }
+
+  private func performAttentionDevicePreferencesUpdate(
+    _ request: AccountAttentionDevicePreferencesRequest
+  ) async -> Bool {
+    guard let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = try? await freshRelaySession(
+            expectedAuthorization: request.authorization
+          ) else {
+      return false
+    }
+    let refreshToken: () async -> String? = { [weak self] in
+      guard let self,
+            self.isPairingCommitAuthorized(request.authorization) else {
+        return nil
+      }
+      return try? await self.freshRelaySession(
+        expectedAuthorization: request.authorization
+      ).token
+    }
+    do {
+      try await attentionRelay.updateDevicePreferences(
+        baseURL: baseURL,
+        token: initialSession.token,
+        deviceId: request.deviceId,
+        devicePreferences: request.devicePreferences,
+        refreshToken: refreshToken
+      )
+      return isPairingCommitAuthorized(request.authorization)
+    } catch {
+      return false
     }
   }
 
@@ -1132,6 +1200,7 @@ final class AccountService: ObservableObject {
         ownershipEpoch: request.ownershipEpoch,
         apnsToken: request.apnsToken,
         pushToStartToken: request.pushToStartToken,
+        clearPushToStartToken: request.clearPushToStartToken,
         bundleId: request.bundleId,
         apsEnvironment: request.apsEnvironment,
         deviceName: UIDevice.current.name,

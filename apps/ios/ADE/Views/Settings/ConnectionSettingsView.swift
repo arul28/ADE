@@ -393,7 +393,12 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     snapshot.canRefreshRelayStatus = boundService?.canSendPushCommands == true
     snapshot.isPaired = boundService?.hasPairedHost == true
     snapshot.accountDeliveryAvailable = AccountService.shared.isSignedIn
+    snapshot.liveActivitiesAuthorized = push.liveActivitiesAuthorized
     snapshot.liveActivityTokenPresent = diagnostics.liveActivityPushToStartTokenSuffix != nil
+    snapshot.liveActivityTokenRegistered =
+      diagnostics.liveActivityPushToStartTokenSuffix != nil
+      && diagnostics.liveActivityPushToStartTokenSuffix
+        == diagnostics.liveActivityRegisteredTokenSuffix
     if let relay = push.relayStatus {
       snapshot.relayResolved = true
       snapshot.publisherEnabled = relay.publisherEnabled

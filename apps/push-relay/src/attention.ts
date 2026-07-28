@@ -3,6 +3,7 @@ import {
   sendApnsPush,
   type ApnsEnvironment,
   type ApnsKeyConfig,
+  type ApnsSendResult,
 } from "./apns";
 
 export type AttentionRelayEnv = {
@@ -46,6 +47,7 @@ type AttentionDeviceRow = {
   bundle_id: string;
   aps_environment: string;
   preferences_json: string;
+  generation: string;
 };
 
 type AttentionDeviceOwnershipRow = {
@@ -94,6 +96,7 @@ const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
+const LIVE_ACTIVITY_START_CLAIM_TTL_MS = 30_000;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 const EVENT_KINDS = new Set([
@@ -603,13 +606,36 @@ async function commitAttentionMachineChanges(
 
 function mergedDevicePreferences(
   device: AttentionDeviceRow,
+  accountPreferences: Record<string, unknown>,
   devicePreferences: Record<string, unknown>,
 ): Record<string, unknown> {
   const registered = readPreferences(device.preferences_json);
   const accountOverride = isRecord(devicePreferences[device.device_id])
     ? devicePreferences[device.device_id] as Record<string, unknown>
     : {};
-  return { ...registered, ...accountOverride };
+  // Registration preferences are a compatibility fallback. iOS includes its
+  // ordinary defaults on every device registration, so treating them as
+  // overrides would make account-wide delivery/privacy settings ineffective.
+  // Only the explicit account `devices[deviceId]` scope may override account
+  // settings for one device.
+  return { ...registered, ...accountPreferences, ...accountOverride };
+}
+
+function resolvedMutedSessionIds(
+  device: AttentionDeviceRow,
+  preferences: Record<string, unknown>,
+  devicePreferences: Record<string, unknown>,
+): unknown {
+  const explicitDevice = isRecord(devicePreferences[device.device_id])
+    ? devicePreferences[device.device_id] as Record<string, unknown>
+    : {};
+  if (Array.isArray(explicitDevice.mutedSessionIds)) {
+    return explicitDevice.mutedSessionIds;
+  }
+  if (Array.isArray(preferences.mutedSessionIds)) {
+    return preferences.mutedSessionIds;
+  }
+  return readPreferences(device.preferences_json).mutedSessionIds;
 }
 
 function quietHoursActive(
@@ -786,16 +812,22 @@ async function deliverAttentionNotifications(
     for (const device of devicesResult.results) {
       if (notificationAttempts >= MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH) return;
       if (!device.apns_token) continue;
-      const override = mergedDevicePreferences(device, devicePreferences);
-      const notificationsEnabled = typeof override.enabled === "boolean"
-        ? override.enabled
-        : preferenceBoolean(override, accountPreferences, "notificationsEnabled", true);
+      const override = mergedDevicePreferences(
+        device,
+        accountPreferences,
+        devicePreferences,
+      );
+      const notificationsEnabled = preferenceBoolean(
+        override,
+        {},
+        "notificationsEnabled",
+        typeof override.enabled === "boolean" ? override.enabled : true,
+      );
       if (
         !notificationsEnabled
         || quietHoursActive(override, accountPreferences, nowMs)
         || stringListIncludes(
-          override.mutedSessionIds
-            ?? preferences.mutedSessionIds,
+          resolvedMutedSessionIds(device, preferences, devicePreferences),
           itemSessionId(item),
         )
       ) {
@@ -1032,6 +1064,83 @@ function notificationTitle(item: ParsedAttentionItem, hideDetails: boolean): str
   return item.kind === "pull_request" ? "ADE pull request update" : "ADE agent update";
 }
 
+async function claimAccountLiveActivityStart(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  activityId: string,
+  generation: string,
+): Promise<string | null> {
+  // `started = 0` is a short-lived lease: one heartbeat owns the remote start
+  // while other concurrent heartbeats skip it. The unique fingerprint makes
+  // release/commit conditional so a stale claimant cannot clobber its successor.
+  const claim = `pending:${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  const staleBefore = new Date(
+    Date.now() - LIVE_ACTIVITY_START_CLAIM_TTL_MS,
+  ).toISOString();
+  const row = await env.DB.prepare(`
+    insert into attention_activity_state(
+      user_id, device_id, activity_id, started, fingerprint, updated_at
+    )
+    select ?, ?, ?, 0, ?, ?
+    where exists (
+      select 1
+      from attention_devices
+      where user_id = ? and device_id = ? and generation = ?
+    )
+    on conflict(user_id, device_id, activity_id) do update set
+      started = 0,
+      fingerprint = excluded.fingerprint,
+      updated_at = excluded.updated_at
+    where attention_activity_state.started = 0
+      and attention_activity_state.updated_at <= ?
+    returning fingerprint
+  `).bind(
+    userId,
+    deviceId,
+    activityId,
+    claim,
+    now,
+    userId,
+    deviceId,
+    generation,
+    staleBefore,
+  ).first<{ fingerprint: string }>();
+  return row?.fingerprint === claim ? claim : null;
+}
+
+async function releaseAccountLiveActivityStart(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  activityId: string,
+  claim: string,
+  generation: string,
+): Promise<void> {
+  await env.DB
+    .prepare(`
+      delete from attention_activity_state
+      where user_id = ? and device_id = ? and activity_id = ?
+        and started = 0 and fingerprint = ?
+        and exists (
+          select 1
+          from attention_devices
+          where user_id = ? and device_id = ? and generation = ?
+        )
+    `)
+    .bind(
+      userId,
+      deviceId,
+      activityId,
+      claim,
+      userId,
+      deviceId,
+      generation,
+    )
+    .run();
+}
+
 async function deliverAccountLiveActivity(
   env: AttentionRelayEnv,
   userId: string,
@@ -1044,7 +1153,7 @@ async function deliverAccountLiveActivity(
       accountActivityContentState(env, userId),
       env.DB.prepare(`
         select device_id, apns_token, push_to_start_token, bundle_id,
-          aps_environment, preferences_json
+          aps_environment, preferences_json, generation
         from attention_devices
         where user_id = ? and lease_expires_at > ?
       `).bind(userId, new Date().toISOString()).all<AttentionDeviceRow>(),
@@ -1059,7 +1168,11 @@ async function deliverAccountLiveActivity(
   const nowSeconds = Math.floor(Date.now() / 1_000);
 
   for (const device of devicesResult.results) {
-    const override = mergedDevicePreferences(device, devicePreferences);
+    const override = mergedDevicePreferences(
+      device,
+      accountPreferences,
+      devicePreferences,
+    );
     const state = await env.DB.prepare(`
       select started, fingerprint
       from attention_activity_state
@@ -1120,12 +1233,37 @@ async function deliverAccountLiveActivity(
     if (!deviceToken) {
       if (event === "end") {
         await env.DB
-          .prepare("delete from attention_activity_state where user_id = ? and device_id = ? and activity_id = ?")
-          .bind(userId, device.device_id, activityId)
+          .prepare(`
+            delete from attention_activity_state
+            where user_id = ? and device_id = ? and activity_id = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `)
+          .bind(
+            userId,
+            device.device_id,
+            activityId,
+            userId,
+            device.device_id,
+            device.generation,
+          )
           .run();
       }
       continue;
     }
+    const startClaim = event === "start"
+      ? await claimAccountLiveActivityStart(
+          env,
+          userId,
+          device.device_id,
+          activityId,
+          device.generation,
+        )
+      : null;
+    if (event === "start" && !startClaim) continue;
 
     const aps: Record<string, unknown> = {
       timestamp: nowSeconds,
@@ -1148,33 +1286,103 @@ async function deliverAccountLiveActivity(
       };
     }
     if (event === "end") aps["dismissal-date"] = nowSeconds + 60;
-    const result = await sendApnsPush(config, {
-      environment: device.aps_environment as ApnsEnvironment,
-      deviceToken,
-      topic: `${device.bundle_id}.push-type.liveactivity`,
-      pushType: "liveactivity",
-      priority: 10,
-      expiration: nowSeconds + 24 * 60 * 60,
-      collapseId: `attention:${activityId}`,
-      payload: { aps },
-    });
+    let result: ApnsSendResult;
+    try {
+      result = await sendApnsPush(config, {
+        environment: device.aps_environment as ApnsEnvironment,
+        deviceToken,
+        topic: `${device.bundle_id}.push-type.liveactivity`,
+        pushType: "liveactivity",
+        priority: 10,
+        expiration: nowSeconds + 24 * 60 * 60,
+        collapseId: `attention:${activityId}`,
+        payload: { aps },
+      });
+    } catch (error) {
+      if (startClaim) {
+        await releaseAccountLiveActivityStart(
+          env,
+          userId,
+          device.device_id,
+          activityId,
+          startClaim,
+          device.generation,
+        );
+      }
+      throw error;
+    }
     if (result.ok) {
       if (event === "end") {
-        await Promise.all([
-          env.DB
-            .prepare("delete from attention_activity_state where user_id = ? and device_id = ? and activity_id = ?")
-            .bind(userId, device.device_id, activityId)
-            .run(),
-          env.DB
-            .prepare("delete from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ?")
-            .bind(userId, device.device_id, activityId)
-            .run(),
+        await env.DB.batch([
+          env.DB.prepare(`
+            delete from attention_activity_state
+            where user_id = ? and device_id = ? and activity_id = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `).bind(
+            userId,
+            device.device_id,
+            activityId,
+            userId,
+            device.device_id,
+            device.generation,
+          ),
+          env.DB.prepare(`
+            delete from attention_activity_tokens
+            where user_id = ? and device_id = ? and activity_id = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `).bind(
+            userId,
+            device.device_id,
+            activityId,
+            userId,
+            device.device_id,
+            device.generation,
+          ),
         ]);
+      } else if (event === "start" && startClaim) {
+        await env.DB
+          .prepare(`
+            update attention_activity_state
+            set started = 1, fingerprint = ?, updated_at = ?
+            where user_id = ? and device_id = ? and activity_id = ?
+              and started = 0 and fingerprint = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `)
+          .bind(
+            deviceFingerprint,
+            new Date().toISOString(),
+            userId,
+            device.device_id,
+            activityId,
+            startClaim,
+            userId,
+            device.device_id,
+            device.generation,
+          )
+          .run();
       } else {
         await env.DB.prepare(`
           insert into attention_activity_state(
             user_id, device_id, activity_id, started, fingerprint, updated_at
-          ) values (?, ?, ?, 1, ?, ?)
+          )
+          select ?, ?, ?, 1, ?, ?
+          where exists (
+            select 1
+            from attention_devices
+            where user_id = ? and device_id = ? and generation = ?
+          )
           on conflict(user_id, device_id, activity_id) do update set
             started = 1,
             fingerprint = excluded.fingerprint,
@@ -1185,18 +1393,50 @@ async function deliverAccountLiveActivity(
           activityId,
           deviceFingerprint,
           new Date().toISOString(),
+          userId,
+          device.device_id,
+          device.generation,
         ).run();
       }
-    } else if (result.tokenInvalid) {
-      if (event === "start") {
+    } else {
+      if (startClaim) {
+        await releaseAccountLiveActivityStart(
+          env,
+          userId,
+          device.device_id,
+          activityId,
+          startClaim,
+          device.generation,
+        );
+      }
+      if (result.tokenInvalid && event === "start") {
         await env.DB
-          .prepare("update attention_devices set push_to_start_token = null where user_id = ? and device_id = ?")
-          .bind(userId, device.device_id)
+          .prepare(`
+            update attention_devices
+            set push_to_start_token = null
+            where user_id = ? and device_id = ? and generation = ?
+          `)
+          .bind(userId, device.device_id, device.generation)
           .run();
-      } else {
+      } else if (result.tokenInvalid) {
         await env.DB
-          .prepare("delete from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ?")
-          .bind(userId, device.device_id, activityId)
+          .prepare(`
+            delete from attention_activity_tokens
+            where user_id = ? and device_id = ? and activity_id = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `)
+          .bind(
+            userId,
+            device.device_id,
+            activityId,
+            userId,
+            device.device_id,
+            device.generation,
+          )
           .run();
       }
     }
@@ -1845,11 +2085,12 @@ async function linkMachineToAccount(
       insert or ignore into attention_devices(
         user_id, device_id, source_machine_key, apns_token, push_to_start_token,
         bundle_id, aps_environment, platform, device_name, preferences_json,
-        registered_at, updated_at, lease_expires_at
+        registered_at, updated_at, lease_expires_at, generation
       )
       select ?, legacy.device_id, ?, legacy.apns_token,
         legacy.push_to_start_token, legacy.bundle_id, aps_environment, platform,
-        device_name, '{}', registered_at, updated_at, ?
+        device_name, '{}', registered_at, updated_at, ?,
+        lower(hex(randomblob(16)))
       from device_registrations as legacy
       where legacy.machine_key = ?
         and not exists (
@@ -2017,6 +2258,7 @@ export async function handleAttentionMachinePublish(
       account.userId,
       items as ParsedAttentionItem[],
     );
+    await deliverAccountLiveActivity(env, account.userId);
     const current = await env.DB
       .prepare("select revision from attention_revisions where user_id = ? limit 1")
       .bind(account.userId)
@@ -2293,20 +2535,119 @@ async function handlePreferences(
     return json({ ok: false, error: "invalid json" }, { status: 400 });
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid preferences" }, { status: 400 });
-  const serialized = JSON.stringify(payload);
-  if (serialized.length > 32_000) {
-    return json({ ok: false, error: "preferences too large" }, { status: 413 });
-  }
-  const updatedAt = new Date().toISOString();
-  await env.DB.prepare(`
-    insert into attention_preferences(user_id, payload_json, updated_at)
-    values (?, ?, ?)
-    on conflict(user_id) do update set
-      payload_json = excluded.payload_json,
-      updated_at = excluded.updated_at
-  `).bind(userId, serialized, updatedAt).run();
+  const preservesDevices = !Object.prototype.hasOwnProperty.call(payload, "devices");
+  const result = await mutateAttentionPreferences(env, userId, (current) => ({
+    ...payload,
+    ...(preservesDevices && isRecord(current.devices)
+      ? { devices: current.devices }
+      : {}),
+  }));
+  if ("response" in result) return result.response;
   await deliverAccountLiveActivity(env, userId);
-  return json({ ok: true, preferences: payload, updatedAt });
+  return json({
+    ok: true,
+    preferences: result.preferences,
+    updatedAt: result.updatedAt,
+  });
+}
+
+async function mutateAttentionPreferences(
+  env: AttentionRelayEnv,
+  userId: string,
+  mutate: (current: Record<string, unknown>) => Record<string, unknown>,
+): Promise<
+  | { preferences: Record<string, unknown>; updatedAt: string }
+  | { response: Response }
+> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const row = await env.DB
+      .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
+      .bind(userId)
+      .first<{ payload_json: string }>();
+    let current: Record<string, unknown> = {};
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.payload_json);
+        if (isRecord(parsed)) current = parsed;
+      } catch {
+        current = {};
+      }
+    }
+    const preferences = mutate(current);
+    const serialized = JSON.stringify(preferences);
+    if (serialized.length > 32_000) {
+      return {
+        response: json(
+          { ok: false, error: "preferences too large" },
+          { status: 413 },
+        ),
+      };
+    }
+    const updatedAt = new Date().toISOString();
+    const committed = row
+      ? await env.DB.prepare(`
+          update attention_preferences
+          set payload_json = ?, updated_at = ?
+          where user_id = ? and payload_json = ?
+          returning payload_json
+        `).bind(serialized, updatedAt, userId, row.payload_json)
+        .first<{ payload_json: string }>()
+      : await env.DB.prepare(`
+          insert into attention_preferences(user_id, payload_json, updated_at)
+          values (?, ?, ?)
+          on conflict(user_id) do nothing
+          returning payload_json
+        `).bind(userId, serialized, updatedAt)
+        .first<{ payload_json: string }>();
+    if (committed) return { preferences, updatedAt };
+  }
+  return {
+    response: json(
+      { ok: false, error: "preferences changed concurrently; retry" },
+      { status: 409 },
+    ),
+  };
+}
+
+async function handleDevicePreferences(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+): Promise<Response> {
+  if (!requiredString(deviceId, 128)) {
+    return json({ ok: false, error: "invalid device id" }, { status: 400 });
+  }
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(payload)) {
+    return json({ ok: false, error: "invalid device preferences" }, { status: 400 });
+  }
+  const result = await mutateAttentionPreferences(env, userId, (current) => {
+    const devices = isRecord(current.devices) ? current.devices : {};
+    const device = isRecord(devices[deviceId]) ? devices[deviceId] : {};
+    return {
+      ...current,
+      devices: {
+        ...devices,
+        [deviceId]: {
+          ...device,
+          ...payload,
+        },
+      },
+    };
+  });
+  if ("response" in result) return result.response;
+  await deliverAccountLiveActivity(env, userId);
+  return json({
+    ok: true,
+    preferences: result.preferences,
+    updatedAt: result.updatedAt,
+  });
 }
 
 async function deleteAttentionDeviceOwnership(
@@ -2425,6 +2766,7 @@ async function handleDeviceRegistration(
   const pushToStartToken = payload.pushToStartToken == null
     ? null
     : requiredString(payload.pushToStartToken, 512);
+  const clearPushToStartToken = payload.clearPushToStartToken === true;
   if (
     !bundleId
     || (apsEnvironment !== "sandbox" && apsEnvironment !== "production")
@@ -2433,6 +2775,7 @@ async function handleDeviceRegistration(
       pushToStartToken !== null
       && (!pushToStartToken || !APNS_TOKEN_PATTERN.test(pushToStartToken))
     )
+    || (pushToStartToken !== null && clearPushToStartToken)
   ) {
     return json({ ok: false, error: "invalid device routing" }, { status: 400 });
   }
@@ -2464,6 +2807,16 @@ async function handleDeviceRegistration(
     .prepare("select 1 as found from attention_devices where user_id = ? and device_id = ? limit 1")
     .bind(userId, deviceId)
     .first<{ found: number }>();
+  const existingOwnership = ownershipRows.find((row) =>
+    row.user_id === userId && row.device_id === deviceId
+  );
+  const ownershipChanged = Boolean(
+    existingDevice?.found
+    && (
+      !existingOwnership
+      || existingOwnership.ownership_epoch !== ownershipEpoch
+    ),
+  );
   const deviceCount = await env.DB
     .prepare("select count(*) as count from attention_devices where user_id = ?")
     .bind(userId)
@@ -2481,6 +2834,7 @@ async function handleDeviceRegistration(
   }
   const now = new Date().toISOString();
   const leaseExpiresAt = new Date(Date.now() + ATTENTION_DEVICE_LEASE_MS).toISOString();
+  const generation = crypto.randomUUID();
   const preferences = isRecord(payload.preferences) ? payload.preferences : {};
   const transferStatements: D1PreparedStatement[] = [];
   if (apnsToken) {
@@ -2508,18 +2862,35 @@ async function handleDeviceRegistration(
       insert into attention_devices(
         user_id, device_id, source_machine_key, apns_token, push_to_start_token,
         bundle_id, aps_environment, platform, device_name, preferences_json,
-        registered_at, updated_at, lease_expires_at
-      ) values (?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        registered_at, updated_at, lease_expires_at, generation
+      ) values (?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(user_id, device_id) do update set
         apns_token = coalesce(excluded.apns_token, attention_devices.apns_token),
-        push_to_start_token = coalesce(excluded.push_to_start_token, attention_devices.push_to_start_token),
+        push_to_start_token = case
+          when ? then null
+          else coalesce(excluded.push_to_start_token, attention_devices.push_to_start_token)
+        end,
         bundle_id = excluded.bundle_id,
         aps_environment = excluded.aps_environment,
         platform = excluded.platform,
         device_name = excluded.device_name,
         preferences_json = excluded.preferences_json,
         updated_at = excluded.updated_at,
-        lease_expires_at = excluded.lease_expires_at
+        lease_expires_at = excluded.lease_expires_at,
+        generation = case
+          when ? then excluded.generation
+          when excluded.apns_token is not null
+            and excluded.apns_token is not attention_devices.apns_token
+            then excluded.generation
+          when excluded.push_to_start_token is not null
+            and excluded.push_to_start_token is not attention_devices.push_to_start_token
+            then excluded.generation
+          when excluded.bundle_id is not attention_devices.bundle_id
+            then excluded.generation
+          when excluded.aps_environment is not attention_devices.aps_environment
+            then excluded.generation
+          else attention_devices.generation
+        end
     `).bind(
       userId,
       deviceId,
@@ -2533,10 +2904,37 @@ async function handleDeviceRegistration(
       now,
       now,
       leaseExpiresAt,
+      generation,
+      clearPushToStartToken ? 1 : 0,
+      clearPushToStartToken || ownershipChanged ? 1 : 0,
     ),
   );
+  if (!clearPushToStartToken) {
+    transferStatements.push(
+      env.DB.prepare(`
+        delete from attention_activity_state
+        where user_id = ? and device_id = ? and started = 0
+          and exists (
+            select 1
+            from attention_devices
+            where user_id = ? and device_id = ? and generation = ?
+          )
+      `).bind(userId, deviceId, userId, deviceId, generation),
+    );
+  }
+  if (clearPushToStartToken) {
+    transferStatements.push(
+      env.DB
+        .prepare("delete from attention_activity_tokens where user_id = ? and device_id = ?")
+        .bind(userId, deviceId),
+      env.DB
+        .prepare("delete from attention_activity_state where user_id = ? and device_id = ?")
+        .bind(userId, deviceId),
+    );
+  }
   // D1 batches are transactional: a failed destination insert rolls back all
-  // ownership deletions, so a transfer cannot orphan the previous account.
+  // ownership and Live Activity mutations, so a transfer cannot orphan the
+  // previous account and an explicit token clear cannot leave stale state.
   try {
     await env.DB.batch(transferStatements);
   } catch (error) {
@@ -2577,15 +2975,37 @@ async function handleActivityTokenRegistration(
     return json({ ok: false, error: "attention device is not registered" }, { status: 404 });
   }
   if (request.method === "DELETE") {
-    await Promise.all([
-      env.DB
-        .prepare("delete from attention_activity_tokens where user_id = ? and device_id = ? and activity_id = ?")
-        .bind(userId, deviceId, activityId)
-        .run(),
-      env.DB
-        .prepare("delete from attention_activity_state where user_id = ? and device_id = ? and activity_id = ?")
-        .bind(userId, deviceId, activityId)
-        .run(),
+    const generation = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(`
+        update attention_devices
+        set generation = ?, updated_at = ?
+        where user_id = ? and device_id = ? and lease_expires_at > ?
+      `).bind(
+        generation,
+        new Date().toISOString(),
+        userId,
+        deviceId,
+        new Date().toISOString(),
+      ),
+      env.DB.prepare(`
+        delete from attention_activity_tokens
+        where user_id = ? and device_id = ? and activity_id = ?
+          and exists (
+            select 1
+            from attention_devices
+            where user_id = ? and device_id = ? and generation = ?
+          )
+      `).bind(userId, deviceId, activityId, userId, deviceId, generation),
+      env.DB.prepare(`
+        delete from attention_activity_state
+        where user_id = ? and device_id = ? and activity_id = ?
+          and exists (
+            select 1
+            from attention_devices
+            where user_id = ? and device_id = ? and generation = ?
+          )
+      `).bind(userId, deviceId, activityId, userId, deviceId, generation),
     ]);
     return json({ ok: true, removed: true });
   }
@@ -2599,21 +3019,60 @@ async function handleActivityTokenRegistration(
   if (!token || !APNS_TOKEN_PATTERN.test(token)) {
     return json({ ok: false, error: "invalid activity token" }, { status: 400 });
   }
-  await env.DB.prepare(`
-    insert into attention_activity_tokens(user_id, device_id, activity_id, token, updated_at)
-    values (?, ?, ?, ?, ?)
-    on conflict(user_id, device_id, activity_id) do update set
-      token = excluded.token,
-      updated_at = excluded.updated_at
-  `).bind(userId, deviceId, activityId, token, new Date().toISOString()).run();
-  await env.DB.prepare(`
-    insert into attention_activity_state(
-      user_id, device_id, activity_id, started, fingerprint, updated_at
-    ) values (?, ?, ?, 1, null, ?)
-    on conflict(user_id, device_id, activity_id) do update set
-      started = 1,
-      updated_at = excluded.updated_at
-  `).bind(userId, deviceId, activityId, new Date().toISOString()).run();
+  const generation = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`
+      update attention_devices
+      set generation = ?, updated_at = ?
+      where user_id = ? and device_id = ? and lease_expires_at > ?
+    `).bind(generation, now, userId, deviceId, now),
+    env.DB.prepare(`
+      insert into attention_activity_tokens(
+        user_id, device_id, activity_id, token, updated_at
+      )
+      select ?, ?, ?, ?, ?
+      where exists (
+        select 1
+        from attention_devices
+        where user_id = ? and device_id = ? and generation = ?
+      )
+      on conflict(user_id, device_id, activity_id) do update set
+        token = excluded.token,
+        updated_at = excluded.updated_at
+    `).bind(
+      userId,
+      deviceId,
+      activityId,
+      token,
+      now,
+      userId,
+      deviceId,
+      generation,
+    ),
+    env.DB.prepare(`
+      insert into attention_activity_state(
+        user_id, device_id, activity_id, started, fingerprint, updated_at
+      )
+      select ?, ?, ?, 1, null, ?
+      where exists (
+        select 1
+        from attention_devices
+        where user_id = ? and device_id = ? and generation = ?
+      )
+      on conflict(user_id, device_id, activity_id) do update set
+        started = 1,
+        updated_at = excluded.updated_at
+    `).bind(
+      userId,
+      deviceId,
+      activityId,
+      now,
+      userId,
+      deviceId,
+      generation,
+    ),
+  ]);
   await deliverAccountLiveActivity(env, userId);
   return json({ ok: true, removed: false });
 }
@@ -2638,6 +3097,19 @@ async function handleAuthorizedAttentionAccountRequest(
   }
   if (route.length === 1 && route[0] === "preferences" && (request.method === "GET" || request.method === "PUT")) {
     return await handlePreferences(request, env, userId);
+  }
+  if (
+    route.length === 3
+    && route[0] === "preferences"
+    && route[1] === "devices"
+    && request.method === "PATCH"
+  ) {
+    return await handleDevicePreferences(
+      request,
+      env,
+      userId,
+      decodeURIComponent(route[2] ?? ""),
+    );
   }
   if (
     route.length === 2
@@ -2733,9 +3205,11 @@ export const attentionTestInternals = Object.freeze({
   attentionTombstoneBlocksItem,
   commitAttentionMachineChanges,
   deepLinkForItem,
+  deliverAccountLiveActivity,
   deliverAttentionNotifications,
   desktopEscalationDelayMs,
   handleAuthorizedAttentionAccountRequest,
+  resolvedMutedSessionIds,
   implicitFullSnapshotTombstone,
   linkMachineToAccount,
   notificationTitle,

@@ -210,12 +210,16 @@ export function createPushRelayClient(args: {
     },
 
     async registerDevice(registration: PushDeviceRegistration): Promise<void> {
+      if (registration.pushToStartToken && registration.clearPushToStartToken) {
+        throw new Error("Cannot set and clear pushToStartToken together.");
+      }
       const body: Record<string, unknown> = {
         bundleId: registration.bundleId,
         apsEnvironment: registration.apsEnvironment,
       };
       if (registration.apnsToken) body.apnsToken = registration.apnsToken;
       if (registration.pushToStartToken) body.pushToStartToken = registration.pushToStartToken;
+      if (registration.clearPushToStartToken) body.clearPushToStartToken = true;
       if (registration.platform) body.platform = registration.platform;
       if (registration.deviceName) body.deviceName = registration.deviceName;
       const response = await request("PUT", machinePath(`/devices/${encodeURIComponent(registration.deviceId)}`), {
@@ -326,8 +330,11 @@ export function createPushRelayClient(args: {
       expectedAccountUserId: string,
       preferences: AttentionPreferences,
     ): Promise<void> {
+      // Desktop edits account/project policy only. Omitting device overrides
+      // lets the relay preserve concurrent phone-owned settings atomically.
+      const { devices: _deviceOverrides, ...accountPreferences } = preferences;
       const response = await request("PUT", "/attention/account/preferences", {
-        body: preferences,
+        body: accountPreferences,
         accountAuthorized: true,
         expectedAccountUserId,
       });

@@ -1593,6 +1593,46 @@ describe("registerIpc sync bridge", () => {
     ).rejects.toThrow("No ADE window is available for this project.");
   });
 
+  it("reports an old brain Attention contract once instead of returning an empty notch", async () => {
+    const logger = {
+      warn: vi.fn(),
+      info: vi.fn(),
+      error: vi.fn(),
+    };
+    const callAttention = vi.fn(async () => {
+      throw new Error(
+        "Remote ADE service method attention.call failed (code -32601): Method not found",
+      );
+    });
+    registerIpc({
+      getCtx: () => ({ logger }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const readSnapshot = () =>
+      ipcHandlers.get(IPC.attentionGetSnapshot)?.(eventForSender(), {
+        since: 0,
+        streamId: null,
+      });
+    await expect(readSnapshot()).rejects.toThrow(
+      /requires a newer connected ADE brain.*update and restart ADE.*host machine/i,
+    );
+    await expect(readSnapshot()).rejects.toThrow(/requires a newer connected ADE brain/i);
+
+    expect(callAttention).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "attention.runtime_incompatible",
+      expect.objectContaining({
+        recovery: "update_and_restart_ade_brain",
+      }),
+    );
+  });
+
   it("rejects a stale renderer Attention preference owner before calling the runtime", async () => {
     const callAttention = vi.fn();
     registerIpc({

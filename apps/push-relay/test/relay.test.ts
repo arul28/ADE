@@ -14,6 +14,7 @@ type DeviceRow = {
   device_name: string | null;
   registered_at: string;
   updated_at: string;
+  generation: string | null;
 };
 type ActivityTokenRow = { machine_key: string; device_id: string; activity_id: string; token: string; updated_at: string };
 type SuppressionRow = { machine_key: string; suppression_key: string; content_hash: string; published_at: string };
@@ -143,13 +144,17 @@ class FakeD1Database {
   all<T>(sql: string, values: unknown[]): T[] {
     if (sql.includes("from device_registrations")) {
       const [machineKey] = values;
-      return this.devices.filter((row) => row.machine_key === machineKey) as T[];
+      return this.devices
+        .filter((row) => row.machine_key === machineKey)
+        .map((row) => ({ ...row })) as T[];
     }
     if (sql.includes("from live_activity_tokens")) {
       const [machineKey, activityId] = values;
-      return this.activityTokens.filter(
-        (row) => row.machine_key === machineKey && row.activity_id === activityId,
-      ) as T[];
+      return this.activityTokens
+        .filter(
+          (row) => row.machine_key === machineKey && row.activity_id === activityId,
+        )
+        .map((row) => ({ ...row })) as T[];
     }
     return [];
   }
@@ -198,19 +203,35 @@ class FakeD1Database {
       return;
     }
     if (sql.includes("insert into device_registrations")) {
-      const [machineKey, deviceId, apnsToken, pushToStartToken, bundleId, apsEnvironment, platform, deviceName, registeredAt, updatedAt] =
-        values as (string | null)[];
+      const [
+        machineKey,
+        deviceId,
+        apnsToken,
+        pushToStartToken,
+        bundleId,
+        apsEnvironment,
+        platform,
+        deviceName,
+        registeredAt,
+        updatedAt,
+        generation,
+        clearPushToStartToken,
+      ] =
+        values as Array<string | number | null>;
       const existing = this.devices.find(
         (row) => row.machine_key === machineKey && row.device_id === deviceId,
       );
       if (existing) {
         existing.apns_token = (apnsToken as string | null) ?? existing.apns_token;
-        existing.push_to_start_token = (pushToStartToken as string | null) ?? existing.push_to_start_token;
+        existing.push_to_start_token = clearPushToStartToken === 1
+          ? null
+          : (pushToStartToken as string | null) ?? existing.push_to_start_token;
         existing.bundle_id = bundleId as string;
         existing.aps_environment = apsEnvironment as string;
         existing.platform = (platform as string | null) ?? existing.platform;
         existing.device_name = (deviceName as string | null) ?? existing.device_name;
         existing.updated_at = updatedAt as string;
+        existing.generation = generation as string;
         return;
       }
       this.devices.push({
@@ -224,6 +245,7 @@ class FakeD1Database {
         device_name: deviceName as string | null,
         registered_at: registeredAt as string,
         updated_at: updatedAt as string,
+        generation: generation as string,
       });
       return;
     }
@@ -280,7 +302,25 @@ class FakeD1Database {
       return;
     }
     if (sql.includes("insert into publish_suppression")) {
-      const [machineKey, suppressionKey, contentHash, publishedAt] = values as string[];
+      const [
+        machineKey,
+        suppressionKey,
+        contentHash,
+        publishedAt,
+        expectedMachineKey,
+        expectedDeviceId,
+        expectedGeneration,
+      ] = values as string[];
+      if (expectedMachineKey) {
+        const currentDevice = this.devices.find(
+          (row) =>
+            row.machine_key === expectedMachineKey
+            && row.device_id === expectedDeviceId,
+        );
+        if (!currentDevice || currentDevice.generation !== expectedGeneration) {
+          return;
+        }
+      }
       const existing = this.suppressions.find(
         (row) => row.machine_key === machineKey && row.suppression_key === suppressionKey,
       );
@@ -295,6 +335,18 @@ class FakeD1Database {
         content_hash: contentHash,
         published_at: publishedAt,
       });
+      return;
+    }
+    if (
+      sql.startsWith("delete from publish_suppression")
+      && sql.includes("substr(suppression_key")
+    ) {
+      const [machineKey, prefixLength, prefix] = values as [string, number, string];
+      this.suppressions = this.suppressions.filter(
+        (row) =>
+          row.machine_key !== machineKey
+          || row.suppression_key.slice(0, prefixLength) !== prefix,
+      );
       return;
     }
     // Retention deletes are exercised implicitly; the fake keeps them no-ops.
@@ -496,6 +548,41 @@ describe("push relay", () => {
     const payload = (await list.json()) as { devices: Array<{ deviceId: string; hasApnsToken: boolean }> };
     expect(payload.devices).toHaveLength(1);
     expect(payload.devices[0]).toMatchObject({ deviceId: "phone-1", hasApnsToken: true });
+  });
+
+  it("preserves an omitted push-to-start token and clears it only explicitly", async () => {
+    const env = makeEnv(db, undefined);
+    await claimMachine(db, env);
+    const path = `/machines/${MACHINE_KEY}/devices/phone-1`;
+    const route = async (body: Record<string, unknown>) => handleRequest(
+      await signedRequest({ method: "PUT", path, body }),
+      env,
+    );
+
+    expect((await route({
+      pushToStartToken: "cd".repeat(32),
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+    })).status).toBe(200);
+    expect((await route({
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+    })).status).toBe(200);
+    expect(db.devices[0]?.push_to_start_token).toBe("cd".repeat(32));
+
+    expect((await route({
+      clearPushToStartToken: true,
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+    })).status).toBe(200);
+    expect(db.devices[0]?.push_to_start_token).toBeNull();
+
+    expect((await route({
+      pushToStartToken: "ef".repeat(32),
+      clearPushToStartToken: true,
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+    })).status).toBe(400);
   });
 
   it("publishes an alert push with phase TTL and clears dead tokens", async () => {
@@ -810,6 +897,251 @@ describe("push relay", () => {
     );
     expect(end.status).toBe(200);
     expect(db.activityTokens).toHaveLength(0);
+  });
+
+  it("suppresses Live Activity content per device so a failed phone can retry", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    for (const [deviceId, token] of [
+      ["phone-1", "ab".repeat(32)],
+      ["phone-2", "cd".repeat(32)],
+    ]) {
+      const registration = await handleRequest(
+        await signedRequest({
+          method: "PUT",
+          path: `/machines/${MACHINE_KEY}/devices/${deviceId}`,
+          body: {
+            pushToStartToken: token,
+            bundleId: "com.ade.ios",
+            apsEnvironment: "sandbox",
+          },
+        }),
+        env,
+      );
+      expect(registration.status).toBe(200);
+    }
+
+    let phone2Attempts = 0;
+    const apnsCalls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      apnsCalls.push(url);
+      if (url.endsWith("cd".repeat(32))) {
+        phone2Attempts += 1;
+        if (phone2Attempts === 1) {
+          return Response.json({ reason: "InternalServerError" }, { status: 500 });
+        }
+      }
+      return new Response(null, { status: 200 });
+    }));
+
+    const publish = async (deviceIds: string[]) => handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: {
+          liveActivity: [{
+            deviceIds,
+            event: "start",
+            activityId: "agent-runs",
+            attributesType: "ADEAgentRunsAttributes",
+            attributes: { machineName: "Studio" },
+            contentState: { runs: [{ title: "fix-login", phase: "running" }] },
+            dedupeKey: "agent-runs",
+            phase: "running",
+          }],
+        },
+      }),
+      env,
+    );
+
+    const first = await publish(["phone-1", "phone-2"]);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ delivered: 1, failed: 1 });
+
+    const retry = await publish(["phone-2"]);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({
+      delivered: 1,
+      failed: 0,
+      suppressed: 0,
+    });
+
+    const alreadyDelivered = await publish(["phone-1"]);
+    expect(alreadyDelivered.status).toBe(200);
+    expect(await alreadyDelivered.json()).toMatchObject({
+      delivered: 0,
+      suppressed: 1,
+    });
+
+    const phone1Path = `/machines/${MACHINE_KEY}/devices/phone-1`;
+    expect((await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: phone1Path,
+        body: {
+          clearPushToStartToken: true,
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+        },
+      }),
+      env,
+    )).status).toBe(200);
+    expect((await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: phone1Path,
+        body: {
+          pushToStartToken: "ab".repeat(32),
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+        },
+      }),
+      env,
+    )).status).toBe(200);
+
+    const replacementStart = await publish(["phone-1"]);
+    expect(replacementStart.status).toBe(200);
+    expect(await replacementStart.json()).toMatchObject({
+      delivered: 1,
+      suppressed: 0,
+    });
+    expect(apnsCalls).toHaveLength(4);
+  });
+
+  it("retains a Live Activity token until a transient end retry succeeds", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    expect((await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: `/machines/${MACHINE_KEY}/devices/phone-1`,
+        body: {
+          pushToStartToken: "ab".repeat(32),
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+        },
+      }),
+      env,
+    )).status).toBe(200);
+    expect((await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/live-activity-tokens`,
+        body: {
+          deviceId: "phone-1",
+          activityId: "agent-runs",
+          token: "ef".repeat(32),
+        },
+      }),
+      env,
+    )).status).toBe(200);
+
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? Response.json({ reason: "InternalServerError" }, { status: 500 })
+        : new Response(null, { status: 200 });
+    }));
+    const publishEnd = async () => handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: {
+          liveActivity: [{
+            deviceIds: ["phone-1"],
+            event: "end",
+            activityId: "agent-runs",
+            contentState: { runs: [] },
+            dedupeKey: "agent-runs",
+            phase: "terminal",
+          }],
+        },
+      }),
+      env,
+    );
+
+    const first = await publishEnd();
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ delivered: 0, failed: 1 });
+    expect(db.activityTokens).toHaveLength(1);
+
+    const retry = await publishEnd();
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ delivered: 1, failed: 0 });
+    expect(db.activityTokens).toHaveLength(0);
+  });
+
+  it("does not recreate cleared suppression from an in-flight APNs response", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    const path = `/machines/${MACHINE_KEY}/devices/phone-1`;
+    const register = async (body: Record<string, unknown>) => handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path,
+        body: {
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+          ...body,
+        },
+      }),
+      env,
+    );
+    expect((await register({ pushToStartToken: "ab".repeat(32) })).status).toBe(200);
+
+    let markSendStarted!: () => void;
+    const sendStarted = new Promise<void>((resolve) => {
+      markSendStarted = resolve;
+    });
+    let completeOldSend!: () => void;
+    const oldSendCompletion = new Promise<void>((resolve) => {
+      completeOldSend = resolve;
+    });
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      sends += 1;
+      if (sends === 1) {
+        markSendStarted();
+        await oldSendCompletion;
+      }
+      return new Response(null, { status: 200 });
+    }));
+    const publish = async () => handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: {
+          liveActivity: [{
+            deviceIds: ["phone-1"],
+            event: "start",
+            activityId: "agent-runs",
+            attributesType: "ADEAgentRunsAttributes",
+            attributes: { machineName: "Studio" },
+            contentState: { runs: [{ title: "fix-login", phase: "running" }] },
+            dedupeKey: "agent-runs",
+            phase: "running",
+          }],
+        },
+      }),
+      env,
+    );
+
+    const oldPublish = publish();
+    await sendStarted;
+    expect((await register({ clearPushToStartToken: true })).status).toBe(200);
+    expect((await register({ pushToStartToken: "ab".repeat(32) })).status).toBe(200);
+    completeOldSend();
+    expect((await oldPublish).status).toBe(200);
+
+    const replacement = await publish();
+    expect(replacement.status).toBe(200);
+    expect(await replacement.json()).toMatchObject({
+      delivered: 1,
+      suppressed: 0,
+    });
+    expect(sends).toBe(2);
   });
 
   it("returns 503 from publish when the APNs key is not configured", async () => {

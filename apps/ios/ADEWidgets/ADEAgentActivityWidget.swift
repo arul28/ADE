@@ -153,44 +153,48 @@ struct AgentRunsPresentation {
             return lhs.updatedAt > rhs.updatedAt
         })
         self.prs = sortedPrs
-        self.activeCount = max(state.activeCount, state.runs.count)
+        let activeCount = max(state.activeCount, state.runs.count)
+        self.activeCount = activeCount
         self.waitingCount = state.runs.filter { $0.resolvedPhase.needsAttention }.count
             + state.prs.filter { $0.resolvedPhase.needsAttention }.count
 
         let attentionRun = sorted.first(where: { $0.resolvedPhase.needsAttention })
         let attentionPr = sortedPrs.first(where: { $0.resolvedPhase.needsAttention })
+        let primary: ADEAgentRunsAttributes.Run?
+        let primaryPr: ADEAgentRunsAttributes.PullRequest?
         if let attentionRun {
-            self.primary = attentionRun
-            self.primaryPr = nil
+            primary = attentionRun
+            primaryPr = nil
         } else if let attentionPr {
-            self.primary = nil
-            self.primaryPr = attentionPr
+            primary = nil
+            primaryPr = attentionPr
         } else if let first = sorted.first {
-            self.primary = first
-            self.primaryPr = nil
+            primary = first
+            primaryPr = nil
         } else {
-            self.primary = nil
-            self.primaryPr = sortedPrs.first
+            primary = nil
+            primaryPr = sortedPrs.first
         }
+        self.primary = primary
+        self.primaryPr = primaryPr
 
-        // Read the chosen primaries through locals: a closure that touches
-        // `self` inside init captures every stored property, including the ones
-        // assigned on the next line, which the compiler rejects.
-        let primaryRunId = self.primary?.id
-        let primaryPrId = self.primaryPr?.id
-        let remainingRuns = sorted.filter { $0.id != primaryRunId }
-        let resolvedSecondaryRuns = Array(remainingRuns.prefix(2))
-        self.secondaryRuns = resolvedSecondaryRuns
-        let remainingSlots = max(0, 2 - resolvedSecondaryRuns.count)
-        self.secondaryPrs = Array(
+        // Keep the chosen presentation values local until every dependent
+        // value is resolved; closures that touch `self` here capture stored
+        // properties that have not all been initialized yet.
+        let remainingRuns = sorted.filter { $0.id != primary?.id }
+        let secondaryRuns = Array(remainingRuns.prefix(2))
+        let remainingSlots = max(0, 2 - secondaryRuns.count)
+        let secondaryPrs = Array(
             sortedPrs
-                .filter { $0.id != primaryPrId }
+                .filter { $0.id != primaryPr?.id }
                 .prefix(remainingSlots)
         )
-        let represented = (self.primary == nil && self.primaryPr == nil ? 0 : 1)
-            + self.secondaryRuns.count
-            + self.secondaryPrs.count
-        self.overflowCount = max(0, self.activeCount + state.prs.count - represented)
+        self.secondaryRuns = secondaryRuns
+        self.secondaryPrs = secondaryPrs
+        let represented = (primary == nil && primaryPr == nil ? 0 : 1)
+            + secondaryRuns.count
+            + secondaryPrs.count
+        self.overflowCount = max(0, activeCount + state.prs.count - represented)
         self.isStale = isStale || state.runs.contains { $0.resolvedPhase == .stale }
         self.machineName = attributes.machineName
         self.accountWide = attributes.isAccountWide

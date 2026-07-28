@@ -89,6 +89,7 @@ final class LiveActivityService {
 
     private var pushToStartTask: Task<Void, Never>?
     private var activityUpdatesTask: Task<Void, Never>?
+    private var authorizationUpdatesTask: Task<Void, Never>?
     private var perActivityTokenTasks: [String: Task<Void, Never>] = [:]
     private var started = false
     private var accountObserversSuspended = false
@@ -101,9 +102,18 @@ final class LiveActivityService {
     /// Begin observing push-to-start and per-activity tokens. Idempotent — safe
     /// to call from pairing success and every foreground transition.
     func start() {
+        observeAuthorizationUpdates()
+        PushNotificationService.shared.updateLiveActivitiesAuthorization(
+            ActivityAuthorizationInfo().areActivitiesEnabled
+        )
+        startActivityObserversIfAuthorized()
+    }
+
+    private func startActivityObserversIfAuthorized() {
         guard !started else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         started = true
+        publishCurrentPushToStartToken()
         observePushToStartToken()
         observeActivityUpdates()
         for activity in Activity<ADEAgentRunsAttributes>.activities {
@@ -120,6 +130,9 @@ final class LiveActivityService {
     /// activities from machines we no longer talk to.
     func handleForegroundTransition() async {
         start()
+        if ActivityAuthorizationInfo().areActivitiesEnabled {
+            publishCurrentPushToStartToken()
+        }
         await endOrphanedActivities()
         await retryPendingAccountWideTokenRegistration()
         for activity in Activity<ADEAgentRunsAttributes>.activities {
@@ -137,6 +150,9 @@ final class LiveActivityService {
     func handleAccountSignIn() async {
         start()
         accountObserversSuspended = false
+        if ActivityAuthorizationInfo().areActivitiesEnabled {
+            publishCurrentPushToStartToken()
+        }
         for activity in Activity<ADEAgentRunsAttributes>.activities
         where activity.attributes.isAccountWide {
             observePushToken(for: activity)
@@ -207,6 +223,41 @@ final class LiveActivityService {
     }
 
     // MARK: - Observation
+
+    private func observeAuthorizationUpdates() {
+        guard authorizationUpdatesTask == nil else { return }
+        let authorization = ActivityAuthorizationInfo()
+        authorizationUpdatesTask = Task { @MainActor [weak self] in
+            for await enabled in authorization.activityEnablementUpdates {
+                PushNotificationService.shared.updateLiveActivitiesAuthorization(enabled)
+                guard let self else { return }
+                if enabled {
+                    self.startActivityObserversIfAuthorized()
+                    self.publishCurrentPushToStartToken()
+                } else {
+                    self.suspendActivityObservers()
+                }
+            }
+        }
+    }
+
+    private func publishCurrentPushToStartToken() {
+        guard let token = Activity<ADEAgentRunsAttributes>.pushToStartToken else { return }
+        PushNotificationService.shared.updateLiveActivityPushToStartToken(
+            token.adePushHexString
+        )
+    }
+
+    private func suspendActivityObservers() {
+        started = false
+        pushToStartTask?.cancel()
+        pushToStartTask = nil
+        activityUpdatesTask?.cancel()
+        activityUpdatesTask = nil
+        // Keep existing per-activity observers alive long enough to observe
+        // ActivityKit ending those activities and delete their relay targets.
+        // Re-enabling replaces any observer whose activity remains active.
+    }
 
     private func observePushToStartToken() {
         pushToStartTask?.cancel()

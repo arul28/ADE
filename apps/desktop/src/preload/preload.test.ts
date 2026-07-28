@@ -104,6 +104,21 @@ describe("preload Attention Notch bridge", () => {
       IPC.attentionNotchAcknowledgeRequested,
       listener,
     );
+
+    const refreshCallback = vi.fn();
+    const unsubscribeRefresh = bridge.attentionNotch.onRefreshRequested(refreshCallback);
+    expect(on).toHaveBeenCalledWith(
+      IPC.attentionNotchRefreshRequested,
+      expect.any(Function),
+    );
+    const refreshListener = on.mock.calls.at(-1)?.[1];
+    refreshListener({});
+    expect(refreshCallback).toHaveBeenCalledOnce();
+    unsubscribeRefresh();
+    expect(removeListener).toHaveBeenCalledWith(
+      IPC.attentionNotchRefreshRequested,
+      refreshListener,
+    );
   });
 });
 

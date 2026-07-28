@@ -55,9 +55,8 @@ struct ContentView: View {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
   }
 
-  // Split into two stages with an explicit `some View` boundary between them.
-  // As one expression this chain exceeds the Swift type-checker's budget and
-  // fails to build; each half on its own is well inside it.
+  // Split the root into explicit `some View` stages. As one expression this
+  // chain exceeds the Swift type-checker's budget; each stage stays bounded.
   var body: some View {
     rootWithChrome
       .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
@@ -104,30 +103,61 @@ struct ContentView: View {
   }
 
   private var rootWithChrome: some View {
+    observedRootContent
+      .sheet(isPresented: $syncService.settingsPresented) {
+        ConnectionSettingsView(syncService: syncService)
+      }
+      .sheet(isPresented: $syncService.attentionDrawerPresented) {
+        AttentionDrawerSheet()
+          .environmentObject(syncService)
+          .environmentObject(syncService.attentionDrawer)
+      }
+      .sheet(isPresented: $syncService.linearPanePresented) {
+        LinearPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
+      .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
+        Button("Don't share", role: .cancel) {
+          ProductAnalytics.shared.setEnabled(false)
+        }
+        Button("Share usage") {
+          ProductAnalytics.shared.setEnabled(true)
+          ProductAnalytics.shared.captureAppOpened(.coldStart)
+          captureCurrentRootScreen()
+        }
+      } message: {
+        Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
+      }
+  }
+
+  @ViewBuilder
+  private var rootContent: some View {
     // The hub is the home screen: all projects open and ready. Opening a
     // project swaps to the detailed tab view. Keep these roots mutually
     // mounted: if the hub stays alive under the project tabs it continues
     // rebuilding roster cards while the user scrolls Work chat detail.
-    Group {
-      if !hasMobileAccess {
-        MobileAccessGateView(
-          accountConfigured: accountService.isConfigured,
-          accountLoading: accountService.phase == .loading,
-          accountSignedIn: accountService.isSignedIn,
-          hasPairedHost: syncService.hasPairedHost,
-          onContinue: {
-            mobileLaunchAccess.grantAccess()
-            if syncService.hasPairedHost, syncService.connectionState.isHostUnreachable {
-              Task { await syncService.reconnectIfPossible(userInitiated: true) }
-            }
+    if !hasMobileAccess {
+      MobileAccessGateView(
+        accountConfigured: accountService.isConfigured,
+        accountLoading: accountService.phase == .loading,
+        accountSignedIn: accountService.isSignedIn,
+        hasPairedHost: syncService.hasPairedHost,
+        onContinue: {
+          mobileLaunchAccess.grantAccess()
+          if syncService.hasPairedHost, syncService.connectionState.isHostUnreachable {
+            Task { await syncService.reconnectIfPossible(userInitiated: true) }
           }
-        )
-      } else if syncService.shouldShowProjectHub {
-        HubScreen()
-      } else {
-        rootTabs
-      }
+        }
+      )
+    } else if syncService.shouldShowProjectHub {
+      HubScreen()
+    } else {
+      rootTabs
     }
+  }
+
+  private var presentedRootContent: some View {
+    rootContent
     // Global capture popup. Sits just below the notch on every tab, stays in
     // sync with the composer's pill (both observe the same global
     // DictationController), and lets you Done/Cancel from anywhere.
@@ -150,6 +180,10 @@ struct ContentView: View {
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
+  }
+
+  private var observedRootContent: some View {
+    presentedRootContent
       .onAppear {
         mobileLaunchAccess.observeInitialAccountPhase(accountService.phase)
         captureCurrentRootScreen()
@@ -180,30 +214,6 @@ struct ContentView: View {
       .onChange(of: syncService.linearPanePresented) { _, isPresented in
         guard isPresented else { return }
         ProductAnalytics.shared.captureScreen(.linear)
-      }
-      .sheet(isPresented: $syncService.settingsPresented) {
-        ConnectionSettingsView(syncService: syncService)
-      }
-      .sheet(isPresented: $syncService.attentionDrawerPresented) {
-        AttentionDrawerSheet()
-          .environmentObject(syncService)
-          .environmentObject(syncService.attentionDrawer)
-      }
-      .sheet(isPresented: $syncService.linearPanePresented) {
-        LinearPaneSheet(syncService: syncService)
-          .environmentObject(syncService)
-      }
-      .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
-        Button("Don't share", role: .cancel) {
-          ProductAnalytics.shared.setEnabled(false)
-        }
-        Button("Share usage") {
-          ProductAnalytics.shared.setEnabled(true)
-          ProductAnalytics.shared.captureAppOpened(.coldStart)
-          captureCurrentRootScreen()
-        }
-      } message: {
-        Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
       }
   }
 
