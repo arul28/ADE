@@ -110,12 +110,19 @@ function stashAttachmentsUnavailable(entry: PromptStashEntry): boolean {
   return entry.attachmentsAvailable === false && stashAttachmentCount(entry) > 0;
 }
 
-function StashImageThumbnail({ attachment }: { attachment: AgentChatFileRef }) {
+function StashImageThumbnail({
+  attachment,
+  composerMachineBinding,
+}: {
+  attachment: AgentChatFileRef;
+  composerMachineBinding: OpenProjectBinding | null;
+}) {
   const directUrl = attachment.type === "image-url" ? attachment.url : null;
   const [src, setSrc] = useState<string | null>(directUrl);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    const capturedBinding = composerMachineBinding;
     let cancelled = false;
     setSrc(directUrl);
     setFailed(false);
@@ -125,7 +132,7 @@ function StashImageThumbnail({ attachment }: { attachment: AgentChatFileRef }) {
       setFailed(true);
       return () => { cancelled = true; };
     }
-    void readImage(attachment.path)
+    void readImage(attachment.path, capturedBinding)
       .then(({ dataUrl }) => {
         if (!cancelled) setSrc(dataUrl);
       })
@@ -133,7 +140,7 @@ function StashImageThumbnail({ attachment }: { attachment: AgentChatFileRef }) {
         if (!cancelled) setFailed(true);
       });
     return () => { cancelled = true; };
-  }, [attachment, directUrl]);
+  }, [attachment, composerMachineBinding, directUrl]);
 
   return (
     <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/[0.08] bg-black/25 text-muted-fg/35">
@@ -155,7 +162,7 @@ function StashImageThumbnail({ attachment }: { attachment: AgentChatFileRef }) {
 export type ComposerPromptStashProps = {
   draft: string;
   attachments?: AgentChatFileRef[];
-  chatRuntimePin?: OpenProjectBinding | null;
+  composerMachineBinding?: OpenProjectBinding | null;
   provider?: string | null;
   modelId?: string | null;
   active: boolean;
@@ -170,7 +177,7 @@ export type ComposerPromptStashProps = {
 export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, ComposerPromptStashProps>(function ComposerPromptStash({
   draft,
   attachments = [],
-  chatRuntimePin = null,
+  composerMachineBinding = null,
   provider,
   modelId,
   active,
@@ -189,7 +196,15 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
   latestDraftRef.current = draft;
   const latestAttachmentsRef = useRef(attachments);
   latestAttachmentsRef.current = attachments;
-  const [entries, setEntries] = useState<PromptStashEntry[]>([]);
+  const latestComposerMachineBindingRef = useRef(composerMachineBinding);
+  latestComposerMachineBindingRef.current = composerMachineBinding;
+  const [stashSnapshot, setStashSnapshot] = useState<{
+    entries: PromptStashEntry[];
+    ownerBinding: OpenProjectBinding | null;
+  }>({
+    entries: [],
+    ownerBinding: null,
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -202,6 +217,10 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     () => attachments.filter(isStashableAttachment),
     [attachments],
   );
+  const currentBindingKey = composerMachineBinding?.key ?? null;
+  const entriesOwnerBinding = stashSnapshot.ownerBinding;
+  const entriesOwnerBindingKey = entriesOwnerBinding?.key ?? null;
+  const entries = entriesOwnerBindingKey === currentBindingKey ? stashSnapshot.entries : [];
   const hasComposerContent = draft.trim().length > 0 || stashableComposerAttachments.length > 0;
   const renderButton = buttonVisible && (hasComposerContent || entries.length > 0);
   const attachmentSignature = attachments.map((attachment) => (
@@ -213,12 +232,20 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     [entries, highlightedId],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (
+    bindingOverride?: OpenProjectBinding | null,
+  ) => {
+    const capturedBinding = bindingOverride === undefined
+      ? composerMachineBinding
+      : bindingOverride;
     const sequence = ++refreshSequenceRef.current;
     try {
-      const next = await window.ade.agentChat.promptStashes.list();
+      const next = await window.ade.agentChat.promptStashes.list(capturedBinding);
       if (sequence !== refreshSequenceRef.current) return;
-      setEntries(next);
+      setStashSnapshot({
+        entries: next,
+        ownerBinding: capturedBinding,
+      });
       setHighlightedId((current) => (
         current && next.some((entry) => entry.id === current)
           ? current
@@ -229,11 +256,11 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       if (sequence !== refreshSequenceRef.current) return;
       setError(refreshError instanceof Error ? refreshError.message : "Could not load stashed prompts.");
     }
-  }, []);
+  }, [composerMachineBinding]);
 
   useEffect(() => {
-    if (active) void refresh();
-  }, [active, refresh]);
+    if (active) void refresh(composerMachineBinding);
+  }, [active, composerMachineBinding, refresh]);
 
   useEffect(() => {
     if (!saveReceiptVisible) return;
@@ -341,6 +368,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
 
   const save = useCallback(async () => {
     if (disabled || operationInFlightRef.current) return;
+    const operationBinding = composerMachineBinding;
     const savedText = latestDraftRef.current;
     const savedComposerAttachments = [...latestAttachmentsRef.current];
     const savedAttachments = savedComposerAttachments.filter(isStashableAttachment);
@@ -351,7 +379,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     if (!savedText.trim() && savedAttachments.length === 0) {
       if (!entries.length) return;
       setMenuOpen(true);
-      await refresh();
+      await refresh(operationBinding);
       return;
     }
 
@@ -370,12 +398,12 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         try {
           dataUrl = (await window.ade.agentChat.getImageDataUrl(
             attachment.path,
-            chatRuntimePin,
+            operationBinding,
           )).dataUrl;
         } catch (runtimeReadError) {
-          // An explicit remote pin identifies a path on another machine.
-          // Never reinterpret that path on the desktop running the renderer.
-          if (chatRuntimePin?.kind === "remote") throw runtimeReadError;
+          // A remote owner identifies a path on another machine. Never
+          // reinterpret that path on the desktop running the renderer.
+          if (operationBinding?.kind !== "local") throw runtimeReadError;
           const localRead = window.ade?.app?.getImageDataUrl;
           if (!localRead) throw runtimeReadError;
           dataUrl = (await localRead(attachment.path)).dataUrl;
@@ -383,7 +411,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         const saved = await window.ade.agentChat.saveTempAttachment({
           data: base64FromDataUrl(dataUrl),
           filename: attachmentName(attachment.path),
-        });
+        }, operationBinding);
         storedAttachments.push({ path: saved.path, type: "image" });
       }
       const created = await window.ade.agentChat.promptStashes.create({
@@ -391,7 +419,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
         provider,
         modelId,
-      });
+      }, operationBinding);
       if (storedAttachments.length > 0) {
         const confirmedAttachments = stashAttachments(created);
         const runtimeConfirmedImages = storedAttachments.every((stored) => (
@@ -399,7 +427,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         ));
         if (!runtimeConfirmedImages) {
           try {
-            await window.ade.agentChat.promptStashes.delete({ id: created.id });
+            await window.ade.agentChat.promptStashes.delete({ id: created.id }, operationBinding);
           } catch {
             // The composer remains intact even if an older runtime cannot
             // roll back the text-only compatibility write.
@@ -407,10 +435,18 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
           throw new Error("The connected ADE runtime could not preserve the attached images. They are still in your composer.");
         }
       }
-      setEntries((current) => [
-        created,
-        ...current.filter((entry) => entry.id !== created.id),
-      ].slice(0, MAX_PROMPT_STASHES));
+      const operationBindingKey = operationBinding?.key ?? null;
+      if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
+        setStashSnapshot((current) => ({
+          entries: [
+            created,
+            ...((current.ownerBinding?.key ?? null) === operationBindingKey
+              ? current.entries.filter((entry) => entry.id !== created.id)
+              : []),
+          ].slice(0, MAX_PROMPT_STASHES),
+          ownerBinding: operationBinding,
+        }));
+      }
       setHighlightedId(created.id);
       setSaveReceiptKey((current) => current + 1);
       setSaveReceiptVisible(true);
@@ -418,7 +454,8 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       // The runtime has durably accepted the stash. Only now is it safe to
       // clear the exact text that was saved. Input typed while a remote
       // runtime acknowledged the write belongs to a newer draft and stays.
-      const composerUnchanged = latestDraftRef.current === savedText
+      const composerUnchanged = (latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey
+        && latestDraftRef.current === savedText
         && latestAttachmentsRef.current.length === savedComposerAttachments.length
         && latestAttachmentsRef.current.every((current, index) => (
           Boolean(savedComposerAttachments[index] && sameAttachment(current, savedComposerAttachments[index]!))
@@ -436,10 +473,11 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [chatRuntimePin, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
+  }, [composerMachineBinding, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
 
   const restore = useCallback(async (entry: PromptStashEntry) => {
     if (operationInFlightRef.current) return;
+    const operationBinding = entriesOwnerBinding;
     if (stashAttachmentsUnavailable(entry)) {
       setError("These images live on the machine where this prompt was stashed. Connect to that machine to restore it.");
       return;
@@ -452,7 +490,15 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     refreshSequenceRef.current += 1;
     setBusy(true);
     setError(null);
-    setEntries((current) => current.filter((candidate) => candidate.id !== entry.id));
+    const operationBindingKey = operationBinding?.key ?? null;
+    setStashSnapshot((current) => (
+      (current.ownerBinding?.key ?? null) === operationBindingKey
+        ? {
+            ...current,
+            entries: current.entries.filter((candidate) => candidate.id !== entry.id),
+          }
+        : current
+    ));
     setHighlightedId(null);
     setMenuOpen(false);
     // Put the saved text into the composer before waiting on a remote delete.
@@ -464,9 +510,11 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       onAddAttachment(attachment);
     }
     try {
-      const deleted = await window.ade.agentChat.promptStashes.delete({ id: entry.id });
+      const deleted = await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
       if (!deleted) {
-        await refresh();
+        if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
+          await refresh(operationBinding);
+        }
         setError("That stash was already restored or deleted on another desktop.");
         return;
       }
@@ -476,17 +524,26 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [onAddAttachment, onDraftChange, refresh]);
+  }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh]);
 
   const remove = useCallback(async (entry: PromptStashEntry) => {
     if (operationInFlightRef.current) return;
+    const operationBinding = entriesOwnerBinding;
     operationInFlightRef.current = true;
     refreshSequenceRef.current += 1;
     setBusy(true);
     setError(null);
     try {
-      await window.ade.agentChat.promptStashes.delete({ id: entry.id });
-      setEntries((current) => current.filter((candidate) => candidate.id !== entry.id));
+      await window.ade.agentChat.promptStashes.delete({ id: entry.id }, operationBinding);
+      const operationBindingKey = operationBinding?.key ?? null;
+      setStashSnapshot((current) => (
+        (current.ownerBinding?.key ?? null) === operationBindingKey
+          ? {
+              ...current,
+              entries: current.entries.filter((candidate) => candidate.id !== entry.id),
+            }
+          : current
+      ));
       setHighlightedId((current) => current === entry.id ? null : current);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Could not delete this prompt.");
@@ -494,7 +551,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [entriesOwnerBinding]);
 
   const handleMenuKeyDown = useCallback((event: {
     key: string;
@@ -622,7 +679,10 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
                   onMouseMove={() => setHighlightedId(entry.id)}
                 >
                   {imageAttachment ? (
-                    <StashImageThumbnail attachment={imageAttachment} />
+                    <StashImageThumbnail
+                      attachment={imageAttachment}
+                      composerMachineBinding={entriesOwnerBinding}
+                    />
                   ) : attachmentCount ? (
                     <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-black/25 text-muted-fg/35">
                       {attachmentsUnavailable ? <Image size={15} aria-hidden /> : <File size={15} aria-hidden />}

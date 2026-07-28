@@ -1203,7 +1203,7 @@ export function AgentChatComposer({
   draft,
   lastSentUserMessage = null,
   attachments,
-  chatRuntimePin = null,
+  composerMachineBinding = null,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
   pinnedLinearIssue = null,
@@ -1344,8 +1344,8 @@ export function AgentChatComposer({
   /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
   lastSentUserMessage?: string | null;
   attachments: AgentChatFileRef[];
-  /** Explicit runtime owning attachments for the selected chat; null uses the bound project runtime. */
-  chatRuntimePin?: OpenProjectBinding | null;
+  /** Effective runtime owning this composer and its prompt stashes. */
+  composerMachineBinding?: OpenProjectBinding | null;
   contextAttachments?: AgentChatContextAttachment[];
   allowAttachmentOnlySubmit?: boolean;
   pinnedLinearIssue?: LaneLinearIssue | null;
@@ -4648,7 +4648,7 @@ export function AgentChatComposer({
             ref={promptStashRef}
             draft={draft}
             attachments={attachments}
-            chatRuntimePin={chatRuntimePin}
+            composerMachineBinding={composerMachineBinding}
             provider={sessionProvider}
             modelId={modelId}
             active={isActive}

@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import type { IosElementContextItem, NormalizedLinearIssue } from "../../../shared/types";
+import type {
+  IosElementContextItem,
+  NormalizedLinearIssue,
+  OpenProjectBinding,
+} from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
 
@@ -340,12 +344,12 @@ describe("AgentChatComposer", () => {
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }));
+    }, null));
     expect(props.onDraftChange).toHaveBeenCalledWith("");
   });
 
-  it("reads a stashed source image through the selected runtime and saves the copy through the bound runtime", async () => {
-    const chatRuntimePin = {
+  it("threads the effective composer binding through the complete image stash operation", async () => {
+    const composerMachineBinding: OpenProjectBinding = {
       kind: "remote" as const,
       key: "remote:source-machine:source-project",
       targetId: "source-machine",
@@ -390,31 +394,30 @@ describe("AgentChatComposer", () => {
 
     renderComposer({
       attachments: [sourceAttachment],
-      chatRuntimePin,
+      composerMachineBinding,
     });
     fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
       sourceAttachment.path,
-      chatRuntimePin,
+      composerMachineBinding,
     ));
     await waitFor(() => expect(createPromptStash).toHaveBeenCalledWith({
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
       attachments: [storedAttachment],
-    }));
+    }, composerMachineBinding));
     expect(getImageDataUrl.mock.calls).toContainEqual([
       sourceAttachment.path,
-      chatRuntimePin,
+      composerMachineBinding,
     ]);
-    // The source path belongs to the selected chat runtime, but the durable
-    // stash copy belongs to the bound project runtime that owns prompt stashes.
     expect(saveTempAttachment.mock.calls).toEqual([[
       {
         data: "cHJldmlldw==",
         filename: "design.png",
       },
+      composerMachineBinding,
     ]]);
   });
 

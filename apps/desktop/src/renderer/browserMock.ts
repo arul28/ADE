@@ -43,6 +43,7 @@ import {
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
+  type OpenProjectBinding,
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
@@ -4860,11 +4861,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         set: resolvedArg(undefined),
       },
       promptStashes: {
-        list: async () => browserMockPromptStashes.map((entry) => ({
+        list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
           ...entry,
           attachments: entry.attachments?.map((attachment) => ({ ...attachment })),
         })),
-        create: async (args: PromptStashCreateArgs) => {
+        create: async (args: PromptStashCreateArgs, _pin?: OpenProjectBinding | null) => {
           const attachments = (args.attachments ?? []).map((attachment) => ({ ...attachment }));
           const entry: PromptStashEntry = {
             id: globalThis.crypto.randomUUID(),
@@ -4880,7 +4881,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           browserMockPromptStashes.splice(MAX_PROMPT_STASHES);
           return entry;
         },
-        delete: async ({ id }: { id: string }) => {
+        delete: async ({ id }: { id: string }, _pin?: OpenProjectBinding | null) => {
           const index = browserMockPromptStashes.findIndex((entry) => entry.id === id);
           if (index < 0) return false;
           browserMockPromptStashes.splice(index, 1);

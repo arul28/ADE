@@ -135,7 +135,7 @@ describe("ComposerPromptStash", () => {
       text: "Fix the parser",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }));
+    }, null));
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(bridge.list).toHaveBeenCalledTimes(1);
   });
@@ -181,13 +181,48 @@ describe("ComposerPromptStash", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
 
-    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: "stash-1" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null));
     expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
     expect(screen.queryByText("Stashed prompts")).toBeNull();
   });
 
+  it("deletes a listed stash through the binding that loaded it", async () => {
+    const ownerBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:stash-owner:stash-project",
+      targetId: "stash-owner",
+      runtimeName: "Stash owner",
+      projectId: "stash-project",
+      rootPath: "/remote/stash-project",
+      displayName: "Stash project",
+    };
+    const remove = vi.fn().mockResolvedValue(true);
+    installBridge({
+      list: vi.fn().mockResolvedValue([savedEntry]),
+      delete: remove,
+    });
+    render(
+      <ComposerPromptStash
+        draft=""
+        composerMachineBinding={ownerBinding}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete stashed prompt" }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      { id: savedEntry.id },
+      ownerBinding,
+    ));
+  });
+
   it("moves image attachments into a stash and restores their thumbnail and attachment", async () => {
-    const chatRuntimePin: OpenProjectBinding = {
+    const composerMachineBinding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:source-machine:source-project",
       targetId: "source-machine",
@@ -227,7 +262,7 @@ describe("ComposerPromptStash", () => {
       <ComposerPromptStash
         draft="Use this design"
         attachments={[imageAttachment]}
-        chatRuntimePin={chatRuntimePin}
+        composerMachineBinding={composerMachineBinding}
         active
         buttonVisible
         shortcutLabel="⌘+S"
@@ -242,14 +277,14 @@ describe("ComposerPromptStash", () => {
       attachments: [storedImageAttachment],
       provider: undefined,
       modelId: undefined,
-    }));
+    }, composerMachineBinding));
     expect(saveTempAttachment).toHaveBeenCalledWith({
       data: "cHJldmlldw==",
       filename: "design.png",
-    });
+    }, composerMachineBinding);
     expect(sourceImageRead).toHaveBeenCalledWith(
       imageAttachment.path,
-      chatRuntimePin,
+      composerMachineBinding,
     );
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(onRemoveAttachment).toHaveBeenCalledWith(imageAttachment.path);
@@ -268,6 +303,7 @@ describe("ComposerPromptStash", () => {
     render(
       <ComposerPromptStash
         draft=""
+        composerMachineBinding={composerMachineBinding}
         active
         buttonVisible
         shortcutLabel="⌘+S"
@@ -277,15 +313,39 @@ describe("ComposerPromptStash", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
-    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(storedImageAttachment.path));
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
+      storedImageAttachment.path,
+      composerMachineBinding,
+    ));
     expect(document.querySelector("[data-prompt-stash-menu] img")?.getAttribute("src"))
       .toBe("data:image/png;base64,cHJldmlldw==");
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
     expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: imageEntry.id }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      { id: imageEntry.id },
+      composerMachineBinding,
+    ));
   });
 
-  it("copies stashed images sequentially and preserves their composer order", async () => {
+  it("pins a sequential image copy to its captured owner when the active binding switches", async () => {
+    const originalBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:source-machine:source-project",
+      targetId: "source-machine",
+      runtimeName: "Source Mac",
+      projectId: "source-project",
+      rootPath: "/remote/source-project",
+      displayName: "Source project",
+    };
+    const switchedBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:other-machine:other-project",
+      targetId: "other-machine",
+      runtimeName: "Other Mac",
+      projectId: "other-project",
+      rootPath: "/remote/other-project",
+      displayName: "Other project",
+    };
     const sourceAttachments = [
       { path: "/Users/me/Desktop/first.png", type: "image" as const },
       { path: "/Users/me/Desktop/second.png", type: "image" as const },
@@ -317,22 +377,40 @@ describe("ComposerPromptStash", () => {
       attachments: storedAttachments,
     });
     installBridge({ create, getImageDataUrl, saveTempAttachment });
-    render(
+    const onDraftChange = vi.fn();
+    const view = render(
       <ComposerPromptStash
         draft="Keep these images ordered"
         attachments={sourceAttachments}
+        composerMachineBinding={originalBinding}
         active
         buttonVisible
         shortcutLabel="⌘+S"
-        onDraftChange={vi.fn()}
+        onDraftChange={onDraftChange}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
 
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(1));
-    expect(getImageDataUrl).toHaveBeenNthCalledWith(1, sourceAttachments[0]!.path, null);
+    expect(getImageDataUrl).toHaveBeenNthCalledWith(
+      1,
+      sourceAttachments[0]!.path,
+      originalBinding,
+    );
     expect(saveTempAttachment).not.toHaveBeenCalled();
+
+    view.rerender(
+      <ComposerPromptStash
+        draft="Keep these images ordered"
+        attachments={sourceAttachments}
+        composerMachineBinding={switchedBinding}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={onDraftChange}
+      />,
+    );
 
     await act(async () => {
       resolveFirstRead?.({ dataUrl: "data:image/png;base64,Zmlyc3Q=" });
@@ -341,14 +419,18 @@ describe("ComposerPromptStash", () => {
     expect(saveTempAttachment).toHaveBeenNthCalledWith(1, {
       data: "Zmlyc3Q=",
       filename: "first.png",
-    });
+    }, originalBinding);
     expect(getImageDataUrl).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       resolveFirstSave?.({ path: storedAttachments[0]!.path });
     });
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(2));
-    expect(getImageDataUrl).toHaveBeenNthCalledWith(2, sourceAttachments[1]!.path, null);
+    expect(getImageDataUrl).toHaveBeenNthCalledWith(
+      2,
+      sourceAttachments[1]!.path,
+      originalBinding,
+    );
     expect(saveTempAttachment).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -358,7 +440,7 @@ describe("ComposerPromptStash", () => {
     expect(saveTempAttachment).toHaveBeenNthCalledWith(2, {
       data: "c2Vjb25k",
       filename: "second.png",
-    });
+    }, originalBinding);
     expect(create).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -369,11 +451,12 @@ describe("ComposerPromptStash", () => {
       attachments: storedAttachments,
       provider: undefined,
       modelId: undefined,
-    }));
+    }, originalBinding));
+    expect(onDraftChange).not.toHaveBeenCalled();
   });
 
-  it("never falls back to this desktop for an image owned by a pinned remote chat", async () => {
-    const chatRuntimePin: OpenProjectBinding = {
+  it("never falls back to this desktop for an image owned by the effective remote binding", async () => {
+    const composerMachineBinding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:source-machine:source-project",
       targetId: "source-machine",
@@ -394,7 +477,7 @@ describe("ComposerPromptStash", () => {
           path: "/remote/source-project/design.png",
           type: "image",
         }]}
-        chatRuntimePin={chatRuntimePin}
+        composerMachineBinding={composerMachineBinding}
         active
         buttonVisible
         shortcutLabel="⌘+S"
@@ -407,12 +490,73 @@ describe("ComposerPromptStash", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("source runtime unavailable");
     expect(runtimeRead).toHaveBeenCalledWith(
       "/remote/source-project/design.png",
-      chatRuntimePin,
+      composerMachineBinding,
     );
     expect(localRead).not.toHaveBeenCalled();
   });
 
+  it("allows the captured local owner to use the Electron image fallback", async () => {
+    const localBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/project",
+      rootPath: "/project",
+      displayName: "Project",
+    };
+    const sourceAttachment = {
+      path: "/Users/me/Desktop/design.png",
+      type: "image" as const,
+    };
+    const storedAttachment = {
+      path: "/project/.ade/attachments/design.png",
+      type: "image" as const,
+    };
+    const runtimeRead = vi.fn().mockRejectedValue(new Error("local runtime unavailable"));
+    const localRead = vi.fn().mockResolvedValue({
+      dataUrl: "data:image/png;base64,cHJldmlldw==",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: storedAttachment.path });
+    const create = vi.fn().mockResolvedValue({
+      ...savedEntry,
+      attachments: [storedAttachment],
+    });
+    installBridge({ create, getImageDataUrl: runtimeRead, saveTempAttachment });
+    (window as any).ade.app = { getImageDataUrl: localRead };
+
+    render(
+      <ComposerPromptStash
+        draft="Keep the local image"
+        attachments={[sourceAttachment]}
+        composerMachineBinding={localBinding}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      text: "Keep the local image",
+      attachments: [storedAttachment],
+      provider: undefined,
+      modelId: undefined,
+    }, localBinding));
+    expect(runtimeRead).toHaveBeenCalledWith(sourceAttachment.path, localBinding);
+    expect(localRead).toHaveBeenCalledWith(sourceAttachment.path);
+    expect(saveTempAttachment).toHaveBeenCalledWith({
+      data: "cHJldmlldw==",
+      filename: "design.png",
+    }, localBinding);
+  });
+
   it("keeps the original image when an older runtime cannot confirm attachment persistence", async () => {
+    const localBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/project",
+      rootPath: "/project",
+      displayName: "Project",
+    };
     const imageAttachment = {
       path: "/Users/me/Desktop/design.png",
       type: "image" as const,
@@ -425,6 +569,7 @@ describe("ComposerPromptStash", () => {
       <ComposerPromptStash
         draft="Keep this safe"
         attachments={[imageAttachment]}
+        composerMachineBinding={localBinding}
         active
         buttonVisible
         shortcutLabel="⌘+S"
@@ -436,7 +581,7 @@ describe("ComposerPromptStash", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
     expect(create).toHaveBeenCalledTimes(1);
-    expect(bridge.delete).toHaveBeenCalledWith({ id: savedEntry.id });
+    expect(bridge.delete).toHaveBeenCalledWith({ id: savedEntry.id }, localBinding);
     expect(onDraftChange).not.toHaveBeenCalled();
     expect(onRemoveAttachment).not.toHaveBeenCalled();
   });
@@ -675,7 +820,7 @@ describe("ComposerPromptStash", () => {
       text: "Hidden button prompt",
       provider: undefined,
       modelId: undefined,
-    }));
+    }, null));
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
   });
@@ -741,7 +886,10 @@ describe("ComposerPromptStash", () => {
     resolveCreate?.(savedEntry);
 
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ text: "Save this version" }));
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Save this version" }),
+      null,
+    );
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
@@ -831,7 +979,7 @@ describe("ComposerPromptStash", () => {
     resolveDelete?.(true);
 
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
-    expect(remove).toHaveBeenCalledWith({ id: "stash-1" });
+    expect(remove).toHaveBeenCalledWith({ id: "stash-1" }, null);
     expect(onDraftChange).toHaveBeenCalledTimes(1);
   });
 });
