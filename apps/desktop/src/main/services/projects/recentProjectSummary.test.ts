@@ -28,8 +28,32 @@ function writeRepo(rootPath: string, configText: string): string {
   return rootPath;
 }
 
-function originConfig(url: string): string {
-  return ["[core]", "\tbare = false", "[remote \"origin\"]", `\turl = ${url}`, "\tfetch = +refs/heads/*:refs/remotes/origin/*", ""].join("\n");
+function originConfig(url: string, bare = false): string {
+  return ["[core]", `\tbare = ${bare}`, "[remote \"origin\"]", `\turl = ${url}`, "\tfetch = +refs/heads/*:refs/remotes/origin/*", ""].join("\n");
+}
+
+function writeLinkedWorktree(
+  tmp: string,
+  commonGitDirName: string,
+  originUrl: string,
+  bare = false,
+): string {
+  const commonGitDir = path.join(tmp, commonGitDirName);
+  fs.mkdirSync(commonGitDir, { recursive: true });
+  fs.writeFileSync(path.join(commonGitDir, "config"), originConfig(originUrl, bare), "utf8");
+
+  const worktreeGitDir = path.join(commonGitDir, "worktrees", "lane-x");
+  fs.mkdirSync(worktreeGitDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(worktreeGitDir, "commondir"),
+    `${path.relative(worktreeGitDir, commonGitDir)}\n`,
+    "utf8",
+  );
+
+  const worktreeRoot = path.join(tmp, "lane-x");
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  fs.writeFileSync(path.join(worktreeRoot, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf8");
+  return worktreeRoot;
 }
 
 beforeEach(() => {
@@ -134,6 +158,27 @@ describe("readGitOriginUrl", () => {
     fs.writeFileSync(path.join(worktreeRoot, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf8");
 
     expect(readGitOriginUrl(worktreeRoot)).toBe("git@github.com:arul28/ADE.git");
+  });
+
+  it("reads the origin from a linked worktree backed by a bare repository", () => {
+    const worktreeRoot = writeLinkedWorktree(
+      makeTempDir(),
+      "central.git",
+      "git@github.com:arul28/bare-backed.git",
+      true,
+    );
+
+    expect(readGitOriginUrl(worktreeRoot)).toBe("git@github.com:arul28/bare-backed.git");
+  });
+
+  it("reads the origin from a linked worktree with a separately named common Git directory", () => {
+    const worktreeRoot = writeLinkedWorktree(
+      makeTempDir(),
+      "git-metadata",
+      "git@github.com:arul28/separate-metadata.git",
+    );
+
+    expect(readGitOriginUrl(worktreeRoot)).toBe("git@github.com:arul28/separate-metadata.git");
   });
 
   it("does not truncate a repo that lives under a directory named worktrees", () => {

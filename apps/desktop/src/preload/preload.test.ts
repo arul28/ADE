@@ -6371,9 +6371,11 @@ describe("per-chat runtime routing", () => {
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
       (globalThis as any).__adeBridge = value;
     });
+    const on = vi.fn();
+    const removeListener = vi.fn();
     vi.doMock("electron", () => ({
       contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      ipcRenderer: { invoke, on, removeListener },
       webFrame: {
         getZoomLevel: vi.fn(() => 0),
         setZoomLevel: vi.fn(),
@@ -6381,7 +6383,12 @@ describe("per-chat runtime routing", () => {
       },
     }));
     await import("./preload");
-    return { bridge: (globalThis as any).__adeBridge, invoke };
+    return {
+      bridge: (globalThis as any).__adeBridge,
+      invoke,
+      on,
+      removeListener,
+    };
   }
 
   it("routes a pinned chat to the pin's machine and leaves the window binding alone", async () => {
@@ -6439,7 +6446,8 @@ describe("per-chat runtime routing", () => {
   it("streams a pinned This Mac chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
     try {
-      const { bridge, invoke } = await mountBridge(machineB);
+      const { bridge, invoke, on } = await mountBridge(machineB);
+      let streamAttempt = 0;
       const envelope = {
         sessionId: "chat-on-a",
         timestamp: "2026-07-27T18:02:00.000Z",
@@ -6450,14 +6458,17 @@ describe("per-chat runtime routing", () => {
           return { result: { sessionId: "chat-on-a", events: [envelope], sessionFound: true } };
         }
         if (channel === IPC.localRuntimeStreamEvents) {
+          streamAttempt += 1;
           return {
-            events: [{
-              id: 1,
-              timestamp: envelope.timestamp,
-              category: "chat",
-              payload: envelope,
-            }],
-            nextCursor: 1,
+            events: streamAttempt === 2
+              ? [{
+                  id: 1,
+                  timestamp: envelope.timestamp,
+                  category: "runtime",
+                  payload: envelope,
+                }]
+              : [],
+            nextCursor: streamAttempt >= 2 ? 1 : 0,
             hasMore: false,
             eventEpoch: "local-epoch-a",
           };
@@ -6468,7 +6479,21 @@ describe("per-chat runtime routing", () => {
       await bridge.agentChat.getEventHistory({ sessionId: "chat-on-a", maxEvents: 5 }, machineA);
       const callback = vi.fn();
       const unsubscribe = bridge.agentChat.onEvent(callback, machineA);
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(0);
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "local-epoch-a",
+        event: {
+          id: 1,
+          timestamp: envelope.timestamp,
+          category: "runtime",
+          payload: envelope,
+        },
+      });
 
       expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
         rootPath: "/repo-a",
@@ -6483,9 +6508,78 @@ describe("per-chat runtime routing", () => {
         request: { cursor: 0, limit: 200 },
       });
       expect(callback).toHaveBeenCalledWith(envelope);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(callback).toHaveBeenCalledTimes(1);
 
       unsubscribe();
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "local-epoch-a",
+        event: {
+          id: 2,
+          timestamp: envelope.timestamp,
+          category: "runtime",
+          payload: envelope,
+        },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off repeated pinned chat poll failures and resets after success", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { bridge, invoke } = await mountBridge(machineB);
+      let streamAttempt = 0;
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.localRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamAttempt += 1;
+        if (streamAttempt <= 6 || streamAttempt === 8) {
+          throw new Error(`offline ${streamAttempt}`);
+        }
+        return {
+          events: [],
+          nextCursor: 0,
+          hasMore: false,
+          eventEpoch: "local-epoch-a",
+        };
+      });
+
+      const unsubscribe = bridge.agentChat.onEvent(vi.fn(), machineA);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamAttempt).toBe(1);
+
+      for (const [delay, expectedAttempts] of [
+        [2_000, 2],
+        [4_000, 3],
+        [8_000, 4],
+        [16_000, 5],
+        [30_000, 6],
+        [30_000, 7],
+      ] as const) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(streamAttempt).toBe(expectedAttempts - 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(streamAttempt).toBe(expectedAttempts);
+      }
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(streamAttempt).toBe(8);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(streamAttempt).toBe(8);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streamAttempt).toBe(9);
+
+      unsubscribe();
+      await vi.runOnlyPendingTimersAsync();
+      expect(streamAttempt).toBe(9);
+    } finally {
+      warn.mockRestore();
       vi.useRealTimers();
     }
   });

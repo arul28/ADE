@@ -3959,6 +3959,7 @@ export function AgentChatPane({
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
+  const preserveDraftAcrossMachineSwitchRef = useRef(false);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
   const selectedSession = useMemo(
@@ -7979,6 +7980,12 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, composerDraftTextRef.current);
     }
     prevDraftKeyRef.current = companionStateKey;
+    if (preserveDraftAcrossMachineSwitchRef.current) {
+      preserveDraftAcrossMachineSwitchRef.current = false;
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+      draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:machine-switch`;
+      return;
+    }
     const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
     composerDraftHydratingTextRef.current = saved?.text ?? null;
@@ -9019,7 +9026,9 @@ export function AgentChatPane({
     // `launchTimedOut` is the normal abort source: withDraftLaunchTimeout rejects
     // the renderer wait but cannot cancel the underlying IPC, so a timed-out
     // step that keeps running must be stopped before its next mutation.
-    const launchBinding = projectBinding;
+    const launchBinding = draftLaunchTargetIsAutoCreate
+      ? rootAppStoreApi.getState().projectBinding ?? projectBinding
+      : projectBinding;
     const launchProjectRoot = projectRoot;
     let launchTimedOut = false;
     const assertLaunchActive = () => {
@@ -10720,6 +10729,7 @@ export function AgentChatPane({
   const switchToLaneMachine = useCallback((machineId: string) => {
     const machine = laneMachineOptions.find((candidate) => candidate.id === machineId);
     if (!machine || machine.isBound) return;
+    preserveDraftAcrossMachineSwitchRef.current = true;
     const switching = machine.targetId
       ? machine.project?.projectId
         ? switchRemoteProject(machine.targetId, machine.project.projectId).then(() => {})
@@ -10728,14 +10738,25 @@ export function AgentChatPane({
         ? switchProjectToPath(machine.project.rootPath)
         : null;
     if (!switching) {
+      preserveDraftAcrossMachineSwitchRef.current = false;
       setError(`Open this repository on ${machine.name} first, then create the lane there.`);
       return;
     }
     setError(null);
-    void switching.catch((err: unknown) => {
-      setError(err instanceof Error ? err.message : String(err));
-    });
-  }, [laneMachineOptions, switchProjectToPath, switchRemoteProject]);
+    void switching
+      .then(() => {
+        // A different machine can expose the same absolute root path. In that
+        // case the composer storage scope never changes, so there is no
+        // hydration effect to consume this one-shot preservation marker.
+        if (selectActiveProjectRoot(rootAppStoreApi.getState()) === projectRoot) {
+          preserveDraftAcrossMachineSwitchRef.current = false;
+        }
+      })
+      .catch((err: unknown) => {
+        preserveDraftAcrossMachineSwitchRef.current = false;
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }, [laneMachineOptions, projectRoot, switchProjectToPath, switchRemoteProject]);
 
   const draftLaneSelectorLanes = useMemo(
     () => showDraftLaunchControls && availableLanes

@@ -3,7 +3,13 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
+import type {
+  AgentChatSession,
+  LaneSummary,
+  OpenProjectBinding,
+  TerminalSessionSummary,
+  TerminalToolType,
+} from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
 
@@ -83,6 +89,7 @@ const workMocks = vi.hoisted(() => {
     refresh: vi.fn().mockResolvedValue(undefined),
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
+    setWorkViewState: vi.fn(),
   };
 
   const baseWork = {
@@ -173,16 +180,7 @@ type MockSessionListPaneProps = {
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
   onSelectForeignRuntimeSession?: (
     session: TerminalSessionSummary,
-    binding:
-      | {
-          kind: "remote";
-          targetId: string;
-          projectId: string;
-        }
-      | {
-          kind: "local";
-          rootPath: string;
-        },
+    binding: OpenProjectBinding,
     event: React.MouseEvent,
     visibleSessionIds: string[],
   ) => void;
@@ -217,6 +215,7 @@ vi.mock("../../state/appStore", () => ({
     laneDeleteProgressByLaneId: Record<string, never>;
     switchRemoteProject: typeof workMocks.fns.switchRemoteProject;
     switchProjectToPath: typeof workMocks.fns.switchProjectToPath;
+    setWorkViewState: typeof workMocks.fns.setWorkViewState;
   }) => T): T =>
     selector({
       selectedLaneId: "lane-primary",
@@ -224,6 +223,7 @@ vi.mock("../../state/appStore", () => ({
       projectBinding: workMocks.projectBinding,
       switchRemoteProject: workMocks.fns.switchRemoteProject,
       switchProjectToPath: workMocks.fns.switchProjectToPath,
+      setWorkViewState: workMocks.fns.setWorkViewState,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
@@ -437,8 +437,12 @@ describe("TerminalsPage chat session activation", () => {
       session,
       {
         kind: "remote",
+        key: "remote:target-studio:project-a",
         targetId: "target-studio",
+        runtimeName: "Mac Studio",
         projectId: "project-a",
+        rootPath: "/remote/repo-a",
+        displayName: "repo-a",
       },
       event,
       [session.id],
@@ -450,8 +454,33 @@ describe("TerminalsPage chat session activation", () => {
 
     resolveSwitch();
     await waitFor(() => {
-      expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-foreign");
-      expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-foreign");
+      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith(
+        "remote:target-studio:project-a",
+        expect.any(Function),
+      );
+    });
+    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
+
+    const updateDestination = workMocks.fns.setWorkViewState.mock.calls[0]?.[1] as
+      | ((previous: {
+          openItemIds: string[];
+          selectedItemId: string | null;
+          activeItemId: string | null;
+        }) => {
+          openItemIds: string[];
+          selectedItemId: string | null;
+          activeItemId: string | null;
+        })
+      | undefined;
+    expect(updateDestination?.({
+      openItemIds: ["existing-session"],
+      selectedItemId: null,
+      activeItemId: null,
+    })).toEqual({
+      openItemIds: ["existing-session", "shell-foreign"],
+      selectedItemId: "shell-foreign",
+      activeItemId: "shell-foreign",
     });
   });
 
@@ -467,16 +496,22 @@ describe("TerminalsPage chat session activation", () => {
     const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
     sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
       session,
-      { kind: "local", rootPath: "/repo-a" },
+      {
+        kind: "local",
+        key: "local:/repo-a",
+        rootPath: "/repo-a",
+        displayName: "repo-a",
+      },
       event,
       [session.id],
     );
 
     expect(workMocks.fns.switchProjectToPath).toHaveBeenCalledWith("/repo-a");
     await waitFor(() => {
-      expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-local");
-      expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-local");
+      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith("/repo-a", expect.any(Function));
     });
+    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalled();
   });
 
   it("focuses orchestration-selected chats from the Work select-session event", async () => {

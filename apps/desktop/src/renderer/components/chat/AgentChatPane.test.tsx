@@ -5135,19 +5135,22 @@ describe("AgentChatPane submit recovery", () => {
       displayName: "project-under-test",
     };
     let finishSwitch!: () => void;
-    const switchRemoteProject = vi.fn(() => new Promise<typeof remoteBinding>((resolve) => {
-      finishSwitch = () => {
-        useAppStore.setState({
-          project: {
-            rootPath: remoteBinding.rootPath,
-            displayName: remoteBinding.displayName,
-          } as any,
-          projectBinding: remoteBinding,
-          projectTransition: null,
-        });
-        resolve(remoteBinding);
-      };
-    }));
+    const switchRemoteProject = vi.fn(() => {
+      useAppStore.setState({ projectTransition: { phase: "switching" } as any });
+      return new Promise<typeof remoteBinding>((resolve) => {
+        finishSwitch = () => {
+          useAppStore.setState({
+            project: {
+              rootPath: remoteBinding.rootPath,
+              displayName: remoteBinding.displayName,
+            } as any,
+            projectBinding: remoteBinding,
+            projectTransition: null,
+          });
+          resolve(remoteBinding);
+        };
+      });
+    });
     useAppStore.setState({
       project: {
         rootPath: localBinding.rootPath,
@@ -5183,6 +5186,12 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create this on the studio." } });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     const machineRows = await screen.findAllByText("Auto-create lane here");
     fireEvent.click(machineRows.at(-1)!);
@@ -5193,7 +5202,14 @@ describe("AgentChatPane submit recovery", () => {
     expect(create).not.toHaveBeenCalled();
 
     finishSwitch();
-    await Promise.resolve();
+    await waitFor(() => expect(useAppStore.getState().projectBinding).toEqual(remoteBinding));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-created" }),
+        remoteBinding,
+      );
+    });
   });
 
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {

@@ -176,14 +176,25 @@ export function parseGitOriginUrlFromConfig(configText: string): string | null {
 /**
  * The directory whose `config` holds a checkout's remotes.
  *
- * A linked worktree's metadata dir is exactly `<main>/.git/worktrees/<name>`
- * and has no remotes of its own, so the config we want is the main repo's. The
- * check is structural rather than a substring search for `worktrees`: a repo
- * that merely lives under a folder named `worktrees` would otherwise be
+ * A linked worktree's metadata dir contains a `commondir` pointer to the
+ * repository-wide Git directory, whose config owns the remotes. Reading that
+ * pointer works for ordinary `.git` directories, bare repositories, and
+ * separately named Git directories without guessing from path basenames.
+ *
+ * The path-shape check remains only as a compatibility fallback for incomplete
+ * metadata (including older synthetic fixtures). It is deliberately strict: a
+ * repo that merely lives under a folder named `worktrees` must not be
  * truncated to that folder's parent, and a submodule nested inside a linked
- * worktree would report the superproject's origin instead of its own.
+ * worktree must keep its own config.
  */
 export function resolveGitConfigDirectory(gitDir: string): string {
+  try {
+    const rawCommonDir = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+    if (rawCommonDir) return path.resolve(gitDir, rawCommonDir);
+  } catch {
+    // Fall through to the legacy path-shape check.
+  }
+
   const parent = path.dirname(gitDir);
   if (path.basename(parent) !== "worktrees") return gitDir;
   const commonGitDir = path.dirname(parent);

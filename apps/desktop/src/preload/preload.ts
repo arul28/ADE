@@ -1661,6 +1661,10 @@ async function callProjectRuntimeSyncOr<T>(
 const remoteAgentChatEventCallbacks = new Set<
   (payload: AgentChatEventEnvelope) => void
 >();
+const pinnedLocalAgentChatEventCallbacks = new Map<
+  string,
+  Set<(event: RemoteRuntimeBufferedEvent) => void>
+>();
 const remoteSessionChangedCallbacks = new Set<
   (payload: TerminalSessionChangedEvent) => void
 >();
@@ -1831,6 +1835,8 @@ const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
 const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
 const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
+const PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS = 2_000;
+const PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS = 30_000;
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
@@ -2108,8 +2114,21 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
 function handleRemoteRuntimeEventNotification(value: unknown): void {
   const payload = toRemoteRuntimeEventNotificationPayload(value);
+  if (!payload) return;
+  const pinnedLocalCallbacks = pinnedLocalAgentChatEventCallbacks.get(
+    payload.bindingKey,
+  );
+  if (pinnedLocalCallbacks?.size) {
+    for (const dispatch of [...pinnedLocalCallbacks]) {
+      try {
+        dispatch(payload.event);
+      } catch (error) {
+        console.error("preload pinned local agent chat listener failed", error);
+      }
+    }
+  }
   const binding = currentProjectBinding;
-  if (!payload || !binding || payload.bindingKey !== binding.key) return;
+  if (!binding || payload.bindingKey !== binding.key) return;
   resetRemoteRuntimeEmptyPolls();
   const notificationEpoch =
     typeof payload.eventEpoch === "string" && payload.eventEpoch.trim()
@@ -2922,6 +2941,30 @@ function subscribeAgentChatEvents(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cursor = 0;
     let eventEpoch: string | null = null;
+    let consecutiveFailures = 0;
+    const seenLocalEventIds = new Set<number>();
+    const dispatchPinnedLocalEvent = (event: RemoteRuntimeBufferedEvent): void => {
+      if (seenLocalEventIds.has(event.id)) return;
+      seenLocalEventIds.add(event.id);
+      while (seenLocalEventIds.size > 1_000) {
+        const oldest = seenLocalEventIds.values().next().value;
+        if (typeof oldest !== "number") break;
+        seenLocalEventIds.delete(oldest);
+      }
+      const envelope = toAgentChatEventEnvelope(event.payload);
+      if (!envelope) return;
+      agentChatSummaryCache.clear();
+      cb(envelope);
+    };
+    const pinnedLocalCallbacks =
+      pin.kind === "local"
+        ? pinnedLocalAgentChatEventCallbacks.get(pin.key) ??
+          new Set<(event: RemoteRuntimeBufferedEvent) => void>()
+        : null;
+    if (pinnedLocalCallbacks) {
+      pinnedLocalCallbacks.add(dispatchPinnedLocalEvent);
+      pinnedLocalAgentChatEventCallbacks.set(pin.key, pinnedLocalCallbacks);
+    }
     const poll = async (): Promise<void> => {
       let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
       try {
@@ -2935,6 +2978,7 @@ function subscribeAgentChatEvents(
             : { rootPath: pin.rootPath, request },
         ) as RemoteRuntimeStreamEventsResult;
         if (cancelled) return;
+        consecutiveFailures = 0;
         let resetForEpochChange = false;
         const batchEpoch =
           typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
@@ -2954,8 +2998,12 @@ function subscribeAgentChatEvents(
         if (!resetForEpochChange) {
           cursor = Number.isFinite(batch.nextCursor) ? Math.max(0, Math.floor(batch.nextCursor)) : cursor;
           for (const event of batch.events ?? []) {
-            const envelope = toAgentChatEventEnvelope(event.payload);
-            if (envelope) cb(envelope);
+            if (pin.kind === "local") {
+              dispatchPinnedLocalEvent(event);
+            } else {
+              const envelope = toAgentChatEventEnvelope(event.payload);
+              if (envelope) cb(envelope);
+            }
           }
           delay = batch.hasMore
             ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
@@ -2965,7 +3013,12 @@ function subscribeAgentChatEvents(
         }
       } catch (error) {
         if (!cancelled) console.warn("ADE pinned chat event polling failed", error);
-        delay = 2_000;
+        consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
+        delay = Math.min(
+          PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS *
+            2 ** (consecutiveFailures - 1),
+          PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS,
+        );
       }
       if (!cancelled) timer = setTimeout(() => void poll(), delay);
     };
@@ -2973,6 +3026,12 @@ function subscribeAgentChatEvents(
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      if (pinnedLocalCallbacks) {
+        pinnedLocalCallbacks.delete(dispatchPinnedLocalEvent);
+        if (pinnedLocalCallbacks.size === 0) {
+          pinnedLocalAgentChatEventCallbacks.delete(pin.key);
+        }
+      }
       removeLocal();
     };
   }
