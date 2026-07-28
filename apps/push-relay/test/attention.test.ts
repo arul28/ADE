@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -54,21 +56,32 @@ class SqliteD1Statement {
     return { success: true };
   }
 
-  runSync(): void {
+  runSync(): Array<Record<string, unknown>> {
+    if (/\breturning\b/i.test(this.sql)) {
+      return this.database.prepare(this.sql).all(...this.values);
+    }
     this.database.prepare(this.sql).run(...this.values);
+    return [];
   }
 }
 
 class SqliteD1Database {
-  readonly native = new DatabaseSync(":memory:");
+  readonly native: NativeDatabase;
+  private nextBatchFailureIndex: number | null = null;
+  private nextBatchObservation:
+    | { index: number; observe: () => Promise<void> }
+    | null = null;
 
-  constructor() {
-    for (const migration of [
-      "../migrations/0001_push_registrations.sql",
-      "../migrations/0002_rate_and_budget.sql",
-      "../migrations/0003_account_attention.sql",
-    ]) {
-      this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
+  constructor(path = ":memory:", migrate = true) {
+    this.native = new DatabaseSync(path);
+    if (migrate) {
+      for (const migration of [
+        "../migrations/0001_push_registrations.sql",
+        "../migrations/0002_rate_and_budget.sql",
+        "../migrations/0003_account_attention.sql",
+      ]) {
+        this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
+      }
     }
   }
 
@@ -76,16 +89,41 @@ class SqliteD1Database {
     return new SqliteD1Statement(this.native, sql);
   }
 
-  async batch(statements: SqliteD1Statement[]): Promise<Array<{ success: boolean }>> {
+  async batch(
+    statements: SqliteD1Statement[],
+  ): Promise<Array<{ success: boolean; results: Array<Record<string, unknown>> }>> {
     this.native.exec("begin immediate");
     try {
-      for (const statement of statements) statement.runSync();
+      const results: Array<{
+        success: boolean;
+        results: Array<Record<string, unknown>>;
+      }> = [];
+      for (const [index, statement] of statements.entries()) {
+        if (index === this.nextBatchFailureIndex) {
+          throw new Error(`injected batch failure at statement ${index}`);
+        }
+        results.push({ success: true, results: statement.runSync() });
+        if (index === this.nextBatchObservation?.index) {
+          await this.nextBatchObservation.observe();
+        }
+      }
       this.native.exec("commit");
-      return statements.map(() => ({ success: true }));
+      return results;
     } catch (error) {
       this.native.exec("rollback");
       throw error;
+    } finally {
+      this.nextBatchFailureIndex = null;
+      this.nextBatchObservation = null;
     }
+  }
+
+  failNextBatchAt(index: number): void {
+    this.nextBatchFailureIndex = index;
+  }
+
+  observeNextBatchAfter(index: number, observe: () => Promise<void>): void {
+    this.nextBatchObservation = { index, observe };
   }
 
   close(): void {
@@ -348,6 +386,359 @@ describe("account Attention contract", () => {
     ).toBe(false);
   });
 
+  it("rolls back a published item when its cursor transaction fails", async () => {
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      database.failNextBatchAt(2);
+      await expect(attentionTestInternals.commitAttentionMachineChanges(
+        makeAttentionEnv(database),
+        {
+          userId: "account-a",
+          machineKey: MACHINE_KEY,
+          items: [parsed],
+          tombstones: [],
+          sealCapacityTombstones: false,
+          now: "2026-07-28T08:00:00.000Z",
+        },
+      )).rejects.toThrow("injected batch failure at statement 2");
+
+      expect(row(database, `
+        select revision
+        from attention_revisions
+        where user_id = 'account-a'
+      `)).toBeUndefined();
+      expect(rows(database, `
+        select item_id
+        from attention_items
+        where user_id = 'account-a'
+      `)).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back item deletion when its tombstone cursor transaction fails", async () => {
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      database.native.prepare(`
+        insert into attention_revisions(user_id, revision, updated_at)
+        values ('account-a', 4, '2026-07-28T07:59:00.000Z')
+      `).run();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, 7, 4, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      database.failNextBatchAt(2);
+      await expect(attentionTestInternals.commitAttentionMachineChanges(
+        makeAttentionEnv(database),
+        {
+          userId: "account-a",
+          machineKey: MACHINE_KEY,
+          items: [],
+          tombstones: [{ id: parsed.id, revision: 7, revivable: false }],
+          sealCapacityTombstones: false,
+          now: "2026-07-28T08:00:00.000Z",
+        },
+      )).rejects.toThrow("injected batch failure at statement 2");
+
+      expect(row(database, `
+        select revision
+        from attention_revisions
+        where user_id = 'account-a'
+      `)?.revision).toBe(4);
+      expect(row(database, `
+        select account_revision
+        from attention_items
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)?.account_revision).toBe(4);
+      expect(rows(database, `
+        select item_id
+        from attention_tombstones
+        where user_id = 'account-a'
+      `)).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back acknowledgment rows when their cursor transaction fails", async () => {
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      database.native.prepare(`
+        insert into attention_revisions(user_id, revision, updated_at)
+        values ('account-a', 4, '2026-07-28T07:59:00.000Z')
+      `).run();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, 7, 4, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      database.failNextBatchAt(1);
+      await expect(accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: [parsed.id],
+          seenAt: "2026-07-28T08:00:00.000Z",
+          dismissedAt: null,
+        },
+      )).rejects.toThrow("injected batch failure at statement 1");
+
+      expect(row(database, `
+        select revision
+        from attention_revisions
+        where user_id = 'account-a'
+      `)?.revision).toBe(4);
+      expect(row(database, `
+        select account_revision, seen_at
+        from attention_items
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)).toMatchObject({
+        account_revision: 4,
+        seen_at: null,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps an empty acknowledgment cursor-stable", async () => {
+    const database = new SqliteD1Database();
+    try {
+      database.native.prepare(`
+        insert into attention_revisions(user_id, revision, updated_at)
+        values ('account-a', 4, '2026-07-28T07:59:00.000Z')
+      `).run();
+
+      const response = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: [],
+          seenAt: "2026-07-28T08:00:00.000Z",
+          dismissedAt: null,
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        ok: true,
+        revision: 4,
+        itemIds: [],
+      });
+      expect(row(database, `
+        select revision
+        from attention_revisions
+        where user_id = 'account-a'
+      `)?.revision).toBe(4);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("never exposes a cursor before its item, tombstone, or acknowledgment rows", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ade-attention-atomic-"));
+    const path = join(directory, "relay.sqlite");
+    const database = new SqliteD1Database(path);
+    const observer = new SqliteD1Database(path, false);
+    const first = attentionTestInternals.parseAttentionItem(
+      validAgentItem(),
+      MACHINE_KEY,
+    );
+    const secondRaw = validAgentItem();
+    secondRaw.id = `agent:${MACHINE_KEY}:session-2`;
+    secondRaw.fingerprint = "fingerprint-session-2";
+    secondRaw.destination = {
+      kind: "session",
+      sessionId: "session-2",
+      itemId: "approval-2",
+      eventId: "event-2",
+    };
+    const second = attentionTestInternals.parseAttentionItem(
+      secondRaw,
+      MACHINE_KEY,
+    );
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    if (!first || !second) {
+      observer.close();
+      database.close();
+      rmSync(directory, { recursive: true, force: true });
+      return;
+    }
+    type SnapshotBody = {
+      revision: number;
+      items: Array<{ id: string; seenAt: string | null }>;
+      tombstones: Array<{ id: string }>;
+    };
+    try {
+      const initialRevision = await attentionTestInternals.commitAttentionMachineChanges(
+        makeAttentionEnv(database),
+        {
+          userId: "account-a",
+          machineKey: MACHINE_KEY,
+          items: [first, second],
+          tombstones: [],
+          sealCapacityTombstones: false,
+          now: "2026-07-28T08:00:00.000Z",
+        },
+      );
+      expect(initialRevision).toBe(1);
+
+      const updatedRaw = validAgentItem();
+      updatedRaw.revision = 8;
+      updatedRaw.fingerprint = "fingerprint-8";
+      updatedRaw.preview = "The migration changed while you were reviewing it.";
+      updatedRaw.updatedAt = "2026-07-28T08:01:00.000Z";
+      const updated = attentionTestInternals.parseAttentionItem(
+        updatedRaw,
+        MACHINE_KEY,
+      );
+      expect(updated).not.toBeNull();
+      if (!updated) return;
+
+      let duringPublish: SnapshotBody | null = null;
+      database.observeNextBatchAfter(0, async () => {
+        const response = await accountRoute(
+          observer,
+          "account-a",
+          "GET",
+          "/attention/account/snapshot?since=1&streamId=account-a",
+        );
+        duringPublish = await response.json() as SnapshotBody;
+      });
+      const publishRevision = await attentionTestInternals.commitAttentionMachineChanges(
+        makeAttentionEnv(database),
+        {
+          userId: "account-a",
+          machineKey: MACHINE_KEY,
+          items: [updated],
+          tombstones: [{ id: second.id, revision: second.revision, revivable: false }],
+          sealCapacityTombstones: false,
+          now: "2026-07-28T08:01:00.000Z",
+        },
+      );
+      expect(publishRevision).toBe(2);
+      expect(duringPublish).toEqual(expect.objectContaining({
+        revision: 1,
+        items: [],
+        tombstones: [],
+      }));
+
+      const publishedDelta = await (
+        await accountRoute(
+          observer,
+          "account-a",
+          "GET",
+          "/attention/account/snapshot?since=1&streamId=account-a",
+        )
+      ).json() as SnapshotBody;
+      expect(publishedDelta.revision).toBe(2);
+      expect(publishedDelta.items.map((item) => item.id)).toEqual([updated.id]);
+      expect(publishedDelta.tombstones.map((item) => item.id)).toEqual([second.id]);
+
+      let duringAcknowledgment: SnapshotBody | null = null;
+      database.observeNextBatchAfter(0, async () => {
+        const response = await accountRoute(
+          observer,
+          "account-a",
+          "GET",
+          "/attention/account/snapshot?since=2&streamId=account-a",
+        );
+        duringAcknowledgment = await response.json() as SnapshotBody;
+      });
+      const acknowledgment = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/ack",
+        {
+          itemIds: [updated.id],
+          seenAt: "2026-07-28T08:02:00.000Z",
+          dismissedAt: null,
+        },
+      );
+      expect(acknowledgment.status).toBe(200);
+      expect(await acknowledgment.json()).toMatchObject({ revision: 3 });
+      expect(duringAcknowledgment).toEqual(expect.objectContaining({
+        revision: 2,
+        items: [],
+        tombstones: [],
+      }));
+
+      const acknowledgedDelta = await (
+        await accountRoute(
+          observer,
+          "account-a",
+          "GET",
+          "/attention/account/snapshot?since=2&streamId=account-a",
+        )
+      ).json() as SnapshotBody;
+      expect(acknowledgedDelta.revision).toBe(3);
+      expect(acknowledgedDelta.items).toEqual([
+        expect.objectContaining({
+          id: updated.id,
+          seenAt: "2026-07-28T08:02:00.000Z",
+        }),
+      ]);
+    } finally {
+      observer.close();
+      database.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("revives capacity-displaced items but seals confirmed removals", async () => {
     const database = new SqliteD1Database();
     const env = makeAttentionEnv(database);
@@ -521,6 +912,94 @@ describe("account Attention contract", () => {
         sendPush,
       );
       expect(sendPush).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not notify for an inbound item rejected by the committed account state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const stale = attentionTestInternals.parseAttentionItem(
+      validAgentItem(),
+      MACHINE_KEY,
+    );
+    expect(stale).not.toBeNull();
+    if (!stale) {
+      database.close();
+      return;
+    }
+    const currentRaw = validAgentItem();
+    currentRaw.revision = stale.revision + 1;
+    currentRaw.fingerprint = "newer-fingerprint";
+    currentRaw.updatedAt = "2026-07-28T08:00:30.000Z";
+    const current = attentionTestInternals.parseAttentionItem(
+      currentRaw,
+      MACHINE_KEY,
+    );
+    expect(current).not.toBeNull();
+    if (!current) {
+      database.close();
+      return;
+    }
+    const sendPush = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      apnsId: "apns-id",
+      reason: null,
+      tokenInvalid: false,
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 2, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        current.id,
+        MACHINE_KEY,
+        current.revision,
+        current.fingerprint,
+        current.eventKind,
+        current.phase,
+        JSON.stringify(current),
+        current.expiresAt,
+        current.updatedAt,
+      );
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: "test-key",
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [stale],
+        sendPush,
+      );
+      expect(sendPush).not.toHaveBeenCalled();
+
+      database.native.prepare(`
+        delete from attention_items
+        where user_id = 'account-a' and item_id = ?
+      `).run(current.id);
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [stale],
+        sendPush,
+      );
+      expect(sendPush).not.toHaveBeenCalled();
     } finally {
       database.close();
     }
@@ -913,6 +1392,81 @@ describe("account Attention contract", () => {
         from attention_tombstones
         where user_id = 'account-a' and item_id = ?
       `, itemId)).toBeUndefined();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back machine-transfer tombstones with their prior-account cursor", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    const parsed = attentionTestInternals.parseAttentionItem(
+      validAgentItem(),
+      MACHINE_KEY,
+    );
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-a",
+        MACHINE_KEY,
+        "Studio",
+      );
+      database.native.prepare(`
+        insert into attention_revisions(user_id, revision, updated_at)
+        values ('account-a', 4, '2026-07-28T07:59:00.000Z')
+      `).run();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (?, ?, ?, ?, 4, ?, ?, ?, ?, null, null, ?, ?)
+      `).run(
+        "account-a",
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      database.failNextBatchAt(2);
+      await expect(attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      )).rejects.toThrow("injected batch failure at statement 2");
+
+      expect(row(database, `
+        select revision
+        from attention_revisions
+        where user_id = 'account-a'
+      `)?.revision).toBe(4);
+      expect(row(database, `
+        select account_revision
+        from attention_items
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)?.account_revision).toBe(4);
+      expect(rows(database, `
+        select item_id
+        from attention_tombstones
+        where user_id = 'account-a'
+      `)).toEqual([]);
+      expect(row(database, `
+        select user_id
+        from attention_machine_links
+        where machine_key = ?
+      `, MACHINE_KEY)?.user_id).toBe("account-a");
     } finally {
       database.close();
     }

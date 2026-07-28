@@ -351,22 +351,29 @@ function attentionTombstoneBlocksItem(
     && Number(tombstone.source_revision) >= itemRevision;
 }
 
-async function upsertAttentionTombstone(
+function upsertAttentionTombstoneStatement(
   env: AttentionRelayEnv,
   args: {
     userId: string;
     itemId: string;
     sourceRevision: number;
-    accountRevision: number;
+    accountRevision: number | null;
     deletedAt: string;
     revivable: boolean;
   },
-): Promise<void> {
-  await env.DB.prepare(`
+): D1PreparedStatement {
+  return env.DB.prepare(`
     insert into attention_tombstones(
       user_id, item_id, source_revision, account_revision, revivable, deleted_at
     )
-    values (?, ?, ?, ?, ?, ?)
+    values (
+      ?, ?, ?,
+      coalesce(
+        ?,
+        (select revision from attention_revisions where user_id = ?)
+      ),
+      ?, ?
+    )
     on conflict(user_id, item_id) do update set
       source_revision = excluded.source_revision,
       account_revision = excluded.account_revision,
@@ -382,17 +389,32 @@ async function upsertAttentionTombstone(
     args.itemId,
     args.sourceRevision,
     args.accountRevision,
+    args.userId,
     args.revivable ? 1 : 0,
     args.deletedAt,
-  ).run();
+  );
 }
 
-async function sealCapacityTombstones(
+async function upsertAttentionTombstone(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    itemId: string;
+    sourceRevision: number;
+    accountRevision: number;
+    deletedAt: string;
+    revivable: boolean;
+  },
+): Promise<void> {
+  await upsertAttentionTombstoneStatement(env, args).run();
+}
+
+function sealCapacityTombstonesStatement(
   env: AttentionRelayEnv,
   userId: string,
   machineKey: string,
-): Promise<void> {
-  await env.DB.prepare(`
+): D1PreparedStatement {
+  return env.DB.prepare(`
     update attention_tombstones
     set revivable = 0
     where user_id = ?
@@ -405,7 +427,178 @@ async function sealCapacityTombstones(
     userId,
     `agent:${machineKey}:%`,
     `pull-request:${machineKey}:%`,
-  ).run();
+  );
+}
+
+async function sealCapacityTombstones(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<void> {
+  await sealCapacityTombstonesStatement(env, userId, machineKey).run();
+}
+
+function attentionItemUpsertStatement(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+  item: ParsedAttentionItem,
+): D1PreparedStatement {
+  return env.DB.prepare(`
+    insert into attention_items(
+      user_id, item_id, machine_key, source_revision, account_revision,
+      fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+      expires_at, updated_at
+    )
+    select ?, ?, ?, ?, revision, ?, ?, ?, ?, null, null, ?, ?
+    from attention_revisions
+    where user_id = ?
+      and not exists (
+        select 1
+        from attention_tombstones
+        where user_id = ? and item_id = ?
+          and revivable != 1
+          and source_revision >= ?
+      )
+    on conflict(user_id, item_id) do update set
+      machine_key = excluded.machine_key,
+      source_revision = excluded.source_revision,
+      account_revision = excluded.account_revision,
+      fingerprint = excluded.fingerprint,
+      event_kind = excluded.event_kind,
+      phase = excluded.phase,
+      payload_json = excluded.payload_json,
+      seen_at = case
+        when attention_items.fingerprint = excluded.fingerprint then attention_items.seen_at
+        else null
+      end,
+      dismissed_at = case
+        when attention_items.fingerprint = excluded.fingerprint then attention_items.dismissed_at
+        else null
+      end,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at
+    where excluded.source_revision >= attention_items.source_revision
+  `).bind(
+    userId,
+    item.id,
+    machineKey,
+    item.revision,
+    item.fingerprint,
+    item.eventKind,
+    item.phase,
+    JSON.stringify(item),
+    item.expiresAt,
+    item.updatedAt,
+    userId,
+    userId,
+    item.id,
+    item.revision,
+  );
+}
+
+function attentionItemTombstoneDeleteStatement(
+  env: AttentionRelayEnv,
+  userId: string,
+  item: ParsedAttentionItem,
+): D1PreparedStatement {
+  return env.DB.prepare(`
+    delete from attention_tombstones
+    where user_id = ? and item_id = ?
+      and (revivable = 1 or source_revision < ?)
+  `).bind(userId, item.id, item.revision);
+}
+
+function attentionTombstoneUpsertForCurrentRevisionStatement(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    itemId: string;
+    sourceRevision: number;
+    deletedAt: string;
+    revivable: boolean;
+  },
+): D1PreparedStatement {
+  return env.DB.prepare(`
+    insert into attention_tombstones(
+      user_id, item_id, source_revision, account_revision, revivable, deleted_at
+    )
+    select ?, ?, ?, revision, ?, ?
+    from attention_revisions
+    where user_id = ?
+      and not exists (
+        select 1
+        from attention_items
+        where user_id = ? and machine_key = ? and item_id = ?
+          and source_revision > ?
+      )
+    on conflict(user_id, item_id) do update set
+      source_revision = excluded.source_revision,
+      account_revision = excluded.account_revision,
+      revivable = case
+        when excluded.source_revision > attention_tombstones.source_revision
+          then excluded.revivable
+        else min(attention_tombstones.revivable, excluded.revivable)
+      end,
+      deleted_at = excluded.deleted_at
+    where excluded.source_revision >= attention_tombstones.source_revision
+  `).bind(
+    args.userId,
+    args.itemId,
+    args.sourceRevision,
+    args.revivable ? 1 : 0,
+    args.deletedAt,
+    args.userId,
+    args.userId,
+    args.machineKey,
+    args.itemId,
+    args.sourceRevision,
+  );
+}
+
+async function commitAttentionMachineChanges(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    items: ParsedAttentionItem[];
+    tombstones: IncomingAttentionTombstone[];
+    sealCapacityTombstones: boolean;
+    now: string;
+  },
+): Promise<number> {
+  const statements: D1PreparedStatement[] = [];
+  for (const item of args.items) {
+    statements.push(
+      attentionItemUpsertStatement(env, args.userId, args.machineKey, item),
+      attentionItemTombstoneDeleteStatement(env, args.userId, item),
+    );
+  }
+  if (args.sealCapacityTombstones) {
+    statements.push(
+      sealCapacityTombstonesStatement(env, args.userId, args.machineKey),
+    );
+  }
+  for (const tombstone of args.tombstones) {
+    statements.push(
+      env.DB
+        .prepare(`
+          delete from attention_items
+          where user_id = ? and machine_key = ? and item_id = ? and source_revision <= ?
+        `)
+        .bind(args.userId, args.machineKey, tombstone.id, tombstone.revision),
+      attentionTombstoneUpsertForCurrentRevisionStatement(env, {
+        userId: args.userId,
+        machineKey: args.machineKey,
+        itemId: tombstone.id,
+        sourceRevision: tombstone.revision,
+        deletedAt: args.now,
+        revivable: tombstone.revivable,
+      }),
+    );
+  }
+  return commitAttentionRevision(env, args.userId, statements, args.now);
 }
 
 function mergedDevicePreferences(
@@ -552,10 +745,32 @@ async function deliverAttentionNotifications(
         : "ambient";
     if (policy !== "notify") continue;
     const current = await env.DB
-      .prepare("select seen_at, dismissed_at from attention_items where user_id = ? and item_id = ? limit 1")
+      .prepare(`
+        select source_revision, fingerprint, seen_at, dismissed_at
+        from attention_items
+        where user_id = ? and item_id = ?
+        limit 1
+      `)
       .bind(userId, item.id)
-      .first<{ seen_at: string | null; dismissed_at: string | null }>();
-    if (current?.seen_at || current?.dismissed_at) continue;
+      .first<{
+        source_revision: number;
+        fingerprint: string;
+        seen_at: string | null;
+        dismissed_at: string | null;
+      }>();
+    // The atomic publish may intentionally reject a stale item or an item
+    // blocked by a sealed tombstone. Only the exact row that committed is
+    // eligible to notify; otherwise an ignored inbound payload could still
+    // produce a phone alert.
+    if (
+      !current
+      || Number(current.source_revision) !== item.revision
+      || current.fingerprint !== item.fingerprint
+      || current.seen_at
+      || current.dismissed_at
+    ) {
+      continue;
+    }
     // Give an active desktop/notch the first chance to surface the item. The
     // machine heartbeat republishes the full snapshot every 30s; if the item
     // remains unseen, the next pass escalates it to the phone.
@@ -1313,17 +1528,42 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   } as ParsedAttentionItem;
 }
 
-async function bumpRevision(env: AttentionRelayEnv, userId: string): Promise<number> {
-  const now = new Date().toISOString();
-  const row = await env.DB.prepare(`
+function attentionRevisionBumpStatement(
+  env: AttentionRelayEnv,
+  userId: string,
+  now: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`
     insert into attention_revisions(user_id, revision, updated_at)
     values (?, 1, ?)
     on conflict(user_id) do update set
       revision = attention_revisions.revision + 1,
       updated_at = excluded.updated_at
     returning revision
-  `).bind(userId, now).first<{ revision: number }>();
-  return Number(row?.revision ?? 1);
+  `).bind(userId, now);
+}
+
+async function commitAttentionRevision(
+  env: AttentionRelayEnv,
+  userId: string,
+  statements: D1PreparedStatement[],
+  now = new Date().toISOString(),
+): Promise<number> {
+  const [revisionResult, ...mutationResults] = await env.DB.batch<{ revision: number }>([
+    attentionRevisionBumpStatement(env, userId, now),
+    ...statements,
+  ]);
+  if (
+    !revisionResult?.success
+    || mutationResults.some((result) => !result.success)
+  ) {
+    throw new Error("attention revision transaction failed");
+  }
+  const revision = Number(revisionResult.results[0]?.revision);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error("attention revision transaction did not return a revision");
+  }
+  return revision;
 }
 
 function attentionDeviceOwnershipDeleteStatements(
@@ -1524,22 +1764,22 @@ async function linkMachineToAccount(
       `)
       .bind(machineKey, previous.user_id)
       .all<{ item_id: string; source_revision: number }>();
-    const previousRevision = previousItems.results.length > 0
-      ? await bumpRevision(env, previous.user_id)
-      : 0;
-    await env.DB
-      .prepare("delete from attention_items where machine_key = ? and user_id = ?")
-      .bind(machineKey, previous.user_id)
-      .run();
-    for (const item of previousItems.results) {
-      await upsertAttentionTombstone(env, {
-        userId: previous.user_id,
-        itemId: item.item_id,
-        sourceRevision: Number(item.source_revision),
-        accountRevision: previousRevision,
-        deletedAt: now,
-        revivable: false,
-      });
+    if (previousItems.results.length > 0) {
+      const statements: D1PreparedStatement[] = [
+        env.DB
+          .prepare("delete from attention_items where machine_key = ? and user_id = ?")
+          .bind(machineKey, previous.user_id),
+        ...previousItems.results.map((item) =>
+          attentionTombstoneUpsertForCurrentRevisionStatement(env, {
+            userId: previous.user_id,
+            machineKey,
+            itemId: item.item_id,
+            sourceRevision: Number(item.source_revision),
+            deletedAt: now,
+            revivable: false,
+          })),
+      ];
+      await commitAttentionRevision(env, previous.user_id, statements, now);
     }
     const previousDevices = await env.DB
       .prepare("select device_id from attention_devices where user_id = ? and source_machine_key = ?")
@@ -1789,94 +2029,16 @@ export async function handleAttentionMachinePublish(
       unchanged: true,
     });
   }
-  const accountRevision = await bumpRevision(env, account.userId);
   const now = new Date().toISOString();
-
-  for (const item of items as ParsedAttentionItem[]) {
-    const tombstone = await env.DB.prepare(`
-      select source_revision, revivable
-      from attention_tombstones
-      where user_id = ? and item_id = ?
-      limit 1
-    `).bind(account.userId, item.id).first<{
-      source_revision: number;
-      revivable: number;
-    }>();
-    if (tombstone && attentionTombstoneBlocksItem(tombstone, item.revision)) {
-      continue;
-    }
-    await env.DB.prepare(`
-      insert into attention_items(
-        user_id, item_id, machine_key, source_revision, account_revision,
-        fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
-        expires_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)
-      on conflict(user_id, item_id) do update set
-        machine_key = excluded.machine_key,
-        source_revision = excluded.source_revision,
-        account_revision = excluded.account_revision,
-        fingerprint = excluded.fingerprint,
-        event_kind = excluded.event_kind,
-        phase = excluded.phase,
-        payload_json = excluded.payload_json,
-        seen_at = case
-          when attention_items.fingerprint = excluded.fingerprint then attention_items.seen_at
-          else null
-        end,
-        dismissed_at = case
-          when attention_items.fingerprint = excluded.fingerprint then attention_items.dismissed_at
-          else null
-        end,
-        expires_at = excluded.expires_at,
-        updated_at = excluded.updated_at
-      where excluded.source_revision >= attention_items.source_revision
-    `).bind(
-      account.userId,
-      item.id,
-      machineKey,
-      item.revision,
-      accountRevision,
-      item.fingerprint,
-      item.eventKind,
-      item.phase,
-      JSON.stringify(item),
-      item.expiresAt,
-      item.updatedAt,
-    ).run();
-    await env.DB
-      .prepare("delete from attention_tombstones where user_id = ? and item_id = ?")
-      .bind(account.userId, item.id)
-      .run();
-  }
-
-  if (fullSnapshot && rawItems.length < MAX_ATTENTION_ITEMS) {
-    // Any revivable tombstone still present after applying the incoming items
-    // is absent from an unsaturated authoritative snapshot, so it is now a
-    // genuine removal and must stop accepting stale same-revision revivals.
-    await sealCapacityTombstones(env, account.userId, machineKey);
-  }
-
-  for (const tombstone of tombstones) {
-    const existing = await env.DB
-      .prepare("select source_revision from attention_items where user_id = ? and machine_key = ? and item_id = ? limit 1")
-      .bind(account.userId, machineKey, tombstone.id)
-      .first<{ source_revision: number }>();
-    if (existing && Number(existing.source_revision) > tombstone.revision) {
-      continue;
-    }
-    await env.DB
-      .prepare("delete from attention_items where user_id = ? and machine_key = ? and item_id = ? and source_revision <= ?")
-      .bind(account.userId, machineKey, tombstone.id, tombstone.revision)
-      .run();
-    await upsertAttentionTombstone(env, {
-      userId: account.userId,
-      itemId: tombstone.id,
-      sourceRevision: tombstone.revision,
-      accountRevision,
-      deletedAt: now,
-      revivable: tombstone.revivable,
-    });
-  }
+  const accountRevision = await commitAttentionMachineChanges(env, {
+    userId: account.userId,
+    machineKey,
+    items: items as ParsedAttentionItem[],
+    tombstones,
+    sealCapacityTombstones:
+      fullSnapshot && rawItems.length < MAX_ATTENTION_ITEMS,
+    now,
+  });
   await deliverAttentionNotifications(
     env,
     account.userId,
@@ -2027,14 +2189,31 @@ async function handleAcknowledgment(
   if (!seenAt || dismissedAt === undefined) {
     return json({ ok: false, error: "invalid timestamp" }, { status: 400 });
   }
-  const revision = await bumpRevision(env, userId);
-  for (const itemId of itemIds as string[]) {
-    await env.DB.prepare(`
-      update attention_items
-      set seen_at = ?, dismissed_at = coalesce(?, dismissed_at), account_revision = ?
-      where user_id = ? and item_id = ?
-    `).bind(seenAt, dismissedAt, revision, userId, itemId).run();
+  if (itemIds.length === 0) {
+    const current = await env.DB
+      .prepare("select revision from attention_revisions where user_id = ? limit 1")
+      .bind(userId)
+      .first<{ revision: number }>();
+    return json({
+      ok: true,
+      revision: Number(current?.revision ?? 0),
+      itemIds,
+    });
   }
+  const statements = (itemIds as string[]).map((itemId) =>
+    env.DB.prepare(`
+      update attention_items
+      set seen_at = ?,
+        dismissed_at = coalesce(?, dismissed_at),
+        account_revision = (
+          select revision
+          from attention_revisions
+          where user_id = ?
+        )
+      where user_id = ? and item_id = ?
+    `).bind(seenAt, dismissedAt, userId, userId, itemId),
+  );
+  const revision = await commitAttentionRevision(env, userId, statements);
   await deliverAccountLiveActivity(env, userId);
   return json({ ok: true, revision, itemIds });
 }
@@ -2552,6 +2731,7 @@ export const attentionTestInternals = Object.freeze({
   attentionAlertRoutingPayload,
   attentionFullSnapshotUnchanged,
   attentionTombstoneBlocksItem,
+  commitAttentionMachineChanges,
   deepLinkForItem,
   deliverAttentionNotifications,
   desktopEscalationDelayMs,
