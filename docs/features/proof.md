@@ -4,7 +4,7 @@
 
 Proof in ADE is **intentional**, not auto-captured. The agent does computer use however it wants — `claude`'s `computer_use`, the `codex` shell, a scripted browser, whatever. ADE does not wrap, proxy, or observe external tools. When the agent (or the user) decides that a moment deserves evidence, the agent runs the `ade proof` CLI or promotes an ADE Browser scratch observation with `ade browser proof`. Those commands are the intentional proof interface.
 
-The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an artifact broker, an auto-observer, and a separate tool-delivery path. All of that is gone. What stays is a tiny CLI, a single SQLite table, and a drawer in the UI.
+The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an auto-observer, and a separate tool-delivery path. Those control-plane layers are gone. What stays is a small CLI, the canonical artifact-and-owner-link tables, and lightweight collection views in chat.
 
 The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
 
@@ -12,7 +12,7 @@ The result: one interface for all models, no backend matrix, no coverage math. A
 
 Proof storage and the broker are owned by the ADE runtime (`ade serve`) that owns the project. Artifacts on disk live under the runtime machine's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote machine. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
 
-That means: proof captured during a remote-runtime session lives on the remote host. The desktop drawer fetches preview bytes through the same SSH-tunneled JSON-RPC channel as the rest of the remote project surface; raw artifact files are not synced back to the desktop machine, and proof is only viewable while the runtime that captured it is reachable.
+That means: proof captured during a remote-runtime session lives on the remote host. Desktop transcript and drawer cards fetch bounded preview bytes through the same SSH-tunneled JSON-RPC channel as the rest of the remote project surface; raw artifact files are not synced back to the desktop machine, and proof is only viewable while the runtime that captured it is reachable.
 
 ---
 
@@ -126,14 +126,28 @@ ADE browser-agent observations are intentionally not proof. `ade browser observe
 
 ---
 
-## Drawer UI
+## Chat UI
 
-Proof surfaces in two places:
+Proof surfaces across chat and linked workflow contexts:
 
-- **Chat** — the proof drawer below the composer shows a thumbnail grid for the current session. Captions are rendered in full below each thumbnail, not as hover tooltips. Click to preview at full size.
+- **Chat transcript** — the latest six proof items render at the thread tail
+  with image thumbnails or inline video. Images open in an in-app lightbox.
+  Earlier items link to the drawer rather than making the thread unbounded.
+- **Proof drawer** — the current chat's complete collected set, with the same
+  previews and captions. It is a collection view, not an approval workflow:
+  there are no accept/reject/publish controls and local files are never handed
+  to Finder just to see them.
+- **iOS chat** — proof stays in the message timeline and the existing artifact
+  sheet, with preview/share actions but no review-state chrome.
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
-Review controls (accept / reject / annotate) remain as first-class actions on each proof.
+Both clients resolve media through the owning runtime instead of opening the
+runtime host's filesystem path. Desktop uses ADE's range-capable artifact
+protocol for local media and `ade.proof.readArtifactPreview` for remote media;
+the RPC response is capped at 10 MiB. iOS requests artifact content over its
+sync command surface and caches renderable images locally. When a runtime is
+unreachable or a desktop remote preview exceeds its bound, the artifact remains
+listed with an unavailable-preview state.
 
 ---
 
@@ -150,7 +164,10 @@ A good proof set is three to eight captures with captions a reviewer can read in
 ## Not supported
 
 - **Cinematic post-processing.** No before/after stitching, no annotated overlays — deferred.
-- **Cross-device sync.** Proof records replicate via cr-sqlite, but the image files do not — proof is viewable only on the device that produced it.
+- **Offline artifact replication.** Proof records replicate via cr-sqlite, but
+  image/video bytes do not. A connected desktop or phone streams a preview from
+  the runtime that owns the project; the media is unavailable when that runtime
+  cannot be reached.
 - **Auto-capture.** The old proof observer is gone. Nothing watches the agent and files screenshots for it.
 
 Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.

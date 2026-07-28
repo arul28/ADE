@@ -2882,6 +2882,20 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_computer_use_artifact_links_owner on computer_use_artifact_links(project_id, owner_kind, owner_id, created_at)");
   db.run("create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id)");
 
+  // Deliberate composer saves shared by every desktop connected to this
+  // project's runtime. The table is PK-only so cr-sqlite can replicate it
+  // across independent synced machines as well.
+  db.run(`
+    create table if not exists prompt_stashes (
+      id text primary key,
+      text text not null,
+      provider text,
+      model_id text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
+
 
   // CTO persistent identity/core-continuity/session-log state.
   db.run(`

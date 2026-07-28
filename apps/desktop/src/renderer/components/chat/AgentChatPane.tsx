@@ -41,6 +41,7 @@ import {
   type CodexThreadGoal,
   type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
+  type ComputerUseArtifactView,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
   type IosElementContextItem,
@@ -2379,6 +2380,7 @@ const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel
 const APP_CONTROL_PROVIDERS: readonly AppControlContextItem["provider"][] = ["cdp", "os-accessibility", "computer-use", "external", "coordinate-fallback"];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
 const EMPTY_REASONING_TIERS: string[] = [];
+const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -3689,6 +3691,10 @@ export function AgentChatPane({
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
+  const openProofDrawer = useCallback(() => {
+    setChatActionsTab("proof");
+    setChatActionsOpen(true);
+  }, []);
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
@@ -6966,10 +6972,6 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
-    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
-      setComputerUseSnapshot(null);
-      return;
-    }
     if (!lockedSingleSessionMode) {
       void refreshComputerUseSnapshot(selectedSessionId);
       return;
@@ -6979,9 +6981,6 @@ export function AgentChatPane({
     }, 180);
     return () => window.clearTimeout(handle);
   }, [
-    chatActionsOpen,
-    chatActionsTab,
-    isRemoteProject,
     isTileActive,
     lockedSingleSessionMode,
     refreshComputerUseSnapshot,
@@ -7447,9 +7446,6 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (!isTileActive) return undefined;
-    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
-      return undefined;
-    }
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
@@ -7458,9 +7454,6 @@ export function AgentChatPane({
     });
     return unsubscribe;
   }, [
-    chatActionsOpen,
-    chatActionsTab,
-    isRemoteProject,
     isTileActive,
     refreshComputerUseSnapshot,
     selectedSessionId,
@@ -10743,7 +10736,6 @@ export function AgentChatPane({
     : TreeStructure;
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
-  const proofSessionId = selectedSessionId ?? "";
   const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
@@ -10832,9 +10824,9 @@ export function AgentChatPane({
   const proofTabContent = (
     <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
       <ChatComputerUsePanel
-        sessionId={proofSessionId}
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
+        allowLocalArtifactProtocol={!isRemoteProject}
       />
     </div>
   );
@@ -12692,6 +12684,9 @@ export function AgentChatPane({
                       onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                       mosaic={subagentView ? undefined : mosaicContext}
                       scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                      proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
+                      allowLocalProofArtifactProtocol={!isRemoteProject}
+                      onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">

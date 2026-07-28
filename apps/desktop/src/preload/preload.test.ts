@@ -2413,6 +2413,13 @@ describe("preload OAuth bridge", () => {
     };
     const delta = { sessionId: "session-1", filesChanged: 2 };
     const preview = "data:image/png;base64,AAAA";
+    const promptStashes = [{
+      id: "stash-1",
+      text: "Fix the parser",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-07-28T12:00:00.000Z",
+    }];
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };
@@ -2428,6 +2435,15 @@ describe("preload OAuth bridge", () => {
             domain: "computer_use_artifacts",
             action: "readArtifactPreview",
             result: preview,
+            statusHints: {},
+          };
+        }
+        if (request?.domain === "chat" && request.action === "listPromptStashes") {
+          return {
+            ok: true,
+            domain: "chat",
+            action: "listPromptStashes",
+            result: promptStashes,
             statusHints: {},
           };
         }
@@ -2456,6 +2472,7 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.sessions.getDelta("session-1")).resolves.toEqual(delta);
     await expect(bridge.computerUse.readArtifactPreview({ uri: ".ade/artifacts/proof.png" })).resolves.toBe(preview);
+    await expect(bridge.agentChat.promptStashes.list()).resolves.toEqual(promptStashes);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -2470,6 +2487,14 @@ describe("preload OAuth bridge", () => {
       id: "target-1",
       projectId: "project-1",
       request: {
+        domain: "chat",
+        action: "listPromptStashes",
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
         domain: "computer_use_artifacts",
         action: "readArtifactPreview",
         args: { uri: ".ade/artifacts/proof.png" },
@@ -2477,6 +2502,7 @@ describe("preload OAuth bridge", () => {
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.computerUseReadArtifactPreview, { uri: ".ade/artifacts/proof.png" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
   });
 
   // The action registry answers lifecycle mutations with an `{ ok, sessionId,
@@ -5688,6 +5714,48 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.projectSwitchToPath, { rootPath: "/next" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesWriteText, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
+
+  it("blocks private prompt-stash reads and mutations while a project switch is in flight", async () => {
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.projectSwitchToPath) return switchPromise;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+
+    await expect(bridge.agentChat.promptStashes.list()).rejects.toThrow(/Project is switching/i);
+    await expect(bridge.agentChat.promptStashes.create({ text: "Keep this private" })).rejects.toThrow(/Project is switching/i);
+    await expect(bridge.agentChat.promptStashes.delete({ id: "stash-1" })).rejects.toThrow(/Project is switching/i);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;

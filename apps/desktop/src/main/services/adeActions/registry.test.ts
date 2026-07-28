@@ -372,6 +372,18 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("readArtifactPreview");
   });
 
+  it("exposes prompt stashes through the project runtime for connected desktops", () => {
+    const actions = ADE_ACTION_ALLOWLIST.chat ?? [];
+    expect(actions).toEqual(expect.arrayContaining([
+      "listPromptStashes",
+      "createPromptStash",
+      "deletePromptStash",
+    ]));
+    expect(isCtoOnlyAdeAction("chat", "listPromptStashes")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "createPromptStash")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
+  });
+
   it("exposes Linear issue tracker composite reads for runtime-backed CTO views", () => {
     const actions = ADE_ACTION_ALLOWLIST.linear_issue_tracker ?? [];
     expect(actions).toContain("getWorkflowCatalog");

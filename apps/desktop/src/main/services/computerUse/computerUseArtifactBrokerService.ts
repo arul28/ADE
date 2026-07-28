@@ -66,6 +66,11 @@ const ARTIFACT_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
   png: "image/png",
   svg: "image/svg+xml",
   webp: "image/webp",
+  m4v: "video/x-m4v",
+  mov: "video/quicktime",
+  mp4: "video/mp4",
+  ogv: "video/ogg",
+  webm: "video/webm",
 };
 
 type ComputerUseArtifactRecordInsert = Omit<ComputerUseArtifactRecord, "id" | "createdAt" | "backendStyle"> & {

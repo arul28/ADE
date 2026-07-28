@@ -573,6 +573,7 @@ type PersistedUserPreferences = {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
@@ -639,6 +640,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       didYouKnowEnabled: parsed.didYouKnowEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
+      promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
       voiceInputEnabled: parsed.voiceInputEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
@@ -684,6 +686,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     didYouKnowEnabled: !isWebClientMode(),
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
+    promptStashButtonEnabled: true,
     voiceInputEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
@@ -715,6 +718,7 @@ function persistUserPreferencesFrom(state: {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
@@ -735,6 +739,7 @@ function persistUserPreferencesFrom(state: {
     didYouKnowEnabled: state.didYouKnowEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
+    promptStashButtonEnabled: state.promptStashButtonEnabled,
     voiceInputEnabled: state.voiceInputEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
@@ -893,6 +898,7 @@ export type AppState = {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
   dictationPhase: DictationPhase;
@@ -1026,6 +1032,7 @@ export type AppState = {
   setDidYouKnowEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
+  setPromptStashButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
   setDictationPhase: (phase: DictationPhase) => void;
@@ -1282,6 +1289,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
+  promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   dictationPhase: "idle",
   dictationElapsed: 0,
@@ -1726,6 +1734,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, launchPromptClipboardNoticeEnabled: enabled });
       return { launchPromptClipboardNoticeEnabled: enabled };
+    }),
+  setPromptStashButtonEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, promptStashButtonEnabled: enabled });
+      return { promptStashButtonEnabled: enabled };
     }),
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
@@ -2570,6 +2583,7 @@ export function createProjectAppStore(
     didYouKnowEnabled: rootState.didYouKnowEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
+    promptStashButtonEnabled: rootState.promptStashButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
     setTheme: rootState.setTheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
@@ -2588,6 +2602,7 @@ export function createProjectAppStore(
     setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
+    setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
     workViewByProject: rootState.workViewByProject,
     laneWorkViewByScope: rootState.laneWorkViewByScope,

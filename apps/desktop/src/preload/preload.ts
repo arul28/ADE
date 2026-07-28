@@ -387,6 +387,9 @@ import type {
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  PromptStashCreateArgs,
+  PromptStashDeleteArgs,
+  PromptStashEntry,
   AgentChatGetTurnFileDiffArgs,
   AgentChatSession,
   AgentChatSessionCapabilities,
@@ -1351,6 +1354,11 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
+  // Private draft state must never fall through to the process-global IPC
+  // database while the owning project binding is changing.
+  "listPromptStashes",
+  "createPromptStash",
+  "deletePromptStash",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -6258,6 +6266,29 @@ contextBridge.exposeInMainWorld("ade", {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "fileSearch", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatFileSearch, args),
       ),
+    promptStashes: {
+      list: async (): Promise<PromptStashEntry[]> =>
+        callProjectRuntimeActionOr(
+          "chat",
+          "listPromptStashes",
+          {},
+          () => ipcRenderer.invoke(IPC.agentChatPromptStashesList),
+        ),
+      create: async (args: PromptStashCreateArgs): Promise<PromptStashEntry> =>
+        callProjectRuntimeActionOr(
+          "chat",
+          "createPromptStash",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatPromptStashesCreate, args),
+        ),
+      delete: async (args: PromptStashDeleteArgs): Promise<boolean> =>
+        callProjectRuntimeActionOr(
+          "chat",
+          "deletePromptStash",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatPromptStashesDelete, args),
+        ),
+    },
     getTurnFileDiff: async (
       args: AgentChatGetTurnFileDiffArgs,
       pin?: OpenProjectBinding | null,

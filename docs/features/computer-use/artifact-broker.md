@@ -6,7 +6,7 @@ The broker runs inside the ADE runtime (`ade serve`) that owns the project. Arti
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services. `readArtifactPreview` serves only files inside the artifact root, caps data-URL responses at 10 MiB, and recognizes common image plus M4V/MOV/MP4/OGV/WebM video extensions.
 - `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — payload parser for agent-browser output.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
 - `apps/desktop/src/shared/types/computerUseArtifacts.ts` (via `shared/types`) — `ComputerUseArtifactRecord`, `ComputerUseArtifactLink`, `ComputerUseArtifactInput`, `ComputerUseArtifactOwner`, `ComputerUseArtifactReviewState`, `ComputerUseArtifactWorkflowState`, `ComputerUseEventPayload`.
@@ -131,9 +131,14 @@ Owner precedence for snapshots (`usageEventMatchesOwner`):
 
 ## Review state
 
-`ComputerUseArtifactReviewState` values: `pending`, `accepted`, `needs_more`, `dismissed`, `published`. Default is `pending`.
+`ComputerUseArtifactReviewState` values: `pending`, `accepted`, `needs_more`, `dismissed`, `published`. Newly ingested proof defaults to `accepted`; the field remains for compatibility with downstream workflow consumers rather than a chat approval step.
 
 `reviewArtifact(args)` updates state and records the decision. Review decisions are persisted alongside the artifact for audit.
+
+These fields remain in the broker contract for compatibility with downstream
+automation and publishing integrations. The chat transcript, proof drawer, and
+iOS artifact surfaces do not render review/workflow controls; to users, proof is
+only the collected artifact set.
 
 `ComputerUseArtifactWorkflowState` values: `evidence_only`, `awaiting_publication`, `published`, `retained`, `purged`. Default is `evidence_only`. Used to track publication lifecycle separately from review.
 
@@ -175,7 +180,8 @@ All links remain in `computer_use_artifact_links`; the artifact record itself is
 Artifacts flow into downstream workflow surfaces:
 
 - **Lane history** — linked lane surfaces the artifact in the lane timeline.
-- **Chat history** — linked chat session surfaces the artifact in the thread.
+- **Chat history** — linked chat sessions render the newest proof at the
+  transcript tail and keep the complete set in the proof drawer.
 - **GitHub PR workflows** — linked PR gets a comment with the artifact reference (when published).
 - **Linear issue** — a linked Linear issue can get a comment + optional state transition through the shared Linear write surface.
 - **Automations history** — linked automation run shows the artifact in the run log.

@@ -7498,6 +7498,32 @@ final class ADETests: XCTestCase {
     target.close()
   }
 
+  func testDatabaseBootstrapAcceptsDesktopPromptStashChanges() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    let stashId = "stash-mobile-schema-compatibility"
+    let packedPk = packedDesktopTextPrimaryKey(stashId)
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    let result = try database.applyChanges([
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "text", val: .string("  preserve this draft\n"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "provider", val: .string("codex"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 1),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "model_id", val: .string("gpt-5"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 2),
+      CrsqlChangeRow(table: "prompt_stashes", pk: packedPk, cid: "created_at", val: .string("2026-07-28T12:00:00.000Z"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 3),
+    ])
+
+    XCTAssertEqual(result.appliedCount, 4)
+    XCTAssertEqual(result.touchedTables, ["prompt_stashes"])
+    XCTAssertFalse(database.skippedUnknownSyncTables.contains("prompt_stashes"))
+
+    let promptChanges = database.exportChangesSince(version: 0).filter { $0.table == "prompt_stashes" }
+    XCTAssertEqual(promptChanges.count, 4)
+    XCTAssertTrue(promptChanges.allSatisfy { $0.pk == packedPk })
+    XCTAssertEqual(promptChanges.first(where: { $0.cid == "text" })?.val, .string("  preserve this draft\n"))
+
+    database.close()
+  }
+
   func testDatabaseApplyChangesDoesNotTrapOnOutOfRangeIntegralDouble() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)

@@ -46,6 +46,8 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
+  MAX_PROMPT_STASHES,
+  type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
 import {
@@ -2975,6 +2977,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   };
 
   const browserMockPersonalChats: any[] = [];
+  const browserMockPromptStashes: PromptStashEntry[] = [];
   const browserMockPersonalChatEvents = new Map<string, any[]>();
   let browserMockPersonalChatSequence = 0;
 
@@ -4852,6 +4855,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       parallelLaunchState: {
         get: resolvedArg(null),
         set: resolvedArg(undefined),
+      },
+      promptStashes: {
+        list: async () => [...browserMockPromptStashes],
+        create: async (args: { text: string; provider?: string | null; modelId?: string | null }) => {
+          const entry: PromptStashEntry = {
+            id: globalThis.crypto.randomUUID(),
+            text: args.text,
+            provider: args.provider ?? null,
+            modelId: args.modelId ?? null,
+            createdAt: new Date().toISOString(),
+          };
+          browserMockPromptStashes.unshift(entry);
+          browserMockPromptStashes.splice(MAX_PROMPT_STASHES);
+          return entry;
+        },
+        delete: async ({ id }: { id: string }) => {
+          const index = browserMockPromptStashes.findIndex((entry) => entry.id === id);
+          if (index < 0) return false;
+          browserMockPromptStashes.splice(index, 1);
+          return true;
+        },
       },
       handoff: resolvedArg({ session: { id: "mock" }, events: [] }),
       prepareCrossMachineHandoff: async (args: AgentChatPrepareCrossMachineHandoffArgs) => ({

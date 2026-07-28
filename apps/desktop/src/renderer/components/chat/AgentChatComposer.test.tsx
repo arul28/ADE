@@ -67,6 +67,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ promptStashButtonEnabled: true });
   delete (window as any).ade;
 });
 
@@ -309,6 +310,38 @@ describe("AgentChatComposer", () => {
 
     expect(props.onClearDraft).toHaveBeenCalledTimes(1);
     expect(props.onInterrupt).not.toHaveBeenCalled();
+  });
+
+  it("stashes the current prompt with Cmd+S even when its appearance button is hidden", async () => {
+    useAppStore.setState({ promptStashButtonEnabled: false });
+    const created = {
+      id: "stash-1",
+      text: "Need a steer message",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-07-28T12:00:00.000Z",
+    };
+    const create = vi.fn().mockResolvedValue(created);
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create,
+          delete: vi.fn().mockResolvedValue(true),
+        },
+      },
+    };
+    const props = renderComposer();
+
+    expect(screen.queryByRole("button", { name: "Stash prompt" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "s", metaKey: true });
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      text: "Need a steer message",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+    }));
+    expect(props.onDraftChange).toHaveBeenCalledWith("");
   });
 
   it("moves a queued steer message back to the composer for editing", () => {

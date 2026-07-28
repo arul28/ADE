@@ -315,13 +315,27 @@ describe("local runtime connection pool", () => {
   it("uses the packaged runtime module path when spawning the service", () => {
     const env = buildLocalRuntimeNodeEnv(
       "1.2.3",
-      { NODE_PATH: "/custom/node_modules" },
+      {
+        NODE_PATH: "/custom/node_modules",
+        ADE_CHAT_SESSION_ID: "agent-chat",
+        ADE_RUN_ID: "agent-run",
+        ADE_STEP_ID: "agent-step",
+        ADE_ATTEMPT_ID: "agent-attempt",
+        ADE_OWNER_ID: "agent-owner",
+        UNRELATED_VALUE: "preserved",
+      },
       { resourcesPath: "/Applications/ADE.app/Contents/Resources", platform: "darwin", arch: "x64" },
     );
 
     expect(env.ADE_DEFAULT_ROLE).toBe("cto");
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");
     expect(env.ADE_CLI_VERSION).toBe("1.2.3");
+    expect(env.ADE_CHAT_SESSION_ID).toBeUndefined();
+    expect(env.ADE_RUN_ID).toBeUndefined();
+    expect(env.ADE_STEP_ID).toBeUndefined();
+    expect(env.ADE_ATTEMPT_ID).toBeUndefined();
+    expect(env.ADE_OWNER_ID).toBeUndefined();
+    expect(env.UNRELATED_VALUE).toBe("preserved");
     expect(env.NODE_PATH).toContain("app-x64.asar.unpacked");
     expect(env.NODE_PATH).toContain("app.asar.unpacked");
     expect(env.NODE_PATH).toContain("/custom/node_modules");

@@ -36,6 +36,8 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatTurnFileDiff,
+  PromptStashCreateArgs,
+  PromptStashDeleteArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
@@ -44,6 +46,11 @@ import {
   buildPrAiResolutionContextKey,
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
+import {
+  createPromptStash,
+  deletePromptStash,
+  listPromptStashes,
+} from "../chat/promptStashService";
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
@@ -208,6 +215,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   search: ["rebuildIndex"],
   project_secret: ["exportEnv"],
   session: ["settleSession", "settleSessions", "unsettleSessions", "updateLifecycleSettings"],
+  // Stashes are unsent user-authored drafts. Desktop runtime clients connect
+  // without a chat binding at CTO role; session-bound agents must never read
+  // or mutate this private composer state through `ade actions`.
+  chat: ["listPromptStashes", "createPromptStash", "deletePromptStash"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -556,6 +567,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listClaudeSessions",
     "listSessions",
     "listSubagents",
+    "listPromptStashes",
+    "createPromptStash",
+    "deletePromptStash",
     "messageSession",
     "modelCatalog",
     "approveToolUse",
@@ -1511,6 +1525,23 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
       runtime.db.setJson(key, normalizeAgentChatParallelLaunchState(args?.state ?? null, parentLaneId));
+    },
+    listPromptStashes: () => listPromptStashes(runtime.db),
+    createPromptStash: (args?: PromptStashCreateArgs) => {
+      const record = readObjectActionArg(args, "chat.createPromptStash");
+      const text = typeof record.text === "string" ? record.text : "";
+      if (!text.trim()) {
+        throw new Error("Expected 'text' to be a non-empty string.");
+      }
+      return createPromptStash(runtime.db, {
+        text,
+        provider: typeof record.provider === "string" ? record.provider : null,
+        modelId: typeof record.modelId === "string" ? record.modelId : null,
+      });
+    },
+    deletePromptStash: (args?: PromptStashDeleteArgs) => {
+      const record = readObjectActionArg(args, "chat.deletePromptStash");
+      return deletePromptStash(runtime.db, requireNonEmptyString(record.id, "id"));
     },
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");

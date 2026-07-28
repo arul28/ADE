@@ -830,6 +830,16 @@ create index if not exists idx_computer_use_artifact_links_owner on computer_use
 
 create index if not exists idx_computer_use_artifact_links_artifact on computer_use_artifact_links(artifact_id);
 
+create table if not exists prompt_stashes (
+      id text primary key,
+      text text not null,
+      provider text,
+      model_id text,
+      created_at text not null
+    );
+
+create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at);
+
 create table if not exists phase_cards (
       id text primary key,
       project_id text not null,
