@@ -6355,13 +6355,13 @@ describe("per-chat runtime routing", () => {
     displayName: "Machine B",
   };
 
-  async function mountBridge() {
+  async function mountBridge(activeBinding: typeof machineA | typeof machineB = machineA) {
     const invoke = vi.fn(async (channel: string, arg?: unknown): Promise<unknown> => {
       if (channel === IPC.appGetWindowSession) {
         return {
           windowId: 1,
-          project: { rootPath: "/repo-a", displayName: "Machine A" },
-          binding: machineA,
+          project: { rootPath: activeBinding.rootPath, displayName: activeBinding.displayName },
+          binding: activeBinding,
         };
       }
       if (channel === IPC.localRuntimeCallAction) return { result: undefined };
@@ -6434,6 +6434,103 @@ describe("per-chat runtime routing", () => {
         args: { limit: 60 },
       },
     });
+  });
+
+  it("streams a pinned This Mac chat while the window is remote-bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge(machineB);
+      const envelope = {
+        sessionId: "chat-on-a",
+        timestamp: "2026-07-27T18:02:00.000Z",
+        event: { type: "text", text: "from This Mac" },
+      };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeCallAction) {
+          return { result: { sessionId: "chat-on-a", events: [envelope], sessionFound: true } };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [{
+              id: 1,
+              timestamp: envelope.timestamp,
+              category: "chat",
+              payload: envelope,
+            }],
+            nextCursor: 1,
+            hasMore: false,
+            eventEpoch: "local-epoch-a",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.agentChat.getEventHistory({ sessionId: "chat-on-a", maxEvents: 5 }, machineA);
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineA);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+        rootPath: "/repo-a",
+        request: {
+          domain: "chat",
+          action: "getChatEventHistory",
+          argsList: ["chat-on-a", { maxEvents: 5 }],
+        },
+      });
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {
+        rootPath: "/repo-a",
+        request: { cursor: 0, limit: 200 },
+      });
+      expect(callback).toHaveBeenCalledWith(envelope);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("routes the complete selected-chat control class through an explicit pin", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.agentChat.getSubagentTranscript({ sessionId: "chat-on-b", agentId: "agent-1" }, machineB);
+    await bridge.agentChat.slashCommands({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.handoff({
+      sourceSessionId: "chat-on-b",
+      targetModelId: "openai/gpt-5.4-mini",
+    }, machineB);
+    await bridge.agentChat.createScheduledWork({
+      sessionId: "chat-on-b",
+      prompt: "continue",
+      delaySeconds: 60,
+    }, machineB);
+    await bridge.agentChat.listScheduledWork({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.cancelScheduledWork({
+      sessionId: "chat-on-b",
+      scheduleId: "schedule-1",
+    }, machineB);
+    await bridge.agentChat.setScheduledWorkPaused({ sessionId: "chat-on-b", paused: true }, machineB);
+    await bridge.agentChat.codex.getGoal({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.codex.setGoal({ sessionId: "chat-on-b", objective: "ship" }, machineB);
+    await bridge.agentChat.codex.setGoalStatus({ sessionId: "chat-on-b", status: "paused" }, machineB);
+    await bridge.agentChat.codex.clearGoal({ sessionId: "chat-on-b" }, machineB);
+
+    const pinnedActions = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, arg]) => (arg as { request: { action: string } }).request.action);
+    expect(pinnedActions).toEqual([
+      "getSubagentTranscript",
+      "getSlashCommands",
+      "handoffSession",
+      "createScheduledWork",
+      "listScheduledWork",
+      "cancelScheduledWork",
+      "setScheduledWorkPaused",
+      "getCodexGoal",
+      "setCodexGoal",
+      "setCodexGoalStatus",
+      "clearCodexGoal",
+    ]);
   });
 
   it("takes the unpinned bound path unchanged for a chat on the active binding", async () => {

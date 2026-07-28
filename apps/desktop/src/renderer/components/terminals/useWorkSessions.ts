@@ -1486,7 +1486,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // reflect the previous project — pruning then drops the destination tabs.
     if (pendingProjectSwitchRef.current != null) return;
     if (!hasAuthoritativeSessionsRef.current) return;
-    const validIds = new Set(sessions.map((session) => session.id));
+    // Open Work tabs are the cross-machine union, not just the active
+    // project's refresh result. A foreign chat can stay open while the local
+    // session list refreshes, so prune against the same combined index used to
+    // render tabs instead of silently dropping every foreign tab.
+    const validIds = new Set(sessionsById.keys());
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
@@ -1519,7 +1523,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [projectStateKey, sessions, setProjectViewState]);
+  }, [projectStateKey, sessionsById, setProjectViewState]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

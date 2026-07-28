@@ -1491,6 +1491,7 @@ declare global {
         };
         handoff: (
           args: AgentChatHandoffArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatHandoffResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
@@ -1568,15 +1569,19 @@ declare global {
         ) => Promise<AgentChatSession>;
         createScheduledWork: (
           args: AgentChatCreateScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCreateScheduledWorkResult>;
         listScheduledWork: (
           args?: AgentChatListScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatScheduledWorkItem[]>;
         cancelScheduledWork: (
           args: AgentChatCancelScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCancelScheduledWorkResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSetScheduledWorkPausedResult>;
         warmupModel: (
           args: {
@@ -1677,15 +1682,19 @@ declare global {
         codex: {
           getGoal: (
             args: AgentChatCodexGetGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           setGoal: (
             args: AgentChatCodexSetGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           setGoalStatus: (
             args: AgentChatCodexSetGoalStatusArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           clearGoal: (
             args: AgentChatCodexClearGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
         };
       };

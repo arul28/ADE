@@ -1,6 +1,7 @@
 import type {
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  OpenProjectBinding,
 } from "../../shared/types";
 
 type CacheEntry = {
@@ -12,7 +13,7 @@ type CacheEntry = {
 const DEFAULT_TTL_MS = 5_000;
 const slashCommandCache = new Map<string, CacheEntry>();
 
-function cacheKey(args: AgentChatSlashCommandsArgs): string {
+function cacheScope(args: AgentChatSlashCommandsArgs): string {
   const projectRoot = args.projectRoot?.trim() || "__active_project__";
   if (args.sessionId?.trim()) {
     return `project:${projectRoot}:session:${args.sessionId.trim()}`;
@@ -22,11 +23,15 @@ function cacheKey(args: AgentChatSlashCommandsArgs): string {
   return `project:${projectRoot}:lane:${lane}:provider:${provider}`;
 }
 
+function cacheKey(args: AgentChatSlashCommandsArgs, pin?: OpenProjectBinding | null): string {
+  return `binding:${pin?.key ?? "__active_binding__"}:${cacheScope(args)}`;
+}
+
 export async function getAgentChatSlashCommandsCached(
   args: AgentChatSlashCommandsArgs,
-  options?: { force?: boolean; ttlMs?: number },
+  options?: { force?: boolean; ttlMs?: number; pin?: OpenProjectBinding | null },
 ): Promise<AgentChatSlashCommand[]> {
-  const key = cacheKey(args);
+  const key = cacheKey(args, options?.pin);
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const now = Date.now();
   const cached = slashCommandCache.get(key);
@@ -36,7 +41,11 @@ export async function getAgentChatSlashCommandsCached(
     return cached.value;
   }
 
-  const promise = window.ade.agentChat.slashCommands(args).then((value) => {
+  const promise = (
+    options?.pin
+      ? window.ade.agentChat.slashCommands(args, options.pin)
+      : window.ade.agentChat.slashCommands(args)
+  ).then((value) => {
     const current = slashCommandCache.get(key);
     if (current?.promise === promise) {
       slashCommandCache.set(key, {
@@ -63,5 +72,8 @@ export function invalidateAgentChatSlashCommandsCache(args?: AgentChatSlashComma
     slashCommandCache.clear();
     return;
   }
-  slashCommandCache.delete(cacheKey(args));
+  const suffix = `:${cacheScope(args)}`;
+  for (const key of slashCommandCache.keys()) {
+    if (key.endsWith(suffix)) slashCommandCache.delete(key);
+  }
 }

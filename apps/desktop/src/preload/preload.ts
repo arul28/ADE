@@ -2917,10 +2917,7 @@ function subscribeAgentChatEvents(
   pin?: OpenProjectBinding | null,
 ): () => void {
   const removeLocal = agentChatEventFanout(cb);
-  if (pin?.kind === "local" && pin.key !== currentProjectBinding?.key) {
-    return removeLocal;
-  }
-  if (pin?.kind === "remote" && pin.key !== currentProjectBinding?.key) {
+  if (pin && pin.key !== currentProjectBinding?.key) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cursor = 0;
@@ -2928,11 +2925,15 @@ function subscribeAgentChatEvents(
     const poll = async (): Promise<void> => {
       let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
       try {
-        const batch = await ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
-          id: pin.targetId,
-          projectId: pin.projectId,
-          request: { cursor, limit: 200 },
-        }) as RemoteRuntimeStreamEventsResult;
+        const request = { cursor, limit: 200 };
+        const batch = await ipcRenderer.invoke(
+          pin.kind === "remote"
+            ? IPC.remoteRuntimeStreamEvents
+            : IPC.localRuntimeStreamEvents,
+          pin.kind === "remote"
+            ? { id: pin.targetId, projectId: pin.projectId, request }
+            : { rootPath: pin.rootPath, request },
+        ) as RemoteRuntimeStreamEventsResult;
         if (cancelled) return;
         let resetForEpochChange = false;
         const batchEpoch =
@@ -5697,8 +5698,9 @@ contextBridge.exposeInMainWorld("ade", {
     },
     handoff: async (
       args: AgentChatHandoffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatHandoffResult> =>
-      callProjectRuntimeActionOr("chat", "handoffSession", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
       ),
     prepareCrossMachineHandoff: async (
@@ -6019,9 +6021,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCreateScheduledWorkResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "createScheduledWork",
         { args },
@@ -6032,8 +6036,10 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listScheduledWork: async (
       args: AgentChatListScheduledWorkArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatScheduledWorkItem[]> =>
-      callProjectRuntimeActionOr(
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "listScheduledWork",
         { args },
@@ -6041,9 +6047,11 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     cancelScheduledWork: async (
       args: AgentChatCancelScheduledWorkArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCancelScheduledWorkResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "cancelScheduledWork",
         { args },
@@ -6054,9 +6062,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     setScheduledWorkPaused: async (
       args: AgentChatSetScheduledWorkPausedArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSetScheduledWorkPausedResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "setScheduledWorkPaused",
         { args },
@@ -6305,15 +6315,17 @@ contextBridge.exposeInMainWorld("ade", {
     codex: {
       getGoal: (
         args: AgentChatCodexGetGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> =>
-        callProjectRuntimeActionOr("chat", "getCodexGoal", { args }, () =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexGetGoal, args),
         ),
       setGoal: async (
         args: AgentChatCodexSetGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoal", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "setCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexSetGoal, args),
         );
         agentChatSummaryCache.clear();
@@ -6321,9 +6333,10 @@ contextBridge.exposeInMainWorld("ade", {
       },
       setGoalStatus: async (
         args: AgentChatCodexSetGoalStatusArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoalStatus", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "setCodexGoalStatus", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexSetGoalStatus, args),
         );
         agentChatSummaryCache.clear();
@@ -6331,9 +6344,10 @@ contextBridge.exposeInMainWorld("ade", {
       },
       clearGoal: async (
         args: AgentChatCodexClearGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "clearCodexGoal", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "clearCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexClearGoal, args),
         );
         agentChatSummaryCache.clear();

@@ -758,31 +758,32 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
   it("opens a foreign union chat in the Work view without adding it to the local session list", async () => {
     const foreign = makeSession("foreign-chat", "foreign-lane");
+    const workState = {
+      openItemIds: ["foreign-chat"],
+      activeItemId: "foreign-chat",
+      selectedItemId: "foreign-chat",
+      gridSets: [],
+      activeGridSetId: null,
+      draftKind: "chat" as const,
+      orchestratorEnabled: false,
+      draftLaneId: null,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedSectionIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+      workSidebarOpen: false,
+      workSidebarTab: "git" as const,
+      workSidebarWidthPct: 36,
+      laneSessionOrder: {},
+      pinnedSessionIds: [],
+    };
     fakeAppStoreState = {
       ...fakeAppStoreState,
       workViewByProject: {
-        "/fake/project": {
-          openItemIds: ["foreign-chat"],
-          activeItemId: "foreign-chat",
-          selectedItemId: "foreign-chat",
-          gridSets: [],
-          activeGridSetId: null,
-          draftKind: "chat",
-          orchestratorEnabled: false,
-          draftLaneId: null,
-          laneFilter: "all",
-          search: "",
-          sessionListOrganization: "by-lane",
-          workCollapsedLaneIds: [],
-          workCollapsedSectionIds: [],
-          workCollapsedTabGroupIds: [],
-          workFocusSessionsHidden: false,
-          workSidebarOpen: false,
-          workSidebarTab: "git",
-          workSidebarWidthPct: 36,
-          laneSessionOrder: {},
-          pinnedSessionIds: [],
-        },
+        "/fake/project": workState,
       },
       crossMachineLanesByMachineId: {
         "target-b": {
@@ -814,6 +815,14 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.sessions).not.toContainEqual(foreign);
     expect(result.current.visibleSessions).toContainEqual(foreign);
     expect(selectLaneSpy).not.toHaveBeenCalledWith("foreign-lane");
+    const appliedStates = setWorkViewStateSpy.mock.calls.map(([, next]) => (
+      typeof next === "function" ? next(workState) : { ...workState, ...next }
+    ));
+    expect(appliedStates).not.toContainEqual(expect.objectContaining({
+      openItemIds: [],
+      activeItemId: null,
+      selectedItemId: null,
+    }));
   });
 
   it("launchPtySession carries its project pin into stopRuntime", async () => {

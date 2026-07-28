@@ -4581,7 +4581,7 @@ export function AgentChatPane({
           sessionId: selectedSessionId,
           agentId: subagentView.agentId ?? subagentView.taskId,
           taskId: subagentView.taskId,
-        });
+        }, ...chatPinArgsFor(chatRuntimePinRef));
         if (cancelled) return;
         if (result === null) {
           setSubagentTranscriptUnsupported(true);
@@ -4668,7 +4668,7 @@ export function AgentChatPane({
           agentId: args.agentId ?? args.taskId,
           taskId: args.taskId,
           limit: 1,
-        });
+        }, ...chatPinArgsFor(chatRuntimePinRef));
         return Array.isArray(result) && result.length > 0;
       } catch {
         return false;
@@ -4699,7 +4699,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await window.ade.agentChat.codex.setGoal({ sessionId, objective });
+      await window.ade.agentChat.codex.setGoal(
+        { sessionId, objective },
+        ...chatPinArgsFor(chatRuntimePinRef),
+      );
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -4715,7 +4718,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await window.ade.agentChat.codex.clearGoal({ sessionId });
+      await window.ade.agentChat.codex.clearGoal(
+        { sessionId },
+        ...chatPinArgsFor(chatRuntimePinRef),
+      );
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -4734,7 +4740,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await window.ade.agentChat.codex.setGoalStatus({ sessionId, status });
+      await window.ade.agentChat.codex.setGoalStatus(
+        { sessionId, status },
+        ...chatPinArgsFor(chatRuntimePinRef),
+      );
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -7020,7 +7029,9 @@ export function AgentChatPane({
     const args = selectedSessionId
       ? { sessionId: selectedSessionId, projectRoot }
       : { laneId, provider: sessionProvider, projectRoot };
-    getAgentChatSlashCommandsCached(args)
+    getAgentChatSlashCommandsCached(args, {
+      pin: selectedSessionId ? chatRuntimePinRef.current : null,
+    })
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
@@ -7420,9 +7431,10 @@ export function AgentChatPane({
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
           getAgentChatSlashCommandsCached(
-            { sessionId: envelope.sessionId },
+            { sessionId: envelope.sessionId, projectRoot },
             {
               force: envelope.event.type === "system_notice",
+              pin: chatRuntimePinRef.current,
             },
           )
             .then(setSdkSlashCommands)
@@ -7431,7 +7443,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [chatRuntimePin, clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -9258,7 +9270,7 @@ export function AgentChatPane({
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
-      });
+      }, ...chatPinArgsFor(chatRuntimePinRef));
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
       invalidateCurrentChatSessionList();
@@ -10814,7 +10826,7 @@ export function AgentChatPane({
         void window.ade.agentChat.setScheduledWorkPaused({
           sessionId: selectedSessionId,
           paused,
-        }).then((result) => {
+        }, ...chatPinArgsFor(chatRuntimePinRef)).then((result) => {
           patchSessionSummary(selectedSessionId, {
             scheduledWorkPaused: result.paused,
             nextWakeAt: result.nextWakeAt,
@@ -10827,7 +10839,7 @@ export function AgentChatPane({
         void window.ade.agentChat.cancelScheduledWork({
           sessionId: selectedSessionId,
           scheduleId: schedule.id,
-        }).then((result) => {
+        }, ...chatPinArgsFor(chatRuntimePinRef)).then((result) => {
           const current = selectedSession?.scheduledWork ?? [];
           patchSessionSummary(selectedSessionId, {
             scheduledWork: result.providerCancellationConfirmed || result.schedule.status === "cancelled"
@@ -11887,7 +11899,10 @@ export function AgentChatPane({
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                 });
-                getAgentChatSlashCommandsCached({ sessionId: selectedSessionId }, { force: true })
+                getAgentChatSlashCommandsCached(
+                  { sessionId: selectedSessionId, projectRoot },
+                  { force: true, pin: chatRuntimePinRef.current },
+                )
                   .then(setSdkSlashCommands)
                   .catch(() => {});
                 if (

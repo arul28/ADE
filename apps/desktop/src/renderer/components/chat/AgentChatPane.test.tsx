@@ -552,6 +552,33 @@ function installAdeMocks(options?: {
   const deleteChat = vi.fn().mockResolvedValue(undefined);
   const archive = vi.fn().mockResolvedValue(undefined);
   const unarchive = vi.fn().mockResolvedValue(undefined);
+  const getSubagentTranscript = vi.fn().mockResolvedValue([]);
+  const setCodexGoal = vi.fn().mockResolvedValue(null);
+  const clearCodexGoal = vi.fn().mockResolvedValue(null);
+  const setCodexGoalStatus = vi.fn().mockResolvedValue(null);
+  const setScheduledWorkPaused = vi.fn().mockImplementation(async (
+    args: { paused: boolean },
+  ) => ({
+    paused: args.paused,
+    nextWakeAt: null,
+  }));
+  const cancelScheduledWork = vi.fn().mockImplementation(async (
+    args: { sessionId: string; scheduleId: string },
+  ) => ({
+    schedule: {
+      id: args.scheduleId,
+      sessionId: args.sessionId,
+      kind: "wakeup",
+      status: "cancelled",
+      title: "Nightly wake",
+      prompt: "continue",
+      createdAt: "2026-07-27T18:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    },
+    providerCancellationRequested: true,
+    providerCancellationConfirmed: true,
+  }));
   const deleteLane = vi.fn().mockResolvedValue(undefined);
   const writeClipboardText = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
@@ -631,6 +658,7 @@ function installAdeMocks(options?: {
         const sessions = options?.sessions ?? [buildSession("session-1")];
         return sessions.find((s) => s.sessionId === sessionId) ?? null;
       }),
+      getSubagentTranscript,
       editSteer: vi.fn().mockResolvedValue(undefined),
       cancelSteer,
       dispatchSteer,
@@ -644,6 +672,14 @@ function installAdeMocks(options?: {
       approve: vi.fn().mockResolvedValue(undefined),
       respondToInput: vi.fn().mockResolvedValue(undefined),
       warmupModel: vi.fn().mockResolvedValue(undefined),
+      setScheduledWorkPaused,
+      cancelScheduledWork,
+      codex: {
+        getGoal: vi.fn().mockResolvedValue(null),
+        setGoal: setCodexGoal,
+        clearGoal: clearCodexGoal,
+        setGoalStatus: setCodexGoalStatus,
+      },
       fileSearch: vi.fn().mockResolvedValue([]),
       create,
       delete: deleteChat,
@@ -739,6 +775,12 @@ function installAdeMocks(options?: {
     deleteChat,
     archive,
     unarchive,
+    getSubagentTranscript,
+    setCodexGoal,
+    clearCodexGoal,
+    setCodexGoalStatus,
+    setScheduledWorkPaused,
+    cancelScheduledWork,
     deleteLane,
     suggestLaneName,
     renameLane,
@@ -8785,6 +8827,23 @@ describe("AgentChatPane per-chat runtime routing", () => {
     });
   }
 
+  function bindWindowToMachineB() {
+    useAppStore.setState({
+      project: { rootPath: "/repo-b", displayName: "Machine B" } as any,
+      projectBinding: machineB as any,
+      openProjectTabRoots: ["/repo-a"],
+      openRemoteProjectTabs: [machineB] as any,
+      projectInfoByRoot: { "/repo-a": { rootPath: "/repo-a", displayName: "Machine A" } } as any,
+      lanes: [{ id: "lane-b", name: "lane on B" }] as any,
+      laneCacheByProject: {
+        [machineA.rootPath]: {
+          lanes: [{ id: "lane-a", name: "lane on A" }],
+          laneSnapshots: [],
+        },
+      } as any,
+    });
+  }
+
   it("streams a chat whose lane lives on another machine from THAT machine, without rebinding the tab", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
@@ -8800,8 +8859,35 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.objectContaining({ sessionId: "chat-on-b" }),
       machineB,
     );
+    expect(window.ade.agentChat.onEvent).toHaveBeenCalledWith(
+      expect.any(Function),
+      machineB,
+    );
+    await waitFor(() => expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-b" }),
+      machineB,
+    ));
     // ...and the window's project tab is STILL bound to machine A.
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("pins This Mac history and live events while the project tab stays remote-bound", async () => {
+    bindWindowToMachineB();
+    const session = buildSession("chat-on-a", { laneId: "lane-a", title: "This Mac chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-a") });
+
+    renderPane(session);
+
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-a" }),
+      machineA,
+    ));
+    expect(window.ade.agentChat.onEvent).toHaveBeenCalledWith(
+      expect.any(Function),
+      machineA,
+    );
+    expect(useAppStore.getState().projectBinding).toEqual(machineB);
   });
 
   it("leaves a chat on the active binding on the unpinned path", async () => {
@@ -8891,5 +8977,82 @@ describe("AgentChatPane per-chat runtime routing", () => {
     });
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
     confirmSpy.mockRestore();
+  });
+
+  it("pins selected-chat transcripts, goals, schedules, and handoff as one control class", async () => {
+    bindWindowToMachineA();
+    const schedule = {
+      id: "schedule-1",
+      sessionId: "chat-on-b",
+      kind: "wakeup" as const,
+      status: "scheduled" as const,
+      title: "Nightly wake",
+      prompt: "continue",
+      nextRunAt: "2026-07-28T03:00:00.000Z",
+      createdAt: "2026-07-27T18:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    };
+    const session = buildSession("chat-on-b", {
+      laneId: "lane-b",
+      title: "Foreign controls",
+      status: "idle",
+      codexGoal: {
+        objective: "Ship clean",
+        status: "active",
+      },
+      scheduledWork: [schedule],
+    });
+    const mocks = installAdeMocks({ sessions: [session], eventHistory: emptyHistory(session.sessionId) });
+
+    renderPane(session);
+    const openActions = screen.queryByRole("button", { name: "Open chat actions drawer" });
+    if (openActions) fireEvent.click(openActions);
+    await waitFor(() => expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "chat-on-b" }),
+      machineB,
+    ));
+    await screen.findByText("Ship clean");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    const goalInput = screen.getByRole("textbox", { name: "Edit goal objective" });
+    fireEvent.change(goalInput, { target: { value: "Ship cleaner" } });
+    fireEvent.blur(goalInput);
+    await waitFor(() => expect(mocks.setCodexGoal).toHaveBeenCalledWith(
+      { sessionId: "chat-on-b", objective: "Ship cleaner" },
+      machineB,
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause goal" }));
+    await waitFor(() => expect(mocks.setCodexGoalStatus).toHaveBeenCalledWith(
+      { sessionId: "chat-on-b", status: "paused" },
+      machineB,
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Clear goal" }));
+    await waitFor(() => expect(mocks.clearCodexGoal).toHaveBeenCalledWith(
+      { sessionId: "chat-on-b" },
+      machineB,
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause scheduled work for this chat" }));
+    await waitFor(() => expect(mocks.setScheduledWorkPaused).toHaveBeenCalledWith(
+      { sessionId: "chat-on-b", paused: true },
+      machineB,
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Nightly wake" }));
+    await waitFor(() => expect(mocks.cancelScheduledWork).toHaveBeenCalledWith(
+      { sessionId: "chat-on-b", scheduleId: "schedule-1" },
+      machineB,
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    await waitFor(() => expect(mocks.handoff).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceSessionId: "chat-on-b", mode: "brief" }),
+      machineB,
+    ));
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
 });
