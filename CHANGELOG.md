@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.41] - 2026-07-28
+
+### Chat history
+
+- Added complete older-history paging across desktop, hosted web, iOS, and `ade code`, using append-stable byte cursors and bounded recent snapshots.
+- Preserved retry cursors across transient failures, kept foreign-project reads bound to their authorized scope, and added sliding-window behavior for very large transcripts.
+- Restored visible chat minimap ticks and kept near-top history loading responsive across short and long conversations.
+
+### Prompts and proof
+
+- Added synced prompt stashes so useful composer text can be saved and restored across connected ADE clients.
+- Surfaced computer-use proof inline with chat while preserving artifact ownership and access controls.
+- Kept drafts, new chats, and existing sessions pinned to the explicitly selected machine.
+
+### Multi-machine Work
+
+- Unified same-repository checkouts across machines while retaining explicit machine identity and availability.
+- Restored foreign-session context menus, lifecycle controls, lane actions, and chat routing throughout Work.
+- Tightened project, lane, and session routing so navigation does not silently rebind the active machine.
+
+### Mobile
+
+- Compacted iOS Claude chat controls to leave more room for the transcript and composer.
+- Added bounded, cursor-paged older history for project, personal, and foreign quick-look chats.
+
 ## [1.2.40] - 2026-07-27
 
 ### Projects, machines, and lanes
@@ -1099,7 +1124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.40...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.41...HEAD
+[1.2.41]: https://github.com/arul28/ADE/compare/v1.2.40...v1.2.41
 [1.2.40]: https://github.com/arul28/ADE/compare/v1.2.39...v1.2.40
 [1.2.39]: https://github.com/arul28/ADE/compare/v1.2.38...v1.2.39
 [1.2.38]: https://github.com/arul28/ADE/compare/v1.2.37...v1.2.38

@@ -1,0 +1,32 @@
+---
+title: "v1.2.41"
+description: "Release notes for ADE v1.2.41 - July 28, 2026"
+---
+
+v1.2.41 makes long conversations fully pageable across desktop, hosted web, iOS, and `ade code`, adds synced prompt stashes and clearer inline proof, and finishes the multi-machine project experience so each draft and session stays routed to the machine you selected.
+
+---
+
+## Complete conversations stay reachable
+
+- **Older messages load all the way back.** Desktop, hosted web, iOS, and `ade code` page through complete chat history instead of stopping at the initial snapshot.
+- **Paging stays responsive.** Clients open from a bounded recent tail, fetch older byte-cursor pages near the top, and preserve the retry point across transient failures.
+- **Very large chats remain usable.** ADE keeps bounded resident history, slides the window when needed, and returns to the authoritative live tail without losing buffered events.
+- **Foreign-project history keeps its scope.** Cross-machine and cross-project reads stay pinned to the exact authorized project and transcript while paging.
+
+## Prompts and proof are easier to reuse
+
+- **Prompt stashes sync between clients.** Save useful composer text, restore it later, and keep the stash available across connected ADE surfaces.
+- **Proof stays in context.** Computer-use artifacts appear inline with the conversation while preserving the artifact broker's ownership and access controls.
+- **Composer behavior stays machine-aware.** Drafts, new chats, and existing sessions remain routed to the selected machine instead of silently rebinding the project.
+
+## Multi-machine Work feels like one project
+
+- **Same-repository checkouts stay unified.** Project tabs and Work views group connected-machine checkouts without hiding the active machine.
+- **Foreign sessions keep their actions.** Context menus, lifecycle controls, lane actions, and chat routing remain available when the selected work lives on another machine.
+- **Machine choices remain explicit.** Lane and chat surfaces preserve machine identity, availability, and route state through navigation.
+
+## Small interaction fixes
+
+- **Chat minimap ticks are visible again.** Long-conversation landmarks retain enough contrast to be useful.
+- **iOS Claude controls take less space.** Compact actions leave more room for the conversation and composer.
