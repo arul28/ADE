@@ -256,8 +256,10 @@ function insertAttentionDevice(
     insert into attention_devices(
       user_id, device_id, source_machine_key, apns_token, push_to_start_token,
       bundle_id, aps_environment, platform, device_name, preferences_json,
-      registered_at, updated_at, lease_expires_at
-    ) values (?, ?, ?, ?, ?, 'com.ade.ios', 'sandbox', 'iOS', null, ?, ?, ?, ?)
+      registered_at, updated_at, lease_expires_at, generation
+    ) values (
+      ?, ?, ?, ?, ?, 'com.ade.ios', 'sandbox', 'iOS', null, ?, ?, ?, ?, ?
+    )
   `).run(
     args.userId,
     args.deviceId,
@@ -268,6 +270,7 @@ function insertAttentionDevice(
     now,
     now,
     args.leaseExpiresAt ?? "2026-09-01T08:00:00.000Z",
+    crypto.randomUUID(),
   );
   database.native.prepare(`
     insert into attention_device_ownership(
@@ -356,6 +359,7 @@ describe("account Attention contract", () => {
       bundle_id: "com.ade.ios",
       aps_environment: "sandbox",
       preferences_json: JSON.stringify({ mutedSessionIds: ["registration-muted"] }),
+      generation: "device-generation",
     };
     expect(attentionTestInternals.resolvedMutedSessionIds(
       device,
@@ -718,6 +722,375 @@ describe("account Attention contract", () => {
       `);
       expect(state?.started).toBe(1);
       expect(String(state?.fingerprint)).not.toMatch(/^pending:/);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not recreate account Live Activity state after its registration is cleared in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    let releaseUpdate!: (response: Response) => void;
+    let markUpdateStarted: (() => void) | null = null;
+    const updateStarted = new Promise<void>((resolve) => {
+      markUpdateStarted = resolve;
+    });
+    const updateResponse = new Promise<Response>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      markUpdateStarted?.();
+      return await updateResponse;
+    }));
+    const env = makeAttentionEnv(database, {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "STALEKEY12",
+      APNS_TEAM_ID: "STALETEAM1",
+    });
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-stale-update",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values (
+          'account-a', 'phone-stale-update', 'agent-runs', ?,
+          '2026-07-28T08:00:00.000Z'
+        )
+      `).run("cd".repeat(32));
+      database.native.prepare(`
+        insert into attention_activity_state(
+          user_id, device_id, activity_id, started, fingerprint, updated_at
+        ) values (
+          'account-a', 'phone-stale-update', 'agent-runs', 1,
+          'outdated-fingerprint', '2026-07-28T08:00:00.000Z'
+        )
+      `).run();
+
+      const delivery = attentionTestInternals.deliverAccountLiveActivity(
+        env,
+        "account-a",
+      );
+      await updateStarted;
+
+      const clearRequest = new Request(
+        "https://push.example/attention/account/devices/phone-stale-update",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ownershipEpoch: 1,
+            bundleId: "com.ade.ios",
+            apsEnvironment: "sandbox",
+            platform: "iOS",
+            clearPushToStartToken: true,
+          }),
+        },
+      );
+      const clearResponse =
+        await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
+          clearRequest,
+          env,
+          new URL(clearRequest.url),
+          "account-a",
+        );
+      expect(clearResponse?.status).toBe(200);
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-stale-update'
+      `)).toHaveLength(0);
+
+      releaseUpdate(new Response(null, {
+        status: 200,
+        headers: { "apns-id": "stale-update" },
+      }));
+      await delivery;
+
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-stale-update'
+      `)).toHaveLength(0);
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_tokens
+        where user_id = 'account-a' and device_id = 'phone-stale-update'
+      `)).toHaveLength(0);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("commits an in-flight account Live Activity start across an unchanged registration refresh", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    let releaseStart!: (response: Response) => void;
+    let markStartStarted: (() => void) | null = null;
+    const startStarted = new Promise<void>((resolve) => {
+      markStartStarted = resolve;
+    });
+    const startResponse = new Promise<Response>((resolve) => {
+      releaseStart = resolve;
+    });
+    const sendPush = vi.fn(async () => {
+      markStartStarted?.();
+      return await startResponse;
+    });
+    vi.stubGlobal("fetch", sendPush);
+    const env = makeAttentionEnv(database, {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "REFRESHKEY",
+      APNS_TEAM_ID: "REFRESHTEAM",
+    });
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-refresh",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      const generationBefore = row<{ generation: string }>(database, `
+        select generation
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-refresh'
+      `)?.generation;
+
+      const delivery = attentionTestInternals.deliverAccountLiveActivity(
+        env,
+        "account-a",
+      );
+      await startStarted;
+
+      const refreshRequest = new Request(
+        "https://push.example/attention/account/devices/phone-refresh",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ownershipEpoch: 1,
+            bundleId: "com.ade.ios",
+            apsEnvironment: "sandbox",
+            platform: "iOS",
+          }),
+        },
+      );
+      const refreshResponse =
+        await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
+          refreshRequest,
+          env,
+          new URL(refreshRequest.url),
+          "account-a",
+        );
+      expect(refreshResponse?.status).toBe(200);
+      expect(row<{ generation: string }>(database, `
+        select generation
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-refresh'
+      `)?.generation).toBe(generationBefore);
+      expect(sendPush).toHaveBeenCalledTimes(1);
+
+      releaseStart(new Response(null, {
+        status: 200,
+        headers: { "apns-id": "refresh-start" },
+      }));
+      await delivery;
+
+      expect(sendPush).toHaveBeenCalledTimes(1);
+      expect(row(database, `
+        select started, fingerprint
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-refresh'
+          and activity_id = 'agent-runs'
+      `)).toMatchObject({
+        started: 1,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("replaces an in-flight account Live Activity start immediately after token rotation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    let releaseOldStart!: (response: Response) => void;
+    let markOldStartStarted: (() => void) | null = null;
+    const oldStartStarted = new Promise<void>((resolve) => {
+      markOldStartStarted = resolve;
+    });
+    const oldStartResponse = new Promise<Response>((resolve) => {
+      releaseOldStart = resolve;
+    });
+    const pushedUrls: string[] = [];
+    const sendPush = vi.fn(async (input: RequestInfo | URL) => {
+      pushedUrls.push(input instanceof Request ? input.url : String(input));
+      if (pushedUrls.length === 1) {
+        markOldStartStarted?.();
+        return await oldStartResponse;
+      }
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "replacement-start" },
+      });
+    });
+    vi.stubGlobal("fetch", sendPush);
+    const env = makeAttentionEnv(database, {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "ROTATEKEY1",
+      APNS_TEAM_ID: "ROTATETEAM",
+    });
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-rotate",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      const generationBefore = row<{ generation: string }>(database, `
+        select generation
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-rotate'
+      `)?.generation;
+
+      const oldDelivery = attentionTestInternals.deliverAccountLiveActivity(
+        env,
+        "account-a",
+      );
+      await oldStartStarted;
+
+      const replacementRequest = new Request(
+        "https://push.example/attention/account/devices/phone-rotate",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ownershipEpoch: 1,
+            pushToStartToken: "cd".repeat(32),
+            bundleId: "com.ade.ios",
+            apsEnvironment: "sandbox",
+            platform: "iOS",
+          }),
+        },
+      );
+      const replacementResponse =
+        await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
+          replacementRequest,
+          env,
+          new URL(replacementRequest.url),
+          "account-a",
+        );
+      expect(replacementResponse?.status).toBe(200);
+      expect(sendPush).toHaveBeenCalledTimes(2);
+      expect(pushedUrls[0]).toContain("ab".repeat(32));
+      expect(pushedUrls[1]).toContain("cd".repeat(32));
+      expect(row<{ generation: string }>(database, `
+        select generation
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-rotate'
+      `)?.generation).not.toBe(generationBefore);
+      const replacementState = row<{ started: number; fingerprint: string }>(
+        database,
+        `
+          select started, fingerprint
+          from attention_activity_state
+          where user_id = 'account-a' and device_id = 'phone-rotate'
+            and activity_id = 'agent-runs'
+        `,
+      );
+      expect(replacementState?.started).toBe(1);
+      expect(replacementState?.fingerprint).not.toMatch(/^pending:/);
+
+      releaseOldStart(new Response(null, {
+        status: 200,
+        headers: { "apns-id": "stale-start" },
+      }));
+      await oldDelivery;
+
+      expect(row(database, `
+        select started, fingerprint
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-rotate'
+          and activity_id = 'agent-runs'
+      `)).toEqual(replacementState);
     } finally {
       database.close();
     }

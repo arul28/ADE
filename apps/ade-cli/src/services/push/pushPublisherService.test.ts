@@ -22,6 +22,10 @@ import {
   type PushPrNotification,
 } from "./pushPublisherService";
 
+function alertDedupeKey(dedupeKey: string, deviceId = "dev-1"): string {
+  return `alert-device:${deviceId.length}:${deviceId}:${dedupeKey}`;
+}
+
 function run(overrides: Partial<AgentRunState>): AgentRunState {
   return {
     sessionId: "s",
@@ -267,7 +271,7 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0].title).toBe("Codex needs you");
     expect(payload.notifications[0].body).toBe("auth-lane · Fix login");
     expect(payload.notifications[0].deviceIds).toEqual(["dev-1"]);
-    expect(payload.notifications[0].dedupeKey).toBe("alert:s-1:approval");
+    expect(payload.notifications[0].dedupeKey).toBe(alertDedupeKey("alert:s-1:approval"));
     expect(payload.liveActivity).toHaveLength(1);
     expect(payload.liveActivity[0].event).toBe("start");
     expect(payload.liveActivity[0].activityId).toBe("agent-runs");
@@ -391,30 +395,90 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("retries a failed alert target when another target is relay-suppressed", async () => {
+  it("retains a Live Activity hard failure as the latest delivery status", async () => {
+    const { publisher, publish, emit, store, cliSessions } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    publish.mockResolvedValueOnce({
+      ok: true,
+      delivered: 0,
+      suppressed: 0,
+      failed: 1,
+      outcomes: [
+        {
+          deviceId: "dev-1",
+          kind: "liveactivity",
+          delivered: false,
+          suppressed: false,
+          skipped: null,
+        },
+      ],
+    });
+    cliSessions.set("cli-1", { title: "Watch logs", toolType: "codex" });
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "ops",
+      sessionId: "cli-1",
+      runtimeState: "running",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1]?.[0].notifications).toBeUndefined();
+    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "update",
+        deviceIds: ["dev-1"],
+      }),
+    ]);
+    expect(store.recordPublishResult).toHaveBeenLastCalledWith({
+      at: expect.any(String),
+      error: "relay failed 1 Live Activity target",
+    });
+
+    publisher.dispose();
+  });
+
+  it("retries only failed alert phones while committing delivered and suppressed phones", async () => {
     const secondDevice = {
       ...device,
       deviceId: "dev-2",
       apnsToken: "c".repeat(64),
       pushToStartToken: "d".repeat(64),
     };
-    const { publisher, publish, emit, store } = makeHarness([device, secondDevice]);
+    const thirdDevice = {
+      ...device,
+      deviceId: "dev-3",
+      apnsToken: "e".repeat(64),
+      pushToStartToken: "f".repeat(64),
+    };
+    const { publisher, publish, emit, store } = makeHarness([device, secondDevice, thirdDevice]);
     publish
       .mockResolvedValueOnce({
         ok: true,
-        delivered: 0,
-        suppressed: 3,
+        delivered: 1,
+        suppressed: 4,
         failed: 1,
         outcomes: [
           {
             deviceId: "dev-1",
+            kind: "alert",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
             kind: "alert",
             delivered: false,
             suppressed: true,
             skipped: null,
           },
           {
-            deviceId: "dev-2",
+            deviceId: "dev-3",
             kind: "alert",
             delivered: false,
             suppressed: false,
@@ -434,23 +498,23 @@ describe("createPushPublisherService flush", () => {
             suppressed: true,
             skipped: null,
           },
+          {
+            deviceId: "dev-3",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
         ],
       })
       .mockResolvedValueOnce({
         ok: true,
         delivered: 1,
-        suppressed: 1,
+        suppressed: 0,
         failed: 0,
         outcomes: [
           {
-            deviceId: "dev-1",
-            kind: "alert",
-            delivered: false,
-            suppressed: true,
-            skipped: null,
-          },
-          {
-            deviceId: "dev-2",
+            deviceId: "dev-3",
             kind: "alert",
             delivered: true,
             suppressed: false,
@@ -464,10 +528,20 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish.mock.calls[0]?.[0].notifications?.[0]).toMatchObject({
-      deviceIds: ["dev-1", "dev-2"],
-      dedupeKey: "alert:s-1:approval",
-    });
+    expect(publish.mock.calls[0]?.[0].notifications).toEqual([
+      expect.objectContaining({
+        deviceIds: ["dev-1"],
+        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-1"),
+      }),
+      expect.objectContaining({
+        deviceIds: ["dev-2"],
+        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-2"),
+      }),
+      expect.objectContaining({
+        deviceIds: ["dev-3"],
+        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-3"),
+      }),
+    ]);
     expect(store.recordPublishResult).toHaveBeenLastCalledWith(
       expect.objectContaining({ error: "relay failed 1 alert target" }),
     );
@@ -475,10 +549,12 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(publish).toHaveBeenCalledTimes(2);
-    expect(publish.mock.calls[1]?.[0].notifications?.[0]).toMatchObject({
-      deviceIds: ["dev-1", "dev-2"],
-      dedupeKey: "alert:s-1:approval",
-    });
+    expect(publish.mock.calls[1]?.[0].notifications).toEqual([
+      expect.objectContaining({
+        deviceIds: ["dev-3"],
+        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-3"),
+      }),
+    ]);
     expect(store.recordPublishResult).toHaveBeenLastCalledWith(
       { at: expect.any(String) },
     );
@@ -826,7 +902,7 @@ describe("createPushPublisherService flush", () => {
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
+        expect.objectContaining({ dedupeKey: alertDedupeKey("alert:s-1:approval") }),
       ]),
     );
     expect(payload.liveActivity).toBeUndefined();
@@ -859,7 +935,7 @@ describe("createPushPublisherService flush", () => {
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
+        expect.objectContaining({ dedupeKey: alertDedupeKey("alert:s-1:approval") }),
       ]),
     );
     expect(payload.liveActivity).toBeUndefined();
@@ -1094,11 +1170,11 @@ describe("createPushPublisherService flush", () => {
     }))).toEqual([
       {
         threadId: "pr:project-a:repo:org-a:api:42",
-        dedupeKey: "alert:pr:project-a:repo:org-a:api:42:opened",
+        dedupeKey: alertDedupeKey("alert:pr:project-a:repo:org-a:api:42:opened"),
       },
       {
         threadId: "pr:project-a:repo:org-b:web:42",
-        dedupeKey: "alert:pr:project-a:repo:org-b:web:42:opened",
+        dedupeKey: alertDedupeKey("alert:pr:project-a:repo:org-b:web:42:opened"),
       },
     ]);
     expect(payload.liveActivity[0].contentState.prs).toMatchObject([
@@ -1135,7 +1211,7 @@ describe("createPushPublisherService flush", () => {
     expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
       title: "PR #42 closed",
       body: "Repeatable PR lifecycle",
-      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+      dedupeKey: alertDedupeKey("alert:pr:project-a:repo:arul28:ade:42:closed"),
     });
 
     publish.mockClear();
@@ -1152,7 +1228,7 @@ describe("createPushPublisherService flush", () => {
     expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
       title: "PR #42 closed",
       body: "Repeatable PR lifecycle",
-      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+      dedupeKey: alertDedupeKey("alert:pr:project-a:repo:arul28:ade:42:closed"),
     });
 
     publisher.dispose();
@@ -1567,7 +1643,7 @@ describe("createPushPublisherService flush", () => {
       body: "Which account should the e2e test use?",
       deepLink: "ade://session/cli-ask-1",
       sessionId: "cli-ask-1",
-      dedupeKey: "alert:cli-ask-1:question",
+      dedupeKey: alertDedupeKey("alert:cli-ask-1:question"),
     });
     expect(payload.liveActivity[0].contentState.runs[0]).toMatchObject({
       id: "cli-ask-1",
@@ -1604,7 +1680,7 @@ describe("createPushPublisherService flush", () => {
     // the run must carry the question phase without the obsolete approval item.
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({
-      dedupeKey: "alert:s-ask-2:question",
+      dedupeKey: alertDedupeKey("alert:s-ask-2:question"),
       body: "jwt or session auth?",
     });
     const askRun = payload.liveActivity[0].contentState.runs.find(
