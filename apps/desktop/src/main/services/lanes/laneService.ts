@@ -3060,9 +3060,21 @@ export function createLaneService({
     try {
       rows = db.all<{ uri: string | null }>(
         `
-          select uri from computer_use_artifacts
-          where storage_kind = 'file'
-            and id in (${LANE_OWNED_ARTIFACT_IDS_SQL})
+          with lane_owned_artifacts as (
+            ${LANE_OWNED_ARTIFACT_IDS_SQL}
+          )
+          select distinct candidate.uri
+          from computer_use_artifacts candidate
+          where candidate.storage_kind = 'file'
+            and candidate.id in (select id from lane_owned_artifacts)
+            and not exists (
+              select 1
+              from computer_use_artifacts survivor
+              where survivor.project_id = candidate.project_id
+                and survivor.storage_kind = 'file'
+                and survivor.uri = candidate.uri
+                and survivor.id not in (select id from lane_owned_artifacts)
+            )
         `,
         [projectId, laneId, laneId, laneId],
       );

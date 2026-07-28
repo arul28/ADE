@@ -3295,6 +3295,43 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(fs.existsSync(sharedFile)).toBe(true);
   });
 
+  it("keeps a proof file when a surviving artifact row references the same URI", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service, repoRoot } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    const relativeUri = ".ade/artifacts/computer-use/shared-uri.png";
+    const artifactFile = path.join(repoRoot, relativeUri);
+    fs.mkdirSync(path.dirname(artifactFile), { recursive: true });
+    fs.writeFileSync(artifactFile, "shared");
+
+    const insertArtifact = (id: string, laneId: string) => {
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, 'proj-delete', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', ?, ?)`,
+        [id, id, relativeUri, laneId, "2026-03-12T14:00:00.000Z"],
+      );
+    };
+    insertArtifact("art-deleted", "lane-child");
+    insertArtifact("art-survivor", "lane-parent");
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    const remaining = db.all<{ id: string }>("select id from computer_use_artifacts").map((row) => row.id);
+    expect(remaining).toContain("art-survivor");
+    expect(remaining).not.toContain("art-deleted");
+    expect(fs.existsSync(artifactFile)).toBe(true);
+  });
+
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

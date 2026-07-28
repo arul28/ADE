@@ -484,6 +484,33 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
   });
 
+  it("does not attribute proof older than the loaded transcript page to its first visible turn", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "Capture current proof.", turnId: "turn-visible" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:02:00.000Z",
+          event: { type: "done", turnId: "turn-visible", status: "completed" },
+        },
+      ],
+      {
+        hasOlderHistory: true,
+        proofArtifacts: [
+          { ...transcriptProofArtifact, id: "proof-older-page", createdAt: "2026-03-17T09:30:00.000Z" },
+          { ...transcriptProofArtifact, id: "proof-visible-turn", createdAt: "2026-03-17T10:01:00.000Z" },
+        ],
+      },
+    );
+
+    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /2 proof/ })).toBeNull();
+  });
+
   it("keeps turn file-change summaries visible without a session id", () => {
     renderMessageList([
       {

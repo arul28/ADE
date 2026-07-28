@@ -6187,16 +6187,26 @@ function AgentChatMessageListMain({
       .filter((entry) => Number.isFinite(entry.at))
       .sort((left, right) => left.at - right.at);
     if (!stamped.length) return map;
-    let windowStart = Number.NEGATIVE_INFINITY;
+    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
+      const at = Date.parse(env.timestamp);
+      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(loadedTranscriptStart)) return map;
+    let windowStart = loadedTranscriptStart;
+    let firstWindow = true;
     for (const env of allGroupedRows) {
       if (env.event.type !== "done") continue;
       const endMs = Date.parse(env.timestamp);
       if (!Number.isFinite(endMs)) continue;
       const captured = stamped
-        .filter((entry) => entry.at > windowStart && entry.at <= endMs)
+        .filter((entry) => (
+          (firstWindow ? entry.at >= windowStart : entry.at > windowStart)
+          && entry.at <= endMs
+        ))
         .map((entry) => entry.artifact);
       if (captured.length > 0) map.set(env.key, captured);
       windowStart = endMs;
+      firstWindow = false;
     }
     return map;
   }, [allGroupedRows, proofArtifacts]);
