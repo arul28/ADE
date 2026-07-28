@@ -8922,6 +8922,53 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
 
+  it("routes a prop-driven incoming local chat independently of the outgoing remote selection", async () => {
+    bindWindowToMachineA();
+    const outgoing = buildSession("chat-on-b", { laneId: "lane-b", title: "Outgoing remote chat" });
+    const incoming = buildSession("chat-on-a", { laneId: "lane-a", title: "Incoming local chat" });
+    installAdeMocks({
+      sessions: [outgoing, incoming],
+      eventHistory: (args) => emptyHistory(args.sessionId),
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-b"
+          initialSessionId={outgoing.sessionId}
+          initialSessionSummary={outgoing}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: outgoing.sessionId }),
+      machineB,
+    ));
+
+    getEventHistory.mockClear();
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-b"
+          initialSessionId={incoming.sessionId}
+          initialSessionSummary={incoming}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: incoming.sessionId }),
+    ));
+    expect(getEventHistory).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: incoming.sessionId }),
+      machineB,
+    );
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
   it("does not pin when the lane's machine is not open in this window", async () => {
     bindWindowToMachineA({ includeMachineB: false });
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Unreachable machine" });

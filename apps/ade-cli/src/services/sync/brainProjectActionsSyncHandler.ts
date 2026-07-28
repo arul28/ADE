@@ -4,6 +4,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { RawData, WebSocket } from "ws";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
@@ -11,6 +12,7 @@ import type {
   PersonalChatScopeContract,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
+  SyncChatHistoryRequestPayload,
   SyncChatUnsubscribePayload,
   SyncCommandPayload,
   SyncRemoteCommandDescriptor,
@@ -170,6 +172,52 @@ function safeStringEquals(expected: string, actual: string): boolean {
 
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function unavailableChatHistoryPage(
+  sessionId: string,
+  beforeOffset: number,
+): AgentChatEventHistoryPage {
+  return {
+    sessionId,
+    events: [],
+    startOffset: beforeOffset,
+    hasMore: beforeOffset > 0,
+    sessionFound: false,
+    unavailable: true,
+  };
+}
+
+function normalizeChatHistoryPage(
+  value: unknown,
+  sessionId: string,
+  beforeOffset: number,
+): AgentChatEventHistoryPage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return unavailableChatHistoryPage(sessionId, beforeOffset);
+  }
+  const record = value as Record<string, unknown>;
+  const startOffset = typeof record.startOffset === "number" && Number.isFinite(record.startOffset)
+    ? Math.max(0, Math.floor(record.startOffset))
+    : null;
+  if (
+    optionalString(record.sessionId) !== sessionId
+    || !Array.isArray(record.events)
+    || startOffset == null
+    || startOffset > beforeOffset
+    || typeof record.hasMore !== "boolean"
+    || typeof record.sessionFound !== "boolean"
+  ) {
+    return unavailableChatHistoryPage(sessionId, beforeOffset);
+  }
+  return {
+    sessionId,
+    events: record.events as AgentChatEventEnvelope[],
+    startOffset,
+    hasMore: record.hasMore,
+    sessionFound: record.sessionFound,
+    ...(record.unavailable === true ? { unavailable: true } : {}),
+  };
 }
 
 function normalizePeerMetadata(value: unknown): SyncPeerMetadata | null {
@@ -813,7 +861,7 @@ export function createBrainProjectActionsSyncHandler(
         }
         const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes)
           ? Math.max(1_024, Math.min(2_000_000, Math.floor(payload.maxBytes)))
-          : 2_000_000;
+          : 256 * 1_024;
         // Capture the tail point before reading history. Events committed
         // during the snapshot can then be replayed (and client-deduped), but
         // can never fall into the gap between history collection and offset.
@@ -824,7 +872,12 @@ export function createBrainProjectActionsSyncHandler(
         const history = (await args.personalChatScope.call("getEventHistory", {
           sessionId,
           maxBytes,
-        })).result as { events?: AgentChatEventEnvelope[]; truncated?: boolean };
+        })).result as {
+          events?: AgentChatEventEnvelope[];
+          truncated?: boolean;
+          tailStartOffset?: number | null;
+          hasOlderHistory?: boolean;
+        };
         if (!isCurrent()) return;
         const turnActive = await args.personalChatScope.isTurnActive(sessionId);
         if (!isCurrent()) return;
@@ -833,9 +886,41 @@ export function createBrainProjectActionsSyncHandler(
           sessionId,
           capturedAt: nowIso(),
           truncated: history.truncated === true,
+          tailStartOffset: history.tailStartOffset ?? 0,
+          hasOlderHistory: history.hasOlderHistory
+            ?? (history.truncated === true && (history.tailStartOffset ?? 0) > 0),
+          cursorKind: "byte",
           events: history.events ?? [],
           turnActive,
         } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
+        break;
+      }
+      case "chat_history": {
+        const payload = envelope.payload as SyncChatHistoryRequestPayload | null;
+        const sessionId = optionalString(payload?.sessionId) ?? "";
+        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+          ? Math.max(0, Math.floor(payload.beforeOffset))
+          : 0;
+        if (
+          !sessionId
+          || payload?.chatScope !== "personal"
+          || !args.personalChatScope
+          || !peer.personalChatSubscriptions.has(sessionId)
+        ) {
+          send(peer.ws, "chat_history", unavailableChatHistoryPage(sessionId, beforeOffset), envelope.requestId);
+          break;
+        }
+        let page = unavailableChatHistoryPage(sessionId, beforeOffset);
+        try {
+          const rawPage = (await args.personalChatScope.call("getEventHistoryPage", {
+            sessionId,
+            beforeOffset,
+            ...(typeof payload.maxBytes === "number" ? { maxBytes: payload.maxBytes } : {}),
+          })).result;
+          page = normalizeChatHistoryPage(rawPage, sessionId, beforeOffset);
+        } catch {}
+        if (!isCurrent()) return;
+        send(peer.ws, "chat_history", page, envelope.requestId);
         break;
       }
       case "chat_unsubscribe": {

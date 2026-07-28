@@ -7,6 +7,12 @@ enum WorkSessionNavigationChrome {
   case embedded
 }
 
+private enum WorkOlderHistoryPageResult {
+  case unsupported
+  case loaded
+  case failed
+}
+
 extension WorkSessionNavigationChrome: Equatable {}
 
 let workSessionEdgeSwipeActivationWidth: CGFloat = 36
@@ -407,6 +413,24 @@ func workChatSnapshotOlderHistoryCursor(
   if hasOlderHistory == false { return nil }
   guard let tailStartOffset, tailStartOffset > 0 else { return nil }
   return tailStartOffset
+}
+
+func workChatOlderTranscriptPageAdvances(
+  beforeOffset: Int,
+  nextCursor: Int?
+) -> Bool {
+  guard beforeOffset > 0 else { return false }
+  guard let nextCursor else { return true }
+  return nextCursor >= 0 && nextCursor < beforeOffset
+}
+
+func workChatHasOlderTranscriptHistory(
+  chatEventCursor: Int?,
+  canonicalTranscriptCursor: Int?,
+  allowsCanonicalFallback: Bool
+) -> Bool {
+  if (chatEventCursor ?? 0) > 0 { return true }
+  return allowsCanonicalFallback && (canonicalTranscriptCursor ?? 0) > 0
 }
 
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
@@ -1389,11 +1413,13 @@ struct WorkSessionDestinationView: View {
       dispatchSteerInterruptAction = nil
     }
     let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
-    let loadOlderTranscriptAction: (@MainActor () async -> Void)?
-    if viewingSubagent || isCrossProject {
-      // Cross-project quick looks show the subscribed tail only: the paged
-      // history command routes through the project scope registry and would
-      // boot the foreign runtime for a read.
+    let loadOlderTranscriptAction: (@MainActor () async -> Bool)?
+    if viewingSubagent {
+      loadOlderTranscriptAction = nil
+    } else if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
+      // Older hosts have no scoped transcript-page envelope. Do not fall back
+      // to a foreign project command, which would activate its runtime just to
+      // read history; the next host upgrade makes the same cached view pageable.
       loadOlderTranscriptAction = nil
     } else {
       loadOlderTranscriptAction = { await loadOlderTranscriptEntries() }
@@ -1833,9 +1859,13 @@ struct WorkSessionDestinationView: View {
         _ = try? await syncService.subscribeToChatEvents(sessionId: sessionId)
       }
 
-      // Quick looks stay on the chat_subscribe snapshot/tail — the canonical
-      // history commands route through the project scope registry and would
-      // boot the foreign runtime for a read (the cost this mode exists to avoid).
+      if let subscribedCursor = syncService.chatOlderHistoryCursor(sessionId: sessionId) {
+        updateOlderChatEventHistoryCursor(subscribedCursor)
+      }
+
+      // Quick looks seed their byte cursor from chat_subscribe and page through
+      // the scoped chat_history envelope. Canonical history commands remain
+      // disabled here because they would boot the foreign runtime for a read.
       let shouldHydrateCanonicalEventTail = !isCrossProject
         && !reducedActiveLiveStream
         && (
@@ -2073,6 +2103,7 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func seedOlderChatEventHistoryCursor(from page: AgentChatEventHistoryPage) {
+    if page.unavailable == true { return }
     guard page.sessionFound else {
       olderChatEventHistoryCursor = 0
       return
@@ -2102,24 +2133,53 @@ struct WorkSessionDestinationView: View {
   }
 
   var hasOlderTranscriptHistory: Bool {
-    (olderChatEventHistoryCursor ?? 0) > 0 || (olderTranscriptCursor ?? 0) > 0
+    workChatHasOlderTranscriptHistory(
+      chatEventCursor: olderChatEventHistoryCursor,
+      canonicalTranscriptCursor: olderTranscriptCursor,
+      allowsCanonicalFallback: !isCrossProject
+    )
   }
 
   /// Fetch the next strictly-older transcript page from the host and prepend
   /// it to the fallback entries that feed the chat timeline.
   @MainActor
-  func loadOlderTranscriptEntries() async {
-    guard !olderTranscriptLoading else { return }
+  func loadOlderTranscriptEntries() async -> Bool {
+    guard !olderTranscriptLoading else { return true }
     olderTranscriptLoading = true
     defer { olderTranscriptLoading = false }
-    if await loadOlderChatEventHistoryPageIfPossible() {
-      return
+    switch await loadOlderChatEventHistoryPageIfPossible() {
+    case .loaded:
+      return true
+    case .failed:
+      return false
+    case .unsupported:
+      break
     }
-    guard let cursor = olderTranscriptCursor, cursor > 0 else { return }
-    guard let page = try? await syncService.fetchChatTranscriptPage(
-      sessionId: sessionId,
-      cursor: cursor
-    ) else { return }
+    // Cross-project quick looks must never fall through to the canonical
+    // command path: that route activates the foreign runtime just to read
+    // history. A modern subscribe cursor will re-enable the scoped event-page
+    // path as soon as its ack arrives.
+    guard !isCrossProject else { return false }
+    guard let cursor = olderTranscriptCursor, cursor > 0 else { return true }
+    var loadedPage: SyncService.AgentChatTranscriptPage?
+    for retry in 0..<3 {
+      if retry > 0 {
+        try? await Task.sleep(nanoseconds: retry == 1 ? 250_000_000 : 750_000_000)
+      }
+      guard !Task.isCancelled else { return false }
+      if let page = try? await syncService.fetchChatTranscriptPage(
+        sessionId: sessionId,
+        cursor: cursor
+      ) {
+        loadedPage = page
+        break
+      }
+    }
+    guard let page = loadedPage else { return false }
+    guard workChatOlderTranscriptPageAdvances(
+      beforeOffset: cursor,
+      nextCursor: page.nextCursor
+    ) else { return false }
     recordTranscriptPage(page, before: cursor)
     let combined = combinedTranscriptEntries()
     if !combined.isEmpty, combined != fallbackEntries {
@@ -2136,30 +2196,43 @@ struct WorkSessionDestinationView: View {
     if !merged.isEmpty, merged != transcript {
       setTranscript(merged)
     }
+    return true
   }
 
   @MainActor
-  func loadOlderChatEventHistoryPageIfPossible() async -> Bool {
-    guard syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId),
+  private func loadOlderChatEventHistoryPageIfPossible() async -> WorkOlderHistoryPageResult {
+    guard (
+      syncService.supportsSubscribedChatHistory(sessionId: sessionId)
+      || syncService.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: sessionId)
+    ),
           var cursor = olderChatEventHistoryCursor,
           cursor > 0
-    else { return false }
+    else { return .unsupported }
 
     for _ in 0..<6 {
       guard cursor > 0 else { break }
-      guard let page = try? await syncService.fetchChatEventHistoryPage(
-        sessionId: sessionId,
-        beforeOffset: cursor
-      ) else {
-        return false
+      var loadedPage: AgentChatEventHistoryPage?
+      for retry in 0..<3 {
+        if retry > 0 {
+          try? await Task.sleep(nanoseconds: retry == 1 ? 250_000_000 : 750_000_000)
+        }
+        guard !Task.isCancelled else { return .failed }
+        if let page = try? await syncService.fetchChatEventHistoryPage(
+          sessionId: sessionId,
+          beforeOffset: cursor,
+          maxBytes: 256 * 1024
+        ), page.unavailable != true {
+          loadedPage = page
+          break
+        }
       }
+      guard let page = loadedPage else { return .failed }
       guard page.sessionFound else {
         olderChatEventHistoryCursor = 0
-        return true
+        return .loaded
       }
-      guard page.startOffset < cursor else {
-        olderChatEventHistoryCursor = 0
-        return true
+      guard page.startOffset >= 0, page.startOffset < cursor else {
+        return .failed
       }
       olderChatEventHistoryCursor = page.hasMore && page.startOffset > 0 ? page.startOffset : 0
       cursor = page.startOffset
@@ -2173,10 +2246,10 @@ struct WorkSessionDestinationView: View {
       if !merged.isEmpty, merged != transcript {
         setTranscript(merged)
       }
-      return true
+      return .loaded
     }
 
-    return true
+    return .loaded
   }
 
   /// Re-read this session's row from the phone's local replicated DB. Cheap
@@ -2392,6 +2465,9 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func syncTranscriptFromLiveEvents() {
+    if let subscribedCursor = syncService.chatOlderHistoryCursorState(sessionId: sessionId) {
+      updateOlderChatEventHistoryCursor(subscribedCursor > 0 ? subscribedCursor : nil)
+    }
     let liveTranscript = liveTranscriptCache.transcript(
       for: sessionId,
       events: syncService.chatEventHistory(sessionId: sessionId)

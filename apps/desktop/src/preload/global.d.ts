@@ -1672,6 +1672,7 @@ declare global {
           args: {
             sessionId: string;
             maxEvents?: number;
+            maxBytes?: number;
           },
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatEventHistorySnapshot>;

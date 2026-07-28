@@ -264,7 +264,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
-import { advanceOlderHistoryCursor, prependOlderTuiHistory, resolveSnapshotHistoryCursor, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP } from "./olderHistory";
+import { advanceOlderHistoryCursor, mergeDetachedTuiHistoryTail, prependOlderTuiHistory, resolveSnapshotHistoryCursor, shouldRequestOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP, TUI_SNAPSHOT_DISPLAY_CAP, type OlderHistoryStatus } from "./olderHistory";
 import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
 import {
   EMPTY_BRACKETED_PASTE_STATE,
@@ -3361,7 +3361,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // a silent gap in the transcript.
   const olderSnapshotBufferBySessionIdRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   // Render mirror of the cursor for the "↑ loading earlier…" indicator.
-  const [olderHistoryStatusBySessionId, setOlderHistoryStatusBySessionId] = useState<Record<string, "loading" | "available" | "exhausted">>({});
+  const [olderHistoryStatusBySessionId, setOlderHistoryStatusBySessionId] = useState<Record<string, OlderHistoryStatus>>({});
+  const detachedHistorySessionIdsRef = useRef(new Set<string>());
+  const detachedLiveEventsBySessionIdRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  const returningHistoryToLatestSessionIdsRef = useRef(new Set<string>());
 	  const providerModelsCacheRef = useRef<Map<string, AgentChatModelInfo[]>>(new Map());
 	  const modelCatalogRef = useRef<AgentChatModelCatalog | null>(null);
 		  const modelCatalogProviderRefreshedAtRef = useRef<Map<string, number>>(new Map());
@@ -3543,6 +3546,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * honours the host's authoritative `hasOlderHistory` signal.
    */
   const seedOlderHistoryCursor = useCallback((sessionId: string, tailStartOffset: number | null | undefined) => {
+    detachedHistorySessionIdsRef.current.delete(sessionId);
+    delete detachedLiveEventsBySessionIdRef.current[sessionId];
     const pageable = tailStartOffset != null && tailStartOffset > 0;
     if (pageable) {
       olderHistoryCursorBySessionIdRef.current[sessionId] = {
@@ -3566,6 +3571,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!sessionId) return;
     delete olderHistoryCursorBySessionIdRef.current[sessionId];
     delete olderSnapshotBufferBySessionIdRef.current[sessionId];
+    detachedHistorySessionIdsRef.current.delete(sessionId);
+    delete detachedLiveEventsBySessionIdRef.current[sessionId];
     setOlderHistoryStatusBySessionId((prev) => {
       if (!(sessionId in prev)) return prev;
       const { [sessionId]: _dropped, ...rest } = prev;
@@ -3576,6 +3583,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const mergeHydratedEventsWithLive = useCallback((sessionId: string, displayEvents: AgentChatEventEnvelope[]) => {
     const existing = eventsBySessionIdRef.current[sessionId] ?? [];
     const pending = pendingChatEnvelopesRef.current.filter((envelope) => envelope.sessionId === sessionId);
+    if (detachedHistorySessionIdsRef.current.has(sessionId)) {
+      // The cached resident window now represents the OLDEST loaded slice.
+      // Never append it after a fresh tail snapshot or it can displace the
+      // latest events. Only live events buffered while detached continue it.
+      return mergeDetachedTuiHistoryTail(
+        displayEvents,
+        [...(detachedLiveEventsBySessionIdRef.current[sessionId] ?? []), ...pending],
+      );
+    }
     if (existing.length === 0 && pending.length === 0) return displayEvents;
     return dedupeTuiEvents(
       [...displayEvents, ...existing, ...pending],
@@ -4627,7 +4643,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       selectActiveSessionId(sessionId);
     }
     if (loadedSessionIdRef.current === sessionId) return;
-    clearLoadedTranscript();
+    const cachedEvents = eventsBySessionIdRef.current[sessionId] ?? [];
+    if (cachedEvents.length > 0) {
+      // Paint the last resident window synchronously. Revalidation below may
+      // replace it, but a chat revisit never flashes an empty transcript.
+      commitActiveSessionEvents(sessionId, cachedEvents);
+      // The cached window remains a valid paging base if background
+      // revalidation is temporarily unavailable.
+      loadedSessionIdRef.current = sessionId;
+    } else {
+      clearLoadedTranscript();
+    }
 
     const conn = connectionRef.current;
     if (!conn) return;
@@ -4641,6 +4667,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (activeSessionIdRef.current !== sessionId) return;
         if (selectedDrawerChatIdRef.current !== sessionId) return;
 
+        if (history.unavailable === true) {
+          setOlderHistoryStatusBySessionId((prev) => (
+            olderHistoryCursorBySessionIdRef.current[sessionId]
+              ? { ...prev, [sessionId]: "error" }
+              : prev
+          ));
+          return;
+        }
         if (history.sessionFound === false) {
           clearOlderHistoryCursor(sessionId);
           loadedSessionIdRef.current = sessionId;
@@ -4689,7 +4723,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setInterrupted(false);
         }
       } catch {
-        // Best-effort preview hydration; leave prior content on transient errors.
+        if (generation !== drawerPreviewGenerationRef.current) return;
+        if (activeSessionIdRef.current !== sessionId) return;
+        if (selectedDrawerChatIdRef.current !== sessionId) return;
+        // Best-effort preview hydration leaves prior content visible, but the
+        // cached cursor must remain explicitly retryable.
+        setOlderHistoryStatusBySessionId((prev) => (
+          olderHistoryCursorBySessionIdRef.current[sessionId]
+            ? { ...prev, [sessionId]: "error" }
+            : prev
+        ));
       }
     })();
   }, [clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
@@ -5291,17 +5334,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // hasn't locally cleared — paging would just resurrect pre-clear events).
     if (loadedSessionIdRef.current !== sessionId) return;
     if (clearedAtRef.current) return;
-    if (eventCountRef.current >= TUI_LOADED_EVENT_CAP) {
-      // Resident-event cap reached: end ALL scroll-back for this session
-      // (drop the snapshot buffer and the byte cursor).
-      delete olderSnapshotBufferBySessionIdRef.current[sessionId];
-      const cappedCursor = olderHistoryCursorBySessionIdRef.current[sessionId];
-      if (cappedCursor) {
-        cappedCursor.hasMore = false;
-        setOlderHistoryStatusBySessionId((prev) => ({ ...prev, [sessionId]: "exhausted" }));
-      }
-      return;
-    }
     // Phase 1 — drain the snapshot remainder locally. The displayed window is
     // the newest 500 snapshot events; everything older from the SAME snapshot
     // sits in this buffer, so prepending its newest chunk is contiguous by
@@ -5314,6 +5346,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setEvents((prev) => {
         const next = prependOlderTuiHistory(prev, chunk);
         if (next === prev) return prev;
+        if (prev.length + chunk.length > TUI_LOADED_EVENT_CAP) {
+          detachedHistorySessionIdsRef.current.add(sessionId);
+        }
         eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, next);
         eventCountRef.current = next.length;
         lastSeenAtBottomEventCountRef.current += next.length - prev.length;
@@ -5333,11 +5368,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const beforeOffset = cursor.beforeOffset;
         if (cursor.lastRequestedBeforeOffset === beforeOffset) break;
         cursor.lastRequestedBeforeOffset = beforeOffset;
-        const page = await getChatHistoryPage(conn, sessionId, beforeOffset);
+        let page: Awaited<ReturnType<typeof getChatHistoryPage>> | null = null;
+        let pageError: unknown = null;
+        for (let retry = 0; retry < 3; retry += 1) {
+          if (retry > 0) {
+            await new Promise((resolve) => setTimeout(resolve, retry === 1 ? 250 : 750));
+          }
+          try {
+            const candidate = await getChatHistoryPage(conn, sessionId, beforeOffset);
+            if (candidate.unavailable === true) {
+              throw new Error("Chat history is temporarily unavailable.");
+            }
+            page = candidate;
+            break;
+          } catch (error) {
+            pageError = error;
+          }
+        }
+        if (!page) throw pageError ?? new Error("Couldn’t load earlier messages.");
+        // Returning to Latest or rehydrating the session replaces the cursor
+        // object. Never let an older in-flight page mutate that fresh window.
+        if (olderHistoryCursorBySessionIdRef.current[sessionId] !== cursor) return;
         const advanced = advanceOlderHistoryCursor(
           { beforeOffset, hasMore: cursor.hasMore },
           page,
-          eventCountRef.current + page.events.length,
         );
         cursor.beforeOffset = advanced.beforeOffset;
         cursor.hasMore = advanced.hasMore;
@@ -5346,6 +5400,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setEvents((prev) => {
             const next = prependOlderTuiHistory(prev, page.events);
             if (next === prev) return prev;
+            if (prev.length + page.events.length > TUI_LOADED_EVENT_CAP) {
+              detachedHistorySessionIdsRef.current.add(sessionId);
+            }
             // Prepending rows above a bottom-anchored viewport keeps the
             // visible rows in place (offset counts up from the newest row),
             // but the dedup-key order and the "new messages since bottom"
@@ -5373,6 +5430,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Transient fetch failure — re-arm the same offset so the next scroll
       // trigger can retry.
       cursor.lastRequestedBeforeOffset = null;
+      setOlderHistoryStatusBySessionId((prev) => ({ ...prev, [sessionId]: "error" }));
     } finally {
       cursor.loading = false;
       setOlderHistoryStatusBySessionId((prev) => {
@@ -5380,10 +5438,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // (re-hydration) while this fetch was in flight — don't resurrect a
         // stale status entry for it.
         if (olderHistoryCursorBySessionIdRef.current[sessionId] !== cursor) return prev;
+        if (prev[sessionId] === "error") return prev;
         return { ...prev, [sessionId]: cursor.hasMore ? "available" : "exhausted" };
       });
     }
   }, []);
+
+  const returnActiveHistoryToLatest = useCallback(async () => {
+    const sessionId = activeSessionIdRef.current;
+    const conn = connectionRef.current;
+    if (!sessionId || !conn || !detachedHistorySessionIdsRef.current.has(sessionId)) return;
+    if (returningHistoryToLatestSessionIdsRef.current.has(sessionId)) return;
+    returningHistoryToLatestSessionIdsRef.current.add(sessionId);
+    try {
+      const history = await getChatHistory(conn, sessionId);
+      // The user may switch chats, or a normal hydration may restore this
+      // session, while the tail request is in flight. Never overwrite that
+      // newer active view with this stale response.
+      if (
+        activeSessionIdRef.current !== sessionId
+        || !detachedHistorySessionIdsRef.current.has(sessionId)
+      ) return;
+      if (history.unavailable === true || history.sessionFound === false) return;
+      const bufferedLive = detachedLiveEventsBySessionIdRef.current[sessionId] ?? [];
+      const deduped = mergeDetachedTuiHistoryTail(history.events, bufferedLive);
+      const { display, buffer } = splitSnapshotForDisplay(deduped);
+      commitActiveSessionEvents(sessionId, display, history.events.length);
+      if (buffer.length > 0) olderSnapshotBufferBySessionIdRef.current[sessionId] = buffer;
+      else delete olderSnapshotBufferBySessionIdRef.current[sessionId];
+      seedOlderHistoryCursor(sessionId, resolveSnapshotHistoryCursor(history));
+      detachedHistorySessionIdsRef.current.delete(sessionId);
+      delete detachedLiveEventsBySessionIdRef.current[sessionId];
+      setChatScrollOffsetRows(0);
+      chatScrollOffsetRowsRef.current = 0;
+    } catch {
+      setOlderHistoryStatusBySessionId((prev) => ({ ...prev, [sessionId]: "error" }));
+    } finally {
+      returningHistoryToLatestSessionIdsRef.current.delete(sessionId);
+    }
+  }, [commitActiveSessionEvents, seedOlderHistoryCursor]);
 
   // Infinite scroll-back trigger: the user is at (or within ~3 rows of) the
   // top of the loaded transcript in the ACTIVE single-chat view. Wheel and
@@ -5391,14 +5484,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // is the single trigger point.
   useEffect(() => {
     if (!activeSessionId || gridViewActive || activeTerminalSession || selectedAgentSnapshot) return;
-    if (chatScrollMaxOffset <= 0) return;
-    if (effectiveChatScrollOffsetRows < chatScrollMaxOffset - 3) return;
     // Local snapshot buffer first, then the byte cursor — sessions with a
     // >500-event snapshot are drainable even when the transcript was never
     // file-truncated (no byte cursor at all).
     const buffered = olderSnapshotBufferBySessionIdRef.current[activeSessionId]?.length ?? 0;
     const cursor = olderHistoryCursorBySessionIdRef.current[activeSessionId];
-    if (buffered === 0 && (!cursor || !cursor.hasMore || cursor.loading)) return;
+    if (!shouldRequestOlderTuiHistory({
+      scrollMaxOffset: chatScrollMaxOffset,
+      scrollOffset: effectiveChatScrollOffsetRows,
+      bufferedEventCount: buffered,
+      cursor: cursor ?? null,
+      status: olderHistoryStatusBySessionId[activeSessionId] ?? null,
+    })) return;
     void loadOlderHistoryForActiveSession();
   }, [
     activeSessionId,
@@ -5407,6 +5504,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     effectiveChatScrollOffsetRows,
     gridViewActive,
     loadOlderHistoryForActiveSession,
+    olderHistoryStatusBySessionId,
     selectedAgentSnapshot,
   ]);
 
@@ -7205,7 +7303,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (shouldHydrateHistory) {
         const history = await getChatHistory(conn, nextSessionId);
         if (!isCurrentRefresh()) return;
-        if (history.sessionFound === false) {
+        if (history.unavailable === true) {
+          nextEvents = eventsBySessionIdRef.current[nextSessionId] ?? eventsRef.current;
+          loadedSessionIdRef.current = null;
+        } else if (history.sessionFound === false) {
           selectedSessionFound = false;
           clearOlderHistoryCursor(nextSessionId);
           setCurrentGoal(null);
@@ -7798,6 +7899,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const next = { ...prev };
       for (const [sessionId, envelopes] of grouped) {
+        if (detachedHistorySessionIdsRef.current.has(sessionId)) {
+          detachedLiveEventsBySessionIdRef.current[sessionId] = [
+            ...(detachedLiveEventsBySessionIdRef.current[sessionId] ?? []),
+            ...envelopes,
+          ].slice(-TUI_SNAPSHOT_DISPLAY_CAP);
+          continue;
+        }
         const existing = prev[sessionId] ?? [];
         // Keep the live-append window at least as large as what's already
         // loaded: scroll-back paging can grow a session past the default 500,
@@ -7811,7 +7919,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // (2) Active-session transcript — incremental reserve/append, batched into a
     // single setState so a burst of tokens triggers one React render, not N.
     const activeId = activeSessionIdRef.current;
-    if (activeId) {
+    if (activeId && !detachedHistorySessionIdsRef.current.has(activeId)) {
       const reserved: Array<{ envelope: AgentChatEventEnvelope; key: string }> = [];
       for (const envelope of pending) {
         if (envelope.sessionId !== activeId) continue;
@@ -13459,7 +13567,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (end) {
+        if (
+          activeSessionId
+          && detachedHistorySessionIdsRef.current.has(activeSessionId)
+        ) {
+          void returnActiveHistoryToLatest();
+          return;
+        }
         setChatScrollOffset(0);
+        return;
+      }
+      if (
+        !paletteOpen
+        && isCtrlInput(input, key, "r")
+        && promptRef.current.length === 0
+        && activeSessionId
+        && olderHistoryStatusBySessionId[activeSessionId] === "error"
+      ) {
+        setOlderHistoryStatusBySessionId((prev) => ({ ...prev, [activeSessionId]: "available" }));
+        void loadOlderHistoryForActiveSession();
         return;
       }
       if (activeMentionRange && mentionSuggestions.length) {

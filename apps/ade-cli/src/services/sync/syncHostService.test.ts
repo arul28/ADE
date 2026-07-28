@@ -1034,6 +1034,14 @@ describe("brain project actions fallback handler", () => {
         action: action as PersonalChatAction,
         result: action === "getEventHistory"
           ? { events: [], truncated: false }
+          : action === "getEventHistoryPage"
+            ? {
+                sessionId: "personal-1",
+                events: [],
+                startOffset: 1_024,
+                hasMore: true,
+                sessionFound: true,
+              }
           : [{ sessionId: "personal-1", surface: "personal" }],
       })),
       streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false })),
@@ -1120,6 +1128,42 @@ describe("brain project actions fallback handler", () => {
         sessionId: "personal-1",
         events: [],
         turnActive: true,
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "personal-history",
+        payload: {
+          sessionId: "personal-1",
+          chatScope: "personal",
+          beforeOffset: 2_048,
+        },
+      }));
+      const historyPage = await waitForEnvelope(envelopes, "chat_history", "personal-history");
+      expect(historyPage.payload).toMatchObject({
+        sessionId: "personal-1",
+        startOffset: 1_024,
+        hasMore: true,
+        sessionFound: true,
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "unsupported-project-history",
+        payload: {
+          sessionId: "project-1",
+          beforeOffset: 2_048,
+        },
+      }));
+      const unsupportedPage = await waitForEnvelope(
+        envelopes,
+        "chat_history",
+        "unsupported-project-history",
+      );
+      expect(unsupportedPage.payload).toMatchObject({
+        sessionId: "project-1",
+        startOffset: 2_048,
+        unavailable: true,
       });
       const event: AgentChatEventEnvelope = {
         sessionId: "personal-1",
@@ -7903,6 +7947,150 @@ describe("chat_subscribe snapshots", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("advertises the snapshot cursor and pages the subscribed chat without another runtime route", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-page.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "chat-page",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "exited",
+      runtimeState: "exited",
+      lastOutputPreview: "",
+    };
+    const olderEvent: AgentChatEventEnvelope = {
+      sessionId: session.id,
+      timestamp: "2026-07-28T10:00:00.000Z",
+      sequence: 1,
+      event: { type: "user_message", text: "older prompt" },
+    };
+    const getChatEventHistoryPage = vi.fn().mockResolvedValue({
+      sessionId: session.id,
+      events: [olderEvent],
+      startOffset: 2_048,
+      hasMore: true,
+      sessionFound: true,
+    });
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-page",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockResolvedValue({
+          sessionId: session.id,
+          events: [],
+          truncated: true,
+          transcriptTruncated: true,
+          windowTruncated: false,
+          sessionFound: true,
+          hasOlderHistory: true,
+          tailStartOffset: 4_096,
+        }),
+        getChatEventHistoryPage,
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "idle" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-page");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-page-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id, maxBytes: 256 * 1_024 },
+      }));
+      const snapshot = await waitForEnvelope(
+        peer.envelopes,
+        "chat_subscribe",
+        "chat-page-subscribe",
+      );
+      expect(snapshot.payload).toMatchObject({
+        sessionId: session.id,
+        cursorKind: "byte",
+        tailStartOffset: 4_096,
+        hasOlderHistory: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-page-history",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          beforeOffset: 4_096,
+          maxBytes: 256 * 1_024,
+        },
+      }));
+      const page = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "chat-page-history",
+      );
+      expect(page.payload).toEqual({
+        sessionId: session.id,
+        events: [olderEvent],
+        startOffset: 2_048,
+        hasMore: true,
+        sessionFound: true,
+      });
+      expect(getChatEventHistoryPage).toHaveBeenCalledWith(session.id, {
+        beforeOffset: 4_096,
+        maxBytes: 256 * 1_024,
+        signal: expect.any(AbortSignal),
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-page-wrong-scope",
+        projectId: "project-1",
+        payload: {
+          sessionId: session.id,
+          projectId: "foreign-project",
+          beforeOffset: 2_048,
+        },
+      }));
+      const refused = await waitForEnvelope(
+        peer.envelopes,
+        "chat_history",
+        "chat-page-wrong-scope",
+      );
+      expect(refused.payload).toMatchObject({
+        sessionId: session.id,
+        startOffset: 2_048,
+        sessionFound: false,
+        unavailable: true,
+      });
+      expect(getChatEventHistoryPage).toHaveBeenCalledTimes(1);
+    } finally {
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

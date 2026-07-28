@@ -31,6 +31,7 @@ import {
 } from "./AdeWordmark";
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
+import type { OlderHistoryStatus } from "../olderHistory";
 import {
   MOSAIC_FENCE_LANGUAGE,
   parseMosaicCard,
@@ -1352,8 +1353,22 @@ function sliceRows(
   maxRows?: number,
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
-  olderHistoryLoading = false,
+  olderHistoryStatus: OlderHistoryStatus | null = null,
 ): RenderedChatRow[] {
+  const remoteOlderAvailable = olderHistoryStatus === "loading"
+    || olderHistoryStatus === "available"
+    || olderHistoryStatus === "error";
+  const olderIndicator = (): RenderedChatRow => ({
+    id: "older-indicator",
+    tone: "indicator",
+    text: olderHistoryStatus === "loading"
+      ? "↑ loading earlier…"
+      : olderHistoryStatus === "error"
+        ? "↑ couldn’t load earlier · Ctrl+R to retry"
+        : "↑ older messages",
+    dim: true,
+    rail: null,
+  });
   // Preserve object identity when sourceRowIndex is already correct (pre-indexed
   // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
   // on every spinner tick. Rows without a matching index are cloned as before.
@@ -1363,10 +1378,13 @@ function sliceRows(
   if (!maxRows || maxRows <= 0) return indexedRows;
   const viewportRows = Math.max(1, maxRows);
   if (indexedRows.length <= viewportRows) {
+    const visible = remoteOlderAvailable
+      ? [olderIndicator(), ...indexedRows.slice(-Math.max(0, viewportRows - 1))]
+      : [...indexedRows];
     return [
-      ...indexedRows,
-      ...Array.from({ length: viewportRows - indexedRows.length }, (_, index) => (
-        spacerRow(`scroll-filler:${indexedRows.length + index}`)
+      ...visible,
+      ...Array.from({ length: viewportRows - visible.length }, (_, index) => (
+        spacerRow(`scroll-filler:${visible.length + index}`)
       )),
     ];
   }
@@ -1375,7 +1393,7 @@ function sliceRows(
   const hasNewer = offset > 0;
   let contentRows = Math.max(1, viewportRows - (hasNewer ? 1 : 0));
   let start = Math.max(0, end - contentRows);
-  const hasOlder = start > 0;
+  const hasOlder = start > 0 || remoteOlderAvailable;
   if (hasOlder) {
     contentRows = Math.max(1, viewportRows - 1 - (hasNewer ? 1 : 0));
     start = Math.max(0, end - contentRows);
@@ -1385,13 +1403,7 @@ function sliceRows(
   if (hasOlder) {
     // While a scroll-back page fetch is in flight the indicator swaps text in
     // place — same row, same count — so the scroll math is untouched.
-    result.push({
-      id: "older-indicator",
-      tone: "indicator",
-      text: olderHistoryLoading ? "↑ loading earlier…" : "↑ older messages",
-      dim: true,
-      rail: null,
-    });
+    result.push(olderIndicator());
   }
   result.push(...visible);
   while (result.length < viewportRows - (hasNewer ? 1 : 0)) {
@@ -1964,7 +1976,7 @@ function ChatViewComponent({
    * is identical in all states); "available"/"exhausted"/null keep the
    * existing indicator behavior.
    */
-  olderHistory?: "loading" | "available" | "exhausted" | null;
+  olderHistory?: OlderHistoryStatus | null;
   selection?: ChatTextSelection | null;
   width?: number;
   focused?: boolean;
@@ -2053,7 +2065,7 @@ function ChatViewComponent({
     } else if (interrupted) {
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
-    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory === "loading");
+    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory);
   }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds, activeToolEntries]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;

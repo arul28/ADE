@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import {
   advanceOlderHistoryCursor,
+  mergeDetachedTuiHistoryTail,
   prependOlderTuiHistory,
   resolveSnapshotHistoryCursor,
+  shouldRequestOlderTuiHistory,
   splitSnapshotForDisplay,
   takeNewestChunk,
   TUI_LOADED_EVENT_CAP,
@@ -120,13 +122,94 @@ describe("prependOlderTuiHistory", () => {
     expect(next.map((entry) => entry.sequence)).toEqual([7, 8, 10]);
   });
 
-  it("keeps the newest events when the cap is exceeded", () => {
+  it("keeps the newly loaded oldest window when the cap is exceeded", () => {
     const existing = [envelope(5), envelope(6), envelope(7)];
     const older = [envelope(1), envelope(2), envelope(3), envelope(4)];
 
     const next = prependOlderTuiHistory(existing, older, 5);
 
-    expect(next.map((entry) => entry.sequence)).toEqual([3, 4, 5, 6, 7]);
+    expect(next.map((entry) => entry.sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect(next).toHaveLength(5);
+    expect(next.at(-1)?.sequence).toBe(5);
+  });
+});
+
+describe("shouldRequestOlderTuiHistory", () => {
+  it("backfills an underfilled viewport without waiting for a scroll gesture", () => {
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 0,
+      scrollOffset: 0,
+      bufferedEventCount: 0,
+      cursor: { hasMore: true, loading: false },
+      status: "available",
+    })).toBe(true);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 0,
+      scrollOffset: 0,
+      bufferedEventCount: 3,
+      cursor: null,
+      status: null,
+    })).toBe(true);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 0,
+      scrollOffset: 0,
+      bufferedEventCount: 0,
+      cursor: null,
+      status: "exhausted",
+    })).toBe(false);
+  });
+
+  it("prefetches only near the loaded top and coalesces loading/error states", () => {
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 100,
+      scrollOffset: 97,
+      bufferedEventCount: 0,
+      cursor: { hasMore: true, loading: false },
+      status: "available",
+    })).toBe(true);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 100,
+      scrollOffset: 50,
+      bufferedEventCount: 0,
+      cursor: { hasMore: true, loading: false },
+      status: "available",
+    })).toBe(false);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 100,
+      scrollOffset: 100,
+      bufferedEventCount: 0,
+      cursor: { hasMore: true, loading: true },
+      status: "loading",
+    })).toBe(false);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 100,
+      scrollOffset: 100,
+      bufferedEventCount: 3,
+      cursor: { hasMore: true, loading: false },
+      status: "error",
+    })).toBe(true);
+    expect(shouldRequestOlderTuiHistory({
+      scrollMaxOffset: 100,
+      scrollOffset: 100,
+      bufferedEventCount: 0,
+      cursor: { hasMore: true, loading: false },
+      status: "error",
+    })).toBe(false);
+  });
+});
+
+describe("mergeDetachedTuiHistoryTail", () => {
+  it("rehydrates Latest from the fresh snapshot plus buffered live events", () => {
+    const duplicatedSeam = envelope(100);
+    const merged = mergeDetachedTuiHistoryTail(
+      [envelope(98), envelope(99), duplicatedSeam],
+      [duplicatedSeam, envelope(101)],
+    );
+
+    expect(merged.map((entry) => entry.sequence)).toEqual([98, 99, 100, 101]);
+    expect(merged).toHaveLength(4);
+    expect(merged.filter((entry) => entry.sequence === 100)).toHaveLength(1);
+    expect(merged.at(-1)?.sequence).toBe(101);
   });
 });
 
@@ -249,7 +332,6 @@ describe("advanceOlderHistoryCursor", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 4096, hasMore: true },
       { startOffset: 2048, hasMore: true },
-      100,
     );
     expect(next).toEqual({ beforeOffset: 2048, hasMore: true });
   });
@@ -258,7 +340,6 @@ describe("advanceOlderHistoryCursor", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 4096, hasMore: true },
       { startOffset: 0, hasMore: false },
-      100,
     );
     expect(next).toEqual({ beforeOffset: 0, hasMore: false });
   });
@@ -267,7 +348,6 @@ describe("advanceOlderHistoryCursor", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 4096, hasMore: true },
       { startOffset: 0, hasMore: true },
-      100,
     );
     expect(next).toEqual({ beforeOffset: 0, hasMore: false });
   });
@@ -276,7 +356,6 @@ describe("advanceOlderHistoryCursor", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 2048, hasMore: true },
       { startOffset: 2048, hasMore: true },
-      100,
     );
     expect(next).toEqual({ beforeOffset: 2048, hasMore: false });
   });
@@ -285,17 +364,27 @@ describe("advanceOlderHistoryCursor", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 2048, hasMore: true },
       { startOffset: 1024, hasMore: true, sessionFound: false },
-      100,
     );
     expect(next).toEqual({ beforeOffset: 2048, hasMore: false });
   });
 
-  it("ends paging once the resident event cap is reached", () => {
+  it("preserves the cursor when the runtime is temporarily unavailable", () => {
+    const next = advanceOlderHistoryCursor(
+      { beforeOffset: 4096, hasMore: true },
+      { startOffset: 0, hasMore: false, sessionFound: false, unavailable: true },
+    );
+    expect(next).toEqual({ beforeOffset: 4096, hasMore: true });
+    expect(next.beforeOffset).toBe(4096);
+    expect(next.hasMore).toBe(true);
+  });
+
+  it("keeps paging with a sliding resident window once the cap is reached", () => {
     const next = advanceOlderHistoryCursor(
       { beforeOffset: 4096, hasMore: true },
       { startOffset: 2048, hasMore: true },
-      TUI_LOADED_EVENT_CAP,
     );
-    expect(next).toEqual({ beforeOffset: 2048, hasMore: false });
+    expect(next).toEqual({ beforeOffset: 2048, hasMore: true });
+    expect(next.beforeOffset).toBeLessThan(4096);
+    expect(next.hasMore).toBe(true);
   });
 });

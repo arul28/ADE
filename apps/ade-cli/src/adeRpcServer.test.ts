@@ -3402,6 +3402,23 @@ describe("adeRpcServer", () => {
 
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
     const fixture = createRuntime();
+    const getChatEventHistory = vi.fn(async (sessionId: string) => ({
+      sessionId,
+      events: [],
+      sessionFound: true,
+    }));
+    const getChatEventHistoryPage = vi.fn(async (
+      sessionId: string,
+      options: { beforeOffset: number },
+    ) => ({
+      sessionId,
+      events: [],
+      startOffset: options.beforeOffset,
+      hasMore: options.beforeOffset > 0,
+      sessionFound: true,
+    }));
+    (fixture.runtime.agentChatService as any).getChatEventHistory = getChatEventHistory;
+    (fixture.runtime.agentChatService as any).getChatEventHistoryPage = getChatEventHistoryPage;
     const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
     const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
     const otherTerminal = { id: "terminal-2", laneId: "lane-2", ptyId: "pty-2", chatSessionId: "chat-2" };
@@ -3462,6 +3479,22 @@ describe("adeRpcServer", () => {
     expect(deniedChatRead.isError).toBe(true);
     expect(fixture.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
 
+    const deniedChatHistory = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getChatEventHistory",
+      args: { sessionId: "chat-2", maxBytes: 65_536 },
+    });
+    expect(deniedChatHistory.isError).toBe(true);
+    expect(getChatEventHistory).not.toHaveBeenCalled();
+
+    const deniedChatHistoryPage = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getChatEventHistoryPage",
+      args: { sessionId: "chat-2", beforeOffset: 4_096, maxBytes: 65_536 },
+    });
+    expect(deniedChatHistoryPage.isError).toBe(true);
+    expect(getChatEventHistoryPage).not.toHaveBeenCalled();
+
     const deniedChatSend = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "sendMessage",
@@ -3479,6 +3512,27 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
       sessionId: "chat-1",
       limit: 10,
+    });
+
+    const ownChatHistory = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getChatEventHistory",
+      args: { maxBytes: 65_536 },
+    });
+    expect(ownChatHistory?.isError).toBeUndefined();
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
+      maxBytes: 65_536,
+    });
+
+    const ownChatHistoryPage = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getChatEventHistoryPage",
+      args: { beforeOffset: 4_096, maxBytes: 65_536 },
+    });
+    expect(ownChatHistoryPage?.isError).toBeUndefined();
+    expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-1", {
+      beforeOffset: 4_096,
+      maxBytes: 65_536,
     });
 
     const ownChatSend = await callTool(handler, "run_ade_action", {
@@ -4256,6 +4310,35 @@ describe("adeRpcServer", () => {
     });
     expect(scheduledWorkCancel.isError).toBe(true);
     expect(fixture.runtime.agentChatService.cancelScheduledWork).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit raw chat history available to unbound ade CLI callers", async () => {
+    const fixture = createRuntime();
+    const getChatEventHistoryPage = vi.fn(async (
+      sessionId: string,
+      options: { beforeOffset: number },
+    ) => ({
+      sessionId,
+      events: [],
+      startOffset: options.beforeOffset,
+      hasMore: options.beforeOffset > 0,
+      sessionFound: true,
+    }));
+    (fixture.runtime.agentChatService as any).getChatEventHistoryPage = getChatEventHistoryPage;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+
+    const historyPage = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getChatEventHistoryPage",
+      args: { sessionId: "chat-2", beforeOffset: 4_096, maxBytes: 65_536 },
+    });
+
+    expect(historyPage?.isError).toBeUndefined();
+    expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-2", {
+      beforeOffset: 4_096,
+      maxBytes: 65_536,
+    });
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

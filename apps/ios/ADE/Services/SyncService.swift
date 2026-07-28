@@ -519,13 +519,12 @@ private let syncTerminalSubscriptionMaxBytes = 240_000
 /// real scrollback instead of a trimmed preview string.
 private let syncTerminalStreamMaxBytes = 512_000
 private let syncTerminalHistoryMaxBytes = 262_144
-private let syncChatSubscriptionMaxBytes = 2_000_000
+private let syncChatSubscriptionMaxBytes = 256 * 1024
 private let syncChatHistoryTailPageProbeOffset = 1_000_000_000
 private let syncChatHistoryTailPageMaxBytes = 600_000
-// 512KB, up from 160KB: the old budget silently truncated reasoning-heavy
-// turns on cellular/Tailscale routes. Chunked envelopes plus off-main decode
-// make the larger snapshot cheap to receive.
-private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
+// A bounded tail keeps chat switches instant on constrained routes. Complete
+// reasoning remains reachable through the same byte-cursor paging contract.
+private let syncReducedLoadChatSubscriptionMaxBytes = 256 * 1024
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
 private let chatEventHistoryMaxSessions = 64
@@ -2270,9 +2269,27 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
     "terminal_history",
     "chat_subscribe",
     "chat_unsubscribe",
+    "chat_history",
   ]
   guard projectScopedTypes.contains(type) else { return nil }
   return syncNormalizedCommandScopeValue(activeProjectId)
+}
+
+/// Resolve the cursor state carried by a full `chat_subscribe` snapshot.
+///
+/// `nil` means the snapshot did not establish a cursor (legacy host, or a
+/// malformed modern ack) and callers must preserve any canonical-history
+/// cursor they already have. Only an explicit `hasOlderHistory: false` is an
+/// authoritative exhausted cursor.
+func syncChatSubscribeHistoryCursor(
+  hasOlderHistory: Bool?,
+  tailStartOffset: Int?,
+  cursorKind: String? = nil
+) -> Int? {
+  if hasOlderHistory == false { return 0 }
+  if let cursorKind, cursorKind != "byte" { return nil }
+  guard let tailStartOffset, tailStartOffset > 0 else { return nil }
+  return tailStartOffset
 }
 
 /// Lane ids that must be hydrated before a `work.listSessions` snapshot can be
@@ -2731,6 +2748,7 @@ final class SyncService: ObservableObject {
   private var terminalSnapshotRecoveryDelayOverrideForTesting: UInt64?
   #endif
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
+  private var chatHistoryCursorBySession: [String: Int] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   /// Highest host-assigned `seq` applied per chat session. Sent back as
   /// `sinceSeq` on re-subscribe so the host can replay exactly the missed
@@ -2937,6 +2955,7 @@ final class SyncService: ObservableObject {
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
+  private var supportsChatHistoryPaging = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -8500,6 +8519,21 @@ final class SyncService: ObservableObject {
     chatEventEnvelopesBySession[sessionId] ?? []
   }
 
+  func chatOlderHistoryCursor(sessionId: String) -> Int? {
+    guard let cursor = chatHistoryCursorBySession[sessionId], cursor > 0 else { return nil }
+    return cursor
+  }
+
+  /// `nil` means no full subscribe snapshot has established a cursor yet;
+  /// `0` is an authoritative exhausted cursor.
+  func chatOlderHistoryCursorState(sessionId: String) -> Int? {
+    chatHistoryCursorBySession[sessionId]
+  }
+
+  func supportsSubscribedChatHistory(sessionId: String) -> Bool {
+    supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
+  }
+
   @discardableResult
   func pruneChatEventHistory(sessionId: String, keepingTail limit: Int) -> [AgentChatEventEnvelope] {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9750,6 +9784,28 @@ final class SyncService: ObservableObject {
     beforeOffset: Int,
     maxBytes: Int? = nil
   ) async throws -> AgentChatEventHistoryPage {
+    if supportsChatHistoryPaging,
+       subscribedChatSessionIds.contains(sessionId) {
+      let requestId = makeRequestId()
+      var payload = chatSubscriptionPayload(
+        sessionId: sessionId,
+        maxBytes: nil,
+        includeSinceSeq: false
+      )
+      payload["beforeOffset"] = max(0, beforeOffset)
+      if let maxBytes, maxBytes > 0 {
+        payload["maxBytes"] = max(1_024, min(syncChatHistoryTailPageMaxBytes, maxBytes))
+      }
+      let raw = try await awaitResponse(
+        requestId: requestId,
+        disconnectOnTimeout: false,
+        timeoutMessage: "Timed out loading earlier chat messages.",
+        timeoutNanoseconds: 8_000_000_000
+      ) {
+        self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
+      }
+      return try decode(raw, as: AgentChatEventHistoryPage.self)
+    }
     var args: [String: Any] = ["sessionId": sessionId, "beforeOffset": beforeOffset]
     if let maxBytes, maxBytes > 0 {
       args["maxBytes"] = maxBytes
@@ -9758,6 +9814,8 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(
       action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
       args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistoryPage.self
@@ -13990,6 +14048,7 @@ final class SyncService: ObservableObject {
       return false
     }
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
+    supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
     supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
@@ -14468,7 +14527,7 @@ final class SyncService: ObservableObject {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "file_response", "terminal_snapshot", "terminal_history":
+    case "command_result", "file_response", "terminal_snapshot", "terminal_history", "chat_history":
       resolve(requestId: requestId, result: .success(payload))
     case "chat_subscribe":
       if supportsChatStreaming,
@@ -14485,6 +14544,13 @@ final class SyncService: ObservableObject {
           // from the next live event — otherwise we would discard the first
           // events of the new stream as "old".
           chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
+          if let cursor = syncChatSubscribeHistoryCursor(
+            hasOlderHistory: snapshot.hasOlderHistory,
+            tailStartOffset: snapshot.tailStartOffset,
+            cursorKind: snapshot.cursorKind
+          ) {
+            updateChatHistoryCursor(sessionId: snapshot.sessionId, cursor: cursor)
+          }
         }
         if resumed {
           mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
@@ -15977,6 +16043,17 @@ final class SyncService: ObservableObject {
     markChatEventsChanged(immediate: true)
   }
 
+  private func updateChatHistoryCursor(sessionId: String, cursor: Int) {
+    let normalizedCursor = max(0, cursor)
+    guard chatHistoryCursorBySession[sessionId] != normalizedCursor else { return }
+    chatHistoryCursorBySession[sessionId] = normalizedCursor
+    // The destination's live observation task owns both transcript events and
+    // the page cursor. Publish cursor-only subscribe acks even when the event
+    // tail was identical to the cached window.
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    markChatEventsChanged(immediate: true)
+  }
+
   private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
     var seen = Set<String>()
     var unique: [AgentChatEventEnvelope] = []
@@ -16279,6 +16356,7 @@ final class SyncService: ObservableObject {
     subscribedChatSessionIds.removeAll()
     chatSubscriptionsNeedingRemoteActivation.removeAll()
     recentFullChatSnapshotRequestBySession.removeAll()
+    chatHistoryCursorBySession.removeAll()
     // Turn-active hints are scoped to the live connection's event stream —
     // a stale "running" hint must not survive a project switch or reconnect.
     chatTurnActiveHintBySession.removeAll()

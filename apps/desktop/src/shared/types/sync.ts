@@ -3,6 +3,7 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatPermissionMode,
 } from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
@@ -482,6 +483,14 @@ export type SyncFeatureFlags = {
    */
   crossProjectChat?: {
     enabled: boolean;
+  };
+  /**
+   * Cursor-paged chat history over the already-authorized chat subscription.
+   * Works for project, personal, and foreign-project quick-look scopes without
+   * activating a runtime just to read older transcript bytes.
+   */
+  chatHistoryPaging?: {
+    enabled: true;
   };
   projectCatalog: {
     enabled: boolean;
@@ -1256,6 +1265,12 @@ export type SyncChatSubscribeSnapshotPayload = {
   sessionId: string;
   capturedAt: string;
   truncated: boolean;
+  /** Logical byte cursor for the first event represented by this tail. */
+  tailStartOffset?: number;
+  /** Authoritative older-page availability for this snapshot. */
+  hasOlderHistory?: boolean;
+  /** Additive cursor discriminator for future non-file transcript stores. */
+  cursorKind?: "byte";
   events: AgentChatEventEnvelope[];
   /**
    * True when the host honored `sinceSeq` and replayed buffered events
@@ -1284,6 +1299,13 @@ export type SyncChatUnsubscribePayload = {
   projectId?: string;
   projectRootPath?: string;
 };
+
+export type SyncChatHistoryRequestPayload = SyncChatUnsubscribePayload & {
+  beforeOffset: number;
+  maxBytes?: number;
+};
+
+export type SyncChatHistoryResponsePayload = AgentChatEventHistoryPage;
 
 /**
  * Live chat event envelope. `seq` is a host-assigned, per-session,
@@ -1808,6 +1830,10 @@ export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_hist
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
+export type SyncChatHistoryEnvelope = SyncEnvelopeWithPayload<
+  "chat_history",
+  SyncChatHistoryRequestPayload | SyncChatHistoryResponsePayload
+>;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
@@ -1879,6 +1905,7 @@ export type SyncEnvelope =
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
+  | SyncChatHistoryEnvelope
   | SyncBrainStatusEnvelope
   | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope

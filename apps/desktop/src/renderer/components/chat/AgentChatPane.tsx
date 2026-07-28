@@ -760,6 +760,8 @@ const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
 const OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2_400];
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
+const INITIAL_SELECTED_CHAT_HISTORY_EVENTS = 1_000;
+const INITIAL_SELECTED_CHAT_HISTORY_BYTES = 256 * 1024;
 const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 const MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES = 32 * 1024 * 1024;
@@ -795,7 +797,13 @@ const EMPTY_CHAT_PIN_ARGS: readonly [] = [];
 function chatPinArgsFor(
   ref: { current: OpenProjectBinding | null },
 ): readonly [] | readonly [OpenProjectBinding] {
-  return ref.current ? [ref.current] : EMPTY_CHAT_PIN_ARGS;
+  return chatPinArgsForBinding(ref.current);
+}
+
+function chatPinArgsForBinding(
+  pin: OpenProjectBinding | null,
+): readonly [] | readonly [OpenProjectBinding] {
+  return pin ? [pin] : EMPTY_CHAT_PIN_ARGS;
 }
 
 type DraftLaunchLaneTarget = {
@@ -3963,6 +3971,15 @@ export function AgentChatPane({
   const preserveDraftAcrossMachineSwitchRef = useRef(false);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
+  // `selectedSessionId` trails a prop-driven chat switch by one render. Resolve
+  // the visible session before deriving either its events or its runtime pin so
+  // Retry can never send the incoming session id to the outgoing machine.
+  const renderedSessionId = resolveRenderedChatSessionId({
+    lockSessionId,
+    initialSessionId,
+    appliedInitialSessionId: appliedInitialSessionIdRef.current,
+    selectedSessionId,
+  });
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -3985,6 +4002,27 @@ export function AgentChatPane({
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  const renderedSession = useMemo(
+    () => (
+      renderedSessionId
+        ? sessions.find((session) => session.sessionId === renderedSessionId)
+          ?? (initialSessionSummary?.sessionId === renderedSessionId ? initialSessionSummary : null)
+        : null
+    ),
+    [initialSessionSummary, renderedSessionId, sessions],
+  );
+  const foreignRenderedLaneId = useRootAppStore((state) => {
+    if (!renderedSessionId || renderedSession) return null;
+    for (const machine of Object.values(state.crossMachineLanesByMachineId)) {
+      const session = machine.sessions.find((candidate) => candidate.id === renderedSessionId);
+      if (session) return session.laneId;
+    }
+    return null;
+  });
+  const renderedChatRuntimePin = useMemo(
+    () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
+    [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
+  );
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -4151,12 +4189,6 @@ export function AgentChatPane({
   // at a different chat. Render against the incoming (prop-derived) id instead:
   // the live event map when it already holds that chat, else its cached view,
   // else nothing — never the previous chat's events.
-  const renderedSessionId = resolveRenderedChatSessionId({
-    lockSessionId,
-    initialSessionId,
-    appliedInitialSessionId: appliedInitialSessionIdRef.current,
-    selectedSessionId,
-  });
   const selectedEvents = renderedSessionId
     ? eventsBySession[renderedSessionId]
       ?? peekAgentChatSessionViewCache(renderedSessionId)?.events
@@ -6113,7 +6145,16 @@ export function AgentChatPane({
     return true;
   }, [applyOlderHistoryCursor, initialSessionSummary]);
 
-  const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
+  const loadHistory = useCallback(async (
+    sessionId: string,
+    options?: { force?: boolean; pin?: OpenProjectBinding | null },
+  ) => {
+    // Freeze routing for this request. Reading chatRuntimePinRef after an await
+    // can cross a project transition and splice the result into the wrong chat.
+    const historyPin = options && "pin" in options
+      ? options.pin ?? null
+      : chatRuntimePinRef.current;
+    const historyPinArgs = chatPinArgsForBinding(historyPin);
     if (options?.force) {
       loadedHistoryRef.current.delete(sessionId);
     }
@@ -6165,8 +6206,9 @@ export function AgentChatPane({
         if (typeof window.ade.agentChat.getEventHistory === "function") {
           const snapshot: AgentChatEventHistorySnapshot = await window.ade.agentChat.getEventHistory({
             sessionId,
-            maxEvents: MAX_SELECTED_CHAT_SESSION_EVENTS,
-          }, ...chatPinArgsFor(chatRuntimePinRef));
+            maxEvents: INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
+            maxBytes: INITIAL_SELECTED_CHAT_HISTORY_BYTES,
+          }, ...historyPinArgs);
           if (snapshot?.sessionId === sessionId && snapshot.unavailable === true) {
             applyHistoryMiss({ unavailable: true });
             return;
@@ -6176,7 +6218,7 @@ export function AgentChatPane({
             return;
           }
           if (snapshot?.sessionId === sessionId && !snapshot.events?.length && snapshot.sessionFound !== true) {
-            const summary = await window.ade.agentChat.getSummary({ sessionId }, ...chatPinArgsFor(chatRuntimePinRef)).catch(() => null);
+            const summary = await window.ade.agentChat.getSummary({ sessionId }, ...historyPinArgs).catch(() => null);
             if (!summary) {
               applyHistoryMiss({ unavailable: snapshot.unavailable });
               return;
@@ -6192,7 +6234,7 @@ export function AgentChatPane({
         usedSnapshotPath = false;
       }
       if (!usedSnapshotPath) {
-        const summary = await window.ade.sessions.get(sessionId, ...chatPinArgsFor(chatRuntimePinRef));
+        const summary = await window.ade.sessions.get(sessionId, ...historyPinArgs);
         if (!summary || !isChatToolType(summary.toolType)) {
           // Clear the loaded flag so a subsequent remount/tab switch can retry.
           // Without this, a transient lookup miss (e.g. session summary not yet
@@ -6205,7 +6247,7 @@ export function AgentChatPane({
           sessionId,
           maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
           raw: true
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, ...historyPinArgs);
         parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       }
 
@@ -6299,7 +6341,10 @@ export function AgentChatPane({
    * shown: a single blip on a remote hop should not make the user look at (and
    * press) a retry affordance for something we can just do ourselves.
    */
-  const loadOlderHistory = useCallback(async (sessionId: string) => {
+  const loadOlderHistory = useCallback(async (
+    sessionId: string,
+    pin: OpenProjectBinding | null,
+  ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null || cursor <= 0) return;
     if (olderHistoryInFlightRef.current.has(sessionId)) return;
@@ -6319,7 +6364,7 @@ export function AgentChatPane({
           sessionId,
           beforeOffset,
           maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-        }, ...chatPinArgsFor(chatRuntimePinRef));
+        }, ...chatPinArgsForBinding(pin));
         // `unavailable` is "we could not reach the runtime", NOT "this chat is
         // gone" — it arrives with `sessionFound: false` (preload synthesises
         // exactly that shape), so it MUST be caught first. Treating it as a
@@ -6419,11 +6464,6 @@ export function AgentChatPane({
       setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
     }
   }, [applyOlderHistoryCursor, lockSessionId, waitBeforeOlderHistoryRetry]);
-
-  const loadOlderHistoryForSelectedSession = useCallback(() => {
-    const sessionId = selectedSessionIdRef.current;
-    if (sessionId) void loadOlderHistory(sessionId);
-  }, [loadOlderHistory]);
 
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
@@ -7181,13 +7221,12 @@ export function AgentChatPane({
     setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
   }, [initialSessionSummary, lockSessionId]);
 
-  const returnSelectedHistoryToLatest = useCallback(() => {
-    const sessionId = selectedSessionIdRef.current;
+  const returnHistoryToLatest = useCallback((sessionId: string, pin: OpenProjectBinding | null) => {
     if (!sessionId || !detachedHistorySessionsRef.current.has(sessionId)) return;
     // Keep buffering live events until the authoritative tail snapshot lands.
     // loadHistory clears detached state only after a successful hydrate, so a
     // transient remote failure leaves the historical window retryable.
-    void loadHistory(sessionId, { force: true });
+    void loadHistory(sessionId, { force: true, pin });
   }, [loadHistory]);
 
   const scheduleQueuedEventFlush = useCallback(() => {
@@ -12753,8 +12792,16 @@ export function AgentChatPane({
                           ? olderHistoryErrorBySession[renderedSessionId] ?? null
                           : null
                       }
-                      onLoadOlderHistory={!subagentView && renderedSessionId ? loadOlderHistoryForSelectedSession : undefined}
-                      onReturnToLatest={!subagentView ? returnSelectedHistoryToLatest : undefined}
+                      onLoadOlderHistory={
+                        !subagentView && renderedSessionId
+                          ? () => { void loadOlderHistory(renderedSessionId, renderedChatRuntimePin); }
+                          : undefined
+                      }
+                      onReturnToLatest={
+                        !subagentView && renderedSessionId
+                          ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
+                          : undefined
+                      }
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}

@@ -28,6 +28,7 @@ import {
 } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   CrsqlChangeRow,
   DeviceMarker,
@@ -57,6 +58,7 @@ import type {
   SyncDpopProof,
   SyncEnvelope,
   SyncChatEventPayload,
+  SyncChatHistoryRequestPayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
@@ -105,6 +107,7 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
+import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
@@ -1141,6 +1144,7 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "terminal_history",
   "chat_subscribe",
   "chat_unsubscribe",
+  "chat_history",
 ]);
 
 type SyncHostProjectScopeResolution =
@@ -1270,6 +1274,9 @@ export function buildSyncHostHelloOkPayload(args: {
       fileAccess: true,
       terminalStreaming: true,
       chatStreaming: {
+        enabled: true,
+      },
+      chatHistoryPaging: {
         enabled: true,
       },
       ...(isInvalidationOnlyBrowserPeer(args.peer)
@@ -5191,35 +5198,40 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     transcriptPath: string,
     maxBytes: number,
     signal?: AbortSignal,
-  ): Promise<{ events: AgentChatEventEnvelope[]; transcriptSize: number; truncated: boolean }> {
-    try {
-      const size = await readHistoryFileSize(transcriptPath);
-      const start = Math.max(0, size - Math.max(1_024, maxBytes));
-      if (size <= start) {
-        return { events: [], transcriptSize: size, truncated: false };
-      }
-      const out = await readHistoryFileRange(
-        transcriptPath,
-        start,
-        size - start,
-        signal,
-      );
-      // Drop a leading partial line when starting mid-file so the parser never
-      // sees a truncated JSON object as the first record.
-      let sliceStart = 0;
-      if (start > 0) {
-        const firstNewline = out.indexOf(0x0a);
-        sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
-      }
-      const raw = out.subarray(sliceStart).toString("utf8");
-      return {
-        events: parseAgentChatTranscript(raw),
-        transcriptSize: size,
-        truncated: start > 0,
-      };
-    } catch {
-      return { events: [], transcriptSize: 0, truncated: false };
+  ): Promise<{
+    events: AgentChatEventEnvelope[];
+    transcriptSize: number;
+    truncated: boolean;
+    tailStartOffset: number;
+  }> {
+    const size = await readHistoryFileSize(transcriptPath);
+    const start = Math.max(0, size - Math.max(1_024, maxBytes));
+    if (size <= start) {
+      return { events: [], transcriptSize: size, truncated: false, tailStartOffset: 0 };
     }
+    const out = await readHistoryFileRange(
+      transcriptPath,
+      start,
+      size - start,
+      signal,
+    );
+    // Drop a leading partial line when starting mid-file so the parser never
+    // sees a truncated JSON object as the first record. The first complete
+    // line's logical offset becomes the paging seam; a page ending there can
+    // recover the dropped straddling record without a gap.
+    let sliceStart = 0;
+    if (start > 0) {
+      const firstNewline = out.indexOf(0x0a);
+      sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
+    }
+    const raw = out.subarray(sliceStart).toString("utf8");
+    const tailStartOffset = start + sliceStart;
+    return {
+      events: parseAgentChatTranscript(raw),
+      transcriptSize: size,
+      truncated: tailStartOffset > 0,
+      tailStartOffset,
+    };
   }
 
   async function readTranscriptLogicalSize(transcriptPath: string | null): Promise<number> {
@@ -6125,6 +6137,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         endOffset: beforeOffset,
         atStart: true,
       } satisfies SyncTerminalHistoryResponsePayload, requestId);
+      return;
+    }
+
+    if (type === "chat_history") {
+      const historyPayload = (payload ?? {}) as { sessionId?: string; beforeOffset?: number };
+      const sessionId = toOptionalString(historyPayload.sessionId) ?? "";
+      const beforeOffset = typeof historyPayload.beforeOffset === "number" && Number.isFinite(historyPayload.beforeOffset)
+        ? Math.max(0, Math.floor(historyPayload.beforeOffset))
+        : 0;
+      sendRequired(peer, "chat_history", {
+        sessionId,
+        events: [],
+        startOffset: beforeOffset,
+        hasMore: beforeOffset > 0,
+        sessionFound: false,
+        unavailable: true,
+      } satisfies AgentChatEventHistoryPage, requestId);
     }
   }
 
@@ -7212,7 +7241,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     const envelopePayload = safeObjectValue(envelope.payload);
     const personalChatEnvelope =
-      (envelope.type === "chat_subscribe" || envelope.type === "chat_unsubscribe")
+      (
+        envelope.type === "chat_subscribe"
+        || envelope.type === "chat_unsubscribe"
+        || envelope.type === "chat_history"
+      )
       && envelopePayload?.chatScope === "personal";
     const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
       ? { ok: true, projectId: null, usedSingleProjectFallback: false }
@@ -7595,6 +7628,81 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         args.ptyService.resizeBySessionId(sessionId, cols, rows, { source: "mobile" });
         break;
       }
+      case "chat_history": {
+        const payload = envelope.payload as SyncChatHistoryRequestPayload | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (!sessionId) break;
+        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+          ? Math.max(0, Math.floor(payload.beforeOffset))
+          : 0;
+        const unavailablePage = (): AgentChatEventHistoryPage => ({
+          sessionId,
+          events: [],
+          startOffset: beforeOffset,
+          hasMore: beforeOffset > 0,
+          sessionFound: false,
+          unavailable: true,
+        });
+        const subscribedScope = peer.chatSubscriptionScopes.get(sessionId);
+        const requestedScope = payload?.chatScope === "personal"
+          ? "personal"
+          : toOptionalString(payload?.projectId) || toOptionalString(payload?.projectRootPath)
+            ? "foreign-project"
+            : "project";
+        if (
+          !peer.subscribedChatSessionIds.has(sessionId)
+          || subscribedScope !== requestedScope
+        ) {
+          args.logger.warn("sync.chat_history_unsubscribed_or_scope_mismatch", {
+            sessionId,
+            subscribedScope: subscribedScope ?? null,
+            requestedScope,
+          });
+          sendRequired(peer, "chat_history", unavailablePage(), envelope.requestId);
+          break;
+        }
+        try {
+          let page: AgentChatEventHistoryPage;
+          const subscribedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
+          if (subscribedTranscriptPath) {
+            const read = await runWithAbortSignal(
+              () => readTranscriptHistoryPage({
+                transcriptPath: subscribedTranscriptPath,
+                sessionId,
+                beforeOffset,
+                maxBytes: payload?.maxBytes,
+                signal,
+              }),
+              signal,
+              "Sync operation aborted.",
+            );
+            page = {
+              sessionId,
+              events: read.envelopes,
+              startOffset: read.startOffset,
+              hasMore: read.hasMore,
+              sessionFound: true,
+            };
+          } else if (args.agentChatService) {
+            page = await args.agentChatService.getChatEventHistoryPage(sessionId, {
+              beforeOffset,
+              ...(typeof payload?.maxBytes === "number" ? { maxBytes: payload.maxBytes } : {}),
+              ...(signal ? { signal } : {}),
+            });
+          } else {
+            page = unavailablePage();
+          }
+          sendRequired(peer, "chat_history", page, envelope.requestId);
+        } catch (error) {
+          args.logger.warn("sync.chat_history_failed", {
+            sessionId,
+            beforeOffset,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          sendRequired(peer, "chat_history", unavailablePage(), envelope.requestId);
+        }
+        break;
+      }
       case "chat_subscribe": {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
@@ -7732,6 +7840,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let events: AgentChatEventEnvelope[];
         let truncated: boolean;
         let transcriptSize: number;
+        let tailStartOffset = 0;
+        let hasOlderHistory = false;
         if (foreignTranscriptPath) {
           const foreignSnapshot = await runWithAbortSignal(
             () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes, signal),
@@ -7741,6 +7851,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           events = foreignSnapshot.events;
           truncated = foreignSnapshot.truncated;
           transcriptSize = foreignSnapshot.transcriptSize;
+          tailStartOffset = foreignSnapshot.tailStartOffset;
+          hasOlderHistory = foreignSnapshot.tailStartOffset > 0;
         } else if (foreignScope.kind === "rejected") {
           // Unresolvable explicit-foreign scope: serve an empty snapshot, never
           // this host's local history for the same session id.
@@ -7758,6 +7870,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           events = history?.events ?? [];
           transcriptSize = await readTranscriptLogicalSize(transcriptPath);
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
+          tailStartOffset = history?.tailStartOffset ?? 0;
+          hasOlderHistory = history?.hasOlderHistory
+            ?? (history?.truncated === true && tailStartOffset > 0);
         }
         events = events.map(compactChatEventEnvelopeForSync);
         peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
@@ -7766,6 +7881,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           sessionId,
           capturedAt: nowIso(),
           truncated,
+          tailStartOffset,
+          hasOlderHistory,
+          cursorKind: "byte",
           events,
           ...(await resolveLiveStatusFields()),
         };

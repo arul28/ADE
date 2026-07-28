@@ -64,4 +64,47 @@ describe("ChatUserMinimap", () => {
     expect(hoveredTick?.className).toContain("bg-[var(--color-fg)]/75");
     expect(hoveredTick?.className).toContain("w-6");
   });
+
+  it("keeps the paging marker visible and stateful before the loaded cutoff", () => {
+    const onLoadOlderHistory = vi.fn();
+    const view = render(
+      <ChatUserMinimap
+        entries={[]}
+        activeIndex={null}
+        onJumpToRow={vi.fn()}
+        hasOlderHistory
+        onLoadOlderHistory={onLoadOlderHistory}
+        listWidthPx={960}
+        listHeightPx={600}
+        listTopViewportPx={0}
+        columnWidthPx={720}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier message markers" }));
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("chat-user-minimap")).toBeTruthy();
+    expect(document.querySelectorAll("[data-minimap-tick]")).toHaveLength(0);
+
+    view.rerender(
+      <ChatUserMinimap
+        entries={ENTRIES.slice(0, 1)}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        hasOlderHistory
+        loadingOlderHistory
+        onLoadOlderHistory={vi.fn()}
+        listWidthPx={960}
+        listHeightPx={600}
+        listTopViewportPx={0}
+        columnWidthPx={720}
+      />,
+    );
+
+    const marker = screen.getByRole("button", { name: "Loading earlier message markers" });
+    expect(marker.hasAttribute("disabled")).toBe(true);
+    expect(marker.getAttribute("title")).toBe("Earlier messages are available");
+    expect(screen.getByTestId("chat-user-minimap")).toBeTruthy();
+  });
 });

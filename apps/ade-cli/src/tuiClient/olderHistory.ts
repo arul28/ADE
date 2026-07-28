@@ -5,7 +5,7 @@ import { dedupeTuiEvents, tuiEventDedupKey } from "./eventDedup";
  * Hard ceiling on how many transcript events the TUI keeps loaded for one
  * session (tail + paged-in older history). A 50MB transcript can hold far
  * more JSONL lines than a terminal process should inflate into JS objects,
- * so scroll-back paging stops once this many events are resident.
+ * so scroll-back uses a sliding window once this many events are resident.
  */
 export const TUI_LOADED_EVENT_CAP = 60_000;
 
@@ -88,8 +88,11 @@ export function prependOlderTuiHistory(
   const fresh = dedupedOlder.filter((envelope) => !seamKeys.has(seamIdentityKey(envelope)));
   if (fresh.length === 0) return existing as AgentChatEventEnvelope[];
   const combined = [...fresh, ...existing];
-  // Over the cap: keep the NEWEST `limit` events (drop the oldest prepended).
-  return combined.length > limit ? combined.slice(-limit) : combined;
+  // Scroll-back is a sliding window. Once the resident cap is full, keep the
+  // newly requested OLDEST side and evict the newest tail; otherwise every
+  // page beyond the cap is fetched and immediately discarded. The caller
+  // marks the session detached and rehydrates the authoritative tail on End.
+  return combined.length > limit ? combined.slice(0, limit) : combined;
 }
 
 /**
@@ -124,6 +127,41 @@ export type OlderHistoryCursorAdvance = {
   hasMore: boolean;
 };
 
+export type OlderHistoryStatus = "loading" | "available" | "exhausted" | "error";
+
+/**
+ * Rebuild the authoritative latest tail after a detached sliding-window view.
+ * The detached resident window is intentionally excluded by callers: it
+ * contains the oldest loaded events, not a continuation of this fresh tail.
+ * Live events buffered while detached are appended and deduped at the seam.
+ */
+export function mergeDetachedTuiHistoryTail(
+  snapshotTail: readonly AgentChatEventEnvelope[],
+  bufferedLiveEvents: readonly AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  const combined = [...snapshotTail, ...bufferedLiveEvents];
+  return dedupeTuiEvents(
+    combined,
+    Math.min(TUI_LOADED_EVENT_CAP, Math.max(1, combined.length)),
+  );
+}
+
+export function shouldRequestOlderTuiHistory(args: {
+  scrollMaxOffset: number;
+  scrollOffset: number;
+  bufferedEventCount: number;
+  cursor: { hasMore: boolean; loading: boolean } | null;
+  status: OlderHistoryStatus | null;
+}): boolean {
+  if (args.status === "loading") return false;
+  if (args.scrollMaxOffset > 0 && args.scrollOffset < args.scrollMaxOffset - 3) return false;
+  // A cached snapshot remainder is local and remains immediately usable even
+  // when background revalidation of the remote byte cursor failed.
+  if (args.bufferedEventCount > 0) return true;
+  if (args.status === "error") return false;
+  return Boolean(args.cursor?.hasMore && !args.cursor.loading);
+}
+
 /**
  * Advance the scroll-back cursor after one page arrives.
  *
@@ -131,14 +169,12 @@ export type OlderHistoryCursorAdvance = {
  * `startOffset` becomes the next `beforeOffset` and must be strictly
  * decreasing; `startOffset` 0 means the head of the transcript was reached.
  * A non-decreasing offset would loop forever, so it defensively ends paging.
- * Paging also ends once `loadedEventCount` reaches the resident-event cap.
  */
 export function advanceOlderHistoryCursor(
   cursor: OlderHistoryCursorAdvance,
-  page: { startOffset: number; hasMore: boolean; sessionFound?: boolean },
-  loadedEventCount: number,
-  cap = TUI_LOADED_EVENT_CAP,
+  page: { startOffset: number; hasMore: boolean; sessionFound?: boolean; unavailable?: boolean },
 ): OlderHistoryCursorAdvance {
+  if (page.unavailable === true) return cursor;
   if (page.sessionFound === false) {
     return { beforeOffset: cursor.beforeOffset, hasMore: false };
   }
@@ -148,6 +184,6 @@ export function advanceOlderHistoryCursor(
   }
   return {
     beforeOffset: page.startOffset,
-    hasMore: page.hasMore && page.startOffset > 0 && loadedEventCount < cap,
+    hasMore: page.hasMore && page.startOffset > 0,
   };
 }
