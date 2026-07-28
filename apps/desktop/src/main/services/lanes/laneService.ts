@@ -3165,10 +3165,51 @@ export function createLaneService({
       `,
       [projectId, laneId, laneId, laneId],
     );
-    // Proof captured in this lane goes with the lane. Both statements have to
-    // run while `terminal_sessions` still exists: the guard that spares a
-    // capture shared with a chat in another lane joins that table, and the
-    // session delete below is what would otherwise orphan the links.
+    // Proof captured in this lane goes with the lane. Transfer shared captures
+    // to a surviving chat's lane before deleting this lane's ownership; the
+    // later delete can then collect the capture when its final lane is removed.
+    // This has to run while `terminal_sessions` still exists because both the
+    // transfer and the guard that spares shared captures join that table.
+    db.run(
+      `
+        update computer_use_artifacts as a
+        set lane_id = (
+          select s.lane_id
+          from computer_use_artifact_links l
+          join terminal_sessions s on s.id = l.owner_id
+          join lanes surviving_lane on surviving_lane.id = s.lane_id
+          where l.artifact_id = a.id
+            and l.owner_kind = 'chat_session'
+            and s.lane_id is not null
+            and s.lane_id <> ?
+            and surviving_lane.project_id = ?
+          order by l.created_at asc, s.id asc
+          limit 1
+        )
+        where a.project_id = ?
+          and (
+            a.lane_id = ?
+            or exists (
+              select 1 from computer_use_artifact_links owned_link
+              where owned_link.artifact_id = a.id
+                and owned_link.owner_kind = 'lane'
+                and owned_link.owner_id = ?
+            )
+          )
+          and exists (
+            select 1
+            from computer_use_artifact_links surviving_link
+            join terminal_sessions surviving_session on surviving_session.id = surviving_link.owner_id
+            join lanes surviving_lane on surviving_lane.id = surviving_session.lane_id
+            where surviving_link.artifact_id = a.id
+              and surviving_link.owner_kind = 'chat_session'
+              and surviving_session.lane_id is not null
+              and surviving_session.lane_id <> ?
+              and surviving_lane.project_id = ?
+          )
+      `,
+      [laneId, projectId, projectId, laneId, laneId, laneId, projectId],
+    );
     db.run(`delete from computer_use_artifacts where id in (${LANE_OWNED_ARTIFACT_IDS_SQL})`, [
       projectId, laneId, laneId, laneId,
     ]);

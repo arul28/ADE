@@ -3242,7 +3242,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     return { db, service, repoRoot, worktreesDir, childPath };
   }
 
-  it("deletes the lane's proof artifacts and their files, sparing proof shared with another lane", async () => {
+  it("transfers shared proof ownership so the final owning lane can delete it", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     const { db, service, repoRoot } = await setupWithLane({ teardown: fake, events });
@@ -3289,10 +3289,18 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     await service.delete({ laneId: "lane-child", deleteBranch: false });
 
-    const remaining = db.all<{ id: string }>("select id from computer_use_artifacts").map((row) => row.id);
-    expect(remaining).toEqual(["art-shared"]);
+    const remaining = db.all<{ id: string; lane_id: string | null }>(
+      "select id, lane_id from computer_use_artifacts",
+    );
+    expect(remaining).toEqual([{ id: "art-shared", lane_id: "lane-parent" }]);
     expect(fs.existsSync(ownedFile)).toBe(false);
     expect(fs.existsSync(sharedFile)).toBe(true);
+
+    await service.delete({ laneId: "lane-parent", deleteBranch: false });
+
+    const afterFinalOwnerDelete = db.all<{ id: string }>("select id from computer_use_artifacts");
+    expect(afterFinalOwnerDelete).toEqual([]);
+    expect(fs.existsSync(sharedFile)).toBe(false);
   });
 
   it("keeps a proof file when a surviving artifact row references the same URI", async () => {

@@ -70,7 +70,11 @@ function mergeAdeCardPayload(existing: AdeCardPayload, incoming: AdeCardPayload)
     return merged;
   }
 
-  if (incomingHasDetail) merged.stale = incoming.stale ?? false;
+  if (incomingHasDetail) {
+    merged.stale = incoming.stale ?? false;
+    merged.degradedReason = incoming.degradedReason ?? undefined;
+    merged.actions = incoming.actions ?? [];
+  }
   return merged;
 }
 

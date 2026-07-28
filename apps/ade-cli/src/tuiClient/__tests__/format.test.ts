@@ -1469,7 +1469,6 @@ describe("ade_card (TUI)", () => {
         env("2026-07-27T12:02:00.000Z", 3, card({
           rows: [{ icon: "pass", text: "tests", detail: "passed" }],
           progress: { passed: 1, failed: 0, running: 0, queued: 0 },
-          degradedReason: null,
         })),
       ],
     }).at(-1)!.body;
