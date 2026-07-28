@@ -294,6 +294,8 @@ export type OpenProjectBinding =
       key: string;
       rootPath: string;
       displayName: string;
+      /** Credential-free origin used to join this checkout across machines. */
+      gitOriginUrl?: string | null;
     }
   | {
       kind: "remote";
@@ -304,6 +306,8 @@ export type OpenProjectBinding =
       projectId: string;
       rootPath: string;
       displayName: string;
+      /** Credential-free origin used to join this checkout across machines. */
+      gitOriginUrl?: string | null;
       /**
        * The remote project's icon as a base64 data URL, resolved on the host
        * machine. Lets the project tab show the real project logo instead of a
@@ -483,6 +487,8 @@ export type RecentProjectRemoteRef = {
   /** Human-friendly machine name shown on the recents row chip. */
   runtimeName: string;
   hostname: string;
+  /** Credential-free origin retained so offline recents can still auto-bind. */
+  gitOriginUrl?: string | null;
   /** Host-resolved project logo for remote recents, when available. */
   iconDataUrl?: string | null;
 };

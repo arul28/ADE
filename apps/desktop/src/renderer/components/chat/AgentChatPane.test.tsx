@@ -588,6 +588,9 @@ function installAdeMocks(options?: {
     app: {
       writeClipboardText,
     },
+    project: {
+      listRecent: vi.fn().mockResolvedValue([]),
+    },
     projectConfig: {
       get: vi.fn().mockResolvedValue({
         local: {
@@ -5117,13 +5120,14 @@ describe("AgentChatPane submit recovery", () => {
     expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
   });
 
-  it("blocks every draft launch path until a cross-machine auto-create switch settles", async () => {
+  it("auto-creates on This Mac from a remote-bound tab without rebinding the project", async () => {
     const { create } = installAdeMocks({ sessions: [] });
     const localBinding = {
       kind: "local" as const,
       key: "local:/tmp/project-under-test",
       rootPath: "/tmp/project-under-test",
       displayName: "project-under-test",
+      gitOriginUrl: "git@github.com:acme/project-under-test.git",
     };
     const remoteBinding = {
       kind: "remote" as const,
@@ -5133,34 +5137,59 @@ describe("AgentChatPane submit recovery", () => {
       projectId: "project-a",
       rootPath: "/Volumes/work/project-under-test",
       displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project-under-test",
     };
-    let finishSwitch!: () => void;
-    const switchRemoteProject = vi.fn(() => {
-      useAppStore.setState({ projectTransition: { phase: "switching" } as any });
-      return new Promise<typeof remoteBinding>((resolve) => {
-        finishSwitch = () => {
-          useAppStore.setState({
-            project: {
-              rootPath: remoteBinding.rootPath,
-              displayName: remoteBinding.displayName,
-            } as any,
-            projectBinding: remoteBinding,
-            projectTransition: null,
-          });
-          resolve(remoteBinding);
-        };
-      });
-    });
+    const switchProjectToPath = vi.fn();
+    const switchRemoteProject = vi.fn();
+    const remoteLanes = [{
+      // Primary lane ids are intentionally duplicated across machines. The
+      // machine-qualified picker value must still route creation to This Mac.
+      id: "primary",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "refs/heads/main",
+      worktreePath: remoteBinding.rootPath,
+    }];
+    const localLanes = [{
+      id: "primary",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "refs/heads/main",
+      worktreePath: localBinding.rootPath,
+    }];
     useAppStore.setState({
       project: {
-        rootPath: localBinding.rootPath,
-        displayName: localBinding.displayName,
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
       } as any,
-      projectBinding: localBinding,
+      projectBinding: remoteBinding,
       openProjectTabRoots: [localBinding.rootPath],
       openRemoteProjectTabs: [remoteBinding],
+      crossMachineLanesByMachineId: {
+        "this-mac": {
+          machineId: "this-mac",
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          binding: localBinding,
+          online: true,
+          lanes: localLanes as any,
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+      switchProjectToPath,
       switchRemoteProject,
     });
+    (window.ade.project.listRecent as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      rootPath: localBinding.rootPath,
+      displayName: localBinding.displayName,
+      lastOpenedAt: "2026-07-28T12:00:00.000Z",
+      exists: true,
+      kind: "local",
+      gitOriginUrl: localBinding.gitOriginUrl,
+    }]);
     window.ade.remoteRuntime = {
       getConnectionSnapshot: vi.fn().mockResolvedValue({
         connections: [{
@@ -5174,7 +5203,7 @@ describe("AgentChatPane submit recovery", () => {
             projectId: remoteBinding.projectId,
             rootPath: remoteBinding.rootPath,
             displayName: remoteBinding.displayName,
-            gitOriginUrl: null,
+            gitOriginUrl: remoteBinding.gitOriginUrl,
           }],
         }],
         connectedCount: 1,
@@ -5183,9 +5212,9 @@ describe("AgentChatPane submit recovery", () => {
       onConnectionSnapshotChanged: vi.fn(() => () => {}),
     } as any;
 
-    renderAutoCreateDraftPane();
+    renderAutoCreateDraftPane({ lanes: remoteLanes });
     const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Create this on the studio." } });
+    fireEvent.change(textbox, { target: { value: "Create this on my MacBook." } });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
@@ -5196,20 +5225,24 @@ describe("AgentChatPane submit recovery", () => {
     const machineRows = await screen.findAllByText("Auto-create lane here");
     fireEvent.click(machineRows.at(-1)!);
 
-    expect(switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    fireEvent.click(screen.getByRole("button", { name: "Auto-create in background" }));
-    expect(create).not.toHaveBeenCalled();
-
-    finishSwitch();
-    await waitFor(() => expect(useAppStore.getState().projectBinding).toEqual(remoteBinding));
+    expect(switchProjectToPath).not.toHaveBeenCalled();
+    expect(switchRemoteProject).not.toHaveBeenCalled();
+    expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+    expect(await screen.findByRole("button", {
+      name: "Choose machine, currently This Mac",
+    })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
+      expect(window.ade.lanes.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: expect.any(String) }),
+        localBinding,
+      );
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({ laneId: "lane-created" }),
-        remoteBinding,
+        localBinding,
       );
     });
+    expect(screen.queryByText(/Open this repository on This Mac first/i)).toBeNull();
   });
 
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {

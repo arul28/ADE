@@ -823,6 +823,7 @@ describe("SessionListPane", () => {
 
       expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
       expect(screen.getByText("Chat on the other machine")).toBeTruthy();
+      expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeTruthy();
 
       // One marker, on the foreign lane only — the local lanes stay untouched.
       const markers = document.querySelectorAll("[data-machine-marker-mode]");
@@ -837,7 +838,45 @@ describe("SessionListPane", () => {
         "session-elsewhere",
         expect.anything(),
         ["session-elsewhere"],
+        expect.objectContaining({
+          targetId: "target-studio",
+          projectId: "project-a",
+        }),
       );
+    });
+
+    it("routes a foreign card's context menu through its owning binding", () => {
+      seedForeignMachine();
+      const onContextMenu = vi.fn();
+      renderPane({ onContextMenu });
+
+      const card = document.querySelector(
+        '[data-session-id="session-elsewhere"]',
+      )!;
+      fireEvent.contextMenu(card);
+
+      expect(onContextMenu).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "session-elsewhere" }),
+        expect.anything(),
+        expect.objectContaining({
+          targetId: "target-studio",
+          projectId: "project-a",
+        }),
+        "Mac Studio (12)",
+      );
+    });
+
+    it("offers lane actions from a foreign lane header", () => {
+      seedForeignMachine();
+      renderPane();
+
+      const header = screen.getByText("Elsewhere Lane").closest(
+        ".ade-lane-group-header",
+      )!;
+      fireEvent.contextMenu(header);
+
+      expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 
     it("routes foreign shell rows through the owning-runtime selector", () => {
@@ -869,12 +908,14 @@ describe("SessionListPane", () => {
       );
     });
 
-    it("shows a bare glyph for one online foreign machine and the name when it drops", () => {
+    it("shows a hover label for one online foreign machine and the name when it drops", async () => {
       seedForeignMachine();
       const view = renderPane();
-      expect(document.querySelector("[data-machine-marker-mode]")?.getAttribute("data-machine-marker-mode"))
-        .toBe("glyph");
+      const marker = document.querySelector("[data-machine-marker-mode]")!;
+      expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
       expect(screen.queryByText("Mac Studio (12)")).toBeNull();
+      fireEvent.mouseEnter(marker.parentElement!);
+      expect((await screen.findByRole("tooltip")).textContent).toContain("Mac Studio (12)");
       view.unmount();
 
       seedForeignMachine({ online: false });

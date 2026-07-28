@@ -1545,11 +1545,10 @@ async function callPinnedRuntimeAction<T>(
   return response.result as T;
 }
 
-// Per-chat runtime routing: a chat inherits its machine from its lane, so a
-// chat whose lane lives on another open machine carries an explicit pin and
-// must reach THAT runtime without rebinding this window's project tab. When no
-// pin is supplied the call behaves exactly as before — same bound path, same
-// IPC fallback, no extra await.
+// Per-session runtime routing: a chat, CLI, or shell inherits its machine from
+// its lane, so a session on another machine carries an explicit pin and must
+// reach THAT runtime without rebinding this window's project tab. Without a pin
+// the call uses the active bound runtime and the existing local IPC fallback.
 function callPinnedOrBoundRuntimeActionOr<T>(
   pin: OpenProjectBinding | null | undefined,
   domain: string,
@@ -5453,56 +5452,66 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.sessionsGet, { sessionId });
     },
-    delete: async (args: DeleteSessionArgs): Promise<void> => {
+    delete: async (
+      args: DeleteSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       sessionDeltaCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "deleteSession",
-        { arg: args.sessionId },
+        {
+          arg: args.sessionId,
+        },
+        () => ipcRenderer.invoke(IPC.sessionsDelete, args),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsDelete, args);
       sessionDeltaCache.clear();
     },
     updateMeta: async (
       args: UpdateSessionMetaArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<TerminalSessionSummary | null> => {
       sessionDeltaCache.clear();
-      const runtime =
-        await callProjectRuntimeActionIfBound<TerminalSessionSummary | null>(
-          "session",
-          "updateMeta",
-          { args },
-        );
-      const updated = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.sessionsUpdateMeta, args);
+      const updated = await callPinnedOrBoundRuntimeActionOr<TerminalSessionSummary | null>(
+        pin,
+        "session",
+        "updateMeta",
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
+      );
       sessionDeltaCache.clear();
-      return updated as TerminalSessionSummary | null;
+      return updated;
     },
     settle: async (
       sessionId: string,
       opts?: { outcome?: string; dismissPendingInput?: boolean },
+      pin?: OpenProjectBinding | null,
     ): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+      const args = {
+        sessionId,
+        ...(opts?.outcome ? { outcome: opts.outcome } : {}),
+        ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
+      };
+      await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "settleSession",
-        {
-          args: {
-            sessionId,
-            ...(opts?.outcome ? { outcome: opts.outcome } : {}),
-            ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
-          },
-        },
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts }),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
     },
-    unsettle: async (sessionId: string): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+    unsettle: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "unsettleSelfSession",
         { args: { sessionId } },
+        () => ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId }),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId });
     },
     settleMany: async (sessionIds: string[]): Promise<string[]> => {
       const runtime = await callProjectRuntimeActionIfBound<string[]>(
@@ -5522,28 +5531,34 @@ contextBridge.exposeInMainWorld("ade", {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
-    snoozeSession: async (sessionId: string, untilIso: string): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+    snoozeSession: async (
+      sessionId: string,
+      untilIso: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> => {
+      const result = await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "snoozeSession",
         { args: { sessionId, untilIso } },
+        () => ipcRenderer.invoke(IPC.sessionsSnooze, { sessionId, untilIso }),
       );
-      return runtime.handled
-        ? sessionLifecycleApplied(runtime.result)
-        : ipcRenderer.invoke(IPC.sessionsSnooze, { sessionId, untilIso });
+      return sessionLifecycleApplied(result);
     },
     wakeSession: async (
       sessionId: string,
       reason?: SessionWakeReason,
+      pin?: OpenProjectBinding | null,
     ): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+      const args = { sessionId, ...(reason ? { reason } : {}) };
+      const result = await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "wakeSession",
-        { args: { sessionId, ...(reason ? { reason } : {}) } },
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsWake, args),
       );
-      return runtime.handled
-        ? sessionLifecycleApplied(runtime.result)
-        : ipcRenderer.invoke(IPC.sessionsWake, { sessionId, ...(reason ? { reason } : {}) });
+      return sessionLifecycleApplied(result);
     },
     snoozeSessions: async (
       sessionIds: string[],
@@ -5574,25 +5589,31 @@ contextBridge.exposeInMainWorld("ade", {
     setSettleOverride: async (
       sessionId: string,
       override: SessionSettleOverride | null,
+      pin?: OpenProjectBinding | null,
     ): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+      const args = { sessionId, override };
+      const result = await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "setSettleOverride",
-        { args: { sessionId, override } },
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsSetSettleOverride, args),
       );
-      return runtime.handled
-        ? sessionLifecycleApplied(runtime.result)
-        : ipcRenderer.invoke(IPC.sessionsSetSettleOverride, { sessionId, override });
+      return sessionLifecycleApplied(result);
     },
-    clearWokeMarker: async (sessionId: string): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+    clearWokeMarker: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> => {
+      const args = { sessionId };
+      const result = await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "clearWokeMarker",
-        { args: { sessionId } },
+        { args },
+        () => ipcRenderer.invoke(IPC.sessionsClearWokeMarker, args),
       );
-      return runtime.handled
-        ? sessionLifecycleApplied(runtime.result)
-        : ipcRenderer.invoke(IPC.sessionsClearWokeMarker, { sessionId });
+      return sessionLifecycleApplied(result);
     },
     getLifecycleSettings: async (): Promise<SessionLifecycleSettings> => {
       const runtime = await callProjectRuntimeActionIfBound<SessionLifecycleSettings>(
@@ -6044,16 +6065,13 @@ contextBridge.exposeInMainWorld("ade", {
     },
     delete: async (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
-      if (pin) {
-        await callPinnedRuntimeAction<void>(pin, "chat", "deleteSession", { args });
-      } else {
-        const runtime = await callProjectRuntimeActionIfBound<void>(
-          "chat",
-          "deleteSession",
-          { args },
-        );
-        if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatDelete, args);
-      }
+      await callPinnedOrBoundRuntimeActionOr<void>(
+        pin,
+        "chat",
+        "deleteSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatDelete, args),
+      );
       agentChatSummaryCache.clear();
     },
     updateSession: async (
@@ -6061,26 +6079,15 @@ contextBridge.exposeInMainWorld("ade", {
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
-      if (pin) {
-        const pinned = await callPinnedRuntimeAction<AgentChatSession>(
-          pin,
-          "chat",
-          "updateSession",
-          { args },
-        );
-        agentChatSummaryCache.clear();
-        return pinned;
-      }
-      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+      const session = await callPinnedOrBoundRuntimeActionOr<AgentChatSession>(
+        pin,
         "chat",
         "updateSession",
         { args },
+        () => ipcRenderer.invoke(IPC.agentChatUpdateSession, args),
       );
-      const session = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
       agentChatSummaryCache.clear();
-      return session as AgentChatSession;
+      return session;
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,

@@ -200,3 +200,41 @@ describe("ProjectWelcomePage worktree recents", () => {
     expect(getToasts().some((toast) => toast.title === "Merge failed")).toBe(false);
   });
 });
+
+describe("ProjectWelcomePage multi-machine recents", () => {
+  it("renders one card for the same Git repository on two machines", async () => {
+    listRecent.mockResolvedValueOnce([
+      {
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T12:00:00.000Z",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: "git@github.com:arul28/ADE.git",
+      },
+      {
+        rootPath: "/Users/studio/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T11:00:00.000Z",
+        exists: true,
+        kind: "remote",
+        gitOriginUrl: "https://github.com/arul28/ADE",
+        remote: {
+          targetId: "studio",
+          projectId: "ade",
+          runtimeName: "Mac Studio",
+          hostname: "studio.local",
+          gitOriginUrl: "https://github.com/arul28/ADE",
+        },
+      },
+    ]);
+
+    renderWelcome();
+
+    await screen.findByText("Also on Mac Studio");
+    expect(
+      document.querySelectorAll('[data-tour="project.recentProject"]'),
+    ).toHaveLength(1);
+    expect(screen.getAllByText("ADE")).toHaveLength(1);
+  });
+});

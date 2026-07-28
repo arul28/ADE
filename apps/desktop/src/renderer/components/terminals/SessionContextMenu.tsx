@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState } from "../../lib/terminalAttention";
@@ -21,6 +21,8 @@ const MENU_ITEM_CLASS =
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
+  binding?: OpenProjectBinding | null;
+  machineName?: string | null;
   x: number;
   y: number;
 } | null;
@@ -28,19 +30,45 @@ export type SessionContextMenuState = {
 type SessionContextMenuProps = {
   menu: SessionContextMenuState;
   onClose: () => void;
-  onStopRuntime: (args: { ptyId: string; sessionId: string }) => void;
-  onStopAndDelete: (session: TerminalSessionSummary) => void;
-  onDeleteChat: (session: TerminalSessionSummary) => void;
-  onDeleteSession: (session: TerminalSessionSummary) => void;
+  onStopRuntime: (
+    args: { ptyId: string; sessionId: string },
+    binding?: OpenProjectBinding | null,
+  ) => void;
+  onStopAndDelete: (
+    session: TerminalSessionSummary,
+    binding?: OpenProjectBinding | null,
+  ) => void;
+  onDeleteChat: (
+    session: TerminalSessionSummary,
+    binding?: OpenProjectBinding | null,
+  ) => void;
+  onDeleteSession: (
+    session: TerminalSessionSummary,
+    binding?: OpenProjectBinding | null,
+  ) => void;
   deletingSessionId: string | null;
-  onGoToLane: (session: TerminalSessionSummary) => void;
+  onGoToLane: (
+    session: TerminalSessionSummary,
+    binding?: OpenProjectBinding | null,
+  ) => void;
   onCopySessionId: (id: string) => void;
-  onRename: (session: TerminalSessionSummary, newTitle: string) => void;
-  onSetChatTag?: (session: TerminalSessionSummary, tag: string | null) => void;
+  onRename: (
+    session: TerminalSessionSummary,
+    newTitle: string,
+    binding?: OpenProjectBinding | null,
+  ) => void;
+  onSetChatTag?: (
+    session: TerminalSessionSummary,
+    tag: string | null,
+    binding?: OpenProjectBinding | null,
+  ) => void;
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
-  onSettle?: (session: TerminalSessionSummary) => void;
+  onSettle?: (
+    session: TerminalSessionSummary,
+    binding?: OpenProjectBinding | null,
+  ) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -97,7 +125,7 @@ export function SessionContextMenu({
 
   if (!menu) return null;
 
-  const { session, x, y } = menu;
+  const { session, binding = null, x, y } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
@@ -122,7 +150,7 @@ export function SessionContextMenu({
    */
   const isDeclaredSettled = Boolean(session.settledAt);
   const chooseSnooze = (key: SnoozeDurationKey) => {
-    void snoozeSessionForDuration(session, key);
+    void snoozeSessionForDuration(session, key, Date.now(), binding);
     onClose();
   };
 
@@ -131,7 +159,7 @@ export function SessionContextMenu({
     finalizedRef.current = true;
     const trimmed = draft.trim();
     if (trimmed.length > 0) {
-      onRename(session, trimmed);
+      onRename(session, trimmed, binding);
     }
     onClose();
   };
@@ -139,7 +167,7 @@ export function SessionContextMenu({
     if (finalizedRef.current) return;
     finalizedRef.current = true;
     const trimmed = draft.trim();
-    onSetChatTag?.(session, trimmed.length ? trimmed : null);
+    onSetChatTag?.(session, trimmed.length ? trimmed : null, binding);
     onClose();
   };
 
@@ -222,7 +250,10 @@ export function SessionContextMenu({
         {isRunning && session.ptyId && !isChat ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onStopRuntime({ ptyId: session.ptyId!, sessionId: session.id }); onClose(); }}
+            onClick={() => {
+              onStopRuntime({ ptyId: session.ptyId!, sessionId: session.id }, binding);
+              onClose();
+            }}
           >
             Stop runtime
           </button>
@@ -232,7 +263,7 @@ export function SessionContextMenu({
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
             disabled={deletingSessionId === session.id}
-            onClick={() => { onStopAndDelete(session); onClose(); }}
+            onClick={() => { onStopAndDelete(session, binding); onClose(); }}
           >
             {deletingSessionId === session.id ? "Deleting…" : "Stop & delete"}
           </button>
@@ -246,7 +277,7 @@ export function SessionContextMenu({
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { void wakeSessionNow(session); onClose(); }}
+            onClick={() => { void wakeSessionNow(session, binding); onClose(); }}
           >
             Wake now
             {snoozeWake ? (
@@ -284,7 +315,7 @@ export function SessionContextMenu({
                 // Declared settles clear the column; derived settles have no
                 // column to clear, so the keep-active pin is the only unsettle.
                 // Both branches live in the shared lifecycle action.
-                void unsettleSession(session);
+                void unsettleSession(session, binding);
                 onClose();
               }}
             >
@@ -295,7 +326,7 @@ export function SessionContextMenu({
                 type="button"
                 className={MENU_ITEM_CLASS}
                 title="Pin this session active so a clean exit cannot re-settle it"
-                onClick={() => { void setSessionSettleOverride(session, "active"); onClose(); }}
+                onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
               >
                 Keep active
               </button>
@@ -305,7 +336,7 @@ export function SessionContextMenu({
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { onSettle(session); onClose(); }}
+            onClick={() => { onSettle(session, binding); onClose(); }}
           >
             {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
           </button>
@@ -324,7 +355,7 @@ export function SessionContextMenu({
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
             disabled={deletingSessionId === session.id}
-            onClick={() => { onDeleteChat(session); onClose(); }}
+            onClick={() => { onDeleteChat(session, binding); onClose(); }}
           >
             {deletingSessionId === session.id ? "Deleting…" : "Delete chat"}
           </button>
@@ -334,7 +365,7 @@ export function SessionContextMenu({
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
             disabled={deletingSessionId === session.id}
-            onClick={() => { onDeleteSession(session); onClose(); }}
+            onClick={() => { onDeleteSession(session, binding); onClose(); }}
           >
             {deletingSessionId === session.id ? "Deleting…" : "Delete session"}
           </button>
@@ -344,7 +375,7 @@ export function SessionContextMenu({
 
         <button
           className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-          onClick={() => { onGoToLane(session); onClose(); }}
+          onClick={() => { onGoToLane(session, binding); onClose(); }}
         >
           Go to lane
         </button>

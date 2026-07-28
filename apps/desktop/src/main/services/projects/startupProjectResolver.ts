@@ -1,9 +1,9 @@
 import path from "node:path";
 import type { GlobalState, RecentProject } from "../state/globalState";
 import {
+  persistableRemoteProjectBinding,
   persistableRecentProjectRemote,
   recentProjectKey,
-  withPersistableRemoteProjectIcon,
 } from "../state/globalState";
 
 // Keep more than the visible window so pinned-but-stale projects don't crowd
@@ -39,6 +39,7 @@ function recentProjectEntryChanged(
     (savedRemote?.projectId ?? null) !== (projectRemote?.projectId ?? null) ||
     (savedRemote?.runtimeName ?? null) !== (projectRemote?.runtimeName ?? null) ||
     (savedRemote?.hostname ?? null) !== (projectRemote?.hostname ?? null) ||
+    (savedRemote?.gitOriginUrl ?? null) !== (projectRemote?.gitOriginUrl ?? null) ||
     (savedRemote?.iconDataUrl ?? null) !== (projectRemote?.iconDataUrl ?? null);
 }
 
@@ -55,7 +56,7 @@ export function normalizeStartupProjectState(args: {
       ? args.saved.lastRemoteProjectBinding
       : null;
   const lastRemoteProjectBinding = savedLastRemoteProjectBinding
-    ? withPersistableRemoteProjectIcon(savedLastRemoteProjectBinding)
+    ? persistableRemoteProjectBinding(savedLastRemoteProjectBinding)
     : null;
   const candidateRecentProjects = [
     ...savedRecentProjects,
@@ -141,8 +142,12 @@ export function normalizeStartupProjectState(args: {
     );
   const lastRemoteProjectBindingChanged =
     savedLastRemoteProjectBinding !== null &&
-    (savedLastRemoteProjectBinding.iconDataUrl ?? null) !==
-      (lastRemoteProjectBinding?.iconDataUrl ?? null);
+    (
+      (savedLastRemoteProjectBinding.iconDataUrl ?? null) !==
+        (lastRemoteProjectBinding?.iconDataUrl ?? null)
+      || (savedLastRemoteProjectBinding.gitOriginUrl ?? null) !==
+        (lastRemoteProjectBinding?.gitOriginUrl ?? null)
+    );
   const lastProjectRootChanged =
     args.saved.lastProjectRoot !== undefined;
   const stateWithoutLastProject: GlobalState = {

@@ -52,6 +52,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   draftKind: "chat",
   orchestratorEnabled: false,
   draftLaneId: null,
+  draftMachineId: null,
   laneFilter: "all",
   search: "",
   sessionListOrganization: "by-lane",
@@ -525,6 +526,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const draftKind = projectViewState.draftKind;
   const orchestratorEnabled = projectViewState.orchestratorEnabled;
   const draftLaneId = projectViewState.draftLaneId;
+  const draftMachineId = projectViewState.draftMachineId;
   const filterLaneId = projectViewState.laneFilter;
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
@@ -650,6 +652,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (normalizedLaneId) selectLane(normalizedLaneId);
     },
     [selectLane, setProjectViewState],
+  );
+
+  const setDraftMachineId = useCallback(
+    (machineId: string | null) => {
+      const normalizedMachineId = machineId?.trim() ?? "";
+      setProjectViewState({ draftMachineId: normalizedMachineId || null });
+    },
+    [setProjectViewState],
   );
 
   const setFilterLaneId = useCallback(
@@ -1875,6 +1885,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setOrchestratorEnabled,
     draftLaneId,
     setDraftLaneId,
+    draftMachineId,
+    setDraftMachineId,
     showDraftKind,
     openSessionTab,
     closeTab,

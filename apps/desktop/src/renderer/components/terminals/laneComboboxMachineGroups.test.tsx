@@ -13,6 +13,8 @@ import {
   autoCreateLaneOptionId,
   isAutoCreateLaneOptionId,
   machineIdFromAutoCreateLaneOptionId,
+  machineLaneFromOptionId,
+  machineLaneOptionId,
 } from "./LaneCombobox";
 
 afterEach(cleanup);
@@ -56,6 +58,17 @@ describe("auto-create lane option ids", () => {
   });
 });
 
+describe("machine lane option ids", () => {
+  it("round-trips machine and lane ids without collisions", () => {
+    const optionId = machineLaneOptionId("studio:2", "primary/shared");
+    expect(machineLaneFromOptionId(optionId)).toEqual({
+      machineId: "studio:2",
+      laneId: "primary/shared",
+    });
+    expect(machineLaneFromOptionId("primary/shared")).toBeNull();
+  });
+});
+
 describe("LaneCombobox machine grouping", () => {
   it("renders one flat list when there is nothing to group by", () => {
     render(<LaneCombobox lanes={lanes} value="lane-local" onChange={vi.fn()} />);
@@ -78,16 +91,23 @@ describe("LaneCombobox machine grouping", () => {
       (node) => node.textContent?.trim() ?? "",
     );
     expect(rows[0]).toBe("This Mac");
-    expect(rows[1]).toContain("auth-refresh");
-    expect(rows[2]).toBe("Auto-create lane here");
+    expect(rows[1]).toBe("Auto-create lane here");
+    expect(rows[2]).toContain("auth-refresh");
     expect(rows[3]).toBe("MacBook Pro (97)");
-    expect(rows[4]).toContain("render-perf");
-    expect(rows[5]).toBe("Auto-create lane here");
+    expect(rows[4]).toBe("Auto-create lane here");
+    expect(rows[5]).toContain("render-perf");
   });
 
   it("selects the per-machine auto-create row with its own id", () => {
     const onChange = vi.fn();
-    render(<LaneCombobox lanes={lanes} machines={machines} value="lane-local" onChange={onChange} />);
+    render(
+      <LaneCombobox
+        lanes={lanes}
+        machines={machines}
+        value={machineLaneOptionId("this-mac", "lane-local")}
+        onChange={onChange}
+      />,
+    );
     const popover = openList();
 
     const autoCreateRows = within(popover).getAllByText("Auto-create lane here");
@@ -114,14 +134,22 @@ describe("LaneCombobox machine grouping", () => {
 
   it("keeps arrow-key navigation on selectable rows only", () => {
     const onChange = vi.fn();
-    render(<LaneCombobox lanes={lanes} machines={machines} value="lane-local" onChange={onChange} />);
+    render(
+      <LaneCombobox
+        lanes={lanes}
+        machines={machines}
+        value={machineLaneOptionId("this-mac", "lane-local")}
+        onChange={onChange}
+      />,
+    );
     const popover = openList();
 
     const search = within(popover).getByPlaceholderText("Search lanes...");
-    // Highlight starts on the selected lane (index 0 of the selectable rows).
+    // Highlight starts on the selected local lane; the next selectable row is
+    // the auto-create action at the top of the next machine group.
     fireEvent.keyDown(search, { key: "ArrowDown" });
     fireEvent.keyDown(search, { key: "Enter" });
-    expect(onChange).toHaveBeenCalledWith(AUTO_CREATE_LANE_OPTION_ID);
+    expect(onChange).toHaveBeenCalledWith(autoCreateLaneOptionId("studio"));
   });
 
   it("labels a selected per-machine auto-create row on the trigger", () => {
@@ -137,5 +165,27 @@ describe("LaneCombobox machine grouping", () => {
     expect(screen.getByRole("button", { name: "Select lane" }).textContent).toContain(
       "Auto-create lane",
     );
+  });
+
+  it("keeps duplicate lane ids machine-qualified", () => {
+    const onChange = vi.fn();
+    const duplicateLanes = [
+      autoCreateLane,
+      { id: "primary", name: "Primary local", machineId: "this-mac" },
+      { id: "primary", name: "Primary studio", machineId: "studio" },
+    ];
+    render(
+      <LaneCombobox
+        lanes={duplicateLanes}
+        machines={machines}
+        value={machineLaneOptionId("this-mac", "primary")}
+        onChange={onChange}
+      />,
+    );
+    const popover = openList();
+
+    fireEvent.click(within(popover).getByText("Primary studio"));
+
+    expect(onChange).toHaveBeenCalledWith(machineLaneOptionId("studio", "primary"));
   });
 });

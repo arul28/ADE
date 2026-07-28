@@ -17,7 +17,7 @@
  */
 
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import type { RemoteRuntimeConnectionStatus } from "../../../shared/types";
+import type { RecentProjectSummary, RemoteRuntimeConnectionStatus } from "../../../shared/types";
 
 // Machine identity is shared, not per-module: five copies of these constants
 // with two different id values is what made the divergence guard able to warn
@@ -83,6 +83,12 @@ export type LaneMachineDerivationInput = {
   repoDisplayName?: string | null;
   /** Local project roots already open in this window (in-memory state only). */
   localProjectRoots?: readonly string[];
+  /**
+   * Known local projects, including unopened recents. Their git origins let a
+   * remote-bound tab address the matching checkout on This Mac without forcing
+   * the user to open it once just to establish identity.
+   */
+  localProjects?: readonly RecentProjectSummary[];
   /** Free disk headroom on this Mac, when a caller already has it. */
   thisMachineFreeBytes?: number | null;
 };
@@ -203,10 +209,32 @@ function repoMatchFor(
  */
 function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption {
   const isBound = input.boundTargetId === null;
+  const repoIdentity = cachedGitRemoteIdentity(input.repoOriginUrl);
   const repoDisplayName = input.repoDisplayName ?? null;
   const localRoots = input.localProjectRoots ?? [];
   let project: LaneMachineProjectRef | null = isBound ? (input.boundProject ?? null) : null;
-  if (!project) {
+  if (!project && repoIdentity) {
+    const matched = input.localProjects?.find((candidate) =>
+      candidate.kind !== "remote"
+      && candidate.exists !== false
+      && cachedGitRemoteIdentity(candidate.gitOriginUrl) === repoIdentity);
+    if (matched) {
+      project = {
+        projectId: null,
+        rootPath: matched.rootPath,
+        displayName: matched.displayName,
+        matchedBy: "origin",
+      };
+    }
+  }
+  // Once the caller supplied an exact repository identity and a catalog of
+  // local checkouts, that catalog is authoritative. Falling back to a
+  // same-named open folder after it disproved the origin match can route a
+  // launch into an unrelated repository.
+  const hasAuthoritativeOriginCatalog = Boolean(
+    repoIdentity && input.localProjects !== undefined,
+  );
+  if (!project && !hasAuthoritativeOriginCatalog) {
     const matchedRoot = localRoots.find((rootPath) =>
       sameRepoName(pathBaseName(rootPath), repoDisplayName),
     );
@@ -221,7 +249,11 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
   }
   // We can only claim the repo is absent from this Mac when we know what we're
   // looking for and have the local project list to look in.
-  const canProveAbsence = !isBound && !!repoDisplayName && localRoots.length > 0;
+  const canProveAbsence = !isBound && (
+    repoIdentity
+      ? input.localProjects !== undefined
+      : !!repoDisplayName && localRoots.length > 0
+  );
   const freeBytes = input.thisMachineFreeBytes;
   return {
     id: THIS_MACHINE_ID,

@@ -3,7 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { SessionContextMenu } from "./SessionContextMenu";
 
 afterEach(cleanup);
@@ -38,11 +38,12 @@ function renderMenu(
   session: TerminalSessionSummary,
   onSetChatTag = vi.fn(),
   onSettle = vi.fn(),
+  binding?: OpenProjectBinding | null,
 ) {
   const onClose = vi.fn();
   render(
     <SessionContextMenu
-      menu={{ session, x: 20, y: 20 }}
+      menu={{ session, binding, x: 20, y: 20 }}
       onClose={onClose}
       onStopRuntime={vi.fn()}
       onStopAndDelete={vi.fn()}
@@ -70,7 +71,7 @@ describe("SessionContextMenu Claude tags", () => {
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onSetChatTag).toHaveBeenCalledWith(session, null);
+    expect(onSetChatTag).toHaveBeenCalledWith(session, null, null);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -83,7 +84,7 @@ describe("SessionContextMenu Claude tags", () => {
     fireEvent.change(input, { target: { value: "review-ready" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onSetChatTag).toHaveBeenCalledWith(session, "review-ready");
+    expect(onSetChatTag).toHaveBeenCalledWith(session, "review-ready", null);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -108,7 +109,7 @@ describe("SessionContextMenu settle safety", () => {
     const { onSettle } = renderMenu(session);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
-    expect(onSettle).toHaveBeenCalledWith(session);
+    expect(onSettle).toHaveBeenCalledWith(session, null);
   });
 
   it("allows stale provider input without a live response handle to be dismissed", () => {
@@ -120,7 +121,30 @@ describe("SessionContextMenu settle safety", () => {
     const { onSettle } = renderMenu(session);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
-    expect(onSettle).toHaveBeenCalledWith(session);
+    expect(onSettle).toHaveBeenCalledWith(session, null);
+  });
+
+  it("passes the owning machine binding directly to deferred lifecycle actions", () => {
+    const session = makeSession({
+      runtimeState: "waiting-input",
+      pendingInputItemId: "pending-1",
+    });
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    const onSettle = vi.fn();
+    renderMenu(session, vi.fn(), onSettle, binding);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
+
+    expect(onSettle).toHaveBeenCalledWith(session, binding);
   });
 
   it("allows an explicit agent ask to settle because settling clears the marker", () => {

@@ -33,6 +33,7 @@
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
@@ -3575,7 +3576,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listMyGitHubRepos: resolvedArg2({ repos: [] }),
       openProject: async (id: string, projectId: string) => ({
         kind: "remote" as const,
-        key: `remote:${id}:${projectId}`,
+        key: remoteProjectBindingKey(id, projectId),
         targetId: id,
         runtimeName: "Mock remote",
         projectId,

@@ -1,31 +1,54 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { useAppStore, selectActiveProjectRoot } from "../../state/appStore";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import {
+  useAppStore,
+  selectActiveProjectStateKey,
+} from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
+import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
 type MenuState = { laneId: string; x: number; y: number };
+type ForeignMenuState = {
+  lane: LaneSummary;
+  binding: OpenProjectBinding;
+  machineName: string;
+  online: boolean;
+  x: number;
+  y: number;
+};
 
 export type LaneContextTrigger = (
   laneId: string,
   e: { preventDefault: () => void; clientX: number; clientY: number },
 ) => void;
+export type ForeignLaneContextTrigger = (
+  lane: LaneSummary,
+  binding: OpenProjectBinding,
+  machineName: string,
+  online: boolean,
+  e: { preventDefault: () => void; clientX: number; clientY: number },
+) => void;
 
 export function useWorkLaneContextMenu(): {
   trigger: LaneContextTrigger;
+  triggerForeign: ForeignLaneContextTrigger;
   menu: React.ReactNode;
 } {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
+  const [foreignMenuState, setForeignMenuState] = useState<ForeignMenuState | null>(null);
   const [managedLaneId, setManagedLaneId] = useState<string | null>(null);
-
   const lanesById = useMemo(() => {
     const map = new Map<string, (typeof lanes)[number]>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -41,15 +64,36 @@ export function useWorkLaneContextMenu(): {
     e.preventDefault();
     setMenuState({ laneId, x: e.clientX, y: e.clientY });
   }, []);
+  const triggerForeign = useCallback<ForeignLaneContextTrigger>((
+    lane,
+    binding,
+    machineName,
+    online,
+    event,
+  ) => {
+    event.preventDefault();
+    setMenuState(null);
+    setForeignMenuState({
+      lane,
+      binding,
+      machineName,
+      online,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, []);
 
-  const close = useCallback(() => setMenuState(null), []);
+  const close = useCallback(() => {
+    setMenuState(null);
+    setForeignMenuState(null);
+  }, []);
 
   useEffect(() => {
-    if (!menuState) return;
-    const onPointerDown = () => setMenuState(null);
+    if (!menuState && !foreignMenuState) return;
+    const onPointerDown = () => close();
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [menuState]);
+  }, [close, foreignMenuState, menuState]);
 
   const goToLanesAction = useCallback(
     (laneId: string | null, action: string, extras?: Record<string, string>) => {
@@ -63,13 +107,54 @@ export function useWorkLaneContextMenu(): {
   );
 
   const startChatInLane = useStartChatInLane({
-    projectRoot,
+    projectStateKey,
     setWorkViewState,
     selectLane,
     navigate,
   });
+  const startForeignChat = useCallback(() => {
+    if (!foreignMenuState || !projectStateKey || !foreignMenuState.online) return;
+    const laneId = foreignMenuState.lane.id;
+    setWorkViewState(projectStateKey, (previous) => ({
+      ...previous,
+      draftKind: "chat",
+      draftLaneId: laneId,
+      draftMachineId: foreignMenuState.binding.kind === "remote"
+        ? foreignMenuState.binding.targetId
+        : "this-mac",
+      activeItemId: null,
+      selectedItemId: null,
+    }));
+    close();
+    void navigate("/work");
+  }, [
+    close,
+    foreignMenuState,
+    navigate,
+    projectStateKey,
+    setWorkViewState,
+  ]);
+  const openForeignLane = useCallback(() => {
+    if (!foreignMenuState?.online) return;
+    const { binding, lane } = foreignMenuState;
+    close();
+    const switching = binding.kind === "remote"
+      ? switchRemoteProject(binding.targetId, binding.projectId)
+      : switchProjectToPath(binding.rootPath);
+    void switching.then(() => {
+      selectLane(lane.id);
+      void navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
+    });
+  }, [
+    close,
+    foreignMenuState,
+    navigate,
+    selectLane,
+    switchProjectToPath,
+    switchRemoteProject,
+  ]);
 
-  const menu = menuState || managedLaneId
+  const menu = menuState || foreignMenuState || managedLaneId
     ? createPortal(
         <>
           {menuState ? (
@@ -100,6 +185,27 @@ export function useWorkLaneContextMenu(): {
               onStartChatInLane={startChatInLane}
             />
           ) : null}
+          {foreignMenuState ? (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  close();
+                }}
+              />
+              <ForeignLaneContextMenu
+                lane={foreignMenuState.lane}
+                machineName={foreignMenuState.machineName}
+                online={foreignMenuState.online}
+                x={foreignMenuState.x}
+                y={foreignMenuState.y}
+                onClose={close}
+                onStartChat={startForeignChat}
+                onOpenInLanes={openForeignLane}
+              />
+            </>
+          ) : null}
           <WorkManageLaneDialogHost
             laneId={managedLaneId}
             onClose={() => setManagedLaneId(null)}
@@ -109,5 +215,5 @@ export function useWorkLaneContextMenu(): {
       )
     : null;
 
-  return { trigger, menu };
+  return { trigger, triggerForeign, menu };
 }

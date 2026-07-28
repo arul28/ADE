@@ -1,7 +1,12 @@
 import React from "react";
-import { CircleNotch, GridFour, WarningCircle, Clock, Moon } from "@phosphor-icons/react";
+import { CircleNotch, DesktopTower, GridFour, WarningCircle, Clock, Moon } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  AgentChatSpawnKind,
+  LaneSummary,
+  OpenProjectBinding,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
   canonicalInputFromSummary,
@@ -415,6 +420,9 @@ export const SessionCard = React.memo(function SessionCard({
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
+  disabledBusy = true,
+  runtimePin = null,
+  deltaEnabled = true,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -431,6 +439,12 @@ export const SessionCard = React.memo(function SessionCard({
   parentSessionTitle?: string | null;
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
+  /** Busy rows spin; offline rows show a stable machine glyph. */
+  disabledBusy?: boolean;
+  /** Runtime that owns this session when it differs from the active project. */
+  runtimePin?: OpenProjectBinding | null;
+  /** Foreign cards skip the active-project delta cache. */
+  deltaEnabled?: boolean;
 }) {
   const navigate = useNavigate();
   const dot = sessionStatusDot(session);
@@ -441,7 +455,10 @@ export const SessionCard = React.memo(function SessionCard({
   const capsuleBadge = sessionCapsuleBadge(sessionAttentionInput);
   const inlineStatusLabel = sessionInlineStatusLabel(sessionAttentionInput);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
+  const delta = useSessionDelta(
+    session.id,
+    deltaEnabled && (!isRemoteProject || isSelected),
+  );
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText, canonicalPhase === "settled");
   // Pulse once when an already-mounted row transitions into the loud Needs-you
@@ -796,7 +813,11 @@ export const SessionCard = React.memo(function SessionCard({
         </div>
         {disabledReason ? (
           <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-lg bg-bg/70 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
-            <CircleNotch size={12} className="animate-spin" />
+            {disabledBusy ? (
+              <CircleNotch size={12} className="animate-spin" />
+            ) : (
+              <DesktopTower size={12} weight="duotone" />
+            )}
             {disabledReason}
           </span>
         ) : null}
@@ -806,7 +827,12 @@ export const SessionCard = React.memo(function SessionCard({
           flattens it into the outer button. */}
       {disabledReason ? null : (
         <div className="pointer-events-none absolute right-1 top-1 z-10 flex items-center gap-0.5 focus-within:pointer-events-auto group-hover:pointer-events-auto">
-          <SessionSnoozeControl session={session} snoozed={snoozed} compact={compact} />
+          <SessionSnoozeControl
+            session={session}
+            snoozed={snoozed}
+            compact={compact}
+            runtimePin={runtimePin}
+          />
         </div>
       )}
     </div>

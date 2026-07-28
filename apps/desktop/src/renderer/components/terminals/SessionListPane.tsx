@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, CircleNotch, Desktop, DesktopTower, Funnel, MagnifyingGlass, Moon, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -170,7 +170,7 @@ function StickyGroupHeader({
   count: number;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void;
   accentColor?: string | null;
   children: React.ReactNode;
   /**
@@ -229,6 +229,7 @@ function StickyGroupHeader({
           }}
           data-section-id={sectionId}
           aria-busy={busyLabel ? "true" : undefined}
+          onContextMenu={onContextMenu}
         >
           <button
             type="button"
@@ -237,7 +238,6 @@ function StickyGroupHeader({
             // trailing PR badge / count cluster, which the sidebar then clips.
             className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 overflow-hidden text-left"
             onClick={onToggleCollapsed}
-            onContextMenu={onContextMenu}
             disabled={Boolean(busyLabel)}
           >
             {collapsed ? (
@@ -292,6 +292,7 @@ function StickyGroupHeader({
             borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
           }}
           data-section-id={sectionId}
+          onContextMenu={onContextMenu}
           {...(heading
             ? { role: "heading" as const, "aria-level": 3, "aria-label": `${label} (${count})` }
             : {})}
@@ -300,7 +301,6 @@ function StickyGroupHeader({
             type="button"
             className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
             onClick={onToggleCollapsed}
-            onContextMenu={onContextMenu}
             {...(heading
               ? { "aria-label": `${label} (${count})`, "aria-expanded": !collapsed }
               : {})}
@@ -431,64 +431,32 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
  * stays monochrome: a tint here would read as a second lane color.
  */
 function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
-  const title = marker.online
-    ? `On ${marker.machineName}`
-    : `On ${marker.machineName} · offline`;
+  const description = marker.online
+    ? "This lane lives on another connected machine."
+    : "This lane is retained here while its machine is offline.";
   return (
-    <span
-      role="img"
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none",
-        marker.online ? "text-muted-fg/70" : "text-muted-fg/45",
-      )}
-      title={title}
-      aria-label={title}
-      data-machine-id={marker.machineId}
-      data-machine-marker-mode={marker.mode}
-    >
-      <Desktop size={10} weight="regular" className="shrink-0 opacity-70" />
-      {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
-    </span>
-  );
-}
-
-/**
- * A session that lives on another machine. Chats carry their own runtime pin
- * and open without rebinding the tab. Shell/CLI sessions do not, so their
- * caller switches to the owning project before selecting them.
- */
-function CrossMachineSessionRow({
-  session,
-  online,
-  machineName,
-  onOpen,
-}: {
-  session: TerminalSessionSummary;
-  online: boolean;
-  machineName: string;
-  onOpen: ((event: React.MouseEvent<HTMLButtonElement>) => void) | null;
-}) {
-  const label = primarySessionLabel(session);
-  const canOpen = online && !!onOpen;
-  return (
-    <button
-      type="button"
-      disabled={!canOpen}
-      onClick={canOpen ? onOpen : undefined}
-      title={canOpen ? `${label} — open on ${machineName}` : `${label} — ${machineName} is offline`}
-      className={cn(
-        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] transition-colors",
-        canOpen ? "cursor-pointer text-fg/70 hover:bg-white/[0.05]" : "cursor-default text-muted-fg/45",
-      )}
+    <SmartTooltip
+      forceEnabled
+      content={{
+        label: marker.machineName,
+        description,
+      }}
     >
       <span
+        role="img"
+        tabIndex={0}
         className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          session.status === "running" ? "bg-emerald-400/70" : "bg-white/25",
+          "inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none",
+          marker.online ? "text-muted-fg/70" : "text-muted-fg/45",
         )}
-      />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-    </button>
+        aria-label={`${marker.machineName}${marker.online ? "" : ", offline"}`}
+        data-machine-id={marker.machineId}
+        data-machine-marker-mode={marker.mode}
+      >
+        <DesktopTower size={10} weight="duotone" className="shrink-0 text-amber-400/85" />
+        {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
+      </span>
+    </SmartTooltip>
   );
 }
 
@@ -554,7 +522,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   draftKind: WorkDraftKind;
   showingDraft: boolean;
   onShowDraftKind: (kind: WorkDraftKind) => void;
-  onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
+  onSelectSession: (
+    id: string,
+    event: React.MouseEvent,
+    visibleSessionIds: string[],
+    binding?: OpenProjectBinding | null,
+  ) => void;
   onSelectForeignRuntimeSession?: (
     session: TerminalSessionSummary,
     binding: OpenProjectBinding,
@@ -565,7 +538,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
   onBulkStopAndDelete?: () => void;
-  onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
+  onContextMenu: (
+    session: TerminalSessionSummary,
+    e: React.MouseEvent,
+    binding?: OpenProjectBinding | null,
+    machineName?: string | null,
+  ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
   workCollapsedLaneIds: string[];
@@ -586,7 +564,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
-  const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
+  const {
+    trigger: triggerLaneContextMenu,
+    triggerForeign: triggerForeignLaneContextMenu,
+    menu: laneContextMenuPortal,
+  } = useWorkLaneContextMenu();
 
   const isByLane = sessionListOrganization === "by-lane";
   const isByTime = sessionListOrganization === "by-time";
@@ -1272,27 +1254,53 @@ export const SessionListPane = React.memo(function SessionListPane({
             // read-only. A wifi blip must never reflow the sidebar.
             dimmed={!row.online}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(compositeLaneId)}
+            onContextMenu={row.binding
+              ? (event) => triggerForeignLaneContextMenu(
+                row.lane,
+                row.binding!,
+                row.machineName,
+                row.online,
+                event,
+              )
+              : undefined}
           >
             {row.sessions.map((session) => (
-              <CrossMachineSessionRow
+              <SessionCard
                 key={session.id}
                 session={session}
-                online={row.online}
-                machineName={row.machineName}
-                onOpen={
-                  isChatToolType(session.toolType)
-                    ? (event) =>
-                        onSelectSession(session.id, event, row.sessions.map((candidate) => candidate.id))
-                    : row.binding && onSelectForeignRuntimeSession
-                      ? (event) =>
-                          onSelectForeignRuntimeSession(
-                            session,
-                            row.binding!,
-                            event,
-                            row.sessions.map((candidate) => candidate.id),
-                          )
-                      : null
+                lane={row.lane}
+                isSelected={selectedSessionId === session.id}
+                isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
+                onSelect={(_id, event) => {
+                  if (isChatToolType(session.toolType)) {
+                    onSelectSession(
+                      session.id,
+                      event,
+                      row.sessions.map((candidate) => candidate.id),
+                      row.binding,
+                    );
+                  } else if (row.binding && onSelectForeignRuntimeSession) {
+                    onSelectForeignRuntimeSession(
+                      session,
+                      row.binding,
+                      event,
+                      row.sessions.map((candidate) => candidate.id),
+                    );
+                  }
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onContextMenu(session, event, row.binding, row.machineName);
+                }}
+                runtimePin={row.binding}
+                deltaEnabled={false}
+                disabledReason={!row.online
+                  ? `${row.machineName} is offline`
+                  : !row.binding
+                    ? `${row.machineName} is unavailable`
+                    : null
                 }
+                disabledBusy={false}
               />
             ))}
           </StickyGroupHeader>

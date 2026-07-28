@@ -23,7 +23,7 @@ async function fetchRepoForCopy(): Promise<{ owner: string; name: string } | nul
   }
 }
 
-const menuItemStyle: React.CSSProperties = {
+export const menuItemStyle: React.CSSProperties = {
   display: "block",
   width: "100%",
   padding: "7px 14px",
@@ -47,22 +47,28 @@ const menuHeaderStyle: React.CSSProperties = {
   color: COLORS.textDim,
 };
 
-function HoverButton({
+export function HoverButton({
   style,
   children,
   onClick,
   dataTour,
+  disabled = false,
 }: {
   style: React.CSSProperties;
   children: React.ReactNode;
   onClick: () => void;
   dataTour?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       role="menuitem"
       data-tour={dataTour}
-      style={style}
+      disabled={disabled}
+      style={{
+        ...style,
+        ...(disabled ? { cursor: "not-allowed", opacity: 0.4 } : {}),
+      }}
       onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       onClick={onClick}

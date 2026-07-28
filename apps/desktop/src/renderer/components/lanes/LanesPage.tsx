@@ -4,7 +4,13 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch, Question } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+  useAppStoreApi,
+  type LaneInspectorTab,
+} from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -394,6 +400,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const keybindings = useAppStore((s) => s.keybindings);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
@@ -1219,7 +1226,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [laneContextMenu]);
 
   const startChatInLane = useStartChatInLane({
-    projectRoot: activeProjectRoot,
+    projectStateKey: activeProjectStateKey,
     setWorkViewState,
     selectLane,
     navigate,

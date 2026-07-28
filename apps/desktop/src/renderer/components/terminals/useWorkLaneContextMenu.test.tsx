@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,6 +10,8 @@ import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 const navigate = vi.fn();
 const selectLane = vi.fn();
 const setWorkViewState = vi.fn();
+const switchRemoteProject = vi.fn().mockResolvedValue(undefined);
+const switchProjectToPath = vi.fn().mockResolvedValue(undefined);
 
 let capturedLaneContextMenuProps: Record<string, unknown> | null = null;
 let capturedManageLaneHostProps: Record<string, unknown> | null = null;
@@ -49,9 +51,15 @@ vi.mock("../../state/appStore", async () => {
           } satisfies LaneSummary,
         ],
         project: { rootPath: "/local/project" },
-        projectBinding: { kind: "remote", rootPath: "/remote/project" },
+        projectBinding: {
+          kind: "remote",
+          key: "/remote/project",
+          rootPath: "/remote/project",
+        },
         selectLane,
         setWorkViewState,
+        switchRemoteProject,
+        switchProjectToPath,
       }),
   };
 });
@@ -61,6 +69,16 @@ vi.mock("../lanes/LaneContextMenu", () => ({
     capturedLaneContextMenuProps = props;
     return null;
   },
+  HoverButton: ({
+    children,
+    onClick,
+    disabled,
+  }: {
+    children: React.ReactNode;
+    onClick: () => void;
+    disabled?: boolean;
+  }) => <button role="menuitem" disabled={disabled} onClick={onClick}>{children}</button>,
+  menuItemStyle: {},
 }));
 
 vi.mock("./WorkManageLaneDialogHost", () => ({
@@ -77,6 +95,8 @@ afterEach(() => {
   navigate.mockReset();
   selectLane.mockReset();
   setWorkViewState.mockReset();
+  switchRemoteProject.mockReset();
+  switchProjectToPath.mockReset();
 });
 
 describe("useWorkLaneContextMenu", () => {
@@ -113,6 +133,57 @@ describe("useWorkLaneContextMenu", () => {
     });
     expect(selectLane).toHaveBeenCalledWith("lane-remote");
     expect(navigate).toHaveBeenCalledWith("/work");
+  });
+
+  it("starts a foreign lane draft with its owning machine", () => {
+    const writeClipboardText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { app: { writeClipboardText } },
+    });
+    const lane = {
+      id: "lane-remote",
+      name: "Remote Lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/remote-lane",
+      worktreePath: "/Users/studio/ADE/.ade/worktrees/remote-lane",
+      linearIssue: null,
+    } as LaneSummary;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    const { result } = renderHook(() => useWorkLaneContextMenu(), {
+      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
+    });
+
+    act(() => {
+      result.current.triggerForeign(lane, binding, "Studio", true, {
+        preventDefault: vi.fn(),
+        clientX: 12,
+        clientY: 34,
+      });
+    });
+    render(<>{result.current.menu}</>);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Start chat in lane" }));
+
+    expect(setWorkViewState).toHaveBeenCalledWith("/remote/project", expect.any(Function));
+    const updater = setWorkViewState.mock.calls[0]?.[1] as (
+      previous: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    expect(updater({})).toMatchObject({
+      draftKind: "chat",
+      draftLaneId: "lane-remote",
+      draftMachineId: "studio",
+      activeItemId: null,
+      selectedItemId: null,
+    });
   });
 
   it("opens lane management in Work without navigating to the Lanes tab", () => {

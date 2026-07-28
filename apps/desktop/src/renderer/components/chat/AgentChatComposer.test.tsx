@@ -2168,8 +2168,11 @@ describe("AgentChatComposer", () => {
         onMachineChange,
       });
 
-      const trigger = screen.getByRole("button", { name: "Run on This Mac" });
-      expect(trigger.textContent).toContain("Run on: This Mac");
+      const trigger = screen.getByRole("button", {
+        name: "Choose machine, currently This Mac",
+      });
+      expect(trigger.textContent).toContain("This Mac");
+      expect(trigger.textContent).not.toContain("Run on");
 
       fireEvent.click(trigger);
       fireEvent.click(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ }));

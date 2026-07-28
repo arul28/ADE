@@ -3,6 +3,7 @@ import { randomUUID as nodeRandomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -88,6 +89,10 @@ type RuntimeBridgeArgs = {
     openProjectTabs?: ProjectInfo[];
     pendingLocalProjectRoots?: string[];
   };
+  authorizeLocalRuntimeRoot?: (
+    session: WindowRuntimeSession | null | undefined,
+    requestedRootPath: string,
+  ) => string | null;
   bindRemoteProject?: (
     windowId: number | null,
     binding: OpenProjectBinding & { kind: "remote" },
@@ -242,11 +247,19 @@ function collectAuthorizedLocalRuntimeRoots(
 function resolveAuthorizedLocalRuntimeRootPath(
   session: WindowRuntimeSession | null | undefined,
   requestedRootPath: string | null | undefined,
+  authorizeLocalRuntimeRoot?: RuntimeBridgeArgs["authorizeLocalRuntimeRoot"],
 ): string | null {
   const roots = collectAuthorizedLocalRuntimeRoots(session);
   const requested = normalizeLocalRuntimeRootPath(requestedRootPath);
   if (requested) {
-    return roots.get(localRuntimeRootKey(requested)) ?? null;
+    const alreadyAuthorized = roots.get(localRuntimeRootKey(requested));
+    if (alreadyAuthorized) return alreadyAuthorized;
+    const additionallyAuthorized = authorizeLocalRuntimeRoot?.(session, requested);
+    const normalizedAdditional = normalizeLocalRuntimeRootPath(additionallyAuthorized);
+    return normalizedAdditional &&
+      localRuntimeRootKey(normalizedAdditional) === localRuntimeRootKey(requested)
+      ? normalizedAdditional
+      : null;
   }
 
   const fallbackRoot =
@@ -333,6 +346,7 @@ export function getOrCreateLocalAccountMachineIdentity(args: {
 
 export function registerRuntimeBridge({
   appVersion,
+  authorizeLocalRuntimeRoot,
   bindRemoteProject,
   getGitHubTokenForRemoteClone,
   getLocalMachineIdentity,
@@ -939,13 +953,14 @@ export function registerRuntimeBridge({
 
         const binding: OpenProjectBinding & { kind: "remote" } = {
           kind: "remote",
-          key: `remote:${target.id}:${project.projectId}`,
+          key: remoteProjectBindingKey(target.id, project.projectId),
           targetId: target.id,
           runtimeName: target.name,
           hostname: target.hostname,
           projectId: project.projectId,
           rootPath: project.rootPath,
           displayName: project.displayName || path.basename(project.rootPath),
+          gitOriginUrl: project.gitOriginUrl,
           iconDataUrl: project.icon?.dataUrl ?? null,
         };
         if (
@@ -1103,6 +1118,7 @@ export function registerRuntimeBridge({
       const rootPath = resolveAuthorizedLocalRuntimeRootPath(
         session,
         arg?.rootPath,
+        authorizeLocalRuntimeRoot,
       );
       if (!rootPath) {
         throw new Error(
@@ -1140,6 +1156,7 @@ export function registerRuntimeBridge({
       const rootPath = resolveAuthorizedLocalRuntimeRootPath(
         session,
         arg?.rootPath,
+        authorizeLocalRuntimeRoot,
       );
       if (!rootPath) {
         throw new Error(
@@ -1178,6 +1195,7 @@ export function registerRuntimeBridge({
       const rootPath = resolveAuthorizedLocalRuntimeRootPath(
         session,
         arg?.rootPath,
+        authorizeLocalRuntimeRoot,
       );
       if (!rootPath) {
         throw new Error(
@@ -1208,6 +1226,7 @@ export function registerRuntimeBridge({
       const rootPath = resolveAuthorizedLocalRuntimeRootPath(
         session,
         arg?.rootPath,
+        authorizeLocalRuntimeRoot,
       );
       if (!rootPath) {
         throw new Error(
@@ -1280,7 +1299,7 @@ export function registerRuntimeBridge({
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
-      const bindingKey = `remote:${target.id}:${projectId}`;
+      const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`;
       const subscribe = (
         onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,

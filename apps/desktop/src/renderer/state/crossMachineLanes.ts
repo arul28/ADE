@@ -24,6 +24,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type {
   LaneSummary,
   OpenProjectBinding,
@@ -706,7 +707,10 @@ async function runRefresh(): Promise<void> {
           option.project?.projectId as string,
           {
             kind: "remote",
-            key: `remote:${option.targetId}:${option.project?.projectId}`,
+            key: remoteProjectBindingKey(
+              option.targetId as string,
+              option.project?.projectId as string,
+            ),
             targetId: option.targetId as string,
             runtimeName: option.name,
             ...(option.hostname ? { hostname: option.hostname } : {}),

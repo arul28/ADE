@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activeMachineForGroup,
+  groupRecentProjects,
   groupProjectTabs,
   isMultiMachine,
   LOCAL_MACHINE_NAME,
@@ -29,6 +30,30 @@ function remote(targetId: string, projectId: string, runtimeName: string): Remot
     rootPath: `/Users/other/${projectId}`,
     displayName: projectId,
   } as RemoteProjectTabBinding;
+}
+
+function remoteRecent(
+  targetId: string,
+  projectId: string,
+  runtimeName: string,
+  gitOriginUrl: string,
+  lastOpenedAt: string,
+): RecentProjectSummary {
+  return {
+    rootPath: `/Users/other/${projectId}`,
+    displayName: projectId,
+    lastOpenedAt,
+    exists: true,
+    kind: "remote",
+    gitOriginUrl,
+    remote: {
+      targetId,
+      projectId,
+      runtimeName,
+      hostname: runtimeName,
+      gitOriginUrl,
+    },
+  };
 }
 
 describe("groupProjectTabs", () => {
@@ -130,5 +155,132 @@ describe("groupProjectTabs", () => {
       remoteOriginByKey: {},
     });
     expect(groups).toHaveLength(2);
+  });
+
+  it("attaches a known unopened checkout without creating another tab", () => {
+    const origin = "git@github.com:arul28/ADE.git";
+    const groups = groupProjectTabs({
+      localTabs: [],
+      remoteTabs: [{ ...remote("t1", "p1", "Mac Studio"), gitOriginUrl: origin }],
+      knownLocalTabs: [local("/Users/me/ADE", origin)],
+      knownRemoteTabs: [remote("t2", "p2", "MacBook Pro")],
+      remoteOriginByKey: { "remote:t2:p2": "git@github.com:arul28/other.git" },
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].machines.map((machine) => machine.machineName)).toEqual([
+      "Mac Studio",
+      LOCAL_MACHINE_NAME,
+    ]);
+  });
+
+  it("keeps an inactive repo on its preferred machine when a local counterpart appears", () => {
+    const origin = "git@github.com:arul28/Versic.git";
+    const remoteBinding = { ...remote("studio", "versic", "Mac Studio"), gitOriginUrl: origin };
+    const groups = groupProjectTabs({
+      localTabs: [local("/Users/me/Other", "git@github.com:arul28/Other.git")],
+      remoteTabs: [remoteBinding],
+      knownLocalTabs: [local("/Users/me/Versic", origin)],
+      preferredBindingKeyByGroup: {
+        "origin:github.com/arul28/versic": remoteBinding.key,
+      },
+    });
+    const versic = groups.find((group) => group.machines.some(
+      (machine) => machine.bindingKey === remoteBinding.key,
+    ));
+
+    expect(activeMachineForGroup(versic!)?.machineName).toBe("Mac Studio");
+  });
+});
+
+describe("groupRecentProjects", () => {
+  it("renders one recent card for two machine checkouts of the same origin", () => {
+    const groups = groupRecentProjects({
+      recentProjects: [
+        local("/Users/me/ADE", "git@github.com:arul28/ADE.git"),
+        remoteRecent(
+          "studio",
+          "ade",
+          "Mac Studio",
+          "https://github.com/arul28/ADE",
+          "2026-07-28T12:00:00.000Z",
+        ),
+      ],
+      remoteSnapshot: {
+        connectedCount: 1,
+        updatedAt: 1,
+        connections: [{
+          target: { id: "studio", name: "Mac Studio", hostname: "studio.local" },
+          state: "connected",
+          projects: [],
+        }],
+      } as never,
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].locations.map((location) => location.machineName)).toEqual([
+      "Mac Studio",
+      LOCAL_MACHINE_NAME,
+    ]);
+  });
+
+  it("uses the newest reachable checkout and fails over when the newest machine is offline", () => {
+    const localRecent = {
+      ...local("/Users/me/Versic", "git@github.com:arul28/Versic.git"),
+      lastOpenedAt: "2026-07-28T11:00:00.000Z",
+    };
+    const groups = groupRecentProjects({
+      recentProjects: [
+        localRecent,
+        remoteRecent(
+          "studio",
+          "versic",
+          "Mac Studio",
+          "git@github.com:arul28/Versic.git",
+          "2026-07-28T12:00:00.000Z",
+        ),
+      ],
+      remoteSnapshot: {
+        connectedCount: 0,
+        updatedAt: 1,
+        connections: [{
+          target: { id: "studio", name: "Mac Studio", hostname: "studio.local" },
+          state: "idle",
+          projects: [],
+        }],
+      } as never,
+    });
+
+    expect(groups[0].primary.machineId).toBe("this-mac");
+  });
+
+  it("auto-binds a never-opened connected catalog checkout by strict origin", () => {
+    const groups = groupRecentProjects({
+      recentProjects: [{
+        ...local("/Users/me/ADE", "git@github.com:arul28/ADE.git"),
+        lastOpenedAt: "2026-07-28T10:00:00.000Z",
+      }],
+      remoteSnapshot: {
+        connectedCount: 1,
+        updatedAt: 1,
+        connections: [{
+          target: { id: "studio", name: "Mac Studio", hostname: "studio.local" },
+          state: "connected",
+          projects: [{
+            projectId: "ade",
+            rootPath: "/Users/studio/ADE",
+            displayName: "ADE",
+            gitOriginUrl: "https://github.com/arul28/ADE.git",
+            lastOpenedAt: 123,
+            icon: null,
+          }],
+        }],
+      } as never,
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].locations).toHaveLength(2);
+    expect(groups[0].locations[1].recentKey).toBeNull();
+    expect(groups[0].locations[1].summary.remote?.projectId).toBe("ade");
   });
 });
