@@ -23,7 +23,17 @@ let mockStoreState: {
   selectLane: ReturnType<typeof vi.fn>;
   smartTooltipsEnabled: boolean;
   project: { rootPath: string } | null;
-  projectBinding: { kind: "local" | "remote"; key: string; rootPath: string } | null;
+  projectBinding:
+    | { kind: "local"; key: string; rootPath: string }
+    | {
+        kind: "remote";
+        key: string;
+        rootPath: string;
+        targetId: string;
+        runtimeName: string;
+        projectId: string;
+      }
+    | null;
 };
 
 vi.mock("../../state/appStore", () => ({
@@ -248,6 +258,33 @@ describe("LaneGitActionsPane push divergence guard", () => {
     renderPane({
       otherMachineBranchStates: [
         otherMachine({ machineId: "this-mac", machineName: "This Mac", headSha: null, ahead: 9 }),
+      ],
+    });
+    await clickPush();
+
+    await waitFor(() => {
+      expect(window.ade.git.push).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("uses the active remote binding as the current machine", async () => {
+    mockStoreState.projectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      rootPath: "/repo-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+    };
+    renderPane({
+      otherMachineBranchStates: [
+        otherMachine({
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          headSha: null,
+          ahead: 9,
+        }),
       ],
     });
     await clickPush();

@@ -6412,6 +6412,30 @@ describe("per-chat runtime routing", () => {
     });
   });
 
+  it("routes pinned lane and session lists to This Mac without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.lanes.list({ includeStatus: true }, machineA);
+    await bridge.sessions.list({ limit: 60 }, machineA);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "lane",
+        action: "list",
+        args: { includeStatus: true },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "session",
+        action: "list",
+        args: { limit: 60 },
+      },
+    });
+  });
+
   it("takes the unpinned bound path unchanged for a chat on the active binding", async () => {
     const { bridge, invoke } = await mountBridge();
 

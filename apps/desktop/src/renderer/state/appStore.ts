@@ -814,7 +814,11 @@ export type ProjectTransitionError = {
  * rows on a wifi blip would be worse than the single-machine list it replaces.
  */
 export type CrossMachineMachineLanes = {
-  /** `THIS_MACHINE_ID` is never stored here — the union's local half is `lanes`. */
+  /**
+   * Usually a remote target id. `THIS_MACHINE_ID` is stored only while the
+   * active tab is bound remotely, because then `lanes` belongs to that remote
+   * binding and This Mac is one of the union's other machines.
+   */
   machineId: string;
   /** Absolute machine name ("MacBook Pro (97)"). Never the word "remote". */
   machineName: string;
@@ -823,7 +827,7 @@ export type CrossMachineMachineLanes = {
   /** The machine's own project id for the repo the active tab is showing. */
   projectId: string | null;
   /** Complete call-routing target for this checkout, even without a project tab. */
-  binding?: Extract<OpenProjectBinding, { kind: "remote" }> | null;
+  binding?: OpenProjectBinding | null;
   online: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
@@ -979,7 +983,7 @@ export type AppState = {
     machineName: string;
     targetId?: string | null;
     projectId?: string | null;
-    binding?: Extract<OpenProjectBinding, { kind: "remote" }> | null;
+    binding?: OpenProjectBinding | null;
     online?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
@@ -1511,7 +1515,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   mergeCrossMachineLanes: (entry) =>
     set((prev) => {
       const machineId = entry.machineId.trim();
-      if (!machineId || machineId === THIS_MACHINE_ID) return {};
+      if (!machineId) return {};
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
       const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
       const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
@@ -1561,7 +1565,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       let changed = false;
       const nextRecord: Record<string, CrossMachineMachineLanes> = {};
       for (const [machineId, entry] of Object.entries(prev.crossMachineLanesByMachineId)) {
-        const isOnline = online.has(machineId);
+        const isOnline = machineId === THIS_MACHINE_ID || online.has(machineId);
         if (entry.online === isOnline) {
           nextRecord[machineId] = entry;
           continue;

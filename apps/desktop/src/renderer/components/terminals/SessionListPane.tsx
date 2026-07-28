@@ -557,7 +557,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
   onSelectForeignRuntimeSession?: (
     session: TerminalSessionSummary,
-    binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+    binding: OpenProjectBinding,
     event: React.MouseEvent,
     visibleSessionIds: string[],
   ) => void;
@@ -1287,7 +1287,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                       ? (event) =>
                           onSelectForeignRuntimeSession(
                             session,
-                            row.binding as Extract<OpenProjectBinding, { kind: "remote" }>,
+                            row.binding!,
                             event,
                             row.sessions.map((candidate) => candidate.id),
                           )

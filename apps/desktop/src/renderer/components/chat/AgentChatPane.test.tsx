@@ -775,6 +775,9 @@ function resetChatTestStore() {
     laneWorkViewByScope: {},
     draftLaunchJobsByScope: {},
     handoffLaunchJobsByScope: {},
+    openProjectTabRoots: [],
+    openRemoteProjectTabs: [],
+    crossMachineLanesByMachineId: {},
   });
 }
 
@@ -8785,6 +8788,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
   it("streams a chat whose lane lives on another machine from THAT machine, without rebinding the tab", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
+    useAppStore.setState({ focusedSessionId: session.sessionId });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
 
     renderPane(session);
@@ -8859,5 +8863,33 @@ describe("AgentChatPane per-chat runtime routing", () => {
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("pins deletion of the selected foreign chat to its owning machine", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
+    const mocks = installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Foreign chat/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete chat" }));
+    await waitFor(() => {
+      expect(mocks.deleteChat).toHaveBeenCalledWith(
+        { sessionId: "chat-on-b" },
+        machineB,
+      );
+    });
+    expect(useAppStore.getState().projectBinding).toEqual(machineA);
+    confirmSpy.mockRestore();
   });
 });

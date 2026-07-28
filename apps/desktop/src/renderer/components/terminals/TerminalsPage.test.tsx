@@ -82,6 +82,7 @@ const workMocks = vi.hoisted(() => {
     upsertOptimisticChatSession: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
+    switchProjectToPath: vi.fn().mockResolvedValue(undefined),
   };
 
   const baseWork = {
@@ -172,11 +173,16 @@ type MockSessionListPaneProps = {
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
   onSelectForeignRuntimeSession?: (
     session: TerminalSessionSummary,
-    binding: {
-      kind: "remote";
-      targetId: string;
-      projectId: string;
-    },
+    binding:
+      | {
+          kind: "remote";
+          targetId: string;
+          projectId: string;
+        }
+      | {
+          kind: "local";
+          rootPath: string;
+        },
     event: React.MouseEvent,
     visibleSessionIds: string[],
   ) => void;
@@ -210,12 +216,14 @@ vi.mock("../../state/appStore", () => ({
     projectBinding: typeof workMocks.projectBinding;
     laneDeleteProgressByLaneId: Record<string, never>;
     switchRemoteProject: typeof workMocks.fns.switchRemoteProject;
+    switchProjectToPath: typeof workMocks.fns.switchProjectToPath;
   }) => T): T =>
     selector({
       selectedLaneId: "lane-primary",
       laneDeleteProgressByLaneId: {},
       projectBinding: workMocks.projectBinding,
       switchRemoteProject: workMocks.fns.switchRemoteProject,
+      switchProjectToPath: workMocks.fns.switchProjectToPath,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
@@ -444,6 +452,30 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-foreign");
       expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-foreign");
+    });
+  });
+
+  it("switches back to This Mac before selecting its shell from a remote-bound tab", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const session = workMocks.makeTerminalSession("shell-local", "lane-local", "shell");
+    const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
+      session,
+      { kind: "local", rootPath: "/repo-a" },
+      event,
+      [session.id],
+    );
+
+    expect(workMocks.fns.switchProjectToPath).toHaveBeenCalledWith("/repo-a");
+    await waitFor(() => {
+      expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-local");
+      expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-local");
     });
   });
 

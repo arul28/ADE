@@ -621,8 +621,8 @@ export function LaneGitActionsPane({
   selectedCommit = null,
   selectedCommitSha,
   otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
-  currentMachineName = THIS_MACHINE_GUARD_NAME,
-  currentMachineId = THIS_MACHINE_GUARD_ID,
+  currentMachineName,
+  currentMachineId,
   currentMachineHeadSha = null
 }: {
   laneId: string | null;
@@ -663,6 +663,7 @@ export function LaneGitActionsPane({
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
   // divergence guard below; the slice is reference-stable while unchanged.
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
@@ -1357,18 +1358,26 @@ export function LaneGitActionsPane({
   // memo) so a single-machine project pays nothing.
   const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
     if (!lane) return null;
+    const activeMachineId = currentMachineId
+      ?? (projectBinding?.kind === "remote" ? projectBinding.targetId : THIS_MACHINE_GUARD_ID);
+    const activeMachineName = currentMachineName
+      ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : THIS_MACHINE_GUARD_NAME);
     // The union slice keeps a stable reference while unchanged, so subscribing
     // costs one identity check per store tick and re-renders nothing. The
     // selector itself is memoized and only runs here, at click time. An
     // explicit prop still wins so callers can supply their own set.
     const others = otherMachineBranchStates.length > 0
       ? otherMachineBranchStates
-      : selectOtherMachineBranchStates({ lanes, crossMachineLanesByMachineId }, lane.id);
+      : selectOtherMachineBranchStates({
+          lanes,
+          crossMachineLanesByMachineId,
+          projectBinding,
+        }, lane.id);
     if (others.length === 0) return null;
     return detectPushDivergence({
       current: {
-        machineId: currentMachineId,
-        machineName: currentMachineName,
+        machineId: activeMachineId,
+        machineName: activeMachineName,
         branchRef: lane.branchRef,
         headSha: currentMachineHeadSha,
         ahead: syncStatus?.ahead ?? lane.status.ahead,
@@ -1384,6 +1393,7 @@ export function LaneGitActionsPane({
     lane,
     lanes,
     otherMachineBranchStates,
+    projectBinding,
     syncStatus,
   ]);
 

@@ -1277,7 +1277,10 @@ declare global {
         ) => () => void;
       };
       lanes: {
-        list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
+        list: (
+          args?: ListLanesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
@@ -1412,7 +1415,10 @@ declare global {
         ) => () => void;
       };
       sessions: {
-        list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
+        list: (
+          args?: ListSessionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalSessionSummary[]>;
         get: (
           sessionId: string,
           pin?: OpenProjectBinding | null,

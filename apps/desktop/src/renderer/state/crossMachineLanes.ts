@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   LaneSummary,
   OpenProjectBinding,
+  RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
@@ -35,6 +36,7 @@ import {
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
 } from "../../shared/machineIdentity";
+import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import {
   EMPTY_MACHINE_BRANCH_STATES,
   toMachineBranchState,
@@ -62,6 +64,25 @@ const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
 /** Foreign session reads are a sidebar preview, not an archive. */
 const FOREIGN_SESSION_LIMIT = 60;
 
+export function resolveThisMachineBindingForOrigin(
+  projects: readonly RecentProjectSummary[],
+  originUrl: string | null | undefined,
+): Extract<OpenProjectBinding, { kind: "local" }> | null {
+  const originIdentity = normalizeGitRemoteIdentity(originUrl);
+  if (!originIdentity) return null;
+  const localProject = projects.find((candidate) =>
+    candidate.kind !== "remote"
+    && candidate.exists !== false
+    && normalizeGitRemoteIdentity(candidate.gitOriginUrl) === originIdentity);
+  if (!localProject) return null;
+  return {
+    kind: "local",
+    key: `local:${localProject.rootPath}`,
+    rootPath: localProject.rootPath,
+    displayName: localProject.displayName,
+  };
+}
+
 // ── Derived rows ────────────────────────────────────────────────────────────
 
 export type CrossMachineLaneRow = {
@@ -71,12 +92,14 @@ export type CrossMachineLaneRow = {
   machineName: string;
   online: boolean;
   isThisMachine: boolean;
+  /** True for the tab-bound machine whose lanes already render in the primary list. */
+  isActiveBinding: boolean;
   /** Sessions belonging to this lane. Empty for local rows (the local list owns them). */
   sessions: TerminalSessionSummary[];
   /** Remote-runtime target id + project id, for "open this on that machine". */
   targetId: string | null;
   projectId: string | null;
-  binding: Extract<OpenProjectBinding, { kind: "remote" }> | null;
+  binding: OpenProjectBinding | null;
 };
 
 export type CrossMachineUnion = {
@@ -144,23 +167,36 @@ function laneActivityRank(row: CrossMachineLaneRow): number {
 export function buildCrossMachineLaneRows(input: {
   localLanes: readonly LaneSummary[];
   machines: Readonly<Record<string, CrossMachineMachineLanes>>;
+  activeBinding?: OpenProjectBinding | null;
 }): CrossMachineLaneRow[] {
   const rows: CrossMachineLaneRow[] = [];
+  const activeBinding = input.activeBinding ?? null;
+  const activeMachineId = activeBinding?.kind === "remote"
+    ? activeBinding.targetId
+    : THIS_MACHINE_ID;
+  const activeMachineName = activeBinding?.kind === "remote"
+    ? activeBinding.runtimeName
+    : THIS_MACHINE_NAME;
+  const activeRemoteBinding = activeBinding?.kind === "remote" ? activeBinding : null;
   for (const lane of input.localLanes) {
     rows.push({
       lane,
-      machineId: THIS_MACHINE_ID,
-      machineName: THIS_MACHINE_NAME,
+      machineId: activeMachineId,
+      machineName: activeMachineName,
       online: true,
-      isThisMachine: true,
+      isThisMachine: activeMachineId === THIS_MACHINE_ID,
+      isActiveBinding: true,
       sessions: [],
-      targetId: null,
-      projectId: null,
-      binding: null,
+      targetId: activeRemoteBinding?.targetId ?? null,
+      projectId: activeRemoteBinding?.projectId ?? null,
+      binding: activeRemoteBinding,
     });
   }
   for (const entry of Object.values(input.machines)) {
-    if (entry.machineId === THIS_MACHINE_ID) continue;
+    // The active binding is already represented by `localLanes`. The sync
+    // cache may also contain that remote machine, so drop its stale/duplicate
+    // slice instead of rendering the same lane twice.
+    if (entry.machineId === activeMachineId) continue;
     const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
     for (const session of entry.sessions) {
       const laneId = session.laneId;
@@ -175,7 +211,8 @@ export function buildCrossMachineLaneRows(input: {
         machineId: entry.machineId,
         machineName: entry.machineName,
         online: entry.online,
-        isThisMachine: false,
+        isThisMachine: entry.machineId === THIS_MACHINE_ID,
+        isActiveBinding: false,
         sessions: sessionsByLaneId.get(lane.id) ?? [],
         targetId: entry.targetId,
         projectId: entry.projectId,
@@ -218,7 +255,12 @@ export function resolveCrossMachineLaneMarkers(
     const sameBranchElsewhere = (machinesByBranch.get(branch)?.size ?? 0) >= 2;
     const mode: CrossMachineLaneMarker["mode"] =
       !row.online || manyForeignMachines || sameBranchElsewhere ? "name" : "glyph";
-    markers.set(`${row.machineId}:${row.lane.id}`, {
+    // Active-binding lanes render through the primary lane list, whose key is
+    // the bare lane id. Other machines render through composite union rows.
+    const markerKey = row.isActiveBinding
+      ? row.lane.id
+      : `${row.machineId}:${row.lane.id}`;
+    markers.set(markerKey, {
       machineId: row.machineId,
       machineName: row.machineName,
       online: row.online,
@@ -235,7 +277,9 @@ export function resolveCrossMachineLaneMarkers(
 type BranchStateCacheKey = {
   lanes: readonly LaneSummary[];
   machines: Readonly<Record<string, CrossMachineMachineLanes>>;
+  projectBinding: OpenProjectBinding | null;
   laneId: string;
+  expiresAtMs: number | null;
   value: MachineBranchState[] | readonly MachineBranchState[];
 };
 
@@ -258,7 +302,7 @@ let branchStateCache: BranchStateCacheKey | null = null;
  * which is exactly when the warning is worth the most.
  */
 export function selectOtherMachineBranchStates(
-  state: Pick<AppState, "lanes" | "crossMachineLanesByMachineId">,
+  state: Pick<AppState, "lanes" | "crossMachineLanesByMachineId" | "projectBinding">,
   laneId: string,
 ): readonly MachineBranchState[] {
   const trimmedLaneId = laneId?.trim() ?? "";
@@ -270,30 +314,42 @@ export function selectOtherMachineBranchStates(
     && cached.laneId === trimmedLaneId
     && cached.lanes === state.lanes
     && cached.machines === state.crossMachineLanesByMachineId
+    && cached.projectBinding === state.projectBinding
+    && (cached.expiresAtMs == null || Date.now() < cached.expiresAtMs)
   ) {
     return cached.value;
   }
 
   const remember = (
     value: MachineBranchState[] | readonly MachineBranchState[],
+    expiresAtMs: number | null = null,
   ): readonly MachineBranchState[] => {
     branchStateCache = {
       lanes: state.lanes,
       machines: state.crossMachineLanesByMachineId,
+      projectBinding: state.projectBinding,
       laneId: trimmedLaneId,
+      expiresAtMs,
       value,
     };
     return value;
   };
 
-  // Resolve the lane and, with it, the machine that owns it. A lane is local
-  // unless a union slice claims it.
+  const activeMachineId = state.projectBinding?.kind === "remote"
+    ? state.projectBinding.targetId
+    : THIS_MACHINE_ID;
+  const activeMachineName = state.projectBinding?.kind === "remote"
+    ? state.projectBinding.runtimeName
+    : THIS_MACHINE_NAME;
+
+  // Resolve the lane and, with it, the machine that owns it. `state.lanes`
+  // belongs to the active tab binding, which may be a remote machine.
   let subjectBranch = "";
   let subjectMachineId = "";
   const localLane = state.lanes.find((lane) => lane.id === trimmedLaneId);
   if (localLane) {
     subjectBranch = normalizeBranchRef(localLane.branchRef);
-    subjectMachineId = THIS_MACHINE_ID;
+    subjectMachineId = activeMachineId;
   } else {
     for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
       const match = entry.lanes.find((lane) => lane.id === trimmedLaneId);
@@ -306,8 +362,17 @@ export function selectOtherMachineBranchStates(
   if (!subjectBranch || !subjectMachineId) return remember(EMPTY_MACHINE_BRANCH_STATES);
 
   const others: MachineBranchState[] = [];
+  let expiresAtMs: number | null = null;
   for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
-    if (entry.machineId === subjectMachineId) continue;
+    // `state.lanes` is the authoritative active-binding slice. Ignore any
+    // retained union copy of that machine and add the live slice below only
+    // when it is genuinely "other" than the subject.
+    if (
+      entry.machineId === subjectMachineId
+      || entry.machineId === activeMachineId
+    ) {
+      continue;
+    }
     if (
       !entry.online
       && (
@@ -319,6 +384,12 @@ export function selectOtherMachineBranchStates(
     }
     for (const lane of entry.lanes) {
       if (normalizeBranchRef(lane.branchRef) !== subjectBranch) continue;
+      if (!entry.online && entry.lastSyncedAtMs != null) {
+        const entryExpiresAtMs = entry.lastSyncedAtMs + OFFLINE_DIVERGENCE_MAX_AGE_MS;
+        expiresAtMs = expiresAtMs == null
+          ? entryExpiresAtMs
+          : Math.min(expiresAtMs, entryExpiresAtMs);
+      }
       others.push(
         toMachineBranchState({
           machineId: entry.machineId,
@@ -328,20 +399,24 @@ export function selectOtherMachineBranchStates(
       );
     }
   }
-  // A foreign lane's "others" includes this Mac, which the union does not store.
-  if (subjectMachineId !== THIS_MACHINE_ID) {
+  // A lane outside the active binding compares against the active binding too;
+  // `state.lanes` is not necessarily This Mac.
+  if (subjectMachineId !== activeMachineId) {
     for (const lane of state.lanes) {
       if (normalizeBranchRef(lane.branchRef) !== subjectBranch) continue;
       others.push(
         toMachineBranchState({
-          machineId: THIS_MACHINE_ID,
-          machineName: THIS_MACHINE_NAME,
+          machineId: activeMachineId,
+          machineName: activeMachineName,
           lane,
         }),
       );
     }
   }
-  return remember(others.length === 0 ? EMPTY_MACHINE_BRANCH_STATES : others);
+  return remember(
+    others.length === 0 ? EMPTY_MACHINE_BRANCH_STATES : others,
+    expiresAtMs,
+  );
 }
 
 /** Test seam — the branch-state memo is module state. */
@@ -362,6 +437,8 @@ export type CrossMachineLaneScope = {
   boundTargetId: string | null;
   /** Project id on the bound machine, when the tab is bound to a remote one. */
   boundProjectId: string | null;
+  /** Verified local checkout of the same repo, while the tab is remote-bound. */
+  thisMachineBinding?: Extract<OpenProjectBinding, { kind: "local" }> | null;
 };
 
 type SyncRuntime = {
@@ -384,6 +461,7 @@ const runtime: SyncRuntime = {
     repoOriginUrl: null,
     boundTargetId: null,
     boundProjectId: null,
+    thisMachineBinding: null,
   },
   refCount: 0,
   generation: 0,
@@ -401,6 +479,7 @@ function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean 
     && a.repoOriginUrl === b.repoOriginUrl
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
+    && a.thisMachineBinding?.key === b.thisMachineBinding?.key
   );
 }
 
@@ -535,6 +614,56 @@ async function readMachine(
   }
 }
 
+async function readThisMachine(
+  binding: Extract<OpenProjectBinding, { kind: "local" }>,
+  generation: number,
+): Promise<void> {
+  const store = rootAppStoreApi.getState();
+  try {
+    const [lanes, sessions] = await Promise.all([
+      withTimeout(
+        window.ade.lanes.list(
+          { includeArchived: false, includeStatus: true },
+          binding,
+        ),
+        MACHINE_READ_TIMEOUT_MS,
+        "lane.list on This Mac",
+      ),
+      withTimeout(
+        window.ade.sessions.list(
+          { limit: FOREIGN_SESSION_LIMIT },
+          binding,
+        ),
+        MACHINE_READ_TIMEOUT_MS,
+        "session.list on This Mac",
+      ),
+    ]);
+    if (generation !== runtime.generation) return;
+    store.mergeCrossMachineLanes({
+      machineId: THIS_MACHINE_ID,
+      machineName: THIS_MACHINE_NAME,
+      targetId: null,
+      projectId: null,
+      binding,
+      online: true,
+      lanes,
+      sessions,
+      error: null,
+    });
+  } catch (error) {
+    if (generation !== runtime.generation) return;
+    store.mergeCrossMachineLanes({
+      machineId: THIS_MACHINE_ID,
+      machineName: THIS_MACHINE_NAME,
+      targetId: null,
+      projectId: null,
+      binding,
+      online: true,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 async function runRefresh(): Promise<void> {
   const generation = ++runtime.generation;
   const scope = runtime.scope;
@@ -551,6 +680,9 @@ async function runRefresh(): Promise<void> {
   const targets = options.filter(
     (option) =>
       option.id !== THIS_MACHINE_ID
+      && option.id !== (
+        scope.boundTargetId ?? THIS_MACHINE_ID
+      )
       && option.targetId
       && option.project?.projectId
       && option.repoMatch === "matched",
@@ -586,7 +718,12 @@ async function runRefresh(): Promise<void> {
         );
       }
     });
-  await Promise.all(workers);
+  await Promise.all([
+    ...workers,
+    ...(scope.boundTargetId && scope.thisMachineBinding
+      ? [readThisMachine(scope.thisMachineBinding, generation)]
+      : []),
+  ]);
 }
 
 function scheduleRefresh(): void {
@@ -703,6 +840,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
     repoOriginUrl: null,
     boundTargetId: null,
     boundProjectId: null,
+    thisMachineBinding: null,
   };
   resetCrossMachineBranchStateCacheForTest();
 }
@@ -724,40 +862,75 @@ export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const [localRepoIdentity, setLocalRepoIdentity] = useState<{
-    rootPath: string;
+    scopeKey: string | null;
     originUrl: string | null;
+    thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
   } | null>(null);
 
   const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
   const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const boundProjectId = projectBinding?.kind === "remote" ? projectBinding.projectId : null;
-  const repoOriginUrl = boundTargetId
-    ? null
-    : localRepoIdentity?.rootPath === projectRoot
-      ? localRepoIdentity.originUrl
-      : undefined;
+  const repoOriginUrl = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.originUrl
+    : undefined;
+  const thisMachineBinding = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.thisMachineBinding
+    : null;
 
   useEffect(() => {
-    if (boundTargetId || !projectRoot) return;
+    if (!projectRoot) return;
     let cancelled = false;
     const listRecent = window.ade?.project?.listRecent;
     if (typeof listRecent !== "function") {
-      setLocalRepoIdentity({ rootPath: projectRoot, originUrl: null });
+      setLocalRepoIdentity({
+        scopeKey,
+        originUrl: null,
+        thisMachineBinding: null,
+      });
       return;
     }
-    void listRecent()
-      .then((projects) => {
-        if (cancelled) return;
+    const loadIdentity = async () => {
+      const projects = await listRecent();
+      if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
-        setLocalRepoIdentity({ rootPath: projectRoot, originUrl: project?.gitOriginUrl ?? null });
+        return {
+          originUrl: project?.gitOriginUrl ?? null,
+          thisMachineBinding: null,
+        };
+      }
+      const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
+      const connection = snapshot.connections.find(
+        (candidate) => candidate.target.id === boundTargetId,
+      );
+      const boundProject = connection?.projects?.find(
+        (candidate) => candidate.projectId === boundProjectId,
+      );
+      return {
+        originUrl: boundProject?.gitOriginUrl ?? null,
+        thisMachineBinding: resolveThisMachineBindingForOrigin(
+          projects,
+          boundProject?.gitOriginUrl,
+        ),
+      };
+    };
+    void loadIdentity()
+      .then((identity) => {
+        if (cancelled) return;
+        setLocalRepoIdentity({ scopeKey, ...identity });
       })
       .catch(() => {
-        if (!cancelled) setLocalRepoIdentity({ rootPath: projectRoot, originUrl: null });
+        if (!cancelled) {
+          setLocalRepoIdentity({
+            scopeKey,
+            originUrl: null,
+            thisMachineBinding: null,
+          });
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [boundTargetId, projectRoot]);
+  }, [boundProjectId, boundTargetId, projectRoot, scopeKey]);
 
   useEffect(
     () => {
@@ -772,18 +945,23 @@ export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
         repoOriginUrl,
         boundTargetId,
         boundProjectId,
+        thisMachineBinding,
       });
     },
-    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey],
+    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
   );
 
   const rows = useMemo(
-    () => buildCrossMachineLaneRows({ localLanes, machines }),
-    [localLanes, machines],
+    () => buildCrossMachineLaneRows({
+      localLanes,
+      machines,
+      activeBinding: projectBinding,
+    }),
+    [localLanes, machines, projectBinding],
   );
   return useMemo(() => {
     const foreignRows = rows
-      .filter((row) => !row.isThisMachine)
+      .filter((row) => !row.isActiveBinding)
       .sort((left, right) => laneActivityRank(right) - laneActivityRank(left));
     // Single-machine setups take this branch forever: no marker map is built and
     // the lane header renders exactly as it did before this feature existed.

@@ -10,6 +10,7 @@ import {
   decodeForeignLanes,
   decodeForeignSessions,
   resolveCrossMachineLaneMarkers,
+  resolveThisMachineBindingForOrigin,
   resetCrossMachineLaneSyncForTest,
   selectOtherMachineBranchStates,
   startCrossMachineLaneSync,
@@ -70,6 +71,7 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
 beforeEach(() => {
   useAppStore.setState({
     lanes: [],
+    projectBinding: null,
     crossMachineLaneScopeKey: null,
     crossMachineLanesByMachineId: {},
   });
@@ -200,6 +202,32 @@ describe("offline machines keep their lanes", () => {
   });
 });
 
+describe("This Mac counterpart resolution", () => {
+  it("joins only an existing local checkout with the same normalized origin", () => {
+    expect(resolveThisMachineBindingForOrigin([
+      {
+        rootPath: "/missing",
+        displayName: "Missing",
+        lastOpenedAt: "2026-07-20T10:00:00Z",
+        exists: false,
+        gitOriginUrl: "https://github.com/acme/ADE.git",
+      },
+      {
+        rootPath: "/repo-a",
+        displayName: "Repo A",
+        lastOpenedAt: "2026-07-20T10:00:00Z",
+        exists: true,
+        gitOriginUrl: "git@github.com:Acme/ADE.git",
+      },
+    ], "https://github.com/acme/ade")).toEqual({
+      kind: "local",
+      key: "local:/repo-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    });
+  });
+});
+
 describe("adaptive machine marker", () => {
   const localRow = () => makeLane({ id: "lane-local", branchRef: "feature/local" });
 
@@ -230,6 +258,74 @@ describe("adaptive machine marker", () => {
     const rows = buildCrossMachineLaneRows({ localLanes: [localRow()], machines: {} });
     expect(rows.every((row) => row.machineId === THIS_MACHINE_ID)).toBe(true);
     expect(resolveCrossMachineLaneMarkers(rows).size).toBe(0);
+  });
+
+  it("attributes the active lane slice to its remote binding without duplicating it", () => {
+    const activeBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    const activeLane = makeLane({ id: "lane-active", branchRef: "feature/active" });
+    const thisMacLane = makeLane({ id: "lane-this-mac", branchRef: "feature/local" });
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [activeLane],
+      activeBinding,
+      machines: {
+        // A retained refresh of the active remote must not duplicate the live
+        // active slice.
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          binding: activeBinding,
+          online: true,
+          lanes: [activeLane],
+          sessions: [makeSession({ id: "session-duplicate", laneId: activeLane.id })],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        [THIS_MACHINE_ID]: {
+          machineId: THIS_MACHINE_ID,
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          binding: {
+            kind: "local",
+            key: "local:/repo-a",
+            rootPath: "/repo-a",
+            displayName: "Repo A",
+          },
+          online: true,
+          lanes: [thisMacLane],
+          sessions: [makeSession({ id: "session-local", laneId: thisMacLane.id })],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      lane: activeLane,
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      isThisMachine: false,
+      isActiveBinding: true,
+    });
+    expect(rows[1]).toMatchObject({
+      lane: thisMacLane,
+      machineId: THIS_MACHINE_ID,
+      isThisMachine: true,
+      isActiveBinding: false,
+      sessions: [{ id: "session-local" }],
+    });
+    expect(resolveCrossMachineLaneMarkers(rows).has("lane-active")).toBe(true);
   });
 
   it("names the machine when it is offline", () => {
@@ -433,6 +529,89 @@ describe("selectOtherMachineBranchStates", () => {
 
     expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-local")).toHaveLength(0);
   });
+
+  it("attributes active remote lanes correctly and ignores a retained duplicate", () => {
+    const activeBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    const activeLane = makeLane({ id: "lane-active", branchRef: "feature/shared" });
+    useAppStore.setState({
+      projectBinding: activeBinding,
+      lanes: [activeLane],
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          binding: activeBinding,
+          online: true,
+          lanes: [activeLane],
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        [THIS_MACHINE_ID]: {
+          machineId: THIS_MACHINE_ID,
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          online: true,
+          lanes: [
+            makeLane({
+              id: "lane-this-mac",
+              branchRef: "feature/shared",
+              status: { dirty: false, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+            }),
+          ],
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+
+    expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-active")).toEqual([
+      expect.objectContaining({
+        machineId: THIS_MACHINE_ID,
+        branchRef: "feature/shared",
+        ahead: 2,
+      }),
+    ]);
+  });
+
+  it("expires memoized offline branch state without a store update", () => {
+    vi.useFakeTimers();
+    const syncedAtMs = Date.parse("2026-07-27T10:00:00Z");
+    vi.setSystemTime(syncedAtMs);
+    useAppStore.setState({
+      projectBinding: null,
+      lanes: [makeLane({ id: "lane-local", branchRef: "feature/shared" })],
+      crossMachineLanesByMachineId: {
+        a: {
+          machineId: "a",
+          machineName: "Mac Studio (12)",
+          targetId: "a",
+          projectId: "p",
+          online: false,
+          lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/shared" })],
+          sessions: [],
+          lastSyncedAtMs: syncedAtMs,
+          error: "offline",
+        },
+      },
+    });
+
+    expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-local")).toHaveLength(1);
+    vi.advanceTimersByTime(60_001);
+    expect(selectOtherMachineBranchStates(useAppStore.getState(), "lane-local")).toHaveLength(0);
+  });
 });
 
 describe("foreign payload decoding", () => {
@@ -445,6 +624,69 @@ describe("foreign payload decoding", () => {
 });
 
 describe("cross-machine refresh scheduling", () => {
+  it("reads This Mac explicitly while the active tab is bound remotely", async () => {
+    vi.useFakeTimers();
+    const localBinding = {
+      kind: "local" as const,
+      key: "local:/repo-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    const listLanes = vi.fn(async () => [
+      makeLane({ id: "lane-this-mac", branchRef: "feature/local" }),
+    ]);
+    const listSessions = vi.fn(async () => [
+      makeSession({ id: "session-this-mac", laneId: "lane-this-mac" }),
+    ]);
+    window.ade = {
+      lanes: { list: listLanes },
+      sessions: { list: listSessions },
+      remoteRuntime: {
+        callAction: vi.fn(),
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "remote:target-studio:project-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: "target-studio",
+      boundProjectId: "project-a",
+      thisMachineBinding: localBinding,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(listLanes).toHaveBeenCalledWith(
+      { includeArchived: false, includeStatus: true },
+      localBinding,
+    );
+    expect(listSessions).toHaveBeenCalledWith({ limit: 60 }, localBinding);
+    expect(useAppStore.getState().crossMachineLanesByMachineId[THIS_MACHINE_ID])
+      .toMatchObject({
+        machineId: THIS_MACHINE_ID,
+        binding: localBinding,
+        lanes: [{ id: "lane-this-mac" }],
+        sessions: [{ id: "session-this-mac" }],
+      });
+
+    stop();
+  });
+
   it("waits for a slow refresh to settle before scheduling the next poll", async () => {
     vi.useFakeTimers();
     const pending: Array<(value: { result: unknown }) => void> = [];

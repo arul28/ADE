@@ -9339,7 +9339,10 @@ export function AgentChatPane({
 
     setError(null);
     setDeletingChatSessionId(selectedSessionId);
-    void window.ade.agentChat.delete({ sessionId: selectedSessionId })
+    void window.ade.agentChat.delete(
+      { sessionId: selectedSessionId },
+      ...chatPinArgsFor(chatRuntimePinRef),
+    )
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();

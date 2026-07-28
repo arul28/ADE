@@ -130,6 +130,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
@@ -245,11 +246,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const handleSelectForeignRuntimeSession = useCallback(
     (
       session: TerminalSessionSummary,
-      binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+      binding: OpenProjectBinding,
       event: React.MouseEvent,
       visibleSessionIds: string[],
     ) => {
-      void switchRemoteProject(binding.targetId, binding.projectId)
+      const switchProject = binding.kind === "remote"
+        ? switchRemoteProject(binding.targetId, binding.projectId)
+        : switchProjectToPath(binding.rootPath);
+      void switchProject
         .then(() => handleSelectSession(session.id, event, visibleSessionIds))
         .catch((reason: unknown) => {
           // A shell/CLI has no per-session runtime pin. If its owning project
@@ -258,7 +262,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("work.foreign_session_switch_failed", reason);
         });
     },
-    [handleSelectSession, switchRemoteProject],
+    [handleSelectSession, switchProjectToPath, switchRemoteProject],
   );
 
   const handleInfoClick = useCallback(

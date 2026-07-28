@@ -4690,7 +4690,13 @@ contextBridge.exposeInMainWorld("ade", {
     onUpdate: subscribeUsageUpdateEvents,
   },
   lanes: {
-    list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+    list: async (
+      args: ListLanesArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<LaneSummary[]>(pin, "lane", "list", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<LaneSummary[]>(
         "lane",
         "list",
@@ -5352,7 +5358,11 @@ contextBridge.exposeInMainWorld("ade", {
   sessions: {
     list: async (
       args: ListSessionsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<TerminalSessionSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<TerminalSessionSummary[]>(pin, "session", "list", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         TerminalSessionSummary[]
       >("session", "list", { args });
