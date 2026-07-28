@@ -58,6 +58,7 @@ describe("browserMock prompt stashes", () => {
         attachmentsAvailable: true,
       }),
     );
-    await window.ade.agentChat.promptStashes.delete({ id: created.id });
+    await expect(window.ade.agentChat.promptStashes.delete({ id: created.id })).resolves.toBe(true);
+    await expect(window.ade.agentChat.promptStashes.list()).resolves.not.toContainEqual(created);
   });
 });

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, forwardRef, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding, PromptStashEntry } from "../../../shared/types";
@@ -283,6 +283,93 @@ describe("ComposerPromptStash", () => {
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
     expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
     await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: imageEntry.id }));
+  });
+
+  it("copies stashed images sequentially and preserves their composer order", async () => {
+    const sourceAttachments = [
+      { path: "/Users/me/Desktop/first.png", type: "image" as const },
+      { path: "/Users/me/Desktop/second.png", type: "image" as const },
+    ];
+    const storedAttachments = [
+      { path: "/project/.ade/attachments/first.png", type: "image" as const },
+      { path: "/project/.ade/attachments/second.png", type: "image" as const },
+    ];
+    let resolveFirstRead: ((result: { dataUrl: string }) => void) | undefined;
+    let resolveSecondRead: ((result: { dataUrl: string }) => void) | undefined;
+    let resolveFirstSave: ((result: { path: string }) => void) | undefined;
+    let resolveSecondSave: ((result: { path: string }) => void) | undefined;
+    const getImageDataUrl = vi.fn()
+      .mockImplementationOnce(() => new Promise<{ dataUrl: string }>((resolve) => {
+        resolveFirstRead = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise<{ dataUrl: string }>((resolve) => {
+        resolveSecondRead = resolve;
+      }));
+    const saveTempAttachment = vi.fn()
+      .mockImplementationOnce(() => new Promise<{ path: string }>((resolve) => {
+        resolveFirstSave = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise<{ path: string }>((resolve) => {
+        resolveSecondSave = resolve;
+      }));
+    const create = vi.fn().mockResolvedValue({
+      ...savedEntry,
+      attachments: storedAttachments,
+    });
+    installBridge({ create, getImageDataUrl, saveTempAttachment });
+    render(
+      <ComposerPromptStash
+        draft="Keep these images ordered"
+        attachments={sourceAttachments}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(1));
+    expect(getImageDataUrl).toHaveBeenNthCalledWith(1, sourceAttachments[0]!.path, null);
+    expect(saveTempAttachment).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveFirstRead?.({ dataUrl: "data:image/png;base64,Zmlyc3Q=" });
+    });
+    await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledTimes(1));
+    expect(saveTempAttachment).toHaveBeenNthCalledWith(1, {
+      data: "Zmlyc3Q=",
+      filename: "first.png",
+    });
+    expect(getImageDataUrl).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstSave?.({ path: storedAttachments[0]!.path });
+    });
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledTimes(2));
+    expect(getImageDataUrl).toHaveBeenNthCalledWith(2, sourceAttachments[1]!.path, null);
+    expect(saveTempAttachment).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSecondRead?.({ dataUrl: "data:image/png;base64,c2Vjb25k" });
+    });
+    await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledTimes(2));
+    expect(saveTempAttachment).toHaveBeenNthCalledWith(2, {
+      data: "c2Vjb25k",
+      filename: "second.png",
+    });
+    expect(create).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSecondSave?.({ path: storedAttachments[1]!.path });
+    });
+    await waitFor(() => expect(create).toHaveBeenCalledWith({
+      text: "Keep these images ordered",
+      attachments: storedAttachments,
+      provider: undefined,
+      modelId: undefined,
+    }));
   });
 
   it("never falls back to this desktop for an image owned by a pinned remote chat", async () => {

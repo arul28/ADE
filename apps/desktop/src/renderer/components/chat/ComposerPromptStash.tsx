@@ -360,8 +360,12 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
     setBusy(true);
     setError(null);
     try {
-      const storedAttachments = await Promise.all(savedAttachments.map(async (attachment): Promise<AgentChatFileRef> => {
-        if (attachment.type === "image-url") return attachment;
+      const storedAttachments: AgentChatFileRef[] = [];
+      for (const attachment of savedAttachments) {
+        if (attachment.type === "image-url") {
+          storedAttachments.push(attachment);
+          continue;
+        }
         let dataUrl: string;
         try {
           dataUrl = (await window.ade.agentChat.getImageDataUrl(
@@ -380,8 +384,8 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
           data: base64FromDataUrl(dataUrl),
           filename: attachmentName(attachment.path),
         });
-        return { path: saved.path, type: "image" };
-      }));
+        storedAttachments.push({ path: saved.path, type: "image" });
+      }
       const created = await window.ade.agentChat.promptStashes.create({
         text: savedText,
         ...(storedAttachments.length ? { attachments: storedAttachments } : {}),

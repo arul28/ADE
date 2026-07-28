@@ -7803,6 +7803,40 @@ final class ADETests: XCTestCase {
     upgradedDatabase.close()
   }
 
+  func testFailedCrrAltersRestoreChangeCapture() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory(), bootstrapSQL: """
+      create table if not exists alter_rows (
+        id text primary key,
+        value text not null
+      );
+    """)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into alter_rows (id, value) values ('row-1', 'before')
+    """)
+    let versionBeforeFailedAlters = database.currentDbVersion()
+
+    XCTAssertThrowsError(try database.executeSqlForTesting("""
+      alter table alter_rows add column value text
+    """)) { error in
+      XCTAssertTrue((error as NSError).localizedDescription.contains("duplicate column name"))
+    }
+    XCTAssertThrowsError(try database.executeSqlForTesting("""
+      alter table alter_rows add column required_value text not null
+    """))
+
+    try database.executeSqlForTesting("""
+      update alter_rows set value = 'after' where id = 'row-1'
+    """)
+
+    let capturedUpdates = database.exportChangesSince(version: versionBeforeFailedAlters)
+      .filter { $0.table == "alter_rows" && $0.cid == "value" }
+    XCTAssertEqual(capturedUpdates.last?.val, .string("after"))
+
+    database.close()
+  }
+
   func testDatabaseApplyChangesDoesNotTrapOnOutOfRangeIntegralDouble() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)

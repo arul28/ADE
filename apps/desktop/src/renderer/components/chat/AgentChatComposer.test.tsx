@@ -344,7 +344,7 @@ describe("AgentChatComposer", () => {
     expect(props.onDraftChange).toHaveBeenCalledWith("");
   });
 
-  it("reads a stashed source image through the selected chat runtime pin", async () => {
+  it("reads a stashed source image through the selected runtime and saves the copy through the bound runtime", async () => {
     const chatRuntimePin = {
       kind: "remote" as const,
       key: "remote:source-machine:source-project",
@@ -368,18 +368,19 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({
       path: storedAttachment.path,
     });
+    const createPromptStash = vi.fn().mockResolvedValue({
+      id: "stash-image",
+      text: "Need a steer message",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      attachments: [storedAttachment],
+      createdAt: "2026-07-28T12:00:00.000Z",
+    });
     (window as any).ade = {
       agentChat: {
         promptStashes: {
           list: vi.fn().mockResolvedValue([]),
-          create: vi.fn().mockResolvedValue({
-            id: "stash-image",
-            text: "Need a steer message",
-            provider: "codex",
-            modelId: "openai/gpt-5.4",
-            attachments: [storedAttachment],
-            createdAt: "2026-07-28T12:00:00.000Z",
-          }),
+          create: createPromptStash,
           delete: vi.fn().mockResolvedValue(true),
         },
         getImageDataUrl,
@@ -397,10 +398,24 @@ describe("AgentChatComposer", () => {
       sourceAttachment.path,
       chatRuntimePin,
     ));
-    expect(saveTempAttachment).toHaveBeenCalledWith({
-      data: "cHJldmlldw==",
-      filename: "design.png",
-    });
+    await waitFor(() => expect(createPromptStash).toHaveBeenCalledWith({
+      text: "Need a steer message",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      attachments: [storedAttachment],
+    }));
+    expect(getImageDataUrl.mock.calls).toContainEqual([
+      sourceAttachment.path,
+      chatRuntimePin,
+    ]);
+    // The source path belongs to the selected chat runtime, but the durable
+    // stash copy belongs to the bound project runtime that owns prompt stashes.
+    expect(saveTempAttachment.mock.calls).toEqual([[
+      {
+        data: "cHJldmlldw==",
+        filename: "design.png",
+      },
+    ]]);
   });
 
   it("moves a queued steer message back to the composer for editing", () => {
