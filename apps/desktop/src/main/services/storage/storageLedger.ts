@@ -81,7 +81,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "Project release staging under .ade/tmp (TestFlight and release verification scratch).",
     policyClass: "derived",
     policy: { maxAgeDays: 7 },
-    enforcement: "doctor",
+    enforcement: "manual",
   },
   {
     id: "fs.tmp_staging",
@@ -89,15 +89,15 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "System temp staging (ade-* directories) left by build and release operations.",
     policyClass: "derived",
     policy: { maxAgeDays: 7 },
-    enforcement: "doctor",
+    enforcement: "manual",
   },
   {
     id: "fs.recovery_backups",
     kind: "file_family",
-    description: "Database recovery backups. The doctor keeps the newest good copy and reaps obsolete ones.",
+    description: "Database recovery backups. ADE keeps the newest good copy and lists older verified copies for review.",
     policyClass: "operational",
     policy: { keepLatest: 1, maxAgeDays: 7 },
-    enforcement: "doctor",
+    enforcement: "manual",
   },
   {
     id: "fs.cache",
@@ -105,7 +105,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "Rebuildable caches under .ade/cache. Recreated on demand.",
     policyClass: "derived",
     policy: {},
-    enforcement: "doctor",
+    enforcement: "manual",
   },
   {
     id: "fs.ios_derived_data",
@@ -113,7 +113,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     description: "iOS simulator DerivedData build cache. Recreated the next time you build.",
     policyClass: "derived",
     policy: {},
-    enforcement: "doctor",
+    enforcement: "manual",
   },
   {
     id: "fs.storage_doctor_journal",
@@ -201,7 +201,7 @@ export function deriveCategoryPolicyChips(): Partial<Record<StorageCategoryId, s
 
   const tmp = _byId.get("fs.tmp");
   if (tmp?.policy.maxAgeDays != null) {
-    chips.build_release = `Auto-cleans after ${tmp.policy.maxAgeDays} days`;
+    chips.build_release = `Review after ${tmp.policy.maxAgeDays} days`;
   }
 
   chips.caches = "Rebuilt when needed";

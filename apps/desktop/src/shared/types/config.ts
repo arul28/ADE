@@ -178,13 +178,15 @@ export type LaneSetupScriptConfig = {
 export type LaneCleanupConfig = {
   /** Maximum number of active (non-archived) lanes. Oldest by access time are auto-archived. 0 = unlimited. */
   maxActiveLanes?: number;
-  /** How often (in hours) to scan for stale lanes and run cleanup. 0 = disabled. */
+  /** How often (in hours) to scan for stale lanes. 0 = disabled. */
   cleanupIntervalHours?: number;
   /** Auto-archive lanes that have been inactive for this many hours. 0 = never. */
   autoArchiveAfterHours?: number;
-  /** Auto-delete archived lanes after this many hours. 0 = never. */
+  /** Mark archived lane files ready for review after this many hours. 0 = never. */
+  reclaimArchivedAfterHours?: number;
+  /** @deprecated Read as reclaimArchivedAfterHours for older local.yaml files. */
   autoDeleteArchivedAfterHours?: number;
-  /** Also delete the remote branch when auto-deleting. */
+  /** @deprecated Cleanup never deletes remote branches automatically. */
   deleteRemoteBranchOnCleanup?: boolean;
 };
 

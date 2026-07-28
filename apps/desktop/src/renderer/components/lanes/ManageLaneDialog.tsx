@@ -11,6 +11,7 @@ import {
   Cpu,
   Eye,
   Cube,
+  FolderDashed,
   CheckCircle,
   Check,
   Cloud,
@@ -24,6 +25,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type {
   LaneDeleteProgress,
   LaneDeleteRisk,
+  LaneReclaimRisk,
   LaneDeleteStep,
   LaneDeleteStepName,
   LaneSummary
@@ -53,6 +55,19 @@ import {
 } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, laneColorName } from "./laneColorPalette";
+
+function formatBytesCompact(bytes: number): string {
+  const safe = Math.max(0, bytes);
+  if (safe < 1024) return `${safe} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = safe / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
 
 const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   git_status: "Checking dirty state",
@@ -397,6 +412,11 @@ export function ManageLaneDialog({
     : "Removes the working folder and ADE registration.";
 
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
+  const [reclaimRisk, setReclaimRisk] = useState<LaneReclaimRisk | null>(null);
+  const [reclaimConfirm, setReclaimConfirm] = useState("");
+  const [discardDirtyConfirmed, setDiscardDirtyConfirmed] = useState(false);
+  const [reclaimBusy, setReclaimBusy] = useState(false);
+  const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
 
@@ -420,6 +440,10 @@ export function ManageLaneDialog({
   useEffect(() => {
     if (!open) {
       setDeleteRisk(null);
+      setReclaimRisk(null);
+      setReclaimConfirm("");
+      setDiscardDirtyConfirmed(false);
+      setReclaimError(null);
       setDeleteProgress(null);
       return;
     }
@@ -433,10 +457,19 @@ export function ManageLaneDialog({
       return;
     }
     let cancelled = false;
-    void window.ade.lanes
-      .getDeleteRisk({ laneId: singleLaneId })
-      .then((risk) => {
-        if (!cancelled) setDeleteRisk(risk);
+    const getReclaimRisk = window.ade.lanes.getReclaimRisk;
+    void Promise.all([
+      window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }),
+      typeof getReclaimRisk === "function"
+        ? getReclaimRisk({ laneId: singleLaneId })
+        : Promise.resolve(null),
+    ])
+      .then(([deleteResult, reclaimResult]) => {
+        if (!cancelled) {
+          setDeleteRisk(deleteResult);
+          setReclaimRisk(reclaimResult);
+          setDiscardDirtyConfirmed(false);
+        }
       })
       .catch(() => {
         // best-effort — pre-flight is informational only
@@ -460,6 +493,31 @@ export function ManageLaneDialog({
 
   const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
   const showStaticBusy = laneActionBusy && !deleteProgress;
+  const reclaimBlocked = reclaimRisk?.blockedReasons.some((reason) => reason.disposition === "blocked") ?? false;
+
+  const archiveAndReclaim = async () => {
+    if (
+      !singleLane
+      || !reclaimRisk
+      || reclaimConfirm !== "RECLAIM"
+      || (reclaimRisk.dirty && !discardDirtyConfirmed)
+    ) return;
+    setReclaimBusy(true);
+    setReclaimError(null);
+    try {
+      await window.ade.lanes.archiveAndReclaim({
+        laneId: singleLane.id,
+        confirmation: "RECLAIM",
+        ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
+      });
+      await onAppearanceChanged?.();
+      onOpenChange(false);
+    } catch (error) {
+      setReclaimError(error instanceof Error ? error.message : "Could not reclaim this lane");
+    } finally {
+      setReclaimBusy(false);
+    }
+  };
 
   // Local/remote branch deletion can't happen while the worktree still has the
   // branch checked out, and any delete here tears the worktree down regardless —
@@ -565,23 +623,94 @@ export function ManageLaneDialog({
 
           {activeTab === "archive" ? (
             <ManageLaneTabPanel tone="neutral">
-              <div className="flex items-start gap-3">
-                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] text-accent">
-                  <Archive size={18} weight="duotone" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-fg">
-                    {isBatch ? `Hide ${lanes.length} lanes from ADE` : "Hide this lane from ADE"}
+              <p className="text-xs leading-relaxed text-muted-fg/75">
+                Choose whether to keep the local files or reclaim their disk space. Both choices keep the lane, branch, chats, and metadata.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+                    <Archive size={16} className="text-accent" />
+                    Archive
+                  </div>
+                  <p className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
+                    Hides the lane from active work. Its worktree and generated files stay on disk.
                   </p>
-                  <p className="mt-1 text-xs text-muted-fg/70">
-                    Files stay on disk until you delete them.
-                  </p>
+                  <div className="mt-3">
+                    <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy || reclaimBusy} onClick={onArchive}>
+                      {isBatch ? `Archive ${lanes.length} lanes` : "Archive and keep files"}
+                    </Button>
+                  </div>
                 </div>
-              </div>
-              <div className="mt-4">
-                <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy} onClick={onArchive}>
-                  {isBatch ? `Archive ${lanes.length} lanes` : "Archive lane"}
-                </Button>
+                {!isBatch && singleLane?.laneType === "worktree" ? (
+                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+                        <FolderDashed size={16} className="text-accent" />
+                        Archive &amp; reclaim
+                      </div>
+                      <span className="text-xs font-semibold tabular-nums text-muted-fg">
+                        {reclaimRisk ? formatBytesCompact(reclaimRisk.reclaimableBytes) : "Measuring…"}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
+                      Removes the local worktree and ADE-generated lane data. Restoring the lane recreates its worktree.
+                    </p>
+                    {reclaimRisk?.blockedReasons.map((reason) => (
+                      <div key={reason.code} className="mt-2 flex gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-amber-100/80">
+                        <WarningCircle size={13} className="mt-0.5 shrink-0" />
+                        {reason.message}
+                      </div>
+                    ))}
+                    {reclaimRisk?.dirty ? (
+                      <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-amber-100/80">
+                        <input
+                          type="checkbox"
+                          checked={discardDirtyConfirmed}
+                          onChange={(event) => setDiscardDirtyConfirmed(event.target.checked)}
+                          disabled={reclaimBusy || laneActionBusy}
+                          className="mt-0.5"
+                        />
+                        <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+                      </label>
+                    ) : null}
+                    <label className="mt-3 block text-[11px] text-muted-fg/80">
+                      Type <strong className="text-fg">RECLAIM</strong> to confirm
+                      <input
+                        value={reclaimConfirm}
+                        onChange={(event) => setReclaimConfirm(event.target.value)}
+                        disabled={reclaimBusy || laneActionBusy}
+                        className={`${INPUT_CLASS_NAME} mt-1.5 w-full text-xs`}
+                      />
+                    </label>
+                    {reclaimError ? <div className="mt-2 text-xs text-red-300">{reclaimError}</div> : null}
+                    <div className="mt-3">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={
+                          !reclaimRisk
+                          || laneActionBusy
+                          || reclaimBusy
+                          || reclaimBlocked
+                          || (reclaimRisk.dirty && !discardDirtyConfirmed)
+                          || reclaimConfirm !== "RECLAIM"
+                        }
+                        onClick={() => void archiveAndReclaim()}
+                      >
+                        {reclaimBusy ? <CircleNotch size={13} className="animate-spin" /> : <FolderDashed size={13} />}
+                        {reclaimBusy
+                          ? "Reclaiming…"
+                          : !reclaimRisk
+                            ? "Measuring…"
+                            : reclaimBlocked
+                              ? "Cannot reclaim this folder"
+                              : reclaimRisk.dirty && !discardDirtyConfirmed
+                                ? "Confirm discarded changes"
+                                : `Reclaim ${formatBytesCompact(reclaimRisk.reclaimableBytes)}`}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </ManageLaneTabPanel>
           ) : null}
@@ -591,6 +720,12 @@ export function ManageLaneDialog({
               <p className="text-xs text-red-200/70">
                 Stops lane activity and removes what you pick below. Cannot be undone.
               </p>
+              {!isBatch && reclaimRisk ? (
+                <div className="mt-2 text-xs text-muted-fg/70">
+                  Estimated local files removed: <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.
+                  Branch deletion is separate below.
+                </div>
+              ) : null}
 
               {hasAnyDirty ? (
                 <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">

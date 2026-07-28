@@ -13,14 +13,14 @@ import {
   dangerButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
-import { baseName, formatBytes, maintenanceOutcome, type SafeCleanupGroup } from "./storageView";
+import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
 
 /**
- * Optional "safe cleanup" plan. When present the dialog runs the broad
- * maintenance flow (grouped preview + plain-language "what happens" + a single
- * primary confirm) instead of the per-target removal flow. When `runMaintenance`
- * is available it drives the daemon doctor; otherwise the dialog falls back to
- * the per-target `cleanup` over `targets` (legacy runtimes).
+ * Optional "safe cleanup" plan. When present the dialog shows a grouped,
+ * plain-language review and a single primary confirmation. Filesystem targets
+ * are still previewed and removed through the preview-bound cleanup contract;
+ * `runMaintenance`, when available, handles the separate compression and
+ * database work after that removal.
  */
 export type SafeCleanupPlanConfig = {
   groups: SafeCleanupGroup[];
@@ -58,6 +58,105 @@ const panelStyle: React.CSSProperties = {
   boxShadow: "0 28px 80px -32px rgba(0,0,0,0.82)",
   overflow: "hidden",
 };
+
+const FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+const mountedDialogFrames: HTMLElement[] = [];
+
+export function StorageDialogFrame({
+  title,
+  canClose = true,
+  onClose,
+  panelStyleOverride,
+  children,
+}: {
+  title: string;
+  canClose?: boolean;
+  onClose: () => void;
+  panelStyleOverride?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  const dialogRef = React.useRef<HTMLElement>(null);
+  const returnFocusRef = React.useRef(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const closeRef = React.useRef(onClose);
+  const canCloseRef = React.useRef(canClose);
+  closeRef.current = onClose;
+  canCloseRef.current = canClose;
+
+  React.useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog) mountedDialogFrames.push(dialog);
+    const frame = window.requestAnimationFrame(() => {
+      const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      (firstFocusable ?? dialogRef.current)?.focus();
+    });
+    const handler = (event: KeyboardEvent) => {
+      if (mountedDialogFrames.at(-1) !== dialogRef.current) return;
+      if (event.key === "Escape" && canCloseRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      const focusIsOutside = !dialogRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || focusIsOutside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || focusIsOutside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handler, true);
+      const index = dialog ? mountedDialogFrames.lastIndexOf(dialog) : -1;
+      if (index >= 0) mountedDialogFrames.splice(index, 1);
+      returnFocusRef.current?.focus();
+    };
+  }, []);
+
+  return (
+    <div
+      style={overlayStyle}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && canClose) onClose();
+      }}
+    >
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        style={{ ...panelStyle, ...panelStyleOverride }}
+      >
+        {children}
+      </section>
+    </div>
+  );
+}
 
 function Row({
   label,
@@ -153,30 +252,22 @@ export function StorageCleanupDialog({
   const [report, setReport] = React.useState<MaintenanceRunReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
-  // When the maintenance doctor is available we skip the filesystem preview and
-  // go straight to the itemized plan; the doctor is comprehensive on its own.
   const maintenanceMode = Boolean(plan);
-  const skipPreview = Boolean(plan?.runMaintenance);
 
   // The preview is initialized once per open. We deliberately do NOT re-run when
   // `targets` changes identity: a successful cleanup reloads the parent snapshot,
   // which recomputes the (derived) safe-cleanup targets — re-running here would
   // reset a "done" dialog back to "review". Read the latest values via a ref.
-  const initRef = React.useRef({ targets, skipPreview });
-  initRef.current = { targets, skipPreview };
+  const initRef = React.useRef({ targets });
+  initRef.current = { targets };
 
   React.useEffect(() => {
     if (!open) return;
     let active = true;
-    const { targets: openTargets, skipPreview: openSkip } = initRef.current;
+    const { targets: openTargets } = initRef.current;
     setResult(null);
     setReport(null);
     setError(null);
-    if (openSkip) {
-      setPreview(null);
-      setStage("review");
-      return;
-    }
     setStage("loading");
     setPreview(null);
     void window.ade.storage
@@ -197,45 +288,30 @@ export function StorageCleanupDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && stage !== "removing") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [open, stage, onClose]);
-
   const confirm = React.useCallback(async () => {
     setStage("removing");
     setError(null);
     try {
-      // Maintenance path: run the daemon doctor and report what it reclaimed.
-      if (plan?.runMaintenance) {
-        const nextReport = await plan.runMaintenance();
-        const freedBytes = typeof nextReport?.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
-          ? nextReport.reclaimedBytes
-          : 0;
-        const synthesized: StorageCleanupResult = { removed: [], failed: [], freedBytes };
-        setReport(nextReport ?? null);
-        setResult(synthesized);
-        setStage("done");
-        onCleaned(synthesized);
-        plan.onMaintenanceDone?.(nextReport);
-        return;
-      }
-      // Fallback / per-target path: remove exactly what was previewed.
-      if (!preview || preview.items.length === 0) {
+      if (!preview) {
         setStage("review");
         return;
       }
-      const next = await window.ade.storage.cleanup(targets, { preview });
+      const filesystemResult = preview.items.length > 0
+        ? await window.ade.storage.cleanup(targets, { preview })
+        : { removed: [], failed: [], freedBytes: 0 };
+      const nextReport = plan?.runMaintenance ? await plan.runMaintenance() : null;
+      const maintenanceBytes = typeof nextReport?.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
+        ? Math.max(0, nextReport.reclaimedBytes)
+        : 0;
+      const next: StorageCleanupResult = {
+        ...filesystemResult,
+        freedBytes: filesystemResult.freedBytes + maintenanceBytes,
+      };
+      setReport(nextReport);
       setResult(next);
       setStage("done");
       onCleaned(next);
+      if (nextReport) plan?.onMaintenanceDone?.(nextReport);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStage("error");
@@ -245,22 +321,15 @@ export function StorageCleanupDialog({
   if (!open) return null;
 
   const removableCount = preview?.items.length ?? 0;
-  // In maintenance mode with the doctor available we always allow confirming
-  // (the estimate is daemon-provided and the primary action is gated upstream).
   const confirmDisabled = stage === "removing" || stage === "loading" ||
-    (skipPreview ? false : removableCount === 0);
+    (removableCount === 0 && !plan?.runMaintenance);
   const confirmLabel = plan?.confirmLabel
     ?? (removableCount > 0 ? `Remove ${removableCount === 1 ? "1 item" : `${removableCount} items`}` : "Remove");
-  const reportOutcome = report ? maintenanceOutcome(report) : null;
+  const cleanupFailed = Boolean(result?.failed.length)
+    || Boolean(report?.actions.some((action) => Boolean(action.error)));
 
   return (
-    <div
-      style={overlayStyle}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && stage !== "removing") onClose();
-      }}
-    >
-      <section role="dialog" aria-modal="true" aria-label={title} style={panelStyle}>
+    <StorageDialogFrame title={title} canClose={stage !== "removing"} onClose={onClose}>
         <header
           style={{
             padding: "16px 18px",
@@ -384,6 +453,17 @@ export function StorageCleanupDialog({
               <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
                 This will free about {formatBytes(plan.estimatedBytes)}.
               </div>
+              {preview && preview.blocked.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                    <WarningCircle size={13} weight="fill" style={{ color: COLORS.warning }} />
+                    {preview.blocked.length === 1 ? "1 item will be kept" : `${preview.blocked.length} items will be kept`}
+                  </div>
+                  {preview.blocked.map((entry) => (
+                    <Row key={entry.path} label={baseName(entry.path)} path={entry.path} tone="blocked" reason={entry.reason} />
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -439,11 +519,13 @@ export function StorageCleanupDialog({
                   fontFamily: SANS_FONT,
                   fontSize: 14,
                   fontWeight: 650,
-                  color: reportOutcome?.failed ? COLORS.danger : COLORS.success,
+                  color: cleanupFailed ? COLORS.danger : COLORS.success,
                 }}
               >
-                {maintenanceMode && reportOutcome
-                  ? `${reportOutcome.message}.`
+                {cleanupFailed
+                  ? result.freedBytes > 0
+                    ? `Freed ${formatBytes(result.freedBytes)}, but some cleanup steps couldn't finish.`
+                    : "Some cleanup steps couldn't finish."
                   : result.freedBytes > 0
                     ? `Freed ${formatBytes(result.freedBytes)}.`
                     : "Nothing needed removing."}
@@ -516,7 +598,6 @@ export function StorageCleanupDialog({
             </>
           )}
         </footer>
-      </section>
-    </div>
+    </StorageDialogFrame>
   );
 }

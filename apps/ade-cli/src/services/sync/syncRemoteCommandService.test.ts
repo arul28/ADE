@@ -40,6 +40,8 @@ function createService(options?: {
   isCloudRelayEnabled?: () => boolean;
   linearCredentialService?: Record<string, unknown>;
   linearOAuthService?: Record<string, unknown>;
+  laneEnvironmentService?: Record<string, unknown>;
+  portAllocationService?: Record<string, unknown>;
   getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
@@ -97,6 +99,8 @@ function createService(options?: {
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     ...(options?.linearCredentialService ? { linearCredentialService: options.linearCredentialService } : {}),
     ...(options?.linearOAuthService ? { linearOAuthService: options.linearOAuthService } : {}),
+    ...(options?.laneEnvironmentService ? { laneEnvironmentService: options.laneEnvironmentService } : {}),
+    ...(options?.portAllocationService ? { portAllocationService: options.portAllocationService } : {}),
     ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
@@ -2494,6 +2498,63 @@ describe("lanes.suggestName", () => {
     await expect(
       service.execute(makePayload("lanes.suggestName", { laneId: "lane-1", modelId: "m" })),
     ).rejects.toThrow("lanes.suggestName requires prompt.");
+  });
+});
+
+describe("lanes.unarchive", () => {
+  it("recreates the lane environment while preserving the mobile response", async () => {
+    const lane = {
+      id: "lane-1",
+      name: "Lane one",
+      laneType: "worktree",
+      worktreePath: "/repo/.ade/worktrees/lane-1",
+    };
+    const unarchive = vi.fn().mockResolvedValue({
+      lane,
+      worktreeRecreated: true,
+    });
+    const list = vi.fn().mockResolvedValue([lane]);
+    const envInitConfig = { dependencies: ["npm install"] };
+    const lease = {
+      laneId: "lane-1",
+      rangeStart: 4100,
+      rangeEnd: 4199,
+      status: "active",
+    };
+    const getLease = vi.fn().mockReturnValue(null);
+    const acquire = vi.fn().mockReturnValue(lease);
+    const getEffective = vi.fn().mockReturnValue({
+      laneEnvInit: null,
+      laneOverlayPolicies: [],
+    });
+    const resolveEnvInitConfig = vi.fn().mockReturnValue(envInitConfig);
+    const initLaneEnvironment = vi.fn().mockResolvedValue({ state: "ready" });
+    const { service } = createService({
+      laneService: { unarchive, list },
+      projectConfigService: {
+        getEffective,
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig,
+        initLaneEnvironment,
+      },
+      portAllocationService: {
+        getLease,
+        acquire,
+      },
+    });
+
+    await expect(
+      service.execute(makePayload("lanes.unarchive", { laneId: "lane-1" })),
+    ).resolves.toEqual({ ok: true });
+    expect(unarchive).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(list).toHaveBeenCalledWith({ includeArchived: false, includeStatus: false });
+    expect(acquire).toHaveBeenCalledWith("lane-1");
+    expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(getEffective.mock.invocationCallOrder[0]!);
+    expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(resolveEnvInitConfig.mock.invocationCallOrder[0]!);
+    const overrides = { portRange: { start: 4100, end: 4199 } };
+    expect(resolveEnvInitConfig).toHaveBeenCalledWith(null, overrides);
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig, overrides);
   });
 });
 

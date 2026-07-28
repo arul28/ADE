@@ -94,6 +94,7 @@ const MEANINGFUL_ACTIONS = new Set([
   "lanes.rename",
   "lanes.reparent",
   "lanes.archive",
+  "lanes.archiveAndReclaim",
   "lanes.unarchive",
   "lanes.delete",
   "lanes.rebaseStart",

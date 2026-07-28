@@ -762,6 +762,8 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "usage_events",
   "test_suites",
   "local_worktree_residual_cleanups",
+  "local_lane_storage_state",
+  "local_storage_lifecycle_runs",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -3581,6 +3583,33 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create unique index if not exists idx_local_worktree_residual_cleanups_path on local_worktree_residual_cleanups(project_id, worktree_path)");
   db.run("create index if not exists idx_local_worktree_residual_cleanups_updated on local_worktree_residual_cleanups(project_id, updated_at)");
+
+  // Machine-local lane storage lifecycle state. Worktree paths, reclaim
+  // failures, and retry counts describe this checkout only and must never
+  // replicate to another desktop or phone.
+  db.run(`
+    create table if not exists local_lane_storage_state (
+      lane_id text primary key,
+      project_id text not null,
+      worktree_path text not null,
+      reclaim_state text not null default 'kept',
+      last_known_bytes integer not null default 0,
+      attempts integer not null default 0,
+      last_error text,
+      reclaimed_at text,
+      updated_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_local_lane_storage_state_project on local_lane_storage_state(project_id, updated_at desc)");
+  db.run(`
+    create table if not exists local_storage_lifecycle_runs (
+      project_id text primary key,
+      last_scan_at text,
+      next_scan_at text,
+      archived_automatically integer not null default 0,
+      updated_at text not null
+    )
+  `);
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.

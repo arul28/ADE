@@ -23,6 +23,7 @@ import {
   formatGoalBannerLine,
   formatGitConflictReport,
   formatLaneDeleteRisk,
+  formatLaneReclaimPreview,
   formFieldUsesPromptInput,
   isChatFlushEdge,
   isChatSessionAnimating,
@@ -1560,6 +1561,41 @@ describe("formatLaneDeleteRisk", () => {
 
   it("reports a clean lane when there is nothing at risk", () => {
     expect(formatLaneDeleteRisk(base)).toBe("Clean — no unpushed work or running sessions.");
+  });
+});
+
+describe("formatLaneReclaimPreview", () => {
+  it("states what ADE removes, keeps, and requires before reclaiming dirty work", () => {
+    const preview = formatLaneReclaimPreview({
+      laneId: "lane-1",
+      laneName: "Feature lane",
+      branchRef: "feat/x",
+      worktreePath: "/project/.ade/worktrees/feature",
+      dirty: true,
+      hasUnpushedCommits: false,
+      unpushedCommitCount: 0,
+      remoteBranchExists: false,
+      activeChatCount: 0,
+      activePtyCount: 0,
+      activeWatcherCount: 0,
+      envInitialized: false,
+      worktreeBytes: 1024 ** 3,
+      generatedBytes: 256 * 1024 ** 2,
+      reclaimableBytes: 1.25 * 1024 ** 3,
+      worktreeAvailable: true,
+      blockedReasons: [{
+        code: "dirty_worktree",
+        message: "This lane has uncommitted files.",
+        disposition: "confirmation_required",
+      }],
+      lastFailure: null,
+      retryCount: 0,
+    });
+
+    expect(preview).toContain("Estimated space: 1.3 GB");
+    expect(preview).toContain("Keeps: the lane, branch, chats, and metadata.");
+    expect(preview).toContain("/lane archive-and-reclaim lane-1 RECLAIM force-dirty");
+    expect(preview).toContain("Nothing has been removed.");
   });
 });
 

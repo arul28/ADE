@@ -154,6 +154,57 @@ describe("projectConfigService - providers permissions", () => {
   });
 });
 
+describe("projectConfigService - lane storage rules", () => {
+  it("persists all cleanup fields and migrates the old delete setting to review retention", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-storage-");
+    fs.writeFileSync(path.join(adeDir, "local.yaml"), YAML.stringify({
+      version: 1,
+      laneCleanup: {
+        maxActiveLanes: 4,
+        cleanupIntervalHours: 6,
+        autoArchiveAfterHours: 72,
+        autoDeleteArchivedAfterHours: 168,
+        deleteRemoteBranchOnCleanup: true,
+      },
+    }));
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-storage",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.laneCleanup).toEqual({
+      maxActiveLanes: 4,
+      cleanupIntervalHours: 6,
+      autoArchiveAfterHours: 72,
+      reclaimArchivedAfterHours: 168,
+    });
+
+    const snapshot = service.get();
+    service.save({
+      shared: snapshot.shared,
+      local: {
+        ...snapshot.local,
+        laneCleanup: {
+          maxActiveLanes: 3,
+          cleanupIntervalHours: 12,
+          autoArchiveAfterHours: 48,
+          reclaimArchivedAfterHours: 240,
+        },
+      },
+    });
+    const written = YAML.parse(fs.readFileSync(path.join(adeDir, "local.yaml"), "utf8"));
+    expect(written.laneCleanup).toEqual({
+      maxActiveLanes: 3,
+      cleanupIntervalHours: 12,
+      autoArchiveAfterHours: 48,
+      reclaimArchivedAfterHours: 240,
+    });
+  });
+});
+
 describe("projectConfigService - lane env init", () => {
   it("preserves extended overlay fields and merged lane env init in effective config", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-lane-init-");

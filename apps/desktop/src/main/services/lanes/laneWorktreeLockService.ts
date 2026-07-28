@@ -98,9 +98,12 @@ function describeOwner(lock: LaneWorktreeLockInfo): string {
 
 export function formatLaneWorktreeLockBlocker(lock: LaneWorktreeLockInfo): LaneWorktreeLockBlocker {
   const owner = describeOwner(lock);
+  const nextAction = lock.ownerKind === "storage_lifecycle"
+    ? "Wait for it to finish before changing or restoring this lane."
+    : "Wait for it to finish or stop it before starting another PR task.";
   return {
     lock,
-    message: `Blocked by ${owner} on this lane. Wait for it to finish or stop it before starting another PR task.`,
+    message: `Blocked by ${owner} on this lane. ${nextAction}`,
   };
 }
 

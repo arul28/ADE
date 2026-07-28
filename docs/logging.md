@@ -108,6 +108,15 @@ identifier. Reads, menu opens, restores, and deletes are not product events.
 The existing `ade_feature_used` limits cap this at 30 accepted events per minute
 and 140 per UTC day without raising the shared 200-event ceiling.
 
+Lane “Archive & Reclaim” records the existing coarse `ade_feature_used`
+mutation fact with `feature: "lanes"` and
+`action: "lanes.archiveAndReclaim"` through the same durable `usage_events`
+ledger.
+It records only the successful user action—not lane names, paths, sizes,
+blocked reasons, retries, or scheduled review scans. The existing
+`ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
+UTC day without raising the shared 200-event ceiling.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate anonymous installation identity and separate `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention.

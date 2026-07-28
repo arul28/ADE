@@ -1,36 +1,12 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, recessedStyle } from "../lanes/laneDesignTokens";
-import type { LaneCleanupConfig, NewLaneBaseSource } from "../../../shared/types";
+import { COLORS, MONO_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import type { NewLaneBaseSource } from "../../../shared/types";
 import { DEFAULT_NEW_LANE_BASE_SOURCE, effectiveNewLaneBaseSource } from "../lanes/newLaneBaseSource";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-
-const inputStyle: CSSProperties = {
-  height: 36,
-  width: "100%",
-  background: COLORS.recessedBg,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  padding: "0 12px",
-  fontSize: 12,
-  color: COLORS.textPrimary,
-  fontFamily: MONO_FONT,
-  borderRadius: 8,
-  outline: "none",
-  transition: "border-color 150ms ease",
-};
-
-const miniLabel: CSSProperties = {
-  fontSize: 10,
-  fontWeight: 600,
-  fontFamily: SANS_FONT,
-  textTransform: "uppercase" as const,
-  letterSpacing: "0.5px",
-  color: COLORS.textMuted,
-  marginBottom: 6,
-};
 
 export function LaneBehaviorSection() {
   const navigate = useNavigate();
@@ -38,7 +14,6 @@ export function LaneBehaviorSection() {
   const [newLaneBaseSource, setNewLaneBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
   const [initialNewLaneBaseSource, setInitialNewLaneBaseSource] =
     useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
-  const [cleanup, setCleanup] = useState<LaneCleanupConfig>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,9 +31,6 @@ export function LaneBehaviorSection() {
     setNewLaneBaseSource(initialSource);
     setInitialNewLaneBaseSource(initialSource);
 
-    const effectiveCleanup = snapshot.effective.laneCleanup ?? {};
-    const localCleanup = snapshot.local.laneCleanup ?? {};
-    setCleanup({ ...effectiveCleanup, ...localCleanup });
   };
 
   useEffect(() => {
@@ -89,7 +61,6 @@ export function LaneBehaviorSection() {
         local: {
           ...snapshot.local,
           git: nextGit,
-          laneCleanup: cleanup,
         },
       });
       await refresh();
@@ -111,13 +82,11 @@ export function LaneBehaviorSection() {
     borderRadius: 8,
   });
 
-  const cleanupActive = !!(cleanup.maxActiveLanes || cleanup.autoArchiveAfterHours);
-
   return (
     <section style={{ padding: 16 }}>
       <div style={{ ...LABEL_STYLE, fontSize: 11, marginBottom: 8 }}>LANE BEHAVIOR</div>
       <div style={{ fontSize: 11, color: COLORS.textDim, marginBottom: 16 }}>
-        Auto-rebase, cleanup limits, and lane lifecycle.
+        Choose how new lanes start and how stacked lanes stay current. Storage rules now live in Storage.
       </div>
 
       {notice ? <div style={{ ...messageStyle(COLORS.success), marginBottom: 12 }}>{notice}</div> : null}
@@ -175,109 +144,6 @@ export function LaneBehaviorSection() {
             </div>
             <ToggleSwitch checked={autoRebaseDraft} onChange={setAutoRebaseDraft} />
           </div>
-        </div>
-
-        {/* Cleanup & limits */}
-        <div style={cardStyle({ borderRadius: 12 })}>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>Cleanup & limits</div>
-            <div style={{ marginTop: 4, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Prevent lane sprawl by automatically archiving or removing inactive lanes.
-            </div>
-          </div>
-
-          {/* Primary controls: max lanes + auto-archive. These are the ones that matter most. */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-            <div>
-              <div style={miniLabel}>Max active lanes</div>
-              <input
-                style={inputStyle}
-                type="number"
-                min={0}
-                value={cleanup.maxActiveLanes ?? ""}
-                onChange={(e) => setCleanup({ ...cleanup, maxActiveLanes: e.target.value ? Number(e.target.value) : undefined })}
-                placeholder="Unlimited"
-              />
-              <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
-                When exceeded, the oldest inactive lane is archived.
-              </div>
-            </div>
-
-            <div>
-              <div style={miniLabel}>Auto-archive after inactivity</div>
-              <input
-                style={inputStyle}
-                type="number"
-                min={0}
-                value={cleanup.autoArchiveAfterHours ?? ""}
-                onChange={(e) => setCleanup({ ...cleanup, autoArchiveAfterHours: e.target.value ? Number(e.target.value) : undefined })}
-                placeholder="Never"
-              />
-              <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
-                Hours of inactivity before a lane is auto-archived.
-              </div>
-            </div>
-          </div>
-
-          {/* Secondary controls — only relevant if cleanup is active */}
-          {cleanupActive && (
-            <div style={{
-              ...recessedStyle({ padding: 12, borderRadius: 8 }),
-              marginBottom: 12,
-            }}>
-              <div style={{ ...miniLabel, marginBottom: 10 }}>Additional cleanup options</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-                <div>
-                  <div style={{ ...miniLabel, fontSize: 9 }}>Check every (hours)</div>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min={0}
-                    value={cleanup.cleanupIntervalHours ?? ""}
-                    onChange={(e) => setCleanup({ ...cleanup, cleanupIntervalHours: e.target.value ? Number(e.target.value) : undefined })}
-                    placeholder="6"
-                  />
-                  <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
-                    How often to scan for stale lanes.
-                  </div>
-                </div>
-                <div>
-                  <div style={{ ...miniLabel, fontSize: 9 }}>Delete archived after (hours)</div>
-                  <input
-                    style={inputStyle}
-                    type="number"
-                    min={0}
-                    value={cleanup.autoDeleteArchivedAfterHours ?? ""}
-                    onChange={(e) => setCleanup({ ...cleanup, autoDeleteArchivedAfterHours: e.target.value ? Number(e.target.value) : undefined })}
-                    placeholder="Never"
-                  />
-                  <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 4 }}>
-                    Permanently remove archived lanes after this period.
-                  </div>
-                </div>
-              </div>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "10px 12px",
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.borderMuted}`,
-                borderRadius: 8,
-              }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: COLORS.textPrimary }}>Delete remote branch on cleanup</div>
-                  <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 2 }}>
-                    Also remove the remote branch when a lane is auto-deleted.
-                  </div>
-                </div>
-                <ToggleSwitch
-                  checked={cleanup.deleteRemoteBranchOnCleanup ?? false}
-                  onChange={(v) => setCleanup({ ...cleanup, deleteRemoteBranchOnCleanup: v })}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Save + Open Rebase/Merge tab */}

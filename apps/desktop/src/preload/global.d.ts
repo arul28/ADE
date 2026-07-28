@@ -57,6 +57,8 @@ import type {
   LaneBranchSwitchResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
+  ArchiveAndReclaimLaneArgs,
+  ArchiveAndReclaimLaneResult,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -525,6 +527,8 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  LaneReclaimRisk,
+  RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
   LaneOverlayOverrides,
@@ -1350,12 +1354,15 @@ declare global {
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
+        archiveAndReclaim: (args: ArchiveAndReclaimLaneArgs) => Promise<ArchiveAndReclaimLaneResult>;
+        unarchive: (args: ArchiveLaneArgs) => Promise<RestoreLaneResult>;
         delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         cancelDelete: (args: {
           laneId: string;
         }) => Promise<{ cancelled: boolean; reason?: string }>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
         getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
+        getReclaimRisk: (args: { laneId: string }) => Promise<LaneReclaimRisk>;
         onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
         onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;

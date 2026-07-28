@@ -487,6 +487,138 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
   });
 
+  it("documents lane reclaim contracts for safe CLI action discovery", () => {
+    expect(getAdeActionInputContract("lane", "getReclaimRisk")).toMatchObject({
+      description: expect.stringContaining("estimated bytes"),
+      input: expect.stringContaining("laneId"),
+    });
+    expect(getAdeActionInputContract("lane", "archiveAndReclaim")).toMatchObject({
+      description: expect.stringContaining("lane, branch, chat, and metadata remain"),
+      input: expect.stringContaining('"RECLAIM"'),
+      example: expect.stringContaining("--confirm RECLAIM"),
+    });
+    expect(getAdeActionInputContract("lane", "unarchive")).toMatchObject({
+      description: expect.stringContaining("recreate"),
+    });
+  });
+
+  it("requires exact reclaim confirmation at the action boundary", async () => {
+    const archiveAndReclaim = vi.fn(async (args: unknown) => ({ args }));
+    const onLaneArchived = vi.fn();
+    const services = getAdeActionDomainServices({
+      laneService: { archiveAndReclaim },
+      automationService: { onLaneArchived },
+    } as never);
+    const laneActions = services.lane as {
+      archiveAndReclaim: (args?: {
+        laneId?: string;
+        confirmation?: string;
+        forceDirty?: boolean;
+      }) => Promise<unknown>;
+    };
+
+    await expect(laneActions.archiveAndReclaim({ laneId: "lane-1" })).rejects.toThrow(
+      /requires confirmation: "RECLAIM"/i,
+    );
+    await expect(laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "reclaim",
+    })).rejects.toThrow(/requires confirmation: "RECLAIM"/i);
+    expect(archiveAndReclaim).not.toHaveBeenCalled();
+    expect(onLaneArchived).not.toHaveBeenCalled();
+
+    await laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "RECLAIM",
+      forceDirty: true,
+    });
+    expect(archiveAndReclaim).toHaveBeenCalledWith(
+      { laneId: "lane-1", confirmation: "RECLAIM", forceDirty: true },
+      {
+        onArchived: expect.any(Function),
+        teardownEnv: undefined,
+      },
+    );
+  });
+
+  it("releases lane runtime resources after archive even when reclaim later fails", async () => {
+    const removeRoute = vi.fn();
+    const release = vi.fn();
+    const onLaneArchived = vi.fn();
+    const lane = {
+      id: "lane-1",
+      name: "Feature",
+      branchRef: "refs/heads/feature",
+      folder: "feature",
+    };
+    const archiveAndReclaim = vi.fn(async (
+      _args: unknown,
+      options?: { onArchived?: () => void },
+    ) => {
+      options?.onArchived?.();
+      throw new Error("disk is busy");
+    });
+    const services = getAdeActionDomainServices({
+      laneService: {
+        archiveAndReclaim,
+        list: vi.fn(async () => [lane]),
+      },
+      automationService: { onLaneArchived },
+      laneProxyService: { removeRoute },
+      portAllocationService: {
+        getLease: () => ({ status: "active" }),
+        release,
+      },
+    } as never);
+    const laneActions = services.lane as {
+      archiveAndReclaim: (args: {
+        laneId: string;
+        confirmation: "RECLAIM";
+      }) => Promise<unknown>;
+    };
+
+    await expect(laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/disk is busy/i);
+
+    expect(removeRoute).toHaveBeenCalledWith("lane-1");
+    expect(release).toHaveBeenCalledWith("lane-1");
+    expect(onLaneArchived).toHaveBeenCalledTimes(1);
+    expect(onLaneArchived).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      laneName: "Feature",
+      branchRef: "refs/heads/feature",
+      folder: "feature",
+    });
+  });
+
+  it("dispatches lane archived automation once after an ADE action archive commits", async () => {
+    const archive = vi.fn();
+    const onLaneArchived = vi.fn();
+    const services = getAdeActionDomainServices({
+      laneService: {
+        archive,
+        list: vi.fn(async () => [{
+          id: "lane-1",
+          name: "Feature",
+          branchRef: "refs/heads/feature",
+          folder: null,
+        }]),
+      },
+      automationService: { onLaneArchived },
+    } as never);
+    const laneActions = services.lane as {
+      archive: (args: { laneId: string }) => Promise<void>;
+    };
+
+    await laneActions.archive({ laneId: "lane-1" });
+
+    expect(archive).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(onLaneArchived).toHaveBeenCalledTimes(1);
+    expect(onLaneArchived.mock.invocationCallOrder[0]).toBeGreaterThan(archive.mock.invocationCallOrder[0]!);
+  });
+
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);
@@ -1863,7 +1995,13 @@ describe("runtime lane snapshot actions", () => {
         cleanupLaneEnvironment,
       },
       portAllocationService: {
-        getLease: vi.fn(() => null),
+        getLease: vi.fn(() => ({
+          laneId: lane.id,
+          rangeStart: 4100,
+          rangeEnd: 4199,
+          status: "active",
+          leasedAt: TEST_NOW,
+        })),
         release,
       },
       logger: {

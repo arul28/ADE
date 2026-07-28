@@ -73,10 +73,26 @@ describe("commands", () => {
     expect(unarchive?.name).toBe("/lane unarchive");
     expect(unarchive?.args).toBe("feat/x");
 
+    const preview = parseCommand("/lane reclaim-preview feat/x");
+    expect(preview?.name).toBe("/lane reclaim-preview");
+    expect(preview?.args).toBe("feat/x");
+
+    const reclaim = parseCommand("/lane archive-and-reclaim feat/x RECLAIM");
+    expect(reclaim?.name).toBe("/lane archive-and-reclaim");
+    expect(reclaim?.args).toBe("feat/x RECLAIM");
+
     // /lane delete must still match (longest-name-first ordering).
     expect(parseCommand("/lane delete")?.name).toBe("/lane delete");
     expect(paletteCommands("/lane").map((c) => c.name)).toEqual(
-      expect.arrayContaining(["/lane rename", "/lane archive", "/lane unarchive", "/lane archived", "/lane delete"]),
+      expect.arrayContaining([
+        "/lane rename",
+        "/lane archive",
+        "/lane reclaim-preview",
+        "/lane archive-and-reclaim",
+        "/lane unarchive",
+        "/lane archived",
+        "/lane delete",
+      ]),
     );
   });
 

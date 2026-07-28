@@ -123,6 +123,8 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  ArchiveAndReclaimLaneArgs,
+  ArchiveAndReclaimLaneResult,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationScheduledCleanup,
@@ -177,6 +179,8 @@ import type {
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  LaneReclaimRisk,
+  RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
@@ -606,6 +610,11 @@ import type { createLaneEnvironmentService } from "../lanes/laneEnvironmentServi
 import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createLaneProxyService } from "../lanes/laneProxyService";
+import {
+  ensureActiveLanePortLease,
+  releaseLaneRuntimeResources,
+  restoreRecreatedLaneRuntime,
+} from "../lanes/laneRuntimeLifecycle";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
@@ -1017,6 +1026,16 @@ function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
   });
 }
 
+function notifyLaneArchived(ctx: AppContext, lane: LaneSummary | null): void {
+  if (!lane) return;
+  ctx.automationService?.onLaneArchived?.({
+    laneId: lane.id,
+    laneName: lane.name,
+    branchRef: lane.branchRef,
+    folder: lane.folder ?? null,
+  });
+}
+
 function clampLayout(layout: DockLayout): DockLayout {
   const out: DockLayout = {};
   for (const [k, v] of Object.entries(layout)) {
@@ -1344,16 +1363,6 @@ function applyLeaseToOverrides(overrides: LaneOverlayOverrides, lease: PortLease
     ...overrides,
     portRange: { start: lease.rangeStart, end: lease.rangeEnd }
   };
-}
-
-async function ensureLanePortLease(ctx: AppContext, laneId: string): Promise<PortLease | null> {
-  if (!ctx.portAllocationService) return null;
-  requireAppContextServices(ctx, ["laneService"] as const);
-  const activeLane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((entry) => entry.id === laneId);
-  if (!activeLane) throw new Error(`Lane not found: ${laneId}`);
-  const existing = ctx.portAllocationService.getLease(laneId);
-  if (existing?.status === "active") return existing;
-  return ctx.portAllocationService.acquire(laneId);
 }
 
 async function buildLinearConnectionStatus(
@@ -5738,7 +5747,7 @@ export function registerIpc({
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
     });
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5746,7 +5755,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.createChild(arg);
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5754,7 +5763,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesCreateFromUnstaged, async (_event, arg: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.createFromUnstaged(arg);
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5762,7 +5771,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.importBranch(arg);
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5791,7 +5800,7 @@ export function registerIpc({
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.attach(arg);
     invalidateProjectPathInspectionCache();
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5804,7 +5813,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.adoptAttached(arg);
-    await ensureLanePortLease(ctx, lane.id);
+    await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
   });
@@ -5831,14 +5840,51 @@ export function registerIpc({
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
       .catch(() => null);
     ctx.laneService.archive(arg);
-    ctx.portAllocationService?.release(arg.laneId);
-    if (lane) {
-      ctx.automationService?.onLaneArchived?.({
-        laneId: lane.id,
-        laneName: lane.name,
-        branchRef: lane.branchRef,
-        folder: lane.folder ?? null,
+    try {
+      releaseLaneRuntimeResources(ctx, arg.laneId);
+    } finally {
+      notifyLaneArchived(ctx, lane);
+    }
+  });
+
+  ipcMain.handle(
+    IPC.lanesArchiveAndReclaim,
+    async (_event, arg: ArchiveAndReclaimLaneArgs): Promise<ArchiveAndReclaimLaneResult> => {
+      const ctx = ensureLaneContext();
+      const lane = await ctx.laneService
+        .list({ includeArchived: true, includeStatus: false })
+        .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
+        .catch(() => null);
+      const envContext = ctx.laneEnvironmentService
+        ? await resolveLaneOverlayContext(ctx, arg.laneId).catch(() => null)
+        : null;
+      const teardownEnv = ctx.laneEnvironmentService && envContext?.envInitConfig
+        ? async () => {
+            await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+          }
+        : undefined;
+      return await ctx.laneService.archiveAndReclaim(arg, {
+        onArchived: () => {
+          try {
+            releaseLaneRuntimeResources(ctx, arg.laneId);
+          } finally {
+            notifyLaneArchived(ctx, lane);
+          }
+        },
+        teardownEnv,
       });
+    },
+  );
+
+  ipcMain.handle(IPC.lanesUnarchive, async (_event, arg: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
+    const ctx = ensureLaneContext();
+    const result = await ctx.laneService.unarchive(arg);
+    if (!result.worktreeRecreated) return result;
+    try {
+      await restoreRecreatedLaneRuntime(ctx, arg.laneId);
+      return result;
+    } catch (error) {
+      return { ...result, setupWarning: getErrorMessage(error) };
     }
   });
 
@@ -5859,7 +5905,7 @@ export function registerIpc({
         }
       : undefined;
     await ctx.laneService.delete(arg, { teardownEnv });
-    ctx.portAllocationService?.release(arg.laneId);
+    releaseLaneRuntimeResources(ctx, arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
@@ -5875,6 +5921,13 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.getDeleteRisk(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesGetReclaimRisk, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<LaneReclaimRisk> => {
+    return ensureLaneContext().laneService.getReclaimRisk(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
@@ -6075,8 +6128,8 @@ export function registerIpc({
   // --- Port Allocation (Phase 5 W3) ---
 
   ipcMain.handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
-    const ctx = getCtx();
-    await ensureLanePortLease(ctx, args.laneId);
+    const ctx = ensureLaneContext();
+    await ensureActiveLanePortLease(ctx, args.laneId);
     return ctx.portAllocationService?.getLease(args.laneId) ?? null;
   });
 
@@ -6086,9 +6139,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesPortAcquire, async (_event, args: { laneId: string }) => {
-    const ctx = getCtx();
+    const ctx = ensureLaneContext();
     if (!ctx.portAllocationService) throw new Error("Port allocation service not available");
-    return (await ensureLanePortLease(ctx, args.laneId))!;
+    return (await ensureActiveLanePortLease(ctx, args.laneId))!;
   });
 
   ipcMain.handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
@@ -6098,7 +6151,7 @@ export function registerIpc({
         throw new Error(`Lane not found: ${args.laneId}`);
       }
     });
-    ctx.portAllocationService?.release(args.laneId);
+    releaseLaneRuntimeResources(ctx, args.laneId);
   });
 
   ipcMain.handle(IPC.lanesPortListConflicts, async () => {

@@ -5180,7 +5180,7 @@ describe("laneService rename", () => {
       });
 
       service.archive({ laneId: "lane-archived" });
-      service.unarchive({ laneId: "lane-active" });
+      await service.unarchive({ laneId: "lane-active" });
 
       expect(onLifecycleEvent).not.toHaveBeenCalled();
       expect(db.get<{ status: string }>("select status from lanes where id = ?", ["lane-archived"])?.status).toBe("archived");

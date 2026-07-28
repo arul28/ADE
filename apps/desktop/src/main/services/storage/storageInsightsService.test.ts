@@ -73,6 +73,24 @@ function seedLane(db: AdeDb, args: {
   );
 }
 
+async function makeStorageFixture() {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-project-"));
+  const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-home-"));
+  fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+  const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
+  seedProject(db, projectRoot);
+  return {
+    projectRoot,
+    adeHome,
+    db,
+    cleanup() {
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    },
+  };
+}
+
 describe("storageInsightsService", () => {
   let projectRoot: string;
   let adeHome: string;
@@ -485,7 +503,7 @@ describe("storageInsightsService", () => {
     subscribe: () => () => {},
   };
 
-  it("runs the maintenance doctor: compresses, reaps safe staging/backups/build data, and journals it", async () => {
+  it("runs the maintenance doctor: compresses history, lists filesystem review candidates, and journals it", async () => {
     // Compression candidate (>14d old inactive transcript).
     const oldTranscript = path.join(projectRoot, ".ade", "transcripts", "chat", "old.jsonl");
     fs.mkdirSync(path.dirname(oldTranscript), { recursive: true });
@@ -533,13 +551,13 @@ describe("storageInsightsService", () => {
     });
     const report = await service.runMaintenanceNow();
 
-    // Reaping outcomes.
-    expect(fs.existsSync(adeTmpStale)).toBe(false);
+    // Filesystem candidates remain until a user previews and confirms them.
+    expect(fs.existsSync(adeTmpStale)).toBe(true);
     expect(fs.existsSync(adeTmpFresh)).toBe(true);
-    expect(fs.existsSync(stageStale)).toBe(false);
-    expect(fs.existsSync(backupOlder)).toBe(false);
+    expect(fs.existsSync(stageStale)).toBe(true);
+    expect(fs.existsSync(backupOlder)).toBe(true);
     expect(fs.existsSync(backupNewer)).toBe(true);
-    expect(fs.existsSync(derived)).toBe(false);
+    expect(fs.existsSync(derived)).toBe(true);
     // Compression outcome (transparent gzip).
     expect(fs.existsSync(`${oldTranscript}.gz`)).toBe(true);
 
@@ -549,13 +567,14 @@ describe("storageInsightsService", () => {
     const byLedger = Object.fromEntries(report.actions.map((action) => [action.ledgerId, action]));
     expect(byLedger["fs.transcripts"]!.itemsAffected).toBe(1);
     expect(byLedger["fs.tmp"]!.itemsAffected).toBe(1);
+    expect(byLedger["fs.tmp"]!.skippedReason).toBe("review_required");
     expect(byLedger["fs.tmp_staging"]!.itemsAffected).toBe(1);
     expect(byLedger["fs.recovery_backups"]!.itemsAffected).toBe(1);
     expect(byLedger["fs.ios_derived_data"]!.itemsAffected).toBe(1);
     // DB hooks absent (no maintenance handle) → unsupported skips, not errors.
     expect(byLedger["db.automation_ingress_events"]!.skippedReason).toBe("unsupported");
     expect(byLedger["db.automation_ingress_events"]!.error).toBeNull();
-    expect(report.reclaimedBytes).toBeGreaterThanOrEqual(40 + 50 + 60 + 70);
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
 
     // Journal written to .ade/cache and surfaced through snapshot extras.
     const journalPath = path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json");
@@ -829,6 +848,296 @@ describe("storageMaintenanceJournal", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+  it("serializes confirmations so the same directory is removed at most once", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const orphan = path.join(projectRoot, ".ade", "worktrees", "concurrent-orphan");
+    writeSized(path.join(orphan, "nested", "file.bin"), 64);
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+    const target: StorageCleanupTarget = { kind: "orphaned_worktree", path: orphan };
+    const preview = await service.cleanupPreview([target]);
+
+    const [first, second] = await Promise.all([
+      service.cleanup([target], { preview }),
+      service.cleanup([target], { preview }),
+    ]);
+
+    expect(first.removed.length + second.removed.length).toBe(1);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect([...first.failed, ...second.failed].some((failure) => /no longer exists/i.test(failure.reason))).toBe(true);
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("routes archived lane folders through Archive & Reclaim safety checks", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const worktree = path.join(projectRoot, ".ade", "worktrees", "archived-guard");
+    writeSized(path.join(worktree, "file.bin"), 32);
+    seedLane(db, {
+      id: "lane-archived-guard",
+      name: "Archived",
+      worktreePath: worktree,
+      archivedAt: "2026-07-01T00:00:00.000Z",
+    });
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const preview = await service.cleanupPreview([
+      { kind: "archived_lane_worktree", laneId: "lane-archived-guard", path: worktree },
+    ]);
+
+    expect(preview.items).toHaveLength(0);
+    expect(preview.blocked[0]?.reason).toMatch(/Archive & Reclaim/i);
+    expect(fs.existsSync(worktree)).toBe(true);
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("does not auto-archive lanes with an active worktree lease, including a lease acquired during the scan", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const lockedPath = path.join(projectRoot, ".ade", "worktrees", "lane-locked");
+    const racedPath = path.join(projectRoot, ".ade", "worktrees", "lane-raced");
+    seedLane(db, { id: "lane-locked", name: "Locked lane", worktreePath: lockedPath });
+    seedLane(db, { id: "lane-raced", name: "Raced lane", worktreePath: racedPath });
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const insertLock = (laneId: string, worktreePath: string, token: string) => {
+      const now = new Date().toISOString();
+      db.run(
+        `insert into lane_worktree_locks(
+           worktree_key, worktree_path, lane_id, owner_kind, owner_pr_id,
+           owner_session_id, owner_proposal_id, owner_label, token,
+           created_at, heartbeat_at, expires_at
+         ) values(?, ?, ?, 'storage_lifecycle', null, null, null, ?, ?, ?, ?, ?)`,
+        [worktreePath, worktreePath, laneId, `Storage work for ${laneId}`, token, now, now, expiresAt],
+      );
+    };
+    insertLock("lane-locked", lockedPath, "lock-before-scan");
+    const archive = vi.fn();
+    const getReclaimRisk = vi.fn(async (laneId: string) => {
+      if (laneId === "lane-raced") insertLock(laneId, racedPath, "lock-during-scan");
+      return {
+        laneId,
+        dirty: false,
+        activeChatCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        blockedReasons: [],
+      };
+    });
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => [
+          {
+            id: "lane-locked",
+            laneType: "worktree" as const,
+            isEditProtected: false,
+            status: { dirty: false },
+          },
+          {
+            id: "lane-raced",
+            laneType: "worktree" as const,
+            isEditProtected: false,
+            status: { dirty: false },
+          },
+        ]),
+        getReclaimRisk,
+        archive,
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+              autoArchiveAfterHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    await service.runLifecycleScanNow();
+
+    expect(getReclaimRisk).toHaveBeenCalledTimes(1);
+    expect(getReclaimRisk).toHaveBeenCalledWith("lane-raced");
+    expect(archive).not.toHaveBeenCalled();
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("treats a lane with no valid activity timestamps as recently active", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const worktreePath = path.join(projectRoot, ".ade", "worktrees", "lane-invalid-activity");
+    seedLane(db, { id: "lane-invalid-activity", name: "Invalid activity", worktreePath });
+    db.run("update lanes set created_at = 'not-a-date' where id = ?", ["lane-invalid-activity"]);
+    const archive = vi.fn();
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => [{
+          id: "lane-invalid-activity",
+          laneType: "worktree" as const,
+          isEditProtected: false,
+          status: { dirty: false },
+        }]),
+        getReclaimRisk: vi.fn(async () => ({
+          dirty: false,
+          activeChatCount: 0,
+          activePtyCount: 0,
+          activeWatcherCount: 0,
+          blockedReasons: [],
+        })),
+        archive,
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+              autoArchiveAfterHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    await service.runLifecycleScanNow();
+
+    expect(archive).not.toHaveBeenCalled();
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("runs manual maintenance when the lane lifecycle scan fails", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      stagingTmpDir: path.join(adeHome, "no-real-staging"),
+      laneService: {
+        list: vi.fn(async () => {
+          throw new Error("lane scan failed");
+        }),
+        getReclaimRisk: vi.fn(),
+        archive: vi.fn(),
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    const report = await service.runMaintenanceNow();
+
+    expect(report.trigger).toBe("manual");
+    expect(report.actions.length).toBeGreaterThan(0);
+    expect(logger.warn).toHaveBeenCalledWith("storage.lifecycle_scan_failed", expect.objectContaining({
+      projectRoot,
+      trigger: "manual",
+      error: "lane scan failed",
+    }));
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("enforces active-lane limits on safe lanes and only marks retained files for review", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const activeIds = ["lane-a", "lane-b", "lane-c"];
+    for (const id of activeIds) {
+      const worktreePath = path.join(projectRoot, ".ade", "worktrees", id);
+      writeSized(path.join(worktreePath, "file.bin"), 16);
+      seedLane(db, { id, name: id, worktreePath });
+    }
+    const retainedPath = path.join(projectRoot, ".ade", "worktrees", "lane-retained");
+    writeSized(path.join(retainedPath, "file.bin"), 24);
+    seedLane(db, {
+      id: "lane-retained",
+      name: "Retained lane",
+      worktreePath: retainedPath,
+      archivedAt: "2026-07-01T00:00:00.000Z",
+    });
+    const archive = vi.fn(({ laneId }: { laneId: string }) => {
+      db.run(
+        "update lanes set status = 'archived', archived_at = ? where id = ?",
+        [new Date().toISOString(), laneId],
+      );
+    });
+    const laneService = {
+      list: vi.fn(async () => db.all<{ id: string; name: string; worktree_path: string; is_edit_protected: number }>(
+        "select id, name, worktree_path, is_edit_protected from lanes where status != 'archived'",
+      ).map((row) => ({
+        id: row.id,
+        name: row.name,
+        laneType: "worktree" as const,
+        worktreePath: row.worktree_path,
+        isEditProtected: row.is_edit_protected === 1,
+        status: { dirty: false },
+      }))),
+      getReclaimRisk: vi.fn(async (laneId: string) => ({
+        laneId,
+        dirty: false,
+        activeChatCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        blockedReasons: [],
+      })),
+      archive,
+    };
+    const projectConfigService = {
+      get: () => ({
+        effective: {
+          laneCleanup: {
+            maxActiveLanes: 1,
+            cleanupIntervalHours: 6,
+            reclaimArchivedAfterHours: 1,
+          },
+        },
+      }),
+    };
+    const releaseLaneRuntimeResources = vi.fn();
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService,
+      projectConfigService,
+      releaseLaneRuntimeResources,
+    });
+
+    await service.runLifecycleScanNow();
+    await service.runLifecycleScanNow();
+
+    expect(archive).toHaveBeenCalledTimes(2);
+    expect(releaseLaneRuntimeResources.mock.calls.map(([laneId]) => laneId))
+      .toEqual(archive.mock.calls.map(([args]) => args.laneId));
+    expect(db.get("select reclaim_state from local_lane_storage_state where lane_id = ?", ["lane-retained"]))
+      .toMatchObject({ reclaim_state: "ready_for_review" });
+    expect(fs.existsSync(retainedPath)).toBe(true);
+    service.dispose();
+    fixture.cleanup();
+  });
 });
 
 describe("storageLedger", () => {
@@ -889,7 +1198,7 @@ describe("storageLedger", () => {
   it("derives category policy chips from the ledger policy values", () => {
     const chips = deriveCategoryPolicyChips();
     expect(chips.chats_history).toBe("Compressed after 14 days");
-    expect(chips.build_release).toBe("Auto-cleans after 7 days");
+    expect(chips.build_release).toBe("Review after 7 days");
     expect(chips.recovery_backups).toBe("Keeps the latest backup");
     expect(chips.caches).toBeTruthy();
     expect(chips.lanes_worktrees).toBeTruthy();

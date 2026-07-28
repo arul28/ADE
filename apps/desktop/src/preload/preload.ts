@@ -174,6 +174,8 @@ import type {
   LaneBranchSwitchResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
+  ArchiveAndReclaimLaneArgs,
+  ArchiveAndReclaimLaneResult,
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
@@ -542,6 +544,8 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  LaneReclaimRisk,
+  RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
   LaneOverlayOverrides,
@@ -5000,6 +5004,30 @@ contextBridge.exposeInMainWorld("ade", {
       );
       clearGitReadCaches();
     },
+    archiveAndReclaim: async (
+      args: ArchiveAndReclaimLaneArgs,
+    ): Promise<ArchiveAndReclaimLaneResult> => {
+      clearGitReadCaches();
+      const result = await callProjectRuntimeActionOr<ArchiveAndReclaimLaneResult>(
+        "lane",
+        "archiveAndReclaim",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesArchiveAndReclaim, args),
+      );
+      clearGitReadCaches();
+      return result;
+    },
+    unarchive: async (args: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
+      clearGitReadCaches();
+      const result = await callProjectRuntimeActionOr<RestoreLaneResult>(
+        "lane",
+        "unarchive",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesUnarchive, args),
+      );
+      clearGitReadCaches();
+      return result;
+    },
     delete: async (args: DeleteLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
       if (pin) {
@@ -5030,6 +5058,13 @@ contextBridge.exposeInMainWorld("ade", {
         "getDeleteRisk",
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesGetDeleteRisk, args),
+      ),
+    getReclaimRisk: async (args: { laneId: string }): Promise<LaneReclaimRisk> =>
+      callProjectRuntimeActionOr(
+        "lane",
+        "getReclaimRisk",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesGetReclaimRisk, args),
       ),
     onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => {
       const listener = (

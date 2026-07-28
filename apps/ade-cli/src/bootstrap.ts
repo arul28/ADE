@@ -47,6 +47,7 @@ import { createLaneEnvironmentService } from "../../desktop/src/main/services/la
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
+import { releaseLaneRuntimeResources } from "../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
@@ -1570,6 +1571,11 @@ export async function createAdeRuntime(args: {
       || ptyService.isTranscriptPathActive(filePath)
       || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
     projectId,
+    laneService,
+    projectConfigService,
+    releaseLaneRuntimeResources: (laneId) => {
+      releaseLaneRuntimeResources({ portAllocationService, laneProxyService }, laneId);
+    },
     // One bounded `ade_feature_used` per completed maintenance run at the daemon
     // boundary (deduped to 20 h by the service).
     captureAnalytics: (input) => {

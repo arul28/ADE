@@ -41,7 +41,14 @@ import type {
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
-import type { LaneDeleteRisk, LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type {
+  ArchiveAndReclaimLaneResult,
+  LaneDeleteRisk,
+  LaneLinearIssue,
+  LaneReclaimRisk,
+  LaneSummary,
+  RestoreLaneResult,
+} from "../../../desktop/src/shared/types/lanes";
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
@@ -521,6 +528,45 @@ export function formatLaneDeleteRisk(risk: LaneDeleteRisk): string {
   if (risk.activePtyCount > 0) parts.push(`${risk.activePtyCount} terminal${risk.activePtyCount === 1 ? "" : "s"}`);
   if (risk.remoteBranchExists) parts.push("remote branch exists");
   return parts.length ? `⚠ ${parts.join(" · ")}` : "Clean — no unpushed work or running sessions.";
+}
+
+function formatStorageBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / (1024 ** unitIndex);
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+export function formatLaneReclaimPreview(risk: LaneReclaimRisk): string {
+  const hardBlocked = risk.blockedReasons.some((reason) => reason.disposition === "blocked");
+  const dirtyWarning = risk.blockedReasons.some((reason) => reason.code === "dirty_worktree");
+  const reasons = risk.blockedReasons.length
+    ? [
+        "",
+        hardBlocked ? "Why ADE cannot reclaim this lane:" : "Review before continuing:",
+        ...risk.blockedReasons.map((reason) => `  • ${reason.message}`),
+      ]
+    : ["", "Safety check: Ready to reclaim."];
+  const nextCommand = hardBlocked
+    ? "Nothing has been removed."
+    : [
+        "Nothing has been removed.",
+        `Run /lane archive-and-reclaim ${risk.laneId} RECLAIM${dirtyWarning ? " force-dirty" : ""} to continue.`,
+      ].join("\n");
+  return [
+    `Estimated space: ${formatStorageBytes(risk.reclaimableBytes)}`,
+    `  Worktree: ${formatStorageBytes(risk.worktreeBytes)}`,
+    `  Generated data: ${formatStorageBytes(risk.generatedBytes)}`,
+    "",
+    "Removes: ADE's managed local worktree and generated data.",
+    "Keeps: the lane, branch, chats, and metadata.",
+    "Restore later with /lane unarchive <lane-id|name>.",
+    ...reasons,
+    "",
+    nextCommand,
+  ].join("\n");
 }
 
 export type ModelPickerEscapeAction =
@@ -7524,7 +7570,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     try {
       await conn.action("lane", "archive", { laneId: targetId });
-      addNotice(`Archived lane ${lane.name}.`, "success");
+      addNotice(`Archived lane ${lane.name}. Local files remain.`, "success");
       // If we archived the lane we were on, fall back to another live lane.
       if (activeLaneIdRef.current === targetId) {
         const fallback = lanes.find((entry) => entry.id !== targetId && !entry.archivedAt) ?? null;
@@ -7554,8 +7600,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`No archived lane matched "${term}".`, "error");
         return;
       }
-      await conn.action("lane", "unarchive", { laneId: match.id });
-      addNotice(`Unarchived lane ${match.name}.`, "success");
+      const result = await conn.action<RestoreLaneResult>("lane", "unarchive", { laneId: match.id });
+      const restoredFiles = result.worktreeRecreated ? " ADE recreated its local worktree." : "";
+      const setupWarning = result.setupWarning ? ` Setup needs attention: ${result.setupWarning}` : "";
+      addNotice(`Restored lane ${match.name}.${restoredFiles}${setupWarning}`, result.setupWarning ? "error" : "success");
       await refreshState();
       selectActiveLaneId(match.id);
     } catch (err) {
@@ -9919,6 +9967,69 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (name === "/lane archive") {
       await archiveLane();
+      return;
+    }
+    if (name === "/lane reclaim-preview" || name === "/lane archive-and-reclaim") {
+      const allLanes = await listLanes(conn, { includeArchived: true });
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const confirmed = name === "/lane archive-and-reclaim" && tokens.includes("RECLAIM");
+      const forceDirty = tokens.includes("force-dirty") || tokens.includes("--force-dirty");
+      const reference = tokens
+        .filter((token) => token !== "RECLAIM" && token !== "force-dirty" && token !== "--force-dirty")
+        .join(" ");
+      const target = reference
+        ? resolveLaneReference(allLanes, reference)
+        : allLanes.find((entry) => entry.id === laneId) ?? null;
+      if (!target) {
+        setRightPane({
+          kind: "details",
+          title: "Archive & Reclaim",
+          body: reference
+            ? `No lane matched "${reference}". Use an exact lane name or id.`
+            : "No active lane is selected.",
+        });
+        return;
+      }
+      const risk = await conn.action<LaneReclaimRisk>("lane", "getReclaimRisk", { laneId: target.id });
+      const preview = formatLaneReclaimPreview(risk);
+      const hardBlocked = risk.blockedReasons.some((reason) => reason.disposition === "blocked");
+      const dirtyNeedsConfirmation = risk.dirty && !forceDirty;
+      if (!confirmed || hardBlocked || dirtyNeedsConfirmation) {
+        setRightPane({ kind: "details", title: `Archive & Reclaim · ${target.name}`, body: preview });
+        if (hardBlocked) {
+          addNotice("ADE cannot reclaim this lane. Review the reason in the details pane.", "error");
+        } else if (dirtyNeedsConfirmation && confirmed) {
+          addNotice("This lane has uncommitted files. Add force-dirty only if those file changes may be lost.", "error");
+        }
+        return;
+      }
+      const result = await conn.action<ArchiveAndReclaimLaneResult>("lane", "archiveAndReclaim", {
+        laneId: target.id,
+        confirmation: "RECLAIM",
+        forceDirty,
+      });
+      const warningLines = result.warnings.length
+        ? ["", "Needs attention:", ...result.warnings.map((warning) => `  • ${warning}`)]
+        : [];
+      setRightPane({
+        kind: "details",
+        title: `Archive & Reclaim · ${target.name}`,
+        body: [
+          `Reclaimed ${formatStorageBytes(result.reclaimedBytes)}.`,
+          "The lane, branch, chats, and metadata were kept.",
+          `Restore it with /lane unarchive ${target.id}.`,
+          ...warningLines,
+        ].join("\n"),
+      });
+      addNotice(
+        `Archived ${target.name} and reclaimed ${formatStorageBytes(result.reclaimedBytes)}.`,
+        result.warnings.length ? "error" : "success",
+      );
+      if (activeLaneIdRef.current === target.id) {
+        const fallback = allLanes.find((entry) => entry.id !== target.id && !entry.archivedAt) ?? null;
+        selectActiveLaneId(fallback?.id ?? null);
+      }
+      await refreshState();
       return;
     }
     if (name === "/lane unarchive") {
