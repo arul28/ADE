@@ -424,6 +424,7 @@ async function deliverAttentionNotifications(
   env: AttentionRelayEnv,
   userId: string,
   items: ParsedAttentionItem[],
+  sendPush: typeof sendApnsPush = sendApnsPush,
 ): Promise<void> {
   const config = apnsConfig(env);
   if (!config || items.length === 0) return;
@@ -513,7 +514,7 @@ async function deliverAttentionNotifications(
       const body = hideDetails
         ? boundedText(item.privacyPreview, MAX_PREVIEW_LENGTH)
         : boundedText(item.preview, MAX_PREVIEW_LENGTH);
-      const result = await sendApnsPush(config, {
+      const result = await sendPush(config, {
         environment: device.aps_environment as ApnsEnvironment,
         deviceToken: device.apns_token,
         topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
@@ -1680,6 +1681,14 @@ export async function handleAttentionMachinePublish(
       tombstones.length,
     )
   ) {
+    // Identical heartbeats still drive desktop-first escalation. The delivery
+    // path checks acknowledgments and durable receipts, so a due alert retries
+    // without rewriting account state or duplicating an already-delivered push.
+    await deliverAttentionNotifications(
+      env,
+      account.userId,
+      items as ParsedAttentionItem[],
+    );
     const current = await env.DB
       .prepare("select revision from attention_revisions where user_id = ? limit 1")
       .bind(account.userId)
@@ -2414,9 +2423,23 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
     await deleteAttentionDeviceOwnership(env, device.user_id, device.device_id);
   }
   await Promise.all([
-    env.DB.prepare("delete from attention_items where expires_at is not null and expires_at <= ?")
-      .bind(now.toISOString())
-      .run(),
+    env.DB.batch([
+      env.DB.prepare(`
+        delete from attention_delivery_receipts
+        where not exists (
+          select 1
+          from attention_items
+          where attention_items.user_id = attention_delivery_receipts.user_id
+            and attention_items.item_id = attention_delivery_receipts.item_id
+            and (
+              attention_items.expires_at is null
+              or attention_items.expires_at > ?
+            )
+        )
+      `).bind(now.toISOString()),
+      env.DB.prepare("delete from attention_items where expires_at is not null and expires_at <= ?")
+        .bind(now.toISOString()),
+    ]),
     env.DB.prepare("delete from attention_tombstones where deleted_at <= ?")
       .bind(tombstoneCutoff)
       .run(),
@@ -2433,6 +2456,7 @@ export const attentionTestInternals = Object.freeze({
   attentionAlertRoutingPayload,
   attentionFullSnapshotUnchanged,
   deepLinkForItem,
+  deliverAttentionNotifications,
   desktopEscalationDelayMs,
   handleAuthorizedAttentionAccountRequest,
   linkMachineToAccount,

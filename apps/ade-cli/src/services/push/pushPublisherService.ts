@@ -6,6 +6,7 @@ import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
   sanitizeAttentionPreview,
+  sortAttentionItems,
   type AttentionEventKind,
   type AttentionItem,
   type AttentionPhase,
@@ -54,6 +55,8 @@ const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
 const ATTENTION_RECENT_TTL_MS = 24 * 60 * 60 * 1000;
+/** The relay rejects an Attention publish containing more than 64 items. */
+const ATTENTION_PUBLISH_MAX_ITEMS = 64;
 const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
@@ -934,7 +937,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const publishAttentionSnapshot = async (nowMs: number): Promise<boolean> => {
     if (typeof deps.relayClient.publishAttention !== "function") return false;
-    const items = buildAttentionItems(nowMs);
+    // Bound the full snapshot before fingerprinting it. The relay treats the
+    // published window as authoritative for this machine, so selection must be
+    // deterministic and use the same canonical priority order as every ADE
+    // Attention surface (needs-you/failures first, then recency and stable id).
+    const items = sortAttentionItems(buildAttentionItems(nowMs))
+      .slice(0, ATTENTION_PUBLISH_MAX_ITEMS);
     const fingerprint = JSON.stringify(items.map((item) => ({
       id: item.id,
       revision: item.revision,

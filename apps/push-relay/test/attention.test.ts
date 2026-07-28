@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attentionTestInternals,
@@ -93,8 +93,11 @@ class SqliteD1Database {
   }
 }
 
-function makeAttentionEnv(database: SqliteD1Database): AttentionRelayEnv {
-  return { DB: database as unknown as D1Database };
+function makeAttentionEnv(
+  database: SqliteD1Database,
+  overrides: Omit<Partial<AttentionRelayEnv>, "DB"> = {},
+): AttentionRelayEnv {
+  return { DB: database as unknown as D1Database, ...overrides };
 }
 
 function row<T extends Record<string, unknown>>(
@@ -176,6 +179,10 @@ function insertAttentionDevice(
 }
 
 const MACHINE_KEY = "a".repeat(32);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function validAgentItem(): Record<string, unknown> {
   return {
@@ -324,6 +331,114 @@ describe("account Attention contract", () => {
     expect(
       attentionTestInternals.attentionFullSnapshotUnchanged(current, incoming, 1),
     ).toBe(false);
+  });
+
+  it("retries a due desktop-first alert without duplicating delivered or acknowledged notifications", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const sendPush = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      apnsId: "apns-id",
+      reason: null,
+      tokenInvalid: false,
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_presence(user_id, device_id, payload_json, observed_at)
+        values (
+          'account-a', 'desktop-1',
+          '{"platform":"macOS","appForeground":true}',
+          '2026-07-28T08:00:10.000Z'
+        )
+      `).run();
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: "test-key",
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).not.toHaveBeenCalled();
+
+      vi.setSystemTime(new Date("2026-07-28T08:00:40.000Z"));
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).toHaveBeenCalledTimes(1);
+      expect(rows(database, `
+        select state
+        from attention_delivery_receipts
+        where user_id = 'account-a' and item_id = ? and device_id = 'phone-1'
+      `, parsed.id)).toHaveLength(1);
+
+      vi.setSystemTime(new Date("2026-07-28T08:00:41.000Z"));
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).toHaveBeenCalledTimes(1);
+
+      database.native.prepare(`
+        delete from attention_delivery_receipts
+        where user_id = 'account-a' and item_id = ?
+      `).run(parsed.id);
+      database.native.prepare(`
+        update attention_items
+        set seen_at = '2026-07-28T08:00:41.000Z'
+        where user_id = 'account-a' and item_id = ?
+      `).run(parsed.id);
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
   });
 
   it("redacts lock-screen content without breaking exact PR routing metadata", () => {
@@ -1071,6 +1186,66 @@ describe("account Attention contract", () => {
         ownership_epoch: 1,
         active: 0,
       });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("prunes delivery receipts without live Attention state for renewed devices", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "active-phone",
+        leaseExpiresAt: "2026-09-01T00:00:00.000Z",
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values
+          (
+            'account-a', 'expired-item', ?, 1, 1, 'expired-fingerprint',
+            'agent_needs_you', 'needs_you', '{}', null, null,
+            '2026-07-28T11:59:59.000Z', '2026-07-28T11:00:00.000Z'
+          ),
+          (
+            'account-a', 'active-item', ?, 1, 2, 'active-fingerprint',
+            'agent_needs_you', 'needs_you', '{}', null, null,
+            '2026-07-29T12:00:00.000Z', '2026-07-28T11:00:00.000Z'
+          )
+      `).run(MACHINE_KEY, MACHINE_KEY);
+      database.native.prepare(`
+        insert into attention_delivery_receipts(
+          user_id, item_id, device_id, state, delivered_at
+        ) values
+          ('account-a', 'expired-item', 'active-phone', 'alert:expired', '2026-07-28T11:00:00.000Z'),
+          ('account-a', 'active-item', 'active-phone', 'alert:active', '2026-07-28T11:00:00.000Z'),
+          ('account-a', 'removed-item', 'active-phone', 'alert:removed', '2026-07-28T11:00:00.000Z')
+      `).run();
+
+      await pruneAttentionState(makeAttentionEnv(database));
+
+      expect(rows(database, `
+        select item_id
+        from attention_delivery_receipts
+        where user_id = 'account-a' and device_id = 'active-phone'
+        order by item_id
+      `)).toEqual([{ item_id: "active-item" }]);
+      expect(rows(database, `
+        select item_id
+        from attention_items
+        where user_id = 'account-a'
+        order by item_id
+      `)).toEqual([{ item_id: "active-item" }]);
+      expect(row(database, `
+        select lease_expires_at
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'active-phone'
+      `)?.lease_expires_at).toBe("2026-09-01T00:00:00.000Z");
     } finally {
       database.close();
     }

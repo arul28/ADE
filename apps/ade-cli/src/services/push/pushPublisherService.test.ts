@@ -286,6 +286,58 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("caps Attention full snapshots at 64 items while preserving the canonical priority boundary", async () => {
+    const { publisher, publishAttention, cliSessions } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "needs-you",
+      kind: "chat",
+      title: "Release decision",
+      message: "Choose the rollout window",
+      laneId: "auth-lane",
+    });
+    // Every lower-priority running item is newer, proving phase priority wins
+    // at the truncation boundary instead of recency accidentally displacing it.
+    vi.advanceTimersByTime(1);
+    for (let index = 0; index < 64; index += 1) {
+      const sessionId = `running-${String(index).padStart(2, "0")}`;
+      cliSessions.set(sessionId, {
+        title: `Background run ${index}`,
+        toolType: "codex",
+        chatSessionId: null,
+      });
+      publisher.handleCliRuntimeSignal("scope-1", {
+        laneId: "auth-lane",
+        sessionId,
+        runtimeState: "running",
+      });
+    }
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    const payload = publishAttention.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      machineName: "MacBook",
+      fullSnapshot: true,
+    });
+    expect(payload.items).toHaveLength(64);
+    expect(payload.items[0]).toMatchObject({
+      id: `agent:${"a".repeat(40)}:needs-you`,
+      phase: "needs_you",
+      destination: {
+        kind: "session",
+        sessionId: "needs-you",
+      },
+    });
+    expect(payload.items.map((item: { id: string }) => item.id)).not.toContain(
+      `agent:${"a".repeat(40)}:running-63`,
+    );
+
+    publisher.dispose();
+  });
+
   it("alerts native structured questions with the unified needs-you copy immediately", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();
