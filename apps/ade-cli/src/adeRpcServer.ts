@@ -1440,6 +1440,9 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "saveMemory",
   "create_lane",
+  "delete_computer_use_artifacts",
+  "prune_broken_computer_use_artifacts",
+  "recover_computer_use_artifact",
   "run_ade_action",
   "start_cli_session",
   "send_to_session",

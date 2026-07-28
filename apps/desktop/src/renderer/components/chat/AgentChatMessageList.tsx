@@ -145,6 +145,11 @@ import {
   type ChatCardTone,
 } from "./chatCardPrimitives";
 
+/** True for an absolute POSIX or Windows path, which the project handler cannot serve. */
+function path_isAbsoluteLike(value: string): boolean {
+  return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value);
+}
+
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
@@ -4900,6 +4905,7 @@ function DoneTurnDivider({
   durationMs,
   toolEntries,
   proofArtifacts,
+  resolveProofThumbnailSrc,
   onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
@@ -4911,6 +4917,7 @@ function DoneTurnDivider({
   durationMs: number | null;
   toolEntries: ChatWorkLogEntry[];
   proofArtifacts?: ComputerUseArtifactView[];
+  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
@@ -5020,6 +5027,7 @@ function DoneTurnDivider({
         <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
           <ChatProofFilmstrip
             artifacts={turnProof}
+            resolveThumbnailSrc={resolveProofThumbnailSrc}
             onOpenAll={onOpenProofDrawer}
             onOpenArtifact={onOpenProofDrawer}
           />
@@ -5209,6 +5217,7 @@ type EventRowProps = {
   settledQueueRecoveryIds?: Set<string>;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
   turnProof?: ComputerUseArtifactView[];
+  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
 };
 
@@ -5257,6 +5266,7 @@ const EventRow = React.memo(function EventRow({
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
   turnProof,
+  resolveProofThumbnailSrc,
   onOpenProofDrawer,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
@@ -5354,6 +5364,7 @@ const EventRow = React.memo(function EventRow({
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
           proofArtifacts={turnProof}
+          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
@@ -5759,9 +5770,7 @@ function AgentChatMessageListMain({
   mosaic,
   scrollToRowKeyRequest,
   proofArtifacts = [],
-  // `allowLocalProofArtifactProtocol` stays on the props type but is no longer
-  // read here: proof left this component as a footer and comes back as an
-  // inline `ade_card` row, which resolves its own artifact protocol.
+  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
 }: {
   events: AgentChatEventEnvelope[];
@@ -6153,6 +6162,23 @@ function AgentChatMessageListMain({
    * from the turn that produced the capture, not a second copy of the artifacts.
    * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
    */
+  /**
+   * Thumbnail source for inline proof. The stored `uri` is project-relative
+   * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
+   * exactly that against the active project root — so a local project gets real
+   * previews synchronously, with no per-tile IPC. A remote project has no such
+   * handler, so tiles fall back to their kind label and the drawer (which reads
+   * bytes over the runtime) stays the way to view them.
+   */
+  const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
+    if (!allowLocalProofArtifactProtocol) return null;
+    const uri = artifact.uri?.trim();
+    if (!uri) return null;
+    if (/^ade-artifact:\/\//i.test(uri)) return uri;
+    if (/^https?:\/\//i.test(uri) || path_isAbsoluteLike(uri)) return null;
+    return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
+  }, [allowLocalProofArtifactProtocol]);
+
   const turnProofByRowKey = useMemo(() => {
     const map = new Map<string, ComputerUseArtifactView[]>();
     if (!proofArtifacts.length) return map;
@@ -6932,6 +6958,7 @@ function AgentChatMessageListMain({
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
           turnProof={turnProof}
+          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
@@ -7023,7 +7050,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { deletePullRequestRowsByIds, deletePullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
-import { isWithinDir, normalizeBranchName } from "../shared/utils";
+import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -3086,8 +3086,16 @@ export function createLaneService({
         }
       }
       const absolute = path.resolve(path.isAbsolute(relative) ? relative : path.join(projectRoot, relative));
-      if (!isWithinDir(artifactsDir, absolute)) continue;
-      paths.push(absolute);
+      // Realpath, not a lexical prefix check. `uri` is a CRR-replicated column,
+      // so a paired peer can write it; a directory symlink under the artifacts
+      // dir would otherwise let this unlink walk straight out of the jail.
+      let jailed: string;
+      try {
+        jailed = resolvePathWithinRoot(artifactsDir, absolute, { allowMissing: true });
+      } catch {
+        continue;
+      }
+      paths.push(jailed);
     }
     return paths;
   };

@@ -1267,6 +1267,27 @@ describe("adeRpcServer", () => {
     });
   });
 
+  // `ade/actions/call` is the only way into `runTool`, and it dispatches off
+  // READ_ONLY_TOOLS / MUTATION_TOOLS. A tool registered in the inventory but
+  // absent from both sets is advertised and unreachable — which is how the
+  // whole proof delete surface (`ade proof rm|prune|recover`) shipped broken.
+  it("dispatches every registered computer-use mutation tool", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "chat-1", role: "agent" });
+
+    for (const name of [
+      "delete_computer_use_artifacts",
+      "prune_broken_computer_use_artifacts",
+      "recover_computer_use_artifact",
+      "list_broken_computer_use_artifacts",
+    ]) {
+      const result = await callTool(handler, name, {});
+      const serialized = JSON.stringify(result ?? {});
+      expect(serialized).not.toContain(`Unsupported ADE action: ${name}`);
+    }
+  });
+
   it("caps a session-bound CTO caller and scopes lifecycle actions to its own session", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
       const { runtime } = createRuntime();

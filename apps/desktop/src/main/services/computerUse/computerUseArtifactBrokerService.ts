@@ -121,12 +121,28 @@ function isAllowedExternalArtifactSource(
  * store — artifacts are previewed in the renderer and synced to paired phones,
  * so promoting a secrets blob into one is an exfiltration path.
  */
+/**
+ * Realpaths both sides before comparing. A lexical check is bypassable with one
+ * `ln -s`: a directory symlink inside an allowed root that points at the secrets
+ * dir would fail this test and then pass the allow-list, which realpaths. The
+ * deny-list is the exfiltration barrier, so it has to be at least as strict as
+ * the check it guards.
+ */
 function isDeniedArtifactSource(absolutePath: string, deniedRoots: string[]): boolean {
-  const normalized = path.resolve(absolutePath);
+  const normalized = realpathOrSelf(path.resolve(absolutePath));
   return deniedRoots.some((root) => {
-    const normalizedRoot = path.resolve(root);
+    const normalizedRoot = realpathOrSelf(path.resolve(root));
     return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + path.sep);
   });
+}
+
+/** Realpath when the path exists; the resolved input otherwise. */
+function realpathOrSelf(candidate: string): string {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
 }
 
 function resolveRendererArtifactPath(rawPath: string, projectRoot: string): string {
@@ -251,6 +267,8 @@ function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOw
 const IMPORTABLE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set([
   "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "heic",
   "mp4", "webm", "mov", "avi", "mkv",
+  "heif", "tif", "tiff",
+  "m4v", "ogv",
   "zip", "har",
   "log", "txt", "md",
 ]);
@@ -771,6 +789,15 @@ export function createComputerUseArtifactBrokerService(args: {
         missing.push(artifactId);
         continue;
       }
+      // Read the owners before the rows go, so the delete can be announced to
+      // the same surfaces `artifact-linked` reached. An `owner: null` event is
+      // silently dropped by every listener, which is why deletes made outside
+      // the drawer used to leave it showing a row that no longer existed.
+      const owners = readLinkRows([artifactId]).map((link) => ({
+        kind: link.ownerKind,
+        id: link.ownerId,
+        relation: link.relation,
+      }));
       try {
         const filePath = resolveArtifactFilePath(record);
         let fileRemoved = false;
@@ -796,7 +823,14 @@ export function createComputerUseArtifactBrokerService(args: {
           path: filePath,
           freedBytes,
         });
-        emit({ type: "artifact-deleted", artifactId, at: nowIso(), owner: null });
+        const deletedAt = nowIso();
+        if (owners.length) {
+          for (const owner of owners) {
+            emit({ type: "artifact-deleted", artifactId, at: deletedAt, owner });
+          }
+        } else {
+          emit({ type: "artifact-deleted", artifactId, at: deletedAt, owner: null });
+        }
       } catch (error) {
         failed.push({
           artifactId,
@@ -853,10 +887,17 @@ export function createComputerUseArtifactBrokerService(args: {
       const owners = dedupeOwners(request.owners ?? []);
       const callerRoot = toOptionalString(request.callerRoot);
       const laneId = resolveLaneIdForOwners(owners);
-      const artifacts = request.inputs.map((input) => {
+      // Resolve every input before persisting any of them. `resolveStoredUri`
+      // now throws (missing file, non-importable type, denied source), and a
+      // half-committed batch would leave the agent's retry inserting the
+      // already-stored inputs a second time.
+      const resolved = request.inputs.map((input) => {
         const kind = normalizeInputKind(input);
         const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
-        const { uri, storageKind, mimeType } = resolveStoredUri(input, kind, title, callerRoot);
+        return { input, kind, title, stored: resolveStoredUri(input, kind, title, callerRoot) };
+      });
+      const artifacts = resolved.map(({ input, kind, title, stored }) => {
+        const { uri, storageKind, mimeType } = stored;
         const metadata = {
           ...(isRecord(input.metadata) ? input.metadata : {}),
           sourcePath: toOptionalString(input.path),

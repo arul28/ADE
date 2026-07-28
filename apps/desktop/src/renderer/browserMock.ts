@@ -3751,9 +3751,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     computerUse: {
       listArtifacts: resolvedArg([]),
       getOwnerSnapshot: resolvedArg({} as any),
-      routeArtifact: resolvedArg({} as any),
       updateArtifactReview: resolvedArg({} as any),
       readArtifactPreview: resolvedArg(null),
+      // The drawer calls these directly; without them the standalone web
+      // renderer throws a TypeError on the delete and recover controls.
+      deleteArtifacts: resolvedArg({ deleted: [], missing: [], failed: [] } as any),
+      listBrokenArtifacts: resolvedArg([]),
+      pruneBrokenArtifacts: resolvedArg({ deleted: [], missing: [], failed: [] } as any),
+      recoverArtifact: resolvedArg({} as any),
       onEvent: () => () => {},
     },
     onboarding: {
