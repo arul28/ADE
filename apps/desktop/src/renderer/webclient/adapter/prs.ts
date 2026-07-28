@@ -171,6 +171,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     getCommits: (prId: string) => read("prs.getCommits", { prId }, []),
     getActionRuns: (prId: string) => read("prs.getActionRuns", { prId }, []),
     getActivity: (prId: string) => read("prs.getActivity", { prId }, []),
+    getWorkflowGraph: (args: unknown) => read("prs.getWorkflowGraph", args, null),
+    getCheckLog: (args: unknown) => read("prs.getCheckLog", args, null),
     getDetailByGithub: (coords: unknown) => call("prs.getDetailByGithub", coords, null),
     getFilesByGithub: (coords: unknown) => call("prs.getFilesByGithub", coords, []),
     getCommitsByGithub: (coords: unknown) => call("prs.getCommitsByGithub", coords, []),

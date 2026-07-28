@@ -49,6 +49,252 @@ private func parseCodexWebSearchResults(from value: Any?) -> [CodexWebSearchResu
   return results.isEmpty ? nil : results
 }
 
+// MARK: - ade_card payload parsing
+
+/// Fold an arbitrary tone string onto the four allowed tones. Red-ish values
+/// (`danger`, `error`, `failed`, `red`) become `.warning`: failures are amber in
+/// ADE chat, never a red error block. Parity with `normalizeAdeCardTone` in
+/// `apps/desktop/src/shared/adeCard.ts`.
+func workAdeCardTone(from value: Any?) -> WorkAdeCardTone {
+  switch (optionalString(value) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "accent":
+    return .accent
+  case "success", "passed", "pass":
+    return .success
+  case "warning", "warn", "danger", "error", "failed", "fail", "red":
+    return .warning
+  default:
+    return .neutral
+  }
+}
+
+private func workAdeCardIcon(from value: Any?) -> WorkAdeCardIcon? {
+  guard let raw = optionalString(value)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+    return nil
+  }
+  return WorkAdeCardIcon(rawValue: raw)
+}
+
+private func workAdeCardMetrics(from value: Any?) -> [WorkAdeCardMetric] {
+  guard let array = value as? [[String: Any]] else { return [] }
+  return array.compactMap { metric in
+    let label = stringValue(metric["label"])
+    let metricValue = stringValue(metric["value"])
+    guard !label.isEmpty || !metricValue.isEmpty else { return nil }
+    return WorkAdeCardMetric(
+      label: label,
+      value: metricValue,
+      tone: workAdeCardTone(from: metric["tone"])
+    )
+  }
+}
+
+private func workAdeCardRows(from value: Any?) -> [WorkAdeCardRow] {
+  guard let array = value as? [[String: Any]] else { return [] }
+  return array.compactMap { row in
+    let text = stringValue(row["text"])
+    guard !text.isEmpty else { return nil }
+    return WorkAdeCardRow(
+      icon: workAdeCardIcon(from: row["icon"]),
+      text: text,
+      detail: optionalString(row["detail"]),
+      tone: workAdeCardTone(from: row["tone"])
+    )
+  }
+}
+
+private func workAdeCardProgress(from value: Any?) -> WorkAdeCardProgress? {
+  guard let dict = value as? [String: Any] else { return nil }
+  let progress = WorkAdeCardProgress(
+    passed: optionalWorkInt(dict["passed"]) ?? 0,
+    failed: optionalWorkInt(dict["failed"]) ?? 0,
+    running: optionalWorkInt(dict["running"]) ?? 0,
+    queued: optionalWorkInt(dict["queued"]) ?? 0
+  )
+  return progress.total > 0 ? progress : nil
+}
+
+private func workAdeCardActions(from value: Any?) -> [WorkAdeCardAction] {
+  guard let array = value as? [[String: Any]] else { return [] }
+  return array.compactMap { action in
+    let label = stringValue(action["label"])
+    guard !label.isEmpty else { return nil }
+    let id = optionalString(action["id"]) ?? label
+    return WorkAdeCardAction(
+      id: id,
+      label: label,
+      isPrimary: optionalString(action["kind"])?.lowercased() == "primary"
+    )
+  }
+}
+
+/// Map the desktop `AppNavigationTarget` onto the subset iOS can address with an
+/// `ade://` URL. Kinds with no URL form — and kinds a newer host invents — return
+/// nil so the card degrades to fallback text without a link.
+private func workAdeCardNavTarget(from value: Any?) -> WorkAdeCardNavTarget? {
+  guard let dict = value as? [String: Any] else { return nil }
+  let laneId = optionalString(dict["laneId"])
+  switch optionalString(dict["kind"])?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "work", "chat":
+    guard let sessionId = optionalString(dict["sessionId"]) else { return nil }
+    return .session(sessionId: sessionId, laneId: laneId)
+  case "file":
+    guard let path = optionalString(dict["path"]) else { return nil }
+    return .file(path: path, line: optionalWorkInt(dict["line"]), laneId: laneId)
+  case "commit":
+    guard let sha = optionalString(dict["sha"]) else { return nil }
+    return .commit(sha: sha, laneId: laneId)
+  case "artifact":
+    guard let artifactId = optionalString(dict["artifactId"]) else { return nil }
+    return .artifact(artifactId: artifactId)
+  case "lane":
+    guard let laneId else { return nil }
+    return .lane(laneId: laneId)
+  case "pr":
+    guard let owner = optionalString(dict["repoOwner"]),
+          let repo = optionalString(dict["repoName"]),
+          let number = optionalWorkInt(dict["prNumber"])
+    else {
+      return nil
+    }
+    let detailTab: PrDetailTab?
+    switch optionalString(dict["detailTab"])?.lowercased() {
+    case "overview", "activity": detailTab = .overview
+    case "files": detailTab = .files
+    case "checks": detailTab = .checks
+    default: detailTab = nil
+    }
+    return .pr(
+      repoOwner: owner,
+      repoName: repo,
+      prNumber: number,
+      detailTab: detailTab
+    )
+  case "branch":
+    guard let owner = optionalString(dict["repoOwner"]),
+          let repo = optionalString(dict["repoName"]),
+          let branch = optionalString(dict["branch"])
+    else {
+      return nil
+    }
+    return .branch(
+      repoOwner: owner,
+      repoName: repo,
+      branch: branch,
+      prNumber: optionalWorkInt(dict["prNumber"])
+    )
+  case "linear-issue":
+    guard let identifier = optionalString(dict["issueIdentifier"]) else { return nil }
+    return .linearIssue(issueIdentifier: identifier, branch: optionalString(dict["branch"]))
+  default:
+    return nil
+  }
+}
+
+/// `fallbackText` if the emitter supplied one, otherwise a generated
+/// description. Parity with `adeCardFallbackText`; guarantees the degradation
+/// path can never render a blank row.
+func workAdeCardFallbackText(
+  provided: String?,
+  variant: String,
+  title: String,
+  subtitle: String?,
+  metrics: [WorkAdeCardMetric],
+  rowCount: Int,
+  isTerminal: Bool
+) -> String {
+  let trimmed = provided?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !trimmed.isEmpty { return trimmed }
+  return workAdeCardGeneratedFallback(
+    variant: variant.isEmpty ? "Card" : variant,
+    title: title,
+    subtitle: subtitle?.isEmpty == true ? nil : subtitle,
+    metrics: metrics,
+    rowCount: rowCount,
+    isTerminal: isTerminal
+  )
+}
+
+/// Generated one-line description, used when an emitter sends a blank
+/// `fallbackText`. Parity with `describeAdeCard`.
+private func workAdeCardGeneratedFallback(
+  variant: String,
+  title: String,
+  subtitle: String?,
+  metrics: [WorkAdeCardMetric],
+  rowCount: Int,
+  isTerminal: Bool
+) -> String {
+  let head = [title, subtitle]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+    .joined(separator: " — ")
+  let metricParts = metrics
+    .map { "\($0.value) \($0.label)".trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+  var parts: [String] = [head.isEmpty ? variant : head]
+  parts.append(contentsOf: metricParts)
+  if metricParts.isEmpty && rowCount > 0 {
+    parts.append("\(rowCount) \(rowCount == 1 ? "item" : "items")")
+  }
+  if !isTerminal {
+    parts.append("in progress")
+  }
+  return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+}
+
+/// Parse an `ade_card` event body. Never fails: a malformed payload still
+/// produces a card carrying whatever text could be recovered, because the
+/// contract's whole point is that an unrecognized or broken card degrades to
+/// fallback text rather than to a blank transcript row.
+func workAdeCardModel(
+  from eventDict: [String: Any],
+  sessionId: String,
+  timestamp: String,
+  sequence: Int?,
+  turnId: String?
+) -> WorkAdeCardModel {
+  let variant = optionalString(eventDict["variant"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let title = stringValue(eventDict["title"]).trimmingCharacters(in: .whitespacesAndNewlines)
+  let subtitle = optionalString(eventDict["subtitle"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let metrics = workAdeCardMetrics(from: eventDict["metrics"])
+  let rows = workAdeCardRows(from: eventDict["rows"])
+  let isTerminal = optionalString(eventDict["state"])?.lowercased() == "terminal"
+  let fallbackText = workAdeCardFallbackText(
+    provided: optionalString(eventDict["fallbackText"]),
+    variant: variant,
+    title: title,
+    subtitle: subtitle,
+    metrics: metrics,
+    rowCount: rows.count,
+    isTerminal: isTerminal
+  )
+  let cardId = optionalString(eventDict["cardId"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+  return WorkAdeCardModel(
+    // A payload without a usable `cardId` gets a deterministic per-envelope id:
+    // it can't merge with anything, but it still renders exactly once.
+    id: (cardId?.isEmpty == false ? cardId : nil) ?? workFallbackItemID(
+      sessionId: sessionId,
+      timestamp: timestamp,
+      sequence: sequence,
+      type: "ade_card",
+      seed: [turnId ?? "", variant, title, fallbackText].joined(separator: "|")
+    ),
+    variant: variant,
+    isTerminal: isTerminal,
+    title: title.isEmpty ? (variant.isEmpty ? "Card" : variant) : title,
+    subtitle: subtitle?.isEmpty == true ? nil : subtitle,
+    metrics: metrics,
+    rows: rows,
+    progress: workAdeCardProgress(from: eventDict["progress"]),
+    navTarget: workAdeCardNavTarget(from: eventDict["navTarget"]),
+    actions: workAdeCardActions(from: eventDict["actions"]),
+    fallbackText: fallbackText,
+    turnId: turnId,
+    timestamp: timestamp
+  )
+}
+
 private func workTranscriptToolName(from eventDict: [String: Any]) -> String {
   let fallback = stringValue(eventDict["tool"])
   guard let mcp = eventDict["mcp"] as? [String: Any] else { return fallback }
@@ -723,6 +969,19 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
             ].joined(separator: "|")
           ),
           turnId: turnId
+        )
+      case "ade_card":
+        // Identity rides on `cardId`, not on the envelope: repeat emits stay
+        // separate envelopes here and collapse into one row in
+        // `buildWorkAdeCards`, the same shape as `buildWorkFileChangeCards`.
+        event = .adeCard(
+          workAdeCardModel(
+            from: eventDict,
+            sessionId: sessionId,
+            timestamp: timestamp,
+            sequence: sequence,
+            turnId: turnId
+          )
         )
       default:
         event = .unknown(type: type)

@@ -8,45 +8,73 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 
-import type { PrActionRun, PrCheck } from "../../../../shared/types/prs";
+import type { PrActionRun, PrCheck, PrRerunChecksTarget } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT, floatingPane } from "../../lanes/laneDesignTokens";
-import { buildUnifiedChecks, formatCheckDuration, type UnifiedCheckItem } from "./prUnifiedChecks";
+import {
+  buildUnifiedChecks,
+  formatCheckDuration,
+  isAttentionState,
+  pipelineStateOf,
+  summarizePipelineStates,
+  type UnifiedCheckItem,
+} from "./prUnifiedChecks";
 
 export type PrChecksCardProps = {
   checks: PrCheck[];
   actionRuns: PrActionRun[];
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
-  onRerunChecks?: () => void;
+  onRerunChecks?: (target?: PrRerunChecksTarget) => void;
   actionBusy?: boolean;
+  /**
+   * Growth-target mode for the right rail: the card takes the column's slack
+   * (`flex-1 min-h-0`) and its list scrolls internally. Because a stretched card
+   * with only the needs-attention rows would just be the old dead air with a
+   * border, fill mode lists EVERY check (already ordered failure → running →
+   * done by `buildUnifiedChecks`).
+   */
+  fill?: boolean;
 };
 
 type Bucket = "pass" | "fail" | "pending" | "skip";
 
-function bucketOf(item: UnifiedCheckItem): Bucket {
-  if (item.status !== "completed") return "pending";
-  if (item.conclusion === "success") return "pass";
-  if (item.conclusion === "neutral" || item.conclusion === "skipped") return "skip";
-  // failure / cancelled / action_required / timed_out / null → needs attention
-  // (counted against "passed" and surfaced in the list, never silently hidden).
-  return "fail";
+/**
+ * Display bucket for one row, derived from the single shared rollup
+ * (`pipelineStateOf`) so this card can never disagree with the CI tab again.
+ * `unknown` (completed, no conclusion) reads as needs-attention rather than
+ * being silently hidden.
+ */
+function bucketOf(item: Pick<UnifiedCheckItem, "status" | "conclusion">): Bucket {
+  switch (pipelineStateOf(item)) {
+    case "passed":
+      return "pass";
+    case "failed":
+    case "unknown":
+      return "fail";
+    case "running":
+    case "queued":
+      return "pending";
+    default:
+      return "skip";
+  }
 }
 
 function toSyntheticCheck(item: UnifiedCheckItem): PrCheck {
   return {
+    id: item.checkRunId,
     name: item.displayName,
     status: item.status,
     conclusion: item.conclusion,
     detailsUrl: item.detailsUrl,
-    startedAt: null,
-    completedAt: null,
+    startedAt: item.startedAt,
+    completedAt: item.completedAt,
   };
 }
 
 function StatusGlyph({ bucket }: { bucket: Bucket }) {
   if (bucket === "fail") return <XCircle size={14} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} />;
   if (bucket === "pending") {
-    return <CircleNotch size={13} className="animate-spin" style={{ color: COLORS.info, flexShrink: 0 }} />;
+    return <CircleNotch size={13} className="motion-safe:animate-spin" style={{ color: COLORS.info, flexShrink: 0 }} />;
   }
   if (bucket === "skip") return <MinusCircle size={14} weight="fill" style={{ color: COLORS.textDim, flexShrink: 0 }} />;
   return <CheckCircle size={14} weight="fill" style={{ color: COLORS.checkPass, flexShrink: 0 }} />;
@@ -62,28 +90,23 @@ export const PrChecksCard = memo(function PrChecksCard({
   onOpenChecksTab,
   onRerunChecks,
   actionBusy = false,
+  fill = false,
 }: PrChecksCardProps) {
   const items = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
 
   const { passing, failing, pending, total } = useMemo(() => {
-    let pass = 0;
-    let fail = 0;
-    let pend = 0;
-    for (const item of items) {
-      const b = bucketOf(item);
-      if (b === "pass") pass += 1;
-      else if (b === "fail") fail += 1;
-      else if (b === "pending") pend += 1;
-    }
-    return { passing: pass, failing: fail, pending: pend, total: items.length };
+    const buckets = summarizePipelineStates(items);
+    return {
+      passing: buckets.passed,
+      failing: buckets.failed + buckets.unknown,
+      pending: buckets.running + buckets.queued,
+      total: buckets.total,
+    };
   }, [items]);
 
   const attention = useMemo(
-    () => items.filter((item) => {
-      const b = bucketOf(item);
-      return b === "fail" || b === "pending";
-    }),
-    [items],
+    () => (fill ? items : items.filter((item) => isAttentionState(pipelineStateOf(item)))),
+    [items, fill],
   );
 
   const summaryColor =
@@ -99,8 +122,12 @@ export const PrChecksCard = memo(function PrChecksCard({
   const headerBucket: Bucket = total === 0 ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
 
   return (
-    <section style={floatingPane({ padding: 0, overflow: "hidden" })} data-testid="pr-checks-card">
-      <div className="group flex items-center gap-2 px-3 py-2.5">
+    <section
+      style={floatingPane({ padding: 0, overflow: "hidden" })}
+      className={fill ? "flex min-h-0 flex-1 flex-col overflow-hidden" : undefined}
+      data-testid="pr-checks-card"
+    >
+      <div className={`group flex items-center gap-2 px-3 py-2.5${fill ? " shrink-0" : ""}`}>
         <StatusGlyph bucket={headerBucket} />
         <span className="text-[12px] font-medium" style={{ color: summaryColor, fontFamily: SANS_FONT }}>
           {summaryText}
@@ -119,9 +146,18 @@ export const PrChecksCard = memo(function PrChecksCard({
       </div>
 
       {attention.length > 0 ? (
-        <div style={{ borderTop: `1px solid ${COLORS.border}` }}>
+        <div
+          className={fill ? "min-h-0 flex-1 overflow-y-auto" : undefined}
+          style={{ borderTop: `1px solid ${COLORS.border}` }}
+          data-testid="pr-checks-card-list"
+        >
           {attention.map((item) => {
             const bucket = bucketOf(item);
+            const rerunTarget: PrRerunChecksTarget | null = item.source === "actions_job" && item.jobId != null
+              ? { actionJobIds: [item.jobId] }
+              : item.checkRunId != null
+                ? { checkRunIds: [item.checkRunId] }
+                : null;
             return (
               <div
                 key={item.id}
@@ -145,11 +181,11 @@ export const PrChecksCard = memo(function PrChecksCard({
                   </span>
                 ) : null}
                 <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100">
-                  {bucket === "fail" && onRerunChecks ? (
+                  {bucket === "fail" && onRerunChecks && rerunTarget ? (
                     <button
                       type="button"
                       disabled={actionBusy}
-                      onClick={onRerunChecks}
+                      onClick={() => onRerunChecks(rerunTarget)}
                       className={ICON_BTN}
                       style={{ color: COLORS.textSecondary }}
                       title="Re-run failed checks"
@@ -158,16 +194,18 @@ export const PrChecksCard = memo(function PrChecksCard({
                       <ArrowClockwise size={12} />
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    onClick={() => onSelectCheck?.(toSyntheticCheck(item))}
-                    className={ICON_BTN}
-                    style={{ color: COLORS.textSecondary }}
-                    title="View check"
-                    aria-label={`View ${item.displayName}`}
-                  >
-                    <ArrowSquareOut size={12} />
-                  </button>
+                  {onSelectCheck ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelectCheck(toSyntheticCheck(item))}
+                      className={ICON_BTN}
+                      style={{ color: COLORS.textSecondary }}
+                      title="View check"
+                      aria-label={`View ${item.displayName}`}
+                    >
+                      <ArrowSquareOut size={12} />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             );

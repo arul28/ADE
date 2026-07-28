@@ -1,4 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { useLocation, useNavigate } from "react-router-dom";
 import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
@@ -13,6 +14,7 @@ import type {
   PrDeployment,
   PrDetail,
   PrReview,
+  PrRerunChecksTarget,
   PrReviewThread,
   PrStatus,
   PrTimelineEvent,
@@ -23,10 +25,76 @@ import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../share
 import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
 import { PrDetailMergeRail } from "../shared/PrDetailMergeRail";
 import { PrDetailRightMetadataRail, type ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
+import { PrFilesChangedCard } from "../shared/PrFilesChangedCard";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { COLORS, floatingPane } from "../../lanes/laneDesignTokens";
+import { COLORS, RADII, SPACING, floatingPane } from "../../lanes/laneDesignTokens";
+
+/* ── Resizable rails ──────────────────────────────────────────────────────
+ * Both rails drag-resize and persist per project, using the same localStorage
+ * idiom `GitHubTab` uses for its list/detail split. Widths are per project
+ * because a repo's PR shape (long check lists vs. long commit lists) is what
+ * decides how you want the space split, and that's a per-project constant.
+ */
+const OVERVIEW_LEFT_RAIL_WIDTH_KEY = "ade.prs.overviewLeftRailWidth";
+const OVERVIEW_RIGHT_RAIL_WIDTH_KEY = "ade.prs.overviewRightRailWidth";
+const LEFT_RAIL_MIN_PX = 176;
+const LEFT_RAIL_MAX_PX = 420;
+const LEFT_RAIL_DEFAULT_PX = 232;
+const RIGHT_RAIL_MIN_PX = 232;
+const RIGHT_RAIL_MAX_PX = 480;
+const RIGHT_RAIL_DEFAULT_PX = 288;
+/** The center thread can never be squeezed below this. */
+const CENTER_MIN_PX = 320;
+
+function railWidthKey(base: string, projectId: string | null | undefined): string {
+  return projectId ? `${base}:${projectId}` : base;
+}
+
+function readPersistedRailPx(key: string, min: number, max: number, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const value = Number(raw);
+      if (Number.isFinite(value) && value >= min && value <= max) return value;
+    }
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function persistRailPx(key: string, px: number): void {
+  try {
+    localStorage.setItem(key, String(Math.round(px)));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 8px gutter between panes that doubles as the drag handle (mid-edge grip). */
+function RailSeparator({ id }: { id: string }) {
+  return (
+    <Separator
+      id={id}
+      data-testid={`pr-detail-rail-separator-${id}`}
+      className="group relative flex items-center justify-center"
+      style={{ width: SPACING.sm, cursor: "col-resize" }}
+    >
+      <span
+        aria-hidden
+        className="opacity-0 transition-opacity group-hover:opacity-100"
+        style={{
+          width: 3,
+          height: 26,
+          borderRadius: RADII.sm,
+          background: COLORS.accent,
+        }}
+      />
+    </Separator>
+  );
+}
 
 export type PrDetailTimelineRailsRef = {
   scrollToEventId: (id: string) => void;
@@ -82,7 +150,7 @@ type Props = {
   actionRuns: PrActionRun[];
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
-  onRerunChecks?: () => void;
+  onRerunChecks?: (target?: PrRerunChecksTarget) => void;
   onOpenFilesTab?: () => void;
   mergeMethod: MergeMethod;
   showReviewerEditor: boolean;
@@ -772,20 +840,41 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
 
     const summaryForTimeline = aiSummaryDismissed ? null : aiSummary ?? null;
 
+    // Per-project persisted rail widths. Read once per project — the Group is
+    // keyed on projectId below so switching projects remounts with its own
+    // remembered layout rather than carrying the previous one over.
+    const leftWidthKey = railWidthKey(OVERVIEW_LEFT_RAIL_WIDTH_KEY, pr.projectId);
+    const rightWidthKey = railWidthKey(OVERVIEW_RIGHT_RAIL_WIDTH_KEY, pr.projectId);
+    const defaultLeftPx = useMemo(
+      () => readPersistedRailPx(leftWidthKey, LEFT_RAIL_MIN_PX, LEFT_RAIL_MAX_PX, LEFT_RAIL_DEFAULT_PX),
+      [leftWidthKey],
+    );
+    const defaultRightPx = useMemo(
+      () => readPersistedRailPx(rightWidthKey, RIGHT_RAIL_MIN_PX, RIGHT_RAIL_MAX_PX, RIGHT_RAIL_DEFAULT_PX),
+      [rightWidthKey],
+    );
+
     return (
-      <div
-        className="grid h-full min-h-0 w-full"
-        style={{
-          gridTemplateColumns: "216px minmax(0, 1fr) 240px",
-          gridTemplateRows: "minmax(0, 1fr)",
-          gap: 8,
-          padding: 8,
-          background: COLORS.prSurface,
-        }}
+      <>
+      <Group
+        key={pr.projectId ?? "no-project"}
+        id="pr-overview-rails"
+        orientation="horizontal"
+        className="flex h-full min-h-0 w-full"
+        style={{ padding: SPACING.sm, background: COLORS.prSurface }}
         data-testid="pr-detail-timeline-rails"
       >
-        {/* LEFT: commits (top) + merge (bottom) as floating panes */}
-        <div className="flex min-h-0 flex-col gap-2 overflow-hidden">
+        {/* LEFT — "what changed": commits (grows) + files changed (capped). */}
+        <Panel
+          id="pr-overview-left-rail"
+          defaultSize={defaultLeftPx}
+          minSize={LEFT_RAIL_MIN_PX}
+          maxSize={LEFT_RAIL_MAX_PX}
+          groupResizeBehavior="preserve-pixel-size"
+          onResize={(size) => persistRailPx(leftWidthKey, size.inPixels)}
+          className="flex min-h-0 min-w-0 flex-col gap-2 overflow-hidden"
+          data-testid="pr-detail-left-rail"
+        >
           <div
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
             style={floatingPane({ padding: 0 })}
@@ -797,34 +886,12 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               onSelectCommit={handleSelectCommit}
             />
           </div>
-          <div
-            className="flex shrink-0 flex-col overflow-hidden"
-            style={floatingPane({ padding: 0, maxHeight: "52%" })}
-          >
-            <div className="min-h-0 overflow-y-auto">
-              <PrDetailMergeRail
-                pr={pr}
-                status={status}
-                checks={checks}
-                reviews={reviews}
-                commits={commitSnapshots}
-                mergeMethod={mergeMethod}
-                actionBusy={actionBusy}
-                onMerge={onMerge}
-                onUpdateBranch={onUpdateBranch}
-                updateBranchBusy={updateBranchBusy}
-                updateBranchNotice={updateBranchNotice}
-                onDeleteBranch={onDeleteBranch}
-                deleteBranchBusy={deleteBranchBusy}
-                onOpenManageLane={onOpenManageLane}
-                onClose={onClose}
-                onReopen={onReopen}
-              />
-            </div>
-          </div>
-        </div>
+          <PrFilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} maxHeight="38%" />
+        </Panel>
 
-        <div className="flex min-h-0 flex-col">
+        <RailSeparator id="pr-overview-left-separator" />
+
+        <Panel id="pr-overview-thread" minSize={CENTER_MIN_PX} className="flex min-h-0 min-w-0 flex-col">
           <PrTimeline
             ref={timelineRef}
             events={events}
@@ -851,67 +918,109 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               />
             }
           />
-        </div>
+        </Panel>
 
-        <div className="min-h-0">
-          <PrDetailRightMetadataRail
-            pr={pr}
-            lane={lane}
-            detail={detail}
-            status={status}
-            reviews={reviews}
-            checks={checks}
-            actionRuns={actionRuns}
-            files={files}
-            showReviewerEditor={showReviewerEditor}
-            setShowReviewerEditor={setShowReviewerEditor}
-            reviewerInput={reviewerInput}
-            setReviewerInput={setReviewerInput}
-            showLabelEditor={showLabelEditor}
-            setShowLabelEditor={setShowLabelEditor}
-            labelInput={labelInput}
-            setLabelInput={setLabelInput}
-            onRequestReviewers={onRequestReviewers}
-            onSetLabels={onSetLabels}
-            actionBusy={actionBusy}
-            onSubmitReview={onSubmitReview}
-            onSelectCheck={onSelectCheck}
-            onOpenChecksTab={onOpenChecksTab}
-            onRerunChecks={onRerunChecks}
-            onOpenFilesTab={onOpenFilesTab}
-          />
-        </div>
+        <RailSeparator id="pr-overview-right-separator" />
 
-        <PrCommandPalettes
-          open={paletteKind}
-          onClose={() => setPaletteKind(null)}
-          commits={paletteCommits}
-          threads={paletteThreads}
-          files={paletteFiles}
-          onPickCommit={(sha) => {
-            setPaletteKind(null);
-            handleSelectCommit(sha);
-          }}
-          onPickThread={(id) => {
-            setPaletteKind(null);
-            const target = events.find(
-              (e) => e.type === "review_thread" && e.threadId === id,
-            );
-            if (target) timelineRef.current?.focusEvent(target.id);
-          }}
-          onPickFile={(path) => {
-            setPaletteKind(null);
-            if (!path) return;
-            navigate("/files", {
-              state: {
-                openFilePath: path,
-                laneId: pr.laneId,
-                mode: "diff",
-              },
-            });
-          }}
-        />
-      </div>
+        {/* RIGHT — "can this land", in the order you resolve it: who → what's
+            running (the growth target) → can I merge (pinned to the bottom). */}
+        <Panel
+          id="pr-overview-right-rail"
+          defaultSize={defaultRightPx}
+          minSize={RIGHT_RAIL_MIN_PX}
+          maxSize={RIGHT_RAIL_MAX_PX}
+          groupResizeBehavior="preserve-pixel-size"
+          onResize={(size) => persistRailPx(rightWidthKey, size.inPixels)}
+          className="flex min-h-0 min-w-0 flex-col gap-2 overflow-hidden"
+          data-testid="pr-detail-right-rail"
+        >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <PrDetailRightMetadataRail
+              pr={pr}
+              lane={lane}
+              detail={detail}
+              status={status}
+              reviews={reviews}
+              checks={checks}
+              actionRuns={actionRuns}
+              showReviewerEditor={showReviewerEditor}
+              setShowReviewerEditor={setShowReviewerEditor}
+              reviewerInput={reviewerInput}
+              setReviewerInput={setReviewerInput}
+              showLabelEditor={showLabelEditor}
+              setShowLabelEditor={setShowLabelEditor}
+              labelInput={labelInput}
+              setLabelInput={setLabelInput}
+              onRequestReviewers={onRequestReviewers}
+              onSetLabels={onSetLabels}
+              actionBusy={actionBusy}
+              onSubmitReview={onSubmitReview}
+              onSelectCheck={onSelectCheck}
+              onOpenChecksTab={onOpenChecksTab}
+              onRerunChecks={onRerunChecks}
+            />
+          </div>
+
+          <div
+            className="flex shrink-0 flex-col overflow-hidden"
+            style={floatingPane({ padding: 0, maxHeight: "52%" })}
+            data-testid="pr-detail-merge-pane"
+          >
+            <div className="min-h-0 overflow-y-auto">
+              <PrDetailMergeRail
+                pr={pr}
+                status={status}
+                checks={checks}
+                reviews={reviews}
+                commits={commitSnapshots}
+                mergeMethod={mergeMethod}
+                actionBusy={actionBusy}
+                onMerge={onMerge}
+                onUpdateBranch={onUpdateBranch}
+                updateBranchBusy={updateBranchBusy}
+                updateBranchNotice={updateBranchNotice}
+                onDeleteBranch={onDeleteBranch}
+                deleteBranchBusy={deleteBranchBusy}
+                onOpenManageLane={onOpenManageLane}
+                onClose={onClose}
+                onReopen={onReopen}
+              />
+            </div>
+          </div>
+        </Panel>
+      </Group>
+
+      {/* Outside the Group: only Panel/Separator may be Group children. */}
+      <PrCommandPalettes
+        open={paletteKind}
+        onClose={() => setPaletteKind(null)}
+        commits={paletteCommits}
+        threads={paletteThreads}
+        files={paletteFiles}
+        onPickCommit={(sha) => {
+          setPaletteKind(null);
+          handleSelectCommit(sha);
+        }}
+        onPickThread={(id) => {
+          setPaletteKind(null);
+          const target = events.find(
+            (e) => e.type === "review_thread" && e.threadId === id,
+          );
+          if (target) timelineRef.current?.focusEvent(target.id);
+        }}
+        onPickFile={(path) => {
+          setPaletteKind(null);
+          if (!path) return;
+          navigate("/files", {
+            state: {
+              openFilePath: path,
+              laneId: pr.laneId,
+              mode: "diff",
+            },
+          });
+        }}
+      />
+      </>
     );
   },
 );

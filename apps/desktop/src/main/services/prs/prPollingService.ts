@@ -24,6 +24,14 @@ function readRateLimitResetAtMs(error: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function isMergeReady(pr: PrSummary): boolean {
+  return pr.state === "open"
+    && pr.checksStatus === "passing"
+    && pr.reviewStatus === "approved"
+    && pr.mergeConflicts !== true
+    && Math.max(0, pr.behindBaseBy ?? 0) === 0;
+}
+
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
     case "opened":
@@ -123,6 +131,8 @@ export function createPrPollingService({
       previousState: PrSummary["state"] | null;
       previousChecksStatus: PrSummary["checksStatus"] | null;
       previousReviewStatus: PrSummary["reviewStatus"] | null;
+      previousMergeConflicts: boolean | null;
+      previousBehindBaseBy: number | null;
     }>;
     polledAt: string;
   }) => void | Promise<void>;
@@ -184,6 +194,8 @@ export function createPrPollingService({
       reviewStatus: PrSummary["reviewStatus"];
       state: PrSummary["state"];
       mergeReady: boolean;
+      mergeConflicts: boolean | null;
+      behindBaseBy: number | null;
     }
   >();
 
@@ -299,7 +311,9 @@ export function createPrPollingService({
             checksStatus: pr.checksStatus,
             reviewStatus: pr.reviewStatus,
             state: pr.state,
-            mergeReady: pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved"
+            mergeReady: isMergeReady(pr),
+            mergeConflicts: pr.mergeConflicts ?? null,
+            behindBaseBy: pr.behindBaseBy ?? null,
           });
           lastFingerprintByPrId.set(pr.id, getPrFingerprint(pr));
         }
@@ -314,12 +328,14 @@ export function createPrPollingService({
         previousState: PrSummary["state"] | null;
         previousChecksStatus: PrSummary["checksStatus"] | null;
         previousReviewStatus: PrSummary["reviewStatus"] | null;
+        previousMergeConflicts: boolean | null;
+        previousBehindBaseBy: number | null;
       }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
         const prevFingerprint = lastFingerprintByPrId.get(pr.id) ?? null;
         const nextFingerprint = getPrFingerprint(pr);
-        const mergeReady = pr.state === "open" && pr.checksStatus === "passing" && pr.reviewStatus === "approved";
+        const mergeReady = isMergeReady(pr);
         const changed =
           !prev
           || prevFingerprint !== nextFingerprint
@@ -333,6 +349,8 @@ export function createPrPollingService({
             previousState: prev?.state ?? null,
             previousChecksStatus: prev?.checksStatus ?? null,
             previousReviewStatus: prev?.reviewStatus ?? null,
+            previousMergeConflicts: prev?.mergeConflicts ?? null,
+            previousBehindBaseBy: prev?.behindBaseBy ?? null,
           });
         }
 
@@ -382,7 +400,9 @@ export function createPrPollingService({
           checksStatus: pr.checksStatus,
           reviewStatus: pr.reviewStatus,
           state: pr.state,
-          mergeReady
+          mergeReady,
+          mergeConflicts: pr.mergeConflicts ?? null,
+          behindBaseBy: pr.behindBaseBy ?? null,
         });
         lastFingerprintByPrId.set(pr.id, nextFingerprint);
       }

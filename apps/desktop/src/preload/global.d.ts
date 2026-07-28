@@ -390,6 +390,10 @@ import type {
   ListIntegrationWorkflowsArgs,
   PrActionRun,
   PrActivityEvent,
+  PrWorkflowGraph,
+  GetPrWorkflowGraphArgs,
+  PrCheckLogExcerpt,
+  GetPrCheckLogArgs,
   PrCheck,
   PrCommit,
   PrComment,
@@ -2214,6 +2218,10 @@ declare global {
         getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;
+        getWorkflowGraph: (
+          args: GetPrWorkflowGraphArgs,
+        ) => Promise<PrWorkflowGraph>;
+        getCheckLog: (args: GetPrCheckLogArgs) => Promise<PrCheckLogExcerpt>;
         getDetailByGithub: (coords: PrGithubCoords) => Promise<PrDetail>;
         getFilesByGithub: (coords: PrGithubCoords) => Promise<PrFile[]>;
         getCommitsByGithub: (coords: PrGithubCoords) => Promise<PrCommit[]>;

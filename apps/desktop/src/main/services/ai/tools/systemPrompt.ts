@@ -191,12 +191,14 @@ export function buildCodingAgentSystemPrompt(args: {
   const adeSkillRoots = args.adeSkillRoots ?? getAdeAgentSkillRootsForPrompt({ cwd: args.cwd });
   const PR_ISSUE_TOOL_NAMES = new Set([
     "prGetChecks",
+    "prGetCheckLog",
     "prGetReviewComments",
     "prRefreshIssueInventory",
     "prRerunFailedChecks",
     "prReplyToReviewThread",
     "prResolveReviewThread",
     "pr_get_checks",
+    "pr_get_check_log",
     "pr_get_review_comments",
     "pr_refresh_issue_inventory",
     "pr_rerun_failed_checks",

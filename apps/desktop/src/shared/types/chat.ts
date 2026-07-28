@@ -2,6 +2,7 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+import type { AdeCardPayload } from "../adeCard";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -744,6 +745,16 @@ export type AgentChatEvent =
       cacheWriteTokens?: number;
       contextWindow?: number;
     }
+  /**
+   * Generic ADE-emitted chat card. One wire contract, three renderers
+   * (desktop / TUI / iOS); `variant` selects the rich rendering and every
+   * surface degrades to `fallbackText` + deeplink for a variant it does not
+   * know. `cardId` is identity — a repeat emit MERGES into the row already in
+   * the transcript rather than appending a duplicate, so a card can track a
+   * long-running thing (CI, a build, an artifact pull) in one chronological
+   * row. See `../adeCard.ts` for the payload and its helpers.
+   */
+  | ({ type: "ade_card" } & AdeCardPayload)
   | {
       type: "cloud_artifact";
       turnId: string;
@@ -2222,6 +2233,12 @@ export type AgentChatMarkCrossMachineHandoffArgs = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+};
+
+/** Host-side emit of an `ade_card` transcript row. See `agentChatService.emitAdeCard`. */
+export type AgentChatEmitAdeCardArgs = {
+  sessionId: string;
+  card: AdeCardPayload;
 };
 
 export type AgentChatListArgs = {

@@ -161,6 +161,8 @@ describe("createSyncRemoteCommandService", () => {
       "prs.getActionRuns",
       "prs.getActivity",
       "prs.getDeployments",
+      "prs.getWorkflowGraph",
+      "prs.getCheckLog",
       "prs.getDetailByGithub",
       "prs.getFilesByGithub",
       "prs.getCommitsByGithub",

@@ -119,6 +119,10 @@ import type {
   PrActionRun,
   PrActionJob,
   PrActionStep,
+  PrWorkflowGraph,
+  GetPrWorkflowGraphArgs,
+  PrCheckLogExcerpt,
+  GetPrCheckLogArgs,
   PrActivityEvent,
 	  PrLabel,
 	  PrUser,
@@ -161,6 +165,8 @@ import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
+import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
+import { parseCheckLog } from "./checkLogParser";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
@@ -266,7 +272,15 @@ type LanePrLookupRow = {
 
 const SQL_IN_CLAUSE_CHUNK_SIZE = 900;
 const PR_ACTION_RUNS_LIMIT = 12;
-const PR_ACTION_RUN_JOBS_LIMIT = 6;
+/**
+ * How many runs get their jobs hydrated. This used to be 6, which silently
+ * returned `jobs: []` for runs 7-12 — the pipeline graph and the checks tab then
+ * showed a workflow with no jobs at all. Every ACTIVE run now gets jobs (there
+ * are never many in flight at once); terminal runs stay capped so a PR with a
+ * long re-run history does not fan out 12 extra requests on every read.
+ */
+const PR_ACTION_RUN_JOBS_LIMIT = PR_ACTION_RUNS_LIMIT;
+const PR_TERMINAL_ACTION_RUN_JOBS_LIMIT = 6;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -1281,22 +1295,15 @@ function toRunStatus(raw: unknown): "queued" | "in_progress" | "waiting" | "comp
   return "completed";
 }
 
-function toJobConclusion(raw: unknown): "success" | "failure" | "neutral" | "cancelled" | "skipped" | null {
+function toJobConclusion(
+  raw: unknown,
+): "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null {
   const c = asString(raw).toLowerCase();
   if (c === "success") return "success";
   if (c === "failure") return "failure";
   if (c === "neutral") return "neutral";
   if (c === "cancelled") return "cancelled";
   if (c === "skipped") return "skipped";
-  return null;
-}
-
-function toRunConclusion(
-  raw: unknown
-): "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null {
-  const base = toJobConclusion(raw);
-  if (base) return base;
-  const c = asString(raw).toLowerCase();
   if (c === "timed_out") return "timed_out";
   if (c === "action_required") return "action_required";
   return null;
@@ -4954,12 +4961,11 @@ export function createPrService({
       const name = asString(run?.name) || "check";
       if (seen.has(name)) continue;
       seen.add(name);
-      const conclusionRaw = asString(run?.conclusion).toLowerCase();
-      const conclusion: PrCheck["conclusion"] =
-        conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required"
-          ? "failure"
-          : toJobConclusion(run?.conclusion);
+      const conclusion: PrCheck["conclusion"] = toJobConclusion(run?.conclusion);
       out.push({
+        // Carried so per-check re-run (`rerunChecks({ checkRunIds })`) is
+        // reachable from the UI; dropping it here made that feature dead code.
+        id: Number(run?.id) > 0 ? Number(run.id) : null,
         name,
         status: toJobStatus(run?.status),
         conclusion,
@@ -4974,6 +4980,9 @@ export function createPrService({
       if (seen.has(name)) continue;
       seen.add(name);
       out.push({
+        // Combined-status contexts are not check runs and cannot be re-run
+        // individually.
+        id: null,
         name,
         status: s.state === "pending" ? "in_progress" : "completed",
         conclusion: s.state === "success" ? "success" : s.state === "failure" || s.state === "error" ? "failure" : null,
@@ -5339,11 +5348,22 @@ export function createPrService({
       ? runsData.workflow_runs.slice(0, PR_ACTION_RUNS_LIMIT)
       : [];
 
+    // Active runs are the ones the pipeline graph and checks tab render live, so
+    // they all get jobs; terminal runs share a smaller budget.
+    let terminalJobFetches = 0;
+    const shouldFetchJobs = (run: any, index: number): boolean => {
+      const status = toRunStatus(run?.status);
+      if (status !== "completed") return index < PR_ACTION_RUN_JOBS_LIMIT;
+      terminalJobFetches += 1;
+      return terminalJobFetches <= PR_TERMINAL_ACTION_RUN_JOBS_LIMIT;
+    };
+    const jobFetchAllowed = rawRuns.map((run, index) => shouldFetchJobs(run, index));
+
     const runs: PrActionRun[] = await Promise.all(
       rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
         const runId = Number(run?.id);
         let jobs: PrActionJob[] = [];
-        if (runId > 0 && index < PR_ACTION_RUN_JOBS_LIMIT) {
+        if (runId > 0 && jobFetchAllowed[index]) {
           try {
             const { data: jobsData } = await githubService.apiRequest<any>({
               method: "GET",
@@ -5353,6 +5373,7 @@ export function createPrService({
             const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
             jobs = rawJobs.map((j: any): PrActionJob => ({
               id: Number(j?.id) || 0,
+              checkRunId: Number(/\/check-runs\/(\d+)(?:[/?#]|$)/.exec(asString(j?.check_run_url))?.[1]) || null,
               name: asString(j?.name) || "",
               status: toJobStatus(j?.status),
               conclusion: toJobConclusion(j?.conclusion),
@@ -5376,17 +5397,362 @@ export function createPrService({
         return {
           id: runId,
           name: asString(run?.name) || "",
+          workflowPath: asString(run?.path) || null,
           status: toRunStatus(run?.status),
-          conclusion: toRunConclusion(run?.conclusion),
-          headSha,
+          conclusion: toJobConclusion(run?.conclusion),
+          // The run's OWN head sha, not the PR head we queried with — that is
+          // what makes `PrWorkflowGraph.stale` able to notice a run from an
+          // older commit. Falls back to the query sha when GitHub omits it.
+          headSha: asString(run?.head_sha) || headSha,
           htmlUrl: asString(run?.html_url) || "",
           createdAt: asString(run?.created_at) || "",
           updatedAt: asString(run?.updated_at) || "",
+          runAttempt: Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1,
           jobs
         };
       })
     );
     return runs;
+  };
+
+  /* ──────────────────── CI pipeline graph + failing-step logs ────────────── */
+
+  const WORKFLOW_DIR = ".github/workflows";
+  const WORKFLOW_FILE_LIMIT = 24;
+
+  /** The lane worktree backing a PR, when it has one (`git show` needs a repo). */
+  const laneWorktreePathForRow = (row: PullRequestRow | null): string | null => {
+    if (!row?.lane_id) return null;
+    try {
+      const worktreePath = laneService.getLaneWorktreePath(row.lane_id);
+      return worktreePath && fs.existsSync(worktreePath) ? worktreePath : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Source 1: read the workflow YAML out of the object database at the exact
+   * head SHA. Reading `git show <sha>:<path>` rather than the working tree is
+   * the whole point — the graph must describe the code that actually ran.
+   */
+  const readWorktreeWorkflows = async (args: {
+    headSha: string;
+    worktreePath: string | null;
+  }): Promise<WorkflowFileSource[] | null> => {
+    const cwd = args.worktreePath;
+    if (!cwd || !args.headSha) return null;
+    const listed = await runGit(["ls-tree", "--name-only", args.headSha, `${WORKFLOW_DIR}/`], {
+      cwd,
+      timeoutMs: 8_000,
+    });
+    // Non-zero here means the SHA is not in this clone (fork PR, unfetched) —
+    // "could not answer", so the caller falls through to the Contents API.
+    if (listed.exitCode !== 0) return null;
+
+    const paths = listed.stdout
+      .split("\n")
+      .map((entry) => entry.trim())
+      .filter((entry) => /\.ya?ml$/i.test(entry))
+      .slice(0, WORKFLOW_FILE_LIMIT);
+    if (paths.length === 0) return null;
+
+    const files: WorkflowFileSource[] = [];
+    for (const filePath of paths) {
+      const shown = await runGit(["show", `${args.headSha}:${filePath}`], { cwd, timeoutMs: 8_000 });
+      if (shown.exitCode !== 0) continue;
+      files.push({ path: filePath, content: shown.stdout });
+    }
+    return files.length ? files : null;
+  };
+
+  /** Source 2: Contents API at `?ref=<headSha>` — fork PRs / non-local repos. */
+  const readContentsApiWorkflows = async (args: {
+    repoOwner: string;
+    repoName: string;
+    headSha: string;
+  }): Promise<WorkflowFileSource[] | null> => {
+    if (!args.repoOwner || !args.repoName || !args.headSha) return null;
+    const base = `/repos/${args.repoOwner}/${args.repoName}/contents`;
+    let entries: any[] = [];
+    try {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `${base}/${WORKFLOW_DIR}`,
+        query: { ref: args.headSha },
+      });
+      entries = Array.isArray(data) ? data : [];
+    } catch {
+      return null;
+    }
+
+    const wanted = entries
+      .filter((entry) => asString(entry?.type) === "file" && /\.ya?ml$/i.test(asString(entry?.path)))
+      .slice(0, WORKFLOW_FILE_LIMIT);
+    if (wanted.length === 0) return null;
+
+    const files = await Promise.all(
+      wanted.map(async (entry): Promise<WorkflowFileSource | null> => {
+        const filePath = asString(entry?.path);
+        try {
+          const { data } = await githubService.apiRequest<any>({
+            method: "GET",
+            path: `${base}/${filePath}`,
+            query: { ref: args.headSha },
+          });
+          const encoded = asString(data?.content);
+          if (!encoded || asString(data?.encoding) !== "base64") return null;
+          return { path: filePath, content: Buffer.from(encoded, "base64").toString("utf8") };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const usable = files.filter((file): file is WorkflowFileSource => file != null);
+    return usable.length ? usable : null;
+  };
+
+  const workflowGraphService = createWorkflowGraph({
+    logger,
+    readWorktreeWorkflows,
+    readContentsApiWorkflows,
+    countCommitsBetween: async ({ worktreePath, fromSha, toSha }) => {
+      if (!worktreePath || !fromSha || !toSha || fromSha === toSha) return null;
+      const res = await runGit(["rev-list", "--count", `${fromSha}..${toSha}`], {
+        cwd: worktreePath,
+        timeoutMs: 8_000,
+      });
+      if (res.exitCode !== 0) return null;
+      const count = Number(res.stdout.trim());
+      return Number.isFinite(count) ? count : null;
+    },
+  });
+
+  const getWorkflowGraphForRow = async (
+    row: PullRequestRow,
+    args: { force?: boolean },
+  ): Promise<PrWorkflowGraph> => {
+    const coords = coordsFromRow(row);
+    const repo = repoFromRow(row);
+    const [runs, checks] = await Promise.all([
+      getActionRunsByCoords(coords).catch(() => [] as PrActionRun[]),
+      getChecksByCoords(coords).catch(() => [] as PrCheck[]),
+    ]);
+    let headSha = asString(row.head_sha);
+    if (!headSha) {
+      const pr = await fetchPr(repo, Number(row.github_pr_number)).catch(() => null);
+      headSha = asString(pr?.head?.sha);
+    }
+    // Fall back to the newest run's SHA so a graph still renders when the PR row
+    // has no head sha cached and the PR fetch failed.
+    if (!headSha) headSha = runs[0]?.headSha ?? "";
+
+    return await workflowGraphService.build({
+      repoOwner: coords.repoOwner,
+      repoName: coords.repoName,
+      headSha,
+      worktreePath: laneWorktreePathForRow(row),
+      runs,
+      checks,
+      force: args.force,
+    });
+  };
+
+  /* ── Failing-step log excerpt ───────────────────────────────────────────── */
+
+  /** Abort the download past this; CI logs can run to tens of MB. */
+  const CHECK_LOG_MAX_BYTES = 4 * 1024 * 1024;
+  /** Only the tail is ever parsed, so only the tail is ever retained. */
+  const CHECK_LOG_TAIL_CHARS = 512 * 1024;
+  const CHECK_LOG_DEFAULT_MAX_LINES = 200;
+  const CHECK_LOG_FETCH_TIMEOUT_MS = 30_000;
+
+  /**
+   * Stream a job log, keeping only a bounded tail in memory.
+   *
+   * The logs endpoint 302s to a short-lived blob URL. We follow it manually so
+   * the `Authorization` header is never replayed to the storage host, and we
+   * stop reading once the byte budget is spent.
+   */
+  const downloadJobLogTail = async (args: {
+    repo: GitHubRepoRef;
+    jobId: number;
+  }): Promise<{ text: string; truncated: boolean } | null> => {
+    const token = await githubService.getTokenOrThrowAsync();
+    const apiUrl = `https://api.github.com/repos/${args.repo.owner}/${args.repo.name}/actions/jobs/${args.jobId}/logs`;
+    const headers = {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "user-agent": "ade-desktop",
+    };
+
+    const redirect = await fetch(apiUrl, {
+      method: "GET",
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(CHECK_LOG_FETCH_TIMEOUT_MS),
+    });
+    let blobResponse: Response;
+    if (redirect.status >= 300 && redirect.status < 400) {
+      const location = redirect.headers.get("location");
+      if (!location) return null;
+      let blobUrl: URL;
+      try {
+        blobUrl = new URL(location);
+      } catch {
+        return null;
+      }
+      if (blobUrl.protocol !== "https:") return null;
+      // Deliberately unauthenticated: the blob URL is pre-signed and GitHub
+      // rejects requests that also carry the API token.
+      blobResponse = await fetch(blobUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(CHECK_LOG_FETCH_TIMEOUT_MS),
+      });
+    } else if (redirect.ok) {
+      blobResponse = redirect;
+    } else {
+      return null;
+    }
+    if (!blobResponse.ok || !blobResponse.body) return null;
+
+    const reader = (blobResponse.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let tail = "";
+    let bytes = 0;
+    let truncated = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        bytes += value.byteLength;
+        tail += decoder.decode(value, { stream: true });
+        if (tail.length > CHECK_LOG_TAIL_CHARS) {
+          tail = tail.slice(tail.length - CHECK_LOG_TAIL_CHARS);
+          truncated = true;
+        }
+        if (bytes > CHECK_LOG_MAX_BYTES) {
+          truncated = true;
+          break;
+        }
+      }
+      tail += decoder.decode();
+      if (tail.length > CHECK_LOG_TAIL_CHARS) {
+        tail = tail.slice(tail.length - CHECK_LOG_TAIL_CHARS);
+        truncated = true;
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    return { text: tail, truncated };
+  };
+
+  const getCheckLogForRow = async (
+    row: PullRequestRow,
+    args: GetPrCheckLogArgs,
+  ): Promise<PrCheckLogExcerpt> => {
+    const repo = repoFromRow(row);
+    const maxLines =
+      Number.isFinite(args.maxLines) && Number(args.maxLines) > 0
+        ? Math.min(2000, Math.floor(Number(args.maxLines)))
+        : CHECK_LOG_DEFAULT_MAX_LINES;
+
+    // Degrade exactly like `ghOpenPrLookup` does: an empty excerpt with a link,
+    // never a throw that blanks the drawer.
+    const empty = (extra: Partial<PrCheckLogExcerpt> = {}): PrCheckLogExcerpt => ({
+      jobId: args.jobId,
+      jobName: "",
+      failingStepName: null,
+      failingStepNumber: null,
+      stepTotal: null,
+      headline: null,
+      lines: [],
+      truncated: false,
+      htmlUrl: null,
+      ...extra,
+    });
+    if (!Number.isSafeInteger(args.jobId) || args.jobId <= 0) return empty();
+
+    let matchedRun: PrActionRun | null = null;
+    let matchedJob: PrActionJob | null = null;
+    try {
+      const runs = await getActionRunsByCoords(coordsFromRow(row));
+      for (const run of runs) {
+        const job = run.jobs.find((entry) => entry.id === args.jobId);
+        if (!job) continue;
+        matchedRun = run;
+        matchedJob = job;
+        break;
+      }
+    } catch (error) {
+      logger.warn("prs.check_log_scope_fetch_failed", {
+        jobId: args.jobId,
+        error: getErrorMessage(error),
+      });
+      return empty();
+    }
+    if (!matchedRun || !matchedJob) {
+      logger.warn("prs.check_log_job_outside_pr", {
+        prId: row.id,
+        jobId: args.jobId,
+      });
+      return empty();
+    }
+
+    const jobName = matchedJob.name;
+    const htmlUrl = matchedRun.htmlUrl
+      ? `${matchedRun.htmlUrl.replace(/\/$/, "")}/job/${matchedJob.id}`
+      : null;
+    const steps = matchedJob.steps;
+    const failingStep =
+      steps.find((step) => step.conclusion === "failure") ??
+      steps.find((step) => {
+        const conclusion = step.conclusion;
+        return conclusion === "timed_out"
+          || conclusion === "cancelled"
+          || conclusion === "action_required";
+      }) ??
+      null;
+    const failingStepName = failingStep?.name || null;
+    const failingStepNumber = failingStep?.number || null;
+    const stepTotal = steps.length > 0 ? steps.length : null;
+
+    let downloaded: { text: string; truncated: boolean } | null = null;
+    try {
+      downloaded = await downloadJobLogTail({ repo, jobId: args.jobId });
+    } catch (error) {
+      logger.warn("prs.check_log_download_failed", {
+        jobId: args.jobId,
+        error: getErrorMessage(error),
+      });
+    }
+    if (!downloaded) {
+      return empty({ jobName, failingStepName, failingStepNumber, stepTotal, htmlUrl });
+    }
+
+    let parsed: ReturnType<typeof parseCheckLog>;
+    try {
+      parsed = parseCheckLog({ rawLog: downloaded.text, failingStepName, maxLines });
+    } catch (error) {
+      logger.warn("prs.check_log_parse_failed", {
+        jobId: args.jobId,
+        error: getErrorMessage(error),
+      });
+      return empty({ jobName, failingStepName, failingStepNumber, stepTotal, htmlUrl, truncated: true });
+    }
+
+    return {
+      jobId: args.jobId,
+      jobName,
+      failingStepName,
+      failingStepNumber,
+      stepTotal,
+      headline: parsed.headline,
+      lines: parsed.lines,
+      truncated: downloaded.truncated,
+      htmlUrl,
+    };
   };
 
   const getActivityByCoords = async (coords: PrGithubCoords): Promise<PrActivityEvent[]> => {
@@ -10333,6 +10699,25 @@ export function createPrService({
       return await getActionRunsByCoords(coords);
     },
 
+    /**
+     * Reconstructed CI pipeline graph for a PR's head SHA. Never throws on a
+     * missing/unparseable workflow: it returns `source: "none"` with an
+     * `unavailableReason` so the UI can degrade to flat swimlanes honestly.
+     */
+    async getWorkflowGraph(args: GetPrWorkflowGraphArgs): Promise<PrWorkflowGraph> {
+      const row = requireRow(args.prId);
+      return await getWorkflowGraphForRow(row, { force: args.force });
+    },
+
+    /**
+     * Tail of the failing step's log for one Actions job. Degrades to an empty
+     * `lines` array with `htmlUrl` set on any network/auth failure.
+     */
+    async getCheckLog(args: GetPrCheckLogArgs): Promise<PrCheckLogExcerpt> {
+      const row = requireRow(args.prId);
+      return await getCheckLogForRow(row, args);
+    },
+
     async getActivity(prId: string): Promise<PrActivityEvent[]> {
       const row = requireRow(prId);
       const repo = repoFromRow(row);
@@ -10921,10 +11306,27 @@ export function createPrService({
     async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
+      const validIds = (ids: number[] | undefined, label: string): number[] => {
+        if (!ids) return [];
+        if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+          throw new Error(`${label} must contain only positive integer ids.`);
+        }
+        return ids;
+      };
+      const actionJobIds = validIds(args.actionJobIds, "actionJobIds");
+      const checkRunIds = validIds(args.checkRunIds, "checkRunIds");
 
-      if (args.checkRunIds?.length) {
+      if (actionJobIds.length) {
+        for (const jobId of actionJobIds) {
+          await githubService.apiRequest({
+            method: "POST",
+            path: `/repos/${repo.owner}/${repo.name}/actions/jobs/${jobId}/rerun`,
+            body: {}
+          });
+        }
+      } else if (checkRunIds.length) {
         // Rerun specific check runs
-        for (const crId of args.checkRunIds) {
+        for (const crId of checkRunIds) {
           await githubService.apiRequest({
             method: "POST",
             path: `/repos/${repo.owner}/${repo.name}/check-runs/${crId}/rerequest`,

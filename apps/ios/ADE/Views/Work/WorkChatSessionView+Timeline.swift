@@ -98,6 +98,10 @@ extension WorkChatSessionView {
       timelineToolCard(toolCard)
     case .eventCard(let card):
       timelineEventCard(card)
+    case .adeCard(let card):
+      // `WorkAdeCardView` handles the reserved `open` action through navTarget;
+      // host-specific action ids stay hidden until iOS has a dispatcher.
+      WorkAdeCardView(card: card)
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
         summary: summary,

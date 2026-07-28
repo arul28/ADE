@@ -4081,3 +4081,57 @@ describe("AgentChatMessageList memo boundary", () => {
     expect(memoListBodyRenders).toBeGreaterThan(before);
   });
 });
+
+describe("AgentChatMessageList ade_card dispatch", () => {
+  afterEach(() => cleanup());
+
+  const cardEnvelope = (
+    over: Record<string, unknown> = {},
+  ): AgentChatEventEnvelope => ({
+    sessionId: "s1",
+    timestamp: "2026-07-27T12:00:00.000Z",
+    event: {
+      type: "ade_card",
+      cardId: "run-42",
+      variant: "proof_artifact",
+      state: "terminal",
+      title: "Cloud artifacts pulled",
+      fallbackText: "3 cloud artifacts pulled into the lane",
+      metrics: [{ label: "files", value: "3" }],
+      ...over,
+    } as never,
+  });
+
+  it("renders the card in the transcript", () => {
+    renderMessageList([cardEnvelope()]);
+    expect(screen.getByText("Cloud artifacts pulled")).toBeTruthy();
+    expect(screen.getByText("files")).toBeTruthy();
+  });
+
+  it("shows one card, not two, when the same cardId is emitted twice", () => {
+    renderMessageList([
+      cardEnvelope({ state: "live", title: "Pulling cloud artifacts" }),
+      cardEnvelope({ title: "Cloud artifacts pulled" }),
+    ]);
+    expect(screen.queryByText("Pulling cloud artifacts")).toBeNull();
+    expect(screen.getAllByText("Cloud artifacts pulled")).toHaveLength(1);
+  });
+
+  it("degrades an unknown variant to its fallbackText", () => {
+    renderMessageList([
+      cardEnvelope({ variant: "future_ci", title: "CI failed", fallbackText: "CI failed · 1 failed" }),
+    ]);
+    expect(screen.getByText("CI failed · 1 failed")).toBeTruthy();
+    expect(screen.queryByText("CI failed")).toBeNull();
+  });
+
+  it("does not advertise a host action without a real card-action dispatcher", () => {
+    const onApproval = vi.fn();
+    renderMessageList(
+      [cardEnvelope({ actions: [{ id: "open-lane", label: "Open lane", kind: "primary" }] })],
+      { onApproval },
+    );
+    expect(screen.queryByText("Open lane")).toBeNull();
+    expect(onApproval).not.toHaveBeenCalled();
+  });
+});

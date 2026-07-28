@@ -2083,20 +2083,34 @@ enum PrNavigationRequestTarget: Equatable {
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
   let target: PrNavigationRequestTarget
+  let detailTab: PrDetailTab?
 
-  init(prId: String, prNumber: Int? = nil, laneId: String? = nil) {
+  init(
+    prId: String,
+    prNumber: Int? = nil,
+    laneId: String? = nil,
+    detailTab: PrDetailTab? = nil
+  ) {
     self.id = UUID().uuidString
     self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
+    self.detailTab = detailTab
   }
 
-  init(prNumber: Int, repoOwner: String? = nil, repoName: String? = nil) {
+  init(
+    prNumber: Int,
+    repoOwner: String? = nil,
+    repoName: String? = nil,
+    detailTab: PrDetailTab? = nil
+  ) {
     self.id = UUID().uuidString
     self.target = .githubNumber(prNumber, repoOwner: repoOwner, repoName: repoName)
+    self.detailTab = detailTab
   }
 
   init(createLaneId: String) {
     self.id = UUID().uuidString
     self.target = .create(laneId: createLaneId)
+    self.detailTab = nil
   }
 
   var laneId: String? {

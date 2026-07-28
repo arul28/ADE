@@ -15,6 +15,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
+import { adeCardRowKey } from "../../../shared/adeCard";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -338,6 +339,12 @@ type CollapseTranscriptContext = {
   recoveryRowIndexByTurn: Map<string, number>;
   /** Actionable stalled-turn card keyed by turn id. */
   stalledRowIndexByTurn: Map<string, number>;
+  /**
+   * `ade_card` rows keyed by `cardId`. A repeat emit mutates the stored row IN
+   * PLACE (new object, SAME key) so the virtualizer's measured height survives
+   * the update — the same discipline as the subagent spawn anchor above.
+   */
+  adeCardRowIndexById: Map<string, number>;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
@@ -350,6 +357,7 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     diagnosticsRowIndexByTurn: new Map(),
     recoveryRowIndexByTurn: new Map(),
     stalledRowIndexByTurn: new Map(),
+    adeCardRowIndexById: new Map(),
   };
 }
 
@@ -1002,12 +1010,34 @@ function repairIndexedTranscriptRowsAfterSplice(
     context.diagnosticsRowIndexByTurn,
     context.recoveryRowIndexByTurn,
     context.stalledRowIndexByTurn,
+    context.adeCardRowIndexById,
   ]) {
     for (const [key, storedIndex] of rowIndexes) {
       if (storedIndex === removedIndex) rowIndexes.delete(key);
       else if (storedIndex > removedIndex) rowIndexes.set(key, storedIndex - 1);
     }
   }
+}
+
+/**
+ * Row position of an existing `ade_card`. The carried context is the fast path;
+ * the reverse scan is the correctness path — it is what keeps the full-recompute
+ * and incremental collapses byte-identical (the parity test) even when a caller
+ * appends without a context, and it guarantees a `cardId` can never mint two
+ * rows sharing one React key. Both agree because only one row ever holds a key.
+ */
+function resolveAdeCardRowIndex(
+  rows: ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext | undefined,
+  cardId: string,
+  expectedKey: string,
+): number | null {
+  const stored = context?.adeCardRowIndexById.get(cardId);
+  if (stored != null && rows[stored]?.key === expectedKey) return stored;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]?.key === expectedKey) return index;
+  }
+  return null;
 }
 
 function removeCollapsedTranscriptRow(
@@ -1827,6 +1857,36 @@ export function appendCollapsedChatTranscriptEvent(
       }
     }
   }
+  // `ade_card` — a PERMANENT chronological transcript row (like a file-change
+  // summary), not activity: it is never classified by `classifyActivityPhaseRow`
+  // and never bundled, so an interleaved reasoning/work phase cannot swallow it.
+  // Repeat emits with the same `cardId` merge into the row already in the list.
+  if (event.type === "ade_card") {
+    const cardId = event.cardId?.trim();
+    // A card with no identity has no merge key and no stable render key; a
+    // transcript can hold arbitrary wire payloads, so drop it rather than mint
+    // an index-derived key the virtualizer would remeasure on every append.
+    if (!cardId) return;
+    const key = adeCardRowKey(cardId);
+    const existingIndex = resolveAdeCardRowIndex(rows, context, cardId, key);
+    const existing = existingIndex != null ? rows[existingIndex] : null;
+    if (existingIndex != null && existing?.event.type === "ade_card") {
+      rows[existingIndex] = {
+        key,
+        timestamp: envelope.timestamp,
+        // Merge, don't replace: an update that omits `rows`/`metrics` is a
+        // partial patch, not an instruction to blank them.
+        event: { ...existing.event, ...event, cardId },
+      };
+      context?.adeCardRowIndexById.set(cardId, existingIndex);
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({ key, timestamp: envelope.timestamp, event: { ...event, cardId } });
+    context?.adeCardRowIndexById.set(cardId, rowIndex);
+    return;
+  }
+
   const normalizedSubagentEvent = normalizeSubagentLifecycleEvent(event);
   if (normalizedSubagentEvent) {
     const activeContext = context ?? createCollapseTranscriptContext();
@@ -2261,6 +2321,45 @@ export function collapseGroupedActivityPhaseRows(
   rows: ChatTranscriptGroupedEnvelope[],
 ): ChatTranscriptGroupedEnvelope[] {
   return collapseActivityPhaseRows(rows, classifyActivityPhaseRow, mergeActivityPhaseRows);
+}
+
+/**
+ * Rejoin activity bundles that became adjacent after presentation-only rows
+ * were removed. The common case is `todo_update → tool call → todo_update`:
+ * tool-only work logs stay available to the turn-finished activity disclosure,
+ * but are hidden as permanent transcript rows. Grouping before that visibility
+ * filter used to leave two task-list cards separated by an invisible row.
+ *
+ * Identity stays anchored to the first bundle so the virtualizer does not
+ * remount the card as later task updates arrive. Missing/different turn ids are
+ * intentionally hard boundaries; grouping remains structural, never temporal.
+ */
+export function mergeAdjacentActivityBundleRows(
+  rows: ChatTranscriptGroupedEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  const merged: ChatTranscriptGroupedEnvelope[] = [];
+  for (const row of rows) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous?.event.type === "activity_bundle"
+      && row.event.type === "activity_bundle"
+      && previous.event.turnId
+      && row.event.turnId
+      && previous.event.turnId === row.event.turnId
+    ) {
+      merged[merged.length - 1] = {
+        key: previous.key,
+        timestamp: row.timestamp,
+        event: {
+          ...previous.event,
+          items: [...previous.event.items, ...row.event.items],
+        },
+      };
+      continue;
+    }
+    merged.push(row);
+  }
+  return merged;
 }
 
 export function groupChatTranscriptRows(

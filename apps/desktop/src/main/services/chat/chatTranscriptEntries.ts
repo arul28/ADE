@@ -32,6 +32,7 @@ import { canAppendBufferedAssistantText, type BufferedAssistantText } from "./ch
  * types flush) because a wrong guess there only costs batching latency.
  */
 const TRANSCRIPT_CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<AgentChatEvent["type"]>([
+  "ade_card",
   "approval_request",
   "codex_image_generation",
   "codex_image_view",

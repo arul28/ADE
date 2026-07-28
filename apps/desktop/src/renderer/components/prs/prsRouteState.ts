@@ -163,6 +163,10 @@ export function resolvePrsActiveTab(route: ParsedPrsRouteState): ResolvedPrsRout
 export function buildPrsRouteSearch(args: {
   activeTab: PrActiveTab;
   selectedPrId: string | null;
+  selectedPrNumber?: number | null;
+  selectedLaneId?: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
   selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
   eventId?: string | null;
@@ -175,10 +179,16 @@ export function buildPrsRouteSearch(args: {
   if (args.activeTab === "normal" || args.activeTab === "github") {
     params.set("tab", args.activeTab);
     if (args.selectedPrId) params.set("prId", args.selectedPrId);
+    if (args.selectedPrNumber != null) params.set("pr", String(args.selectedPrNumber));
+    if (args.selectedLaneId) params.set("laneId", args.selectedLaneId);
+    if (args.repoOwner) params.set("repoOwner", args.repoOwner);
+    if (args.repoName) params.set("repoName", args.repoName);
     if (args.eventId) params.set("eventId", args.eventId);
     if (args.threadId) params.set("threadId", args.threadId);
     if (args.commitSha) params.set("commitSha", args.commitSha);
-    if (args.selectedPrId && args.detailTab) params.set("detailTab", args.detailTab);
+    if ((args.selectedPrId || args.selectedPrNumber != null) && args.detailTab) {
+      params.set("detailTab", args.detailTab);
+    }
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);

@@ -104,6 +104,22 @@ describe("parseDeeplink — ade:// scheme", () => {
     });
   });
 
+  it("parses a PR detail tab and drops unknown future tabs", () => {
+    expect(expectOk(parseDeeplink("ade://pr/anthropics/claude-code/1234?tab=checks"))).toEqual({
+      kind: "pr",
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+      prNumber: 1234,
+      detailTab: "checks",
+    });
+    expect(expectOk(parseDeeplink("ade://pr/anthropics/claude-code/1234?tab=future"))).toEqual({
+      kind: "pr",
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+      prNumber: 1234,
+    });
+  });
+
   it("rejects pr links with non-integer numbers", () => {
     const result = parseDeeplink("ade://pr/anthropics/claude-code/notanumber");
     expect(result.ok).toBe(false);
@@ -217,6 +233,19 @@ describe("parseDeeplink — https://ade-app.dev/open", () => {
   it("parses pr links", () => {
     const target = expectOk(parseDeeplink("https://ade-app.dev/open?type=pr&repo=a/b&number=99"));
     expect(target).toEqual({ kind: "pr", repoOwner: "a", repoName: "b", prNumber: 99 });
+  });
+
+  it("parses a PR detail tab from the HTTPS form", () => {
+    const target = expectOk(
+      parseDeeplink("https://ade-app.dev/open?type=pr&repo=a/b&number=99&tab=files"),
+    );
+    expect(target).toEqual({
+      kind: "pr",
+      repoOwner: "a",
+      repoName: "b",
+      prNumber: 99,
+      detailTab: "files",
+    });
   });
 
   it("parses file, commit, artifact mirror links", () => {
@@ -337,6 +366,19 @@ describe("buildDeeplink", () => {
     const target = { kind: "pr", repoOwner: "a", repoName: "b", prNumber: 100 } as const;
     const url = buildDeeplink(target);
     expect(expectOk(parseDeeplink(url))).toEqual(target);
+  });
+
+  it("round-trips a PR checks-tab target in both forms", () => {
+    const target = {
+      kind: "pr",
+      repoOwner: "a",
+      repoName: "b",
+      prNumber: 100,
+      detailTab: "checks",
+    } as const;
+    expect(buildDeeplink(target, { form: "ade" })).toBe("ade://pr/a/b/100?tab=checks");
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target)))).toEqual(target);
   });
 });
 

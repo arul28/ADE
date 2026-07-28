@@ -437,6 +437,65 @@ describe("PrTimeline", () => {
     expect(args.count).toBe(500);
   });
 
+  it("renders an identity-bearing author avatar once — in the card header, never also on the rail gutter", () => {
+    const events: PrTimelineEvent[] = [
+      makeEvent({
+        id: "c1",
+        type: "issue_comment",
+        commentId: "c1",
+        author: "alice",
+        avatarUrl: "https://avatars.example/alice.png",
+        body: "looks good",
+        isBot: false,
+      }),
+    ];
+    render(
+      <PrTimeline
+        events={events}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    // The gutter is a 2px spine now: one avatar total (the card header's), and
+    // no icon node for an event that already carries a face.
+    const avatars = document.querySelectorAll('img[src="https://avatars.example/alice.png"]');
+    expect(avatars).toHaveLength(1);
+    expect(screen.getAllByTestId("pr-timeline-rail-spine").length).toBeGreaterThan(0);
+    expect(screen.queryAllByTestId("pr-timeline-rail-icon")).toHaveLength(0);
+  });
+
+  it("keeps a rail icon node for events with no identity (nothing else marks them on the spine)", () => {
+    const events: PrTimelineEvent[] = [
+      makeEvent({
+        id: "d1",
+        type: "deployment",
+        author: null,
+        deploymentId: "d1",
+        environment: "preview",
+        state: "success",
+        environmentUrl: null,
+      }),
+    ];
+    render(
+      <PrTimeline
+        events={events}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    expect(screen.getAllByTestId("pr-timeline-rail-icon").length).toBeGreaterThan(0);
+  });
+
   it("renders a bodyful bot review collapsed by default (no defaultOpen override)", () => {
     const events: PrTimelineEvent[] = [
       makeEvent({

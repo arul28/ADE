@@ -23,6 +23,7 @@ import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
+import { pipelineStateOf } from "../../../shared/prPipelineState";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -168,7 +169,7 @@ type ChecksView = { icon: React.ReactNode; text: string; tone: string };
 function checksView(checks: PrCheck[] | null, fallback: PrSummary["checksStatus"]): ChecksView | null {
   if (checks && checks.length > 0) {
     const total = checks.length;
-    const failing = checks.filter((c) => c.conclusion === "failure" || c.conclusion === "cancelled").length;
+    const failing = checks.filter((check) => pipelineStateOf(check) === "failed").length;
     const running = checks.filter((c) => c.status !== "completed").length;
     const passing = checks.filter((c) => c.conclusion === "success").length;
     if (failing > 0) {
@@ -626,7 +627,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     if (isMergeReady(pr, status)) return "inset 3px 0 0 0 rgba(52,211,153,0.55)";
     const failing =
       pr.checksStatus === "failing" ||
-      (checks?.some((c) => c.conclusion === "failure" || c.conclusion === "cancelled") ?? false);
+      (checks?.some((check) => pipelineStateOf(check) === "failed") ?? false);
     if (failing) return "inset 3px 0 0 0 rgba(248,113,113,0.5)";
     return undefined;
   }, [pr, status, checks]);

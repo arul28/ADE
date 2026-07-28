@@ -1,7 +1,67 @@
 import { describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
+import { emitRuntimePrCardsForChanges } from "./bootstrap";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
+import type { PrCardChange } from "../../desktop/src/main/services/prs/prChatCards";
+
+describe("emitRuntimePrCardsForChanges", () => {
+  it("emits PR cards through the daemon-owned chat service", async () => {
+    const change = {
+      pr: {
+        id: "pr-1",
+        laneId: "lane-1",
+        githubPrNumber: 42,
+        repoOwner: "acme",
+        repoName: "ade",
+        baseBranch: "main",
+        headSha: "abc123",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "none",
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      },
+      previousState: "open",
+      previousChecksStatus: "pending",
+      previousReviewStatus: "none",
+      previousMergeConflicts: false,
+      previousBehindBaseBy: 0,
+    } as PrCardChange;
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+
+    await emitRuntimePrCardsForChanges({
+      changes: [change],
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: {
+        listSessions: vi.fn().mockResolvedValue([{
+          sessionId: "chat-1",
+          laneId: "lane-1",
+          surface: "work",
+          archivedAt: null,
+          lastActivityAt: "2026-07-27T18:00:00.000Z",
+        }]),
+        emitAdeCard,
+      },
+      logger: { warn: vi.fn() },
+    });
+
+    expect(emitAdeCard).toHaveBeenCalledTimes(1);
+    expect(emitAdeCard).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "chat-1",
+      card: expect.objectContaining({
+        variant: "pr_ci",
+        state: "terminal",
+        navTarget: expect.objectContaining({ kind: "pr", detailTab: "checks" }),
+      }),
+    }));
+  });
+});
 
 describe("isSourceCheckoutRuntimeModule", () => {
   it.each([

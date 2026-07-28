@@ -1976,9 +1976,36 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     ].joined(separator: "|")
   case .fileChange(let path, let diff, let kind, let status, let itemId, let turnId):
     return ["file_change", turnId ?? "", itemId, path, kind, status.rawValue, diff].joined(separator: "|")
+  case .adeCard(let card):
+    // Content-sensitive on purpose: a progress emit for a `cardId` already in
+    // the transcript must survive base+live merging as its own envelope so the
+    // card builder can fold the newer state over the older one.
+    return ["ade_card", card.turnId ?? "", card.id, workAdeCardContentMergeKey(card)].joined(separator: "|")
   case .unknown(let type):
     return ["unknown", type].joined(separator: "|")
   }
+}
+
+/// Content fingerprint for an `ade_card`. `timestamp` is excluded — the card's
+/// chronological anchor is not part of what makes two emits different.
+func workAdeCardContentMergeKey(_ card: WorkAdeCardModel) -> String {
+  var parts: [String] = [
+    card.variant,
+    card.isTerminal ? "terminal" : "live",
+    card.title,
+    card.subtitle ?? "",
+    card.fallbackText,
+  ]
+  parts.append(card.metrics.map { "\($0.label)\t\($0.value)\t\($0.tone.rawValue)" }.joined(separator: "\n"))
+  parts.append(card.rows.map { "\($0.icon?.rawValue ?? "")\t\($0.text)\t\($0.detail ?? "")\t\($0.tone.rawValue)" }.joined(separator: "\n"))
+  if let progress = card.progress {
+    parts.append("\(progress.passed)/\(progress.failed)/\(progress.running)/\(progress.queued)")
+  } else {
+    parts.append("")
+  }
+  parts.append(card.actions.map { "\($0.id)\t\($0.label)\t\($0.isPrimary ? "primary" : "default")" }.joined(separator: "\n"))
+  parts.append(String(describing: card.navTarget))
+  return parts.joined(separator: "|")
 }
 
 func workUsageSummaryMergeKey(_ usage: WorkUsageSummary?) -> String {

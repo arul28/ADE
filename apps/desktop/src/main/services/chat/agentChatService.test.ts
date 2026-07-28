@@ -2370,6 +2370,7 @@ describe("createAgentChatService", () => {
     expect(service.fastForwardCrossMachineHandoffLane).toBeTypeOf("function");
     expect(service.acceptCrossMachineHandoff).toBeTypeOf("function");
     expect(service.markCrossMachineHandoff).toBeTypeOf("function");
+    expect(service.emitAdeCard).toBeTypeOf("function");
     expect(service.sendMessage).toBeTypeOf("function");
     expect(service.steer).toBeTypeOf("function");
     expect(service.interrupt).toBeTypeOf("function");
@@ -21512,6 +21513,118 @@ describe("createAgentChatService", () => {
         "stash_push",
         "list_stashes",
       ]));
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // emitAdeCard
+  // --------------------------------------------------------------------------
+
+  describe("emitAdeCard", () => {
+    const proofCard = (over: Record<string, unknown> = {}) => ({
+      cardId: "run-42",
+      variant: "proof_artifact",
+      state: "live" as const,
+      title: "Pulling cloud artifacts",
+      fallbackText: "1 cloud artifact pulled into the lane",
+      ...over,
+    });
+
+    it("writes the card to the durable transcript with an assigned sequence", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      await service.emitAdeCard({ sessionId: session.id, card: proofCard() });
+
+      // Live path.
+      const emitted = events.filter((entry) => entry.event.type === "ade_card");
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]!.event).toMatchObject({ cardId: "run-42", variant: "proof_artifact" });
+      expect(typeof emitted[0]!.sequence).toBe("number");
+
+      // Durable path — the card is WRITTEN, which is what makes it replay on
+      // reopen and reach mobile. (A live-only emit would pass the assertion
+      // above and still be invisible everywhere else.)
+      const durablePath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      await vi.waitFor(() => expect(fs.readFileSync(durablePath, "utf8")).toContain("\"ade_card\""));
+      service.forceDisposeAll();
+    });
+
+    it("skips a byte-identical re-emit but writes a changed one", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      await service.emitAdeCard({ sessionId: session.id, card: proofCard() });
+      await service.emitAdeCard({ sessionId: session.id, card: proofCard() });
+      expect(events.filter((entry) => entry.event.type === "ade_card")).toHaveLength(1);
+
+      await service.emitAdeCard({
+        sessionId: session.id,
+        card: proofCard({ state: "terminal", title: "Cloud artifacts pulled" }),
+      });
+      const emitted = events.filter((entry) => entry.event.type === "ade_card");
+      expect(emitted).toHaveLength(2);
+      // Same identity, and createdAt carried forward from the first emit so the
+      // client can compute elapsed across the update.
+      expect(emitted[1]!.event).toMatchObject({ cardId: "run-42", state: "terminal" });
+      expect((emitted[1]!.event as { createdAt?: string }).createdAt)
+        .toBe((emitted[0]!.event as { createdAt?: string }).createdAt);
+      service.forceDisposeAll();
+    });
+
+    it("retries an identical card after its durable transcript append fails", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const durablePath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      const originalAppend = fs.promises.appendFile.bind(fs.promises);
+      const appendFault = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (candidate, data, options) => {
+        if (path.resolve(String(candidate)) === path.resolve(durablePath)) {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        }
+        return await originalAppend(candidate, data, options);
+      });
+
+      await expect(service.emitAdeCard({ sessionId: session.id, card: proofCard() }))
+        .rejects.toThrow(/no space left/i);
+      appendFault.mockRestore();
+
+      await expect(service.emitAdeCard({ sessionId: session.id, card: proofCard() }))
+        .resolves.toBeUndefined();
+      expect(events.filter((entry) => entry.event.type === "ade_card")).toHaveLength(2);
+      expect(fs.readFileSync(durablePath, "utf8")).toContain("\"ade_card\"");
+      service.forceDisposeAll();
+    });
+
+    it("fills an empty fallbackText rather than shipping a card that degrades to nothing", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      await service.emitAdeCard({ sessionId: session.id, card: proofCard({ fallbackText: "  " }) });
+
+      const emitted = events.find((entry) => entry.event.type === "ade_card")!;
+      expect((emitted.event as { fallbackText: string }).fallbackText.trim().length).toBeGreaterThan(0);
+      service.forceDisposeAll();
+    });
+
+    it("rejects a card with no session or no cardId", async () => {
+      const { service } = createService();
+      await expect(service.emitAdeCard({ sessionId: "  ", card: proofCard() })).rejects.toThrow(/chat session/i);
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await expect(service.emitAdeCard({ sessionId: session.id, card: proofCard({ cardId: " " }) }))
+        .rejects.toThrow(/cardId/i);
+      service.forceDisposeAll();
     });
   });
 

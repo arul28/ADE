@@ -1321,3 +1321,114 @@ describe("renderChatLines", () => {
     expect(lines[0]?.body).not.toContain("↵ expands");
   });
 });
+
+describe("ade_card (TUI)", () => {
+  const env = (timestamp: string, sequence: number, event: unknown) => ({
+    sessionId: "s1",
+    timestamp,
+    sequence,
+    event: event as never,
+  });
+
+  const card = (over: Record<string, unknown> = {}) => ({
+    type: "ade_card",
+    cardId: "run-42",
+    variant: "proof_artifact",
+    state: "terminal",
+    title: "Cloud artifacts pulled",
+    fallbackText: "3 cloud artifacts pulled into the lane",
+    ...over,
+  });
+
+  it("renders a box-drawn card with fixed-width walls", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          subtitle: "run-42",
+          metrics: [{ label: "files", value: "3" }],
+          rows: [{ icon: "file", text: "report.md", detail: "12 KB" }],
+          progress: { passed: 3, failed: 0, running: 0, queued: 0 },
+        })),
+      ],
+    });
+
+    const body = lines.at(-1)!.body;
+    const rendered = body.split("\n");
+    expect(rendered[0]!.startsWith("┌")).toBe(true);
+    expect(rendered[0]!).toContain("Cloud artifacts pulled");
+    expect(body).toContain("3 files");
+    expect(body).toContain("report.md");
+    expect(body).toContain("12 KB");
+
+    // Every box line is exactly the same width — a ragged box is the one thing
+    // that makes a TUI card look broken.
+    const boxLines = rendered.filter((line) => /^[┌│└]/.test(line));
+    expect(new Set(boxLines.map((line) => [...line].length)).size).toBe(1);
+    expect(boxLines.at(-1)!.startsWith("└")).toBe(true);
+  });
+
+  it("falls back to fallbackText + deeplink for an unknown variant", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "future_ci",
+          title: "CI failed",
+          fallbackText: "CI failed · 20 passed · 1 failed",
+          navTarget: { kind: "pr", repoOwner: "arul28", repoName: "ADE", prNumber: 916 },
+        })),
+      ],
+    });
+
+    const body = lines.at(-1)!.body;
+    expect(body).toContain("CI failed · 20 passed · 1 failed");
+    expect(body).toContain("ade://");
+    // No box: an unknown variant must not be drawn as if it were understood.
+    expect(body).not.toContain("┌");
+  });
+
+  it("shows only the executable open hint, not inert numbered actions", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          navTarget: { kind: "pr", repoOwner: "arul28", repoName: "ADE", prNumber: 916 },
+          actions: [
+            { id: "open", label: "Review merge", kind: "primary" },
+            { id: "future-action", label: "Do something", kind: "default" },
+          ],
+        })),
+      ],
+    });
+
+    const body = lines.at(-1)!.body;
+    expect(body).toContain("[o] open");
+    expect(body).not.toContain("[1]");
+    expect(body).not.toContain("Do something");
+  });
+
+  it("merges repeat emits of one cardId into a single row at its first position", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({ state: "live", title: "Pulling cloud artifacts", metrics: [{ label: "files", value: "1" }] })),
+        env("2026-07-27T12:00:01.000Z", 2, { type: "text", text: "meanwhile", messageId: "m-1" }),
+        env("2026-07-27T12:00:02.000Z", 3, card({ metrics: [{ label: "files", value: "3" }] })),
+      ],
+    });
+
+    const cardLines = lines.filter((line) => line.body.includes("┌"));
+    expect(cardLines).toHaveLength(1);
+    expect(cardLines[0]!.body).toContain("Cloud artifacts pulled");
+    expect(cardLines[0]!.body).toContain("3 files");
+    // Position: the card precedes the text that arrived after its first emit.
+    const cardIndex = lines.findIndex((line) => line.body.includes("┌"));
+    const textIndex = lines.findIndex((line) => line.body.includes("meanwhile"));
+    expect(cardIndex).toBeLessThan(textIndex);
+  });
+});

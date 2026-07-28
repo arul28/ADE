@@ -269,6 +269,10 @@ import type {
   PrCommit,
   PrActionRun,
   PrActivityEvent,
+  PrWorkflowGraph,
+  GetPrWorkflowGraphArgs,
+  PrCheckLogExcerpt,
+  GetPrCheckLogArgs,
   PrGithubCoords,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
@@ -8393,6 +8397,14 @@ contextBridge.exposeInMainWorld("ade", {
     getActivity: async (prId: string): Promise<PrActivityEvent[]> =>
       callPrReadRuntimeActionOr("getActivity", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
+      ),
+    getWorkflowGraph: async (args: GetPrWorkflowGraphArgs): Promise<PrWorkflowGraph> =>
+      callPrReadRuntimeActionOr("getWorkflowGraph", { args }, () =>
+        ipcRenderer.invoke(IPC.prsGetWorkflowGraph, args),
+      ),
+    getCheckLog: async (args: GetPrCheckLogArgs): Promise<PrCheckLogExcerpt> =>
+      callPrReadRuntimeActionOr("getCheckLog", { args }, () =>
+        ipcRenderer.invoke(IPC.prsGetCheckLog, args),
       ),
     getDetailByGithub: async (coords: PrGithubCoords): Promise<PrDetail> =>
       callPrReadRuntimeActionOr("getDetailByGithub", { arg: coords }, () =>

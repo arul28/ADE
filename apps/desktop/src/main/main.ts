@@ -101,6 +101,9 @@ import { createFeedbackReporterService } from "./services/feedback/feedbackRepor
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
+import {
+  emitPrCardsForChange,
+} from "./services/prs/prChatCards";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
@@ -2815,6 +2818,8 @@ app.whenReady().then(async () => {
       openExternal: openExternalUrl,
     });
     prServiceRef = prService;
+    let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
+      null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -2870,6 +2875,24 @@ app.whenReady().then(async () => {
             },
           ),
         );
+        const chatService = agentChatServiceRef;
+        if (chatService) {
+          await Promise.all(changes.map(async (change) => {
+            try {
+              await emitPrCardsForChange({
+                change,
+                dataSource: prService,
+                chat: chatService,
+              });
+            } catch (error) {
+              logger.warn("prs.chat_card_emit_failed", {
+                prId: change.pr.id,
+                laneId: change.pr.laneId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }));
+        }
         // Live status round-trip (no-op unless flag is set): a PR that just
         // transitioned into the merged state moves its linked Linear issues to
         // Done.
@@ -2910,8 +2933,6 @@ app.whenReady().then(async () => {
     });
     prPollingServiceRef = prPollingService;
 
-    let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
-      null;
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
       null;
     const queueLandingService = createQueueLandingService({

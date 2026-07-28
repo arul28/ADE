@@ -4019,3 +4019,381 @@ func workSubagentDurationLabel(_ snapshot: WorkSubagentSnapshot) -> String? {
   guard seconds > 0 else { return nil }
   return WorkActivityIndicator.formatElapsedSeconds(seconds)
 }
+
+// MARK: - ade_card
+
+/// `ade://` URL for a card's nav target, or nil when the target has no
+/// addressable form. Reuses `LaneDeeplinkHelpers` for the shapes it already
+/// builds; the rest are assembled from the same `ADEDeepLinkURLParsing`
+/// encoders `DeepLinkRouter` parses back out.
+func workAdeCardDeeplink(_ target: WorkAdeCardNavTarget?) -> URL? {
+  guard let target else { return nil }
+  let string: String
+  switch target {
+  case .lane(let laneId):
+    string = LaneDeeplinkHelpers.laneLink(laneId: laneId, form: .ade)
+  case .session(let sessionId, let laneId):
+    string = LaneDeeplinkHelpers.sessionLink(sessionId: sessionId, laneId: laneId, form: .ade)
+  case .pr(let repoOwner, let repoName, let prNumber, let detailTab):
+    string = LaneDeeplinkHelpers.prLink(
+      repoOwner: repoOwner,
+      repoName: repoName,
+      number: prNumber,
+      detailTab: detailTab,
+      form: .ade
+    )
+  case .branch(let repoOwner, let repoName, let branch, let prNumber):
+    string = LaneDeeplinkHelpers.branchLink(
+      repoOwner: repoOwner,
+      repoName: repoName,
+      branch: branch,
+      prNumber: prNumber,
+      form: .ade
+    )
+  case .file(let path, let line, let laneId):
+    string = workAdeCardURLString(
+      base: "ade://file/\(ADEDeepLinkURLParsing.encodedPath(path))",
+      items: [("line", line.map(String.init)), ("lane", laneId)]
+    )
+  case .commit(let sha, let laneId):
+    string = workAdeCardURLString(
+      base: "ade://commit/\(ADEDeepLinkURLParsing.encodedPathSegment(sha))",
+      items: [("lane", laneId)]
+    )
+  case .artifact(let artifactId):
+    string = "ade://artifact/\(ADEDeepLinkURLParsing.encodedPathSegment(artifactId))"
+  case .linearIssue(let issueIdentifier, let branch):
+    string = workAdeCardURLString(
+      base: "ade://linear-issue/\(ADEDeepLinkURLParsing.encodedPathSegment(issueIdentifier))",
+      items: [("branch", branch)]
+    )
+  }
+  return URL(string: string)
+}
+
+private func workAdeCardURLString(base: String, items: [(String, String?)]) -> String {
+  let query = ADEDeepLinkURLParsing.queryString(items)
+  return query.isEmpty ? base : "\(base)?\(query)"
+}
+
+/// Short label for the card's nav target, used on the "open" affordance.
+func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
+  switch target {
+  case .none: return nil
+  case .session: return "Open chat"
+  case .file(let path, _, _): return (path as NSString).lastPathComponent
+  case .commit(let sha, _): return "Commit \(sha.prefix(7))"
+  case .artifact: return "Open artifact"
+  case .lane: return "Open lane"
+  case .pr(_, _, let prNumber, _): return "#\(prNumber)"
+  case .branch(_, _, let branch, _): return branch
+  case .linearIssue(let identifier, _): return identifier
+  }
+}
+
+/// Transcript row for an `ade_card`.
+///
+/// Two rendering modes, and the fallback one is the load-bearing half: a card
+/// whose `variant` this build does not know (or whose payload arrived broken)
+/// renders `fallbackText` plus its deeplink as tappable text. It never renders
+/// nothing, and it never renders an empty row — that is what lets desktop ship
+/// a new variant without waiting on an App Store review.
+///
+/// Tone note: failures are AMBER here, never red. The wire contract has no
+/// danger tone and `workAdeCardTone(from:)` folds red-ish values into
+/// `.warning`, so this view has no red path to take.
+struct WorkAdeCardView: View {
+  let card: WorkAdeCardModel
+  /// Dispatch for host-specific actions. The reserved `open` action is handled
+  /// locally through `navTarget` on every client.
+  var onAction: ((WorkAdeCardAction) -> Void)? = nil
+  var onOpenDeeplink: (URL) -> Void = { DeepLinkRouter.shared.handle($0) }
+
+  private var deeplink: URL? { workAdeCardDeeplink(card.navTarget) }
+  private var availableActions: [WorkAdeCardAction] {
+    card.actions.filter { action in
+      (action.id == "open" && deeplink != nil) || onAction != nil
+    }
+  }
+
+  /// Amber whenever anything on the card is in a warning tone (the contract's
+  /// failure state), emerald for a settled all-good card, accent otherwise.
+  private var accentTone: WorkAdeCardTone {
+    if let progress = card.progress, progress.failed > 0 { return .warning }
+    if card.metrics.contains(where: { $0.tone == .warning })
+      || card.rows.contains(where: { $0.tone == .warning }) {
+      return .warning
+    }
+    if card.isTerminal,
+       card.metrics.contains(where: { $0.tone == .success })
+        || card.rows.contains(where: { $0.tone == .success }) {
+      return .success
+    }
+    return .accent
+  }
+
+  private var accentTint: Color { workAdeCardToneColor(accentTone) }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      progressBar
+      if card.isKnownVariant {
+        richBody
+      } else {
+        fallbackBody
+      }
+    }
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(accentTint.opacity(0.26), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(card.fallbackText)
+  }
+
+  // MARK: Progress
+
+  @ViewBuilder
+  private var progressBar: some View {
+    if let progress = card.progress, progress.total > 0 {
+      GeometryReader { geometry in
+        HStack(spacing: 0) {
+          progressSegment(progress.passed, total: progress.total, width: geometry.size.width, tint: ADEColor.success)
+          progressSegment(progress.failed, total: progress.total, width: geometry.size.width, tint: ADEColor.warning)
+          progressSegment(progress.running, total: progress.total, width: geometry.size.width, tint: ADEColor.accent)
+          progressSegment(progress.queued, total: progress.total, width: geometry.size.width, tint: ADEColor.textMuted.opacity(0.4))
+        }
+      }
+      .frame(height: 2)
+      .accessibilityHidden(true)
+    }
+  }
+
+  @ViewBuilder
+  private func progressSegment(_ count: Int, total: Int, width: CGFloat, tint: Color) -> some View {
+    if count > 0 {
+      Rectangle()
+        .fill(tint)
+        .frame(width: width * CGFloat(count) / CGFloat(total))
+    }
+  }
+
+  // MARK: Rich body
+
+  private var richBody: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      header
+      if !card.metrics.isEmpty { metricsRow }
+      if !visibleRows.isEmpty { detailRows }
+      if !availableActions.isEmpty { actionsRow }
+    }
+    .padding(.vertical, 10)
+  }
+
+  private var header: some View {
+    HStack(spacing: 8) {
+      statusGlyph
+      Text(card.title)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      if let subtitle = card.subtitle, !subtitle.isEmpty {
+        Text(subtitle)
+          .font(.caption2.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Spacer(minLength: 6)
+      if let deeplink, let label = workAdeCardNavLabel(card.navTarget) {
+        Button {
+          onOpenDeeplink(deeplink)
+        } label: {
+          HStack(spacing: 3) {
+            Text(label)
+              .lineLimit(1)
+            Image(systemName: "arrow.up.right")
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.accentBright)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(label)")
+      }
+    }
+    .padding(.horizontal, 12)
+  }
+
+  @ViewBuilder
+  private var statusGlyph: some View {
+    if card.isTerminal {
+      Image(systemName: accentTone == .warning ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(accentTint)
+    } else {
+      Circle()
+        .fill(ADEColor.accent)
+        .frame(width: 7, height: 7)
+        .overlay(Circle().stroke(ADEColor.accent.opacity(0.35), lineWidth: 2).scaleEffect(1.5))
+    }
+  }
+
+  private var metricsRow: some View {
+    HStack(spacing: 12) {
+      ForEach(Array(card.metrics.enumerated()), id: \.offset) { _, metric in
+        HStack(spacing: 4) {
+          Text(metric.value)
+            .monospacedDigit()
+            .font(.caption.weight(.semibold))
+          Text(metric.label)
+            .font(.caption)
+        }
+        .foregroundStyle(workAdeCardToneColor(metric.tone))
+        .lineLimit(1)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+  }
+
+  /// Cap the detail list: the transcript row is a summary, and the full list
+  /// lives behind the card's nav target.
+  private var visibleRows: [WorkAdeCardRow] {
+    Array(card.rows.prefix(4))
+  }
+
+  private var detailRows: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      ForEach(Array(visibleRows.enumerated()), id: \.offset) { _, row in
+        HStack(spacing: 6) {
+          if let icon = row.icon {
+            Image(systemName: workAdeCardIconSymbol(icon))
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(workAdeCardToneColor(workAdeCardIconTone(icon, fallback: row.tone)))
+              .frame(width: 11)
+          }
+          Text(row.text)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 6)
+          if let detail = row.detail, !detail.isEmpty {
+            Text(detail)
+              .monospacedDigit()
+              .font(.caption2.monospaced())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+      }
+      if card.rows.count > visibleRows.count {
+        Text("+\(card.rows.count - visibleRows.count) more")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, 12)
+  }
+
+  private var actionsRow: some View {
+    HStack(spacing: 6) {
+      ForEach(Array(availableActions.enumerated()), id: \.offset) { _, action in
+        Button {
+          if action.id == "open", let deeplink {
+            onOpenDeeplink(deeplink)
+          } else {
+            onAction?(action)
+          }
+        } label: {
+          Text(action.label)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(action.isPrimary ? ADEColor.accentBright : ADEColor.textSecondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+              (action.isPrimary ? ADEColor.accent.opacity(0.12) : Color.clear),
+              in: Capsule(style: .continuous)
+            )
+            .overlay(
+              Capsule(style: .continuous)
+                .stroke(
+                  action.isPrimary ? ADEColor.accent.opacity(0.36) : ADEColor.glassBorder,
+                  lineWidth: 1
+                )
+            )
+        }
+        .buttonStyle(.plain)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 2)
+  }
+
+  // MARK: Degradation
+
+  /// Unknown variant (or a payload we could not make sense of): fallback text
+  /// plus the deeplink as tappable text. Never blank.
+  private var fallbackBody: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(card.fallbackText)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+      if let deeplink {
+        Button {
+          onOpenDeeplink(deeplink)
+        } label: {
+          Text(deeplink.absoluteString)
+            .font(.caption2.monospaced())
+            .foregroundStyle(ADEColor.accentBright)
+            .underline()
+            .lineLimit(2)
+            .truncationMode(.middle)
+            .multilineTextAlignment(.leading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(deeplink.absoluteString)")
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(12)
+  }
+}
+
+func workAdeCardToneColor(_ tone: WorkAdeCardTone) -> Color {
+  switch tone {
+  case .neutral: return ADEColor.textSecondary
+  case .accent: return ADEColor.accent
+  case .success: return ADEColor.success
+  // No red path: a failed check is amber. See `adeCard.ts`'s tone policy.
+  case .warning: return ADEColor.warning
+  }
+}
+
+func workAdeCardIconSymbol(_ icon: WorkAdeCardIcon) -> String {
+  switch icon {
+  case .pass: return "checkmark.circle.fill"
+  case .fail: return "exclamationmark.circle.fill"
+  case .running: return "circle.dotted"
+  case .queued: return "clock"
+  case .skipped: return "minus.circle"
+  case .info: return "info.circle"
+  case .file: return "doc.text"
+  }
+}
+
+/// Glyph tone. `pass`/`fail` carry their own semantics; everything else defers
+/// to the row's declared tone.
+func workAdeCardIconTone(_ icon: WorkAdeCardIcon, fallback: WorkAdeCardTone) -> WorkAdeCardTone {
+  switch icon {
+  case .pass: return .success
+  case .fail: return .warning
+  case .running: return .accent
+  case .queued, .skipped, .info, .file: return fallback
+  }
+}

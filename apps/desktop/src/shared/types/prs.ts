@@ -122,9 +122,23 @@ export type PrStatus = {
 };
 
 export type PrCheck = {
+  /**
+   * GitHub check-run id, when this row came from a check run (combined-status
+   * contexts have none). Carried so per-check re-run — `rerunChecks({
+   * checkRunIds })` — is reachable from the UI.
+   */
+  id?: number | null;
   name: string;
   status: "queued" | "in_progress" | "completed";
-  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  conclusion:
+    | "success"
+    | "failure"
+    | "neutral"
+    | "skipped"
+    | "cancelled"
+    | "timed_out"
+    | "action_required"
+    | null;
   detailsUrl: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -1357,20 +1371,34 @@ export type PrCommit = {
 export type PrActionRun = {
   id: number;
   name: string;
+  /** Repo-relative workflow file path from GitHub, used to disambiguate duplicate display names. */
+  workflowPath?: string | null;
   status: "queued" | "in_progress" | "completed" | "waiting";
   conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out" | "action_required" | null;
   headSha: string;
   htmlUrl: string;
   createdAt: string;
   updatedAt: string;
+  /** GitHub's `run_attempt`; >1 after a re-run. Backs the attempt scrubber. */
+  runAttempt?: number;
   jobs: PrActionJob[];
 };
 
 export type PrActionJob = {
   id: number;
+  /** Backing Checks API run id parsed from `check_run_url`, when GitHub provides it. */
+  checkRunId?: number | null;
   name: string;
   status: "queued" | "in_progress" | "completed";
-  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  conclusion:
+    | "success"
+    | "failure"
+    | "neutral"
+    | "cancelled"
+    | "skipped"
+    | "timed_out"
+    | "action_required"
+    | null;
   startedAt: string | null;
   completedAt: string | null;
   steps: PrActionStep[];
@@ -1379,10 +1407,133 @@ export type PrActionJob = {
 export type PrActionStep = {
   name: string;
   status: "queued" | "in_progress" | "completed";
-  conclusion: "success" | "failure" | "neutral" | "cancelled" | "skipped" | null;
+  conclusion:
+    | "success"
+    | "failure"
+    | "neutral"
+    | "cancelled"
+    | "skipped"
+    | "timed_out"
+    | "action_required"
+    | null;
   number: number;
   startedAt: string | null;
   completedAt: string | null;
+};
+
+/* ─────────────────────────── CI pipeline graph ───────────────────────────
+ * GitHub's jobs API does not return `needs:`, so the dependency graph is
+ * reconstructed by parsing the workflow YAML and joining it to live run state.
+ * See docs/features/pull-requests/README.md and the WorkflowGraph service.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Where a graph's edges came from. `none` means we could not build a graph and
+ * the UI must degrade to flat swimlanes grouped by `workflowName` — we never
+ * guess an edge.
+ */
+export type PrWorkflowGraphSource = "worktree" | "contents-api" | "none";
+
+/** Why a graph could not be built, for an honest UI message. */
+export type PrWorkflowGraphUnavailableReason =
+  | "no-workflow-file"
+  | "unparseable"
+  | "reusable-workflow"
+  | "dynamic-job-name"
+  | "not-actions";
+
+/** Rolled-up state of a node, unified across check runs and Actions jobs. */
+export type PrPipelineState = "passed" | "failed" | "running" | "queued" | "skipped" | "unknown";
+
+/** One expanded matrix leg collapsed under a single graph node. */
+export type PrWorkflowMatrixLeg = {
+  /** The live job name, e.g. `build-runtime-binaries (darwin-arm64, macos-15)`. */
+  name: string;
+  jobId: number | null;
+  state: PrPipelineState;
+  durationMs: number | null;
+  detailsUrl: string | null;
+};
+
+/** A node in the reconstructed pipeline graph — one workflow job (all legs). */
+export type PrWorkflowGraphNode = {
+  /** Template job id from the YAML (`jobs.<id>`), the join key for edges. */
+  jobId: string;
+  displayName: string;
+  workflowName: string;
+  state: PrPipelineState;
+  /** Topological tier; 0 = no dependencies. Used for column layout. */
+  tier: number;
+  /** Live elapsed for running nodes, final duration once terminal. */
+  durationMs: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** Populated for matrix jobs; a single-leg job has an empty array. */
+  legs: PrWorkflowMatrixLeg[];
+  /** Steps of the representative (or failing) leg, for in-node progress. */
+  steps: PrActionStep[];
+  /** Numeric check-run id where known, so per-check re-run is reachable. */
+  checkRunId: number | null;
+  /** Numeric GitHub Actions job id, used for job-log retrieval and job reruns. */
+  actionsJobId?: number | null;
+  runId: number | null;
+  detailsUrl: string | null;
+};
+
+/** A dependency edge, `from` → `to`, derived from `needs:`. */
+export type PrWorkflowGraphEdge = {
+  from: string;
+  to: string;
+};
+
+/** The pipeline graph for one PR head SHA. */
+export type PrWorkflowGraph = {
+  source: PrWorkflowGraphSource;
+  unavailableReason: PrWorkflowGraphUnavailableReason | null;
+  headSha: string;
+  /** Highest observed `run_attempt`, so the UI can offer an attempt scrubber. */
+  attempt: number;
+  nodes: PrWorkflowGraphNode[];
+  edges: PrWorkflowGraphEdge[];
+  /**
+   * Job ids on the longest-duration dependency chain — the chain that actually
+   * determines wall-clock time.
+   */
+  criticalPath: string[];
+  /** Checks with no workflow file (CodeRabbit, Vercel, …) — not graphable. */
+  externalChecks: PrCheck[];
+  /** True when these checks ran on a SHA older than the PR head. */
+  stale: boolean;
+  staleBehindBy: number | null;
+};
+
+export type GetPrWorkflowGraphArgs = {
+  prId: string;
+  /** Re-parse the workflow YAML instead of using the cached graph. */
+  force?: boolean;
+};
+
+/** An extracted excerpt of a failing job's log. */
+export type PrCheckLogExcerpt = {
+  jobId: number;
+  jobName: string;
+  /** The step the job failed on, when identifiable. */
+  failingStepName: string | null;
+  failingStepNumber: number | null;
+  stepTotal: number | null;
+  /** Framework summary line lifted to the top (vitest/jest/pytest/go), if found. */
+  headline: string | null;
+  /** Tail of the failing step's output, newest last. */
+  lines: string[];
+  truncated: boolean;
+  htmlUrl: string | null;
+};
+
+export type GetPrCheckLogArgs = {
+  prId: string;
+  jobId: number;
+  /** Max lines to return from the tail of the failing step. Defaults to 200. */
+  maxLines?: number;
 };
 
 /** Unified activity event for the PR timeline. */
@@ -1473,9 +1624,13 @@ export type ReopenPrArgs = {
   prId: string;
 };
 
-export type RerunPrChecksArgs = {
-  prId: string;
+export type PrRerunChecksTarget = {
+  actionJobIds?: number[];
   checkRunIds?: number[];
+};
+
+export type RerunPrChecksArgs = PrRerunChecksTarget & {
+  prId: string;
 };
 
 export type AiReviewSummaryArgs = {
@@ -1784,7 +1939,7 @@ export type PrTimelineEvent =
       type: "check_update";
       checkName: string;
       status: "queued" | "in_progress" | "completed";
-      conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+      conclusion: PrCheck["conclusion"];
       detailsUrl: string | null;
     })
   | (PrTimelineEventBase & {

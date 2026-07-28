@@ -13,11 +13,15 @@ import type {
   FilePatch,
   PrSnapshotHydration,
   PrGithubCoords,
+  AgentChatSessionSummary,
+  PrCheckLogExcerpt,
+  PrRerunChecksTarget,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
+import { PrChecksTab } from "./PrChecksTab";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
@@ -26,10 +30,13 @@ import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
   findUnifiedCheckId,
-  formatCheckDuration,
+  isPipelineTerminal,
+  summarizePipelineStates,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
+import { navigateToAppTarget } from "../../../lib/openExternal";
+import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -166,6 +173,36 @@ function writeStoredDetailTab(prId: string, tab: DetailTab): void {
   } catch {
     // localStorage can be unavailable in private/test environments.
   }
+}
+
+export function buildCiFixPrompt(
+  pr: Pick<PrWithConflicts, "githubPrNumber" | "repoOwner" | "repoName" | "headBranch">,
+  excerpt: PrCheckLogExcerpt,
+): string {
+  const logTail = excerpt.lines.slice(-80).join("\n").trim();
+  const longestFence = Math.max(
+    2,
+    ...Array.from(logTail.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(longestFence + 1);
+  return [
+    `Fix the failing CI job \`${excerpt.jobName}\` on ${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} (${pr.headBranch}).`,
+    excerpt.failingStepName ? `Failing step: ${excerpt.failingStepName}.` : null,
+    excerpt.headline ? `Failure headline: ${excerpt.headline}` : null,
+    "",
+    "Inspect the current lane, reproduce the failure locally when practical, make the smallest correct fix, run the relevant checks, and report what changed.",
+    logTail ? `\nFailing log excerpt:\n${fence}text\n${logTail}\n${fence}` : null,
+  ].filter((line): line is string => line != null).join("\n");
+}
+
+function newestWorkChat(sessions: AgentChatSessionSummary[]): AgentChatSessionSummary | null {
+  const timestamp = (session: AgentChatSessionSummary): number => {
+    const parsed = Date.parse(session.lastActivityAt);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return sessions
+    .filter((session) => (session.surface ?? "work") === "work" && session.archivedAt == null)
+    .sort((left, right) => timestamp(right) - timestamp(left))[0] ?? null;
 }
 
 function PrDetailLoadingPill() {
@@ -471,6 +508,8 @@ export function PrDetailPane({
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
+    isGithubRateLimited,
+    noteGithubRateLimit,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const initialPaneWarmCache = readDetailPaneWarmCache(pr.id);
@@ -478,6 +517,8 @@ export function PrDetailPane({
     () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
   const [focusedCheckId, setFocusedCheckId] = React.useState<string | null>(null);
+  // Bumped by the `g k` chord so the CI tab knows to open its checks palette.
+  const [checksPaletteRequest, setChecksPaletteRequest] = React.useState(0);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? initialPaneWarmCache?.files ?? []);
   const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? initialPaneWarmCache?.commits ?? []);
@@ -488,6 +529,10 @@ export function PrDetailPane({
   // so it never shadows a fresher live status once GitHub settles.
   const [polledStatus, setPolledStatus] = React.useState<PrStatus | null>(null);
   const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? initialPaneWarmCache?.checks ?? []);
+  // Latest result of this pane's own `getChecks` poll. Cleared whenever the
+  // context hands down a new live `checks` array, so context always wins and
+  // this only fills the gaps between context refreshes.
+  const [polledChecks, setPolledChecks] = React.useState<PrCheck[] | null>(null);
   const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? initialPaneWarmCache?.reviews ?? []);
   const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? initialPaneWarmCache?.comments ?? []);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>(() => initialPaneWarmCache?.actionRuns ?? []);
@@ -518,9 +563,24 @@ export function PrDetailPane({
   // While the base (live/snapshot) status still reports GitHub computing
   // mergeability, prefer the latest direct re-poll result for this PR.
   const status = polledStatus && baseStatus?.mergeabilityComputing ? polledStatus : baseStatus;
-  const checks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
+  const baseChecks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
+  const checks = polledChecks ?? baseChecks;
+  React.useEffect(() => {
+    setPolledChecks(null);
+  }, [liveChecks, pr.id]);
   const reviews = liveDetailReady ? liveReviews : (hasSnapshotDetail ? snapshotReviews : liveReviews);
   const comments = liveDetailReady ? liveComments : (hasSnapshotDetail ? snapshotComments : liveComments);
+
+  // One unified check set for the tab header, the CI rollup, and the adaptive
+  // refresh cadence below.
+  const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+  const checksTerminal = React.useMemo(
+    // An empty result is not terminal: a workflow may not have created its
+    // first check run yet. Keep the checks-tab poll alive until at least one
+    // check exists and every one of them has settled.
+    () => headerChecks.length > 0 && isPipelineTerminal(summarizePipelineStates(headerChecks)),
+    [headerChecks],
+  );
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);
@@ -531,6 +591,8 @@ export function PrDetailPane({
   const handleOpenChecksTab = React.useCallback(() => {
     setActiveTab("checks");
   }, [setActiveTab]);
+
+  const handleFocusedCheckConsumed = React.useCallback(() => setFocusedCheckId(null), []);
 
   const handleSelectCheckFromRail = React.useCallback((check: PrCheck) => {
     const unifiedId = findUnifiedCheckId(check, checks, actionRuns);
@@ -613,13 +675,33 @@ export function PrDetailPane({
         if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (activeTab !== "overview") return;
-
-      const rails = timelineRailsRef.current;
-      if (!rails) return;
 
       const now = Date.now();
       const inChord = lastKey === "g" && now - lastKeyAt < CHORD_WINDOW_MS;
+
+      // `g k` works from any detail tab: it routes to CI / Checks and opens the
+      // checks palette there. Once the checks tab is mounted it owns the chord.
+      if (inChord && event.key === "k" && activeTab !== "checks") {
+        event.preventDefault();
+        lastKey = "";
+        lastKeyAt = 0;
+        setActiveTab("checks");
+        setChecksPaletteRequest((n) => n + 1);
+        return;
+      }
+
+      if (activeTab !== "overview") {
+        if (event.key === "g") {
+          lastKey = "g";
+          lastKeyAt = now;
+        } else {
+          lastKey = "";
+        }
+        return;
+      }
+
+      const rails = timelineRailsRef.current;
+      if (!rails) return;
 
       if (inChord) {
         const palette = chordPalettes[event.key];
@@ -648,7 +730,7 @@ export function PrDetailPane({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeTab]);
+  }, [activeTab, setActiveTab]);
   // Action states
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -675,6 +757,31 @@ export function PrDetailPane({
   const updateDetailPaneWarmCache = React.useCallback((patch: PrDetailPaneWarmCachePatch) => {
     writeDetailPaneWarmCache(pr.id, patch);
   }, [pr.id]);
+
+  const handleFixInChat = React.useCallback(async (excerpt: PrCheckLogExcerpt) => {
+    if (!pr.laneId) return;
+    const prompt = buildCiFixPrompt(pr, excerpt);
+    try {
+      const session = newestWorkChat(
+        await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }),
+      );
+      if (session) {
+        queueAgentChatDraftHandoff({ sessionId: session.sessionId }, prompt);
+        navigateToAppTarget({
+          kind: "work",
+          laneId: pr.laneId,
+          sessionId: session.sessionId,
+        });
+        return;
+      }
+
+      const draftTargetId = `work:draft:${pr.laneId}:chat`;
+      queueAgentChatDraftHandoff({ draftTargetId }, prompt);
+      navigateToAppTarget({ kind: "work", laneId: pr.laneId });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [pr]);
 
   const applyDetailPaneWarmCache = React.useCallback((cached: PrDetailPaneWarmCache) => {
     if (cached.detail) {
@@ -768,6 +875,11 @@ export function PrDetailPane({
     isUnmapped && coordsRef.current
       ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current)
       : window.ade.prs.getReviewThreads(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchChecks = React.useCallback((): Promise<PrCheck[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getChecksByGithub(coordsRef.current)
+      : window.ade.prs.getChecks(pr.id),
   [isUnmapped, pr.id]);
 
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean; showLoading?: boolean } = {}) => {
@@ -951,13 +1063,34 @@ export function PrDetailPane({
     };
   }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id, updateDetailPaneWarmCache]);
 
-  // Poll checks + actionRuns + reviewThreads every 60s so the PR detail
-  // readiness signals stay fresh without requiring a manual refresh.
-  // Full activity fetches include comments/reviews/checks again, so only do that
-  // while the Overview thread is actually visible.
+  // Adaptive refresh for the PR detail readiness signals.
+  //
+  // Cadence: ~5s while the CI tab is open AND something is still queued or
+  // running, 60s otherwise. It stops entirely when the window is hidden, and on
+  // the CI tab once everything is terminal — there is nothing left to observe.
+  // `getChecks` is included: it used to be missing, so third-party checks
+  // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
+  const [windowVisible, setWindowVisible] = React.useState(
+    () => (typeof document === "undefined" ? true : document.visibilityState !== "hidden"),
+  );
   React.useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const onVisibility = () => setWindowVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  React.useEffect(() => {
+    if (!windowVisible) return undefined;
+    const checksTabOpen = activeTab === "checks";
+    if (checksTabOpen && checksTerminal) return undefined;
+    const periodMs = checksTabOpen && !checksTerminal ? 5_000 : 60_000;
+
     let cancelled = false;
     const id = window.setInterval(() => {
+      // Honour PrsContext's shared GitHub rate-limit backoff rather than
+      // hammering the API alongside it.
+      if (isGithubRateLimited()) return;
       const activityPromise = activeTab === "overview"
         ? fetchActivity()
         : Promise.resolve(null);
@@ -965,8 +1098,17 @@ export function PrDetailPane({
         fetchActionRuns(),
         fetchReviewThreadsApi(),
         activityPromise,
-      ]).then(([arResult, thrResult, actResult]) => {
+        fetchChecks(),
+      ]).then(([arResult, thrResult, actResult, checksResult]) => {
         if (cancelled) return;
+        for (const result of [arResult, thrResult, actResult, checksResult]) {
+          if (result.status !== "rejected") continue;
+          const message = String((result.reason as Error | undefined)?.message ?? result.reason);
+          if (message.includes("rate limit") || message.includes("API rate")) {
+            noteGithubRateLimit();
+            return;
+          }
+        }
         if (arResult.status === "fulfilled") {
           setActionRuns(arResult.value);
           updateDetailPaneWarmCache({ actionRuns: arResult.value });
@@ -979,13 +1121,20 @@ export function PrDetailPane({
           setActivity(actResult.value);
           updateDetailPaneWarmCache({ activity: actResult.value });
         }
+        if (checksResult.status === "fulfilled") {
+          setPolledChecks(checksResult.value);
+          updateDetailPaneWarmCache({ checks: checksResult.value });
+        }
       });
-    }, 60_000);
+    }, periodMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [activeTab, fetchActionRuns, fetchActivity, fetchReviewThreadsApi, pr.id, updateDetailPaneWarmCache]);
+  }, [
+    activeTab, checksTerminal, fetchActionRuns, fetchActivity, fetchChecks, fetchReviewThreadsApi,
+    isGithubRateLimited, noteGithubRateLimit, pr.id, updateDetailPaneWarmCache, windowVisible,
+  ]);
 
   // While GitHub is still computing mergeability for the selected PR, re-poll
   // its status every ~2.5s until it resolves so the merge checklist stops
@@ -1191,8 +1340,8 @@ export function PrDetailPane({
     await onRefresh();
   });
 
-  const handleRerunChecks = () => runAction(async () => {
-    await window.ade.prs.rerunChecks({ prId: pr.id });
+  const handleRerunChecks = (target?: PrRerunChecksTarget) => runAction(async () => {
+    await window.ade.prs.rerunChecks({ prId: pr.id, ...target });
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
@@ -1224,18 +1373,13 @@ export function PrDetailPane({
   };
   const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 
-  const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
   const headerCi = React.useMemo(() => {
     if (headerChecks.length === 0) return null;
-    let passing = 0;
-    let failing = 0;
-    let pending = 0;
-    for (const item of headerChecks) {
-      if (item.status !== "completed") pending += 1;
-      else if (item.conclusion === "success") passing += 1;
-      else if (item.conclusion === "neutral" || item.conclusion === "skipped") { /* neutral — not pass/fail */ }
-      else failing += 1;
-    }
+    // Same rollup as the CI tab and the overview card — one implementation.
+    const buckets = summarizePipelineStates(headerChecks);
+    const passing = buckets.passed;
+    const failing = buckets.failed + buckets.unknown;
+    const pending = buckets.running + buckets.queued;
     if (failing > 0) {
       return { color: COLORS.danger, label: `${failing} failed`, icon: <XCircle size={12} weight="fill" /> };
     }
@@ -1533,12 +1677,17 @@ export function PrDetailPane({
         )}
         {activeTab === "checks" && (
           <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
-          <ChecksTab
-            checks={checks} actionRuns={actionRuns}
+          <PrChecksTab
+            pr={pr}
+            checks={checks}
+            actionRuns={actionRuns}
             actionBusy={actionBusy}
+            unmapped={isUnmapped}
             onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
             focusedCheckId={focusedCheckId}
-            onFocusedCheckConsumed={() => setFocusedCheckId(null)}
+            onFocusedCheckConsumed={handleFocusedCheckConsumed}
+            paletteRequest={checksPaletteRequest}
+            onFixInChat={pr.laneId ? handleFixInChat : undefined}
           />
           </div>
         )}
@@ -1638,250 +1787,6 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                     Patch unavailable for this file.
                   </div>
                 ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ================================================================
-// CHECKS TAB
-// ================================================================
-
-function ChecksTab({
-  checks,
-  actionRuns,
-  actionBusy,
-  onRerunChecks,
-  focusedCheckId,
-  onFocusedCheckConsumed,
-}: {
-  checks: PrCheck[];
-  actionRuns: PrActionRun[];
-  actionBusy: boolean;
-  onRerunChecks?: () => void;
-  focusedCheckId?: string | null;
-  onFocusedCheckConsumed?: () => void;
-}) {
-  const [expandedItems, setExpandedItems] = React.useState<Set<string>>(new Set());
-  const [highlightedCheckId, setHighlightedCheckId] = React.useState<string | null>(null);
-  const checkCardRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
-
-  const unifiedChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
-
-  React.useEffect(() => {
-    if (!focusedCheckId) return;
-    const target = unifiedChecks.find((item) => item.id === focusedCheckId);
-    if (!target) {
-      onFocusedCheckConsumed?.();
-      return;
-    }
-
-    setExpandedItems((prev) => {
-      const next = new Set(prev);
-      next.add(focusedCheckId);
-      return next;
-    });
-    setHighlightedCheckId(focusedCheckId);
-
-    const frame = window.requestAnimationFrame(() => {
-      checkCardRefs.current.get(focusedCheckId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      onFocusedCheckConsumed?.();
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [focusedCheckId, onFocusedCheckConsumed, unifiedChecks]);
-
-  // Auto-clear the highlight ring on its own timer — keeping it here meant the
-  // focus effect's cleanup (fired when onFocusedCheckConsumed nulls focusedCheckId)
-  // cancelled the timer, leaving the ring stuck on.
-  React.useEffect(() => {
-    if (!highlightedCheckId) return;
-    const timer = window.setTimeout(() => setHighlightedCheckId(null), 2400);
-    return () => window.clearTimeout(timer);
-  }, [highlightedCheckId]);
-
-  const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
-  const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
-  const pending = unifiedChecks.filter(c => c.status !== "completed" && !c.conclusion).length;
-  const skipped = unifiedChecks.filter(c => c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled").length;
-  const total = unifiedChecks.length;
-
-  const toggleExpand = (id: string) => {
-    setExpandedItems(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  const summaryText = total === 0
-    ? "No checks"
-    : failing > 0
-      ? `${failing} failing, ${passing} passing${pending > 0 ? `, ${pending} pending` : ""}${skipped > 0 ? `, ${skipped} skipped` : ""}`
-      : pending > 0
-        ? `${passing} passing, ${pending} pending${skipped > 0 ? `, ${skipped} skipped` : ""}`
-        : skipped > 0 && passing === 0
-          ? `All ${total} checks skipped`
-          : skipped > 0
-            ? `${passing} passing, ${skipped} skipped`
-            : `All ${total} checks passing`;
-
-  return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Summary bar */}
-      <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px" }}>
-          <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-            {summaryText}
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {onRerunChecks ? (
-              <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" })}>
-                <ArrowsClockwise size={14} /> Re-run Failed
-              </button>
-            ) : null}
-          </div>
-        </div>
-        {total > 0 && (
-          <div style={{ display: "flex", height: 4 }}>
-            {passing > 0 && <div style={{ flex: passing, background: "#22C55E", transition: "flex 300ms ease" }} />}
-            {failing > 0 && <div style={{ flex: failing, background: "#EF4444", transition: "flex 300ms ease" }} />}
-            {pending > 0 && <div style={{ flex: pending, background: "#F59E0B", transition: "flex 300ms ease" }} />}
-            {skipped > 0 && <div style={{ flex: skipped, background: "#6B7280", transition: "flex 300ms ease" }} />}
-          </div>
-        )}
-      </div>
-
-      {/* Unified check list */}
-      {total === 0 ? (
-        <div style={cardStyle()}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No checks found</div>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {unifiedChecks.map((item) => {
-            const isExpanded = expandedItems.has(item.id);
-            const hasSteps = item.source === "actions_job" && item.steps && item.steps.length > 0;
-            const stateColor = item.conclusion === "success" ? COLORS.success
-              : item.conclusion === "failure" ? COLORS.danger
-              : item.status === "in_progress" ? COLORS.warning
-              : item.status === "queued" ? COLORS.textMuted
-              : COLORS.textMuted;
-
-            const conclusionLabel = item.conclusion === "failure" ? "FAILED"
-              : item.conclusion === "success" ? "PASSED"
-              : item.conclusion === "neutral" ? "NEUTRAL"
-              : item.conclusion === "skipped" ? "SKIPPED"
-              : item.conclusion === "cancelled" ? "CANCELLED"
-              : item.status === "in_progress" ? "RUNNING"
-              : item.status === "queued" ? "QUEUED"
-              : "PENDING";
-
-            const isHighlighted = highlightedCheckId === item.id;
-            return (
-              <div
-                key={item.id}
-                ref={(node) => {
-                  if (node) checkCardRefs.current.set(item.id, node);
-                  else checkCardRefs.current.delete(item.id);
-                }}
-                data-testid="pr-checks-tab-item"
-                data-check-id={item.id}
-                style={cardStyle({
-                  padding: 0,
-                  overflow: "hidden",
-                  borderColor: isHighlighted ? COLORS.accent : undefined,
-                  boxShadow: isHighlighted ? `0 0 0 1px color-mix(in srgb, ${COLORS.accent} 45%, transparent)` : undefined,
-                })}
-              >
-                <div
-                  role={hasSteps ? "button" : undefined}
-                  tabIndex={hasSteps ? 0 : undefined}
-                  onClick={hasSteps ? () => toggleExpand(item.id) : undefined}
-                  onKeyDown={hasSteps ? (e) => { if (e.key === "Enter") toggleExpand(item.id); } : undefined}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between",
-                    padding: "10px 16px",
-                    background: item.conclusion === "failure"
-                      ? "color-mix(in srgb, var(--color-error) 6%, transparent)"
-                      : isHighlighted
-                        ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)`
-                        : "transparent",
-                    cursor: hasSteps ? "pointer" : "default",
-                    transition: "background 100ms ease",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
-                    {hasSteps && (
-                      isExpanded
-                        ? <CaretDown size={11} style={{ color: stateColor, flexShrink: 0 }} />
-                        : <CaretRight size={11} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
-                    )}
-                    {item.conclusion === "success" ? <CheckCircle size={15} weight="fill" style={{ color: COLORS.success, flexShrink: 0 }} /> :
-                     item.conclusion === "failure" ? <XCircle size={15} weight="fill" style={{ color: COLORS.danger, flexShrink: 0 }} /> :
-                     item.status === "in_progress" ? <CircleNotch size={15} className="animate-spin" style={{ color: COLORS.warning, flexShrink: 0 }} /> :
-                     <Circle size={15} style={{ color: COLORS.textMuted, flexShrink: 0 }} />}
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 500, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {item.displayName}
-                    </span>
-                    {item.source === "check" && (
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim, flexShrink: 0, padding: "1px 5px", border: `1px solid ${COLORS.border}` }}>
-                        3RD PARTY
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                    {item.duration != null && (
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                        {formatCheckDuration(item.duration)}
-                      </span>
-                    )}
-                    <span style={{
-                      fontFamily: MONO_FONT, fontSize: 9, fontWeight: 600, textTransform: "uppercase",
-                      color: stateColor, padding: "2px 8px",
-                      background: `${stateColor}14`, border: `1px solid ${stateColor}30`,
-                    }}>
-                      {conclusionLabel}
-                    </span>
-                    {item.detailsUrl && (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(item.detailsUrl!); }}
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10, gap: 4 })}
-                      >
-                        <GithubLogo size={11} /> View
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Expanded steps for GitHub Actions jobs */}
-                {isExpanded && hasSteps && (
-                  <div style={{ borderTop: `1px solid ${COLORS.border}`, background: "rgba(0,0,0,0.08)", padding: "8px 16px 8px 52px" }}>
-                    {item.steps!.map((step) => {
-                      return (
-                        <div key={step.number} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-                          {step.conclusion === "success" ? <CheckCircle size={12} weight="fill" style={{ color: COLORS.success }} /> :
-                           step.conclusion === "failure" ? <XCircle size={12} weight="fill" style={{ color: COLORS.danger }} /> :
-                           step.conclusion === "skipped" ? <Circle size={12} style={{ color: COLORS.textDim }} /> :
-                           <CircleNotch size={12} className="animate-spin" style={{ color: COLORS.warning }} />}
-                          <span style={{
-                            fontFamily: SANS_FONT, fontSize: 11,
-                            color: step.conclusion === "failure" ? COLORS.danger
-                              : step.conclusion === "success" ? COLORS.textSecondary
-                              : COLORS.textMuted,
-                          }}>{step.name}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             );
           })}

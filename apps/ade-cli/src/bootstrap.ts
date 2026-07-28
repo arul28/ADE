@@ -57,6 +57,12 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
+import {
+  emitPrCardsForChange,
+  type PrCardChange,
+  type PrCardChatSink,
+  type PrCardDataSource,
+} from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
@@ -167,6 +173,37 @@ declare const __ADE_VERSION__: string | undefined;
 const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
+
+export async function emitRuntimePrCardsForChanges(args: {
+  changes: PrCardChange[];
+  dataSource: PrCardDataSource;
+  chat: Partial<PrCardChatSink> | null;
+  logger: Pick<Logger, "warn">;
+}): Promise<void> {
+  const { chat } = args;
+  if (
+    !chat
+    || typeof chat.listSessions !== "function"
+    || typeof chat.emitAdeCard !== "function"
+  ) {
+    return;
+  }
+  await Promise.all(args.changes.map(async (change) => {
+    try {
+      await emitPrCardsForChange({
+        change,
+        dataSource: args.dataSource,
+        chat: chat as PrCardChatSink,
+      });
+    } catch (error) {
+      args.logger.warn("prs.chat_card_emit_failed", {
+        prId: change.pr.id,
+        laneId: change.pr.laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }));
+}
 
 export type AdeRuntimePaths = {
   adeDir: string;
@@ -1365,6 +1402,12 @@ export async function createAdeRuntime(args: {
           previousReviewStatus,
         });
       }
+      await emitRuntimePrCardsForChanges({
+        changes,
+        dataSource: headlessLinearServices.prService,
+        chat: agentChatService,
+        logger,
+      });
     },
   });
   prPollingService.start();

@@ -65,11 +65,18 @@ final class DeepLinkRouter {
         guard ADEDeepLinkURLParsing.splitRepo("\(owner)/\(repo)") != nil,
               let number = Int(pathComponents[2]),
               number > 0 else { return }
-        post(kind: "pr", identifier: "\(number)", prNumber: number, repoOwner: owner, repoName: repo)
+        post(
+          kind: "pr",
+          identifier: "\(number)",
+          prNumber: number,
+          repoOwner: owner,
+          repoName: repo,
+          detailTab: prDetailTab(from: url)
+        )
         return
       }
       guard let raw = pathComponents.first, !raw.isEmpty else { return }
-      post(kind: "pr", identifier: raw)
+      post(kind: "pr", identifier: raw, detailTab: prDetailTab(from: url))
     case "lane":
       // Lanes are a local-only desktop concept — the iOS client has no
       // counterpart UI, so we surface a "Send to your Mac" card instead of
@@ -187,16 +194,20 @@ final class DeepLinkRouter {
       postSendToMac(url: url)
     case "pr":
       guard let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else { return true }
-      // PR numbers are only unique within a repository, and the local
-      // workspace snapshot carries no repo identity — when the link names a
-      // repo, hand off to the paired Mac (whose resolution ladder verifies
-      // the repo) instead of guessing a local PR by bare number.
+      let detailTab = prDetailTab(from: query["tab"])
       if query["repo"]?.isEmpty ?? true {
-        post(kind: "pr", identifier: "\(number)", prNumber: number)
+        post(kind: "pr", identifier: "\(number)", prNumber: number, detailTab: detailTab)
         return true
       }
-      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil else { return true }
-      postSendToMac(url: url)
+      guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]) else { return true }
+      post(
+        kind: "pr",
+        identifier: "\(number)",
+        prNumber: number,
+        repoOwner: repo.owner,
+        repoName: repo.repo,
+        detailTab: detailTab
+      )
     case "linear-issue":
       guard let identifier = query["issue"],
             ADEDeepLinkURLParsing.isValidLinearIdentifier(identifier),
@@ -232,7 +243,8 @@ final class DeepLinkRouter {
       post(
         kind: "pr",
         identifier: prId,
-        prNumber: prNumberValue(from: userInfo["prNumber"])
+        prNumber: prNumberValue(from: userInfo["prNumber"]),
+        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"]))
       )
       return
     }
@@ -244,7 +256,8 @@ final class DeepLinkRouter {
         identifier: identifier,
         prNumber: prNumberValue(from: userInfo["prNumber"]),
         repoOwner: stringValue(from: userInfo["repoOwner"]),
-        repoName: stringValue(from: userInfo["repoName"])
+        repoName: stringValue(from: userInfo["repoName"]),
+        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"]))
       )
     }
   }
@@ -256,6 +269,7 @@ final class DeepLinkRouter {
     laneId: String? = nil,
     repoOwner: String? = nil,
     repoName: String? = nil,
+    detailTab: PrDetailTab? = nil,
     branch: String? = nil,
     event: Int? = nil,
     offset: Int? = nil
@@ -284,6 +298,7 @@ final class DeepLinkRouter {
     if let scopedLaneId, !scopedLaneId.isEmpty { userInfo["laneId"] = scopedLaneId }
     if let scopedRepoOwner, !scopedRepoOwner.isEmpty { userInfo["repoOwner"] = scopedRepoOwner }
     if let scopedRepoName, !scopedRepoName.isEmpty { userInfo["repoName"] = scopedRepoName }
+    if let detailTab { userInfo["detailTab"] = detailTab.rawValue }
     if let scopedBranch, !scopedBranch.isEmpty { userInfo["branch"] = scopedBranch }
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
@@ -311,16 +326,43 @@ final class DeepLinkRouter {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
           prNumber: number,
           repoOwner: scopedRepoOwner,
-          repoName: scopedRepoName
+          repoName: scopedRepoName,
+          detailTab: detailTab
         )
       } else if let prId = resolvePrId(from: trimmed) {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
           prId: prId,
-          prNumber: prNumber ?? Int(trimmed)
+          prNumber: prNumber ?? Int(trimmed),
+          detailTab: detailTab
         )
       } else if let prNumber = Int(trimmed), prNumber > 0 {
-        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)
+        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
+          prNumber: prNumber,
+          detailTab: detailTab
+        )
       }
+    }
+  }
+
+  private func prDetailTab(from url: URL) -> PrDetailTab? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    return prDetailTab(
+      from: components.queryItems?.first(where: { $0.name.lowercased() == "tab" })?.value
+    )
+  }
+
+  private func prDetailTab(from rawValue: String?) -> PrDetailTab? {
+    switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "overview", "activity":
+      return .overview
+    case "files":
+      return .files
+    case "checks":
+      return .checks
+    default:
+      return nil
     }
   }
 

@@ -431,6 +431,149 @@ struct WorkFileChangeCardModel: Identifiable, Equatable {
   let timestamp: String
 }
 
+// MARK: - ade_card
+
+/// Tone vocabulary for the `ade_card` chat primitive. Mirrors `AdeCardTone` in
+/// `apps/desktop/src/shared/adeCard.ts` — and, like it, deliberately has NO
+/// danger/red member. Failures render amber in ADE chat (the house rule stated
+/// at the top of `SubagentActivityCards.tsx`); `workAdeCardTone(from:)` folds
+/// any red-ish string an emitter invents into `.warning` so a payload cannot
+/// bypass the policy.
+enum WorkAdeCardTone: String, Equatable {
+  case neutral
+  case accent
+  case success
+  case warning
+}
+
+/// Semantic row glyph. Open on the wire; unrecognized values parse to `nil`
+/// and the row simply renders without a glyph.
+enum WorkAdeCardIcon: String, Equatable {
+  case pass
+  case fail
+  case running
+  case queued
+  case skipped
+  case info
+  case file
+}
+
+struct WorkAdeCardMetric: Equatable {
+  let label: String
+  let value: String
+  let tone: WorkAdeCardTone
+}
+
+struct WorkAdeCardRow: Equatable {
+  let icon: WorkAdeCardIcon?
+  let text: String
+  let detail: String?
+  let tone: WorkAdeCardTone
+}
+
+struct WorkAdeCardProgress: Equatable {
+  let passed: Int
+  let failed: Int
+  let running: Int
+  let queued: Int
+
+  var total: Int {
+    max(0, passed) + max(0, failed) + max(0, running) + max(0, queued)
+  }
+}
+
+struct WorkAdeCardAction: Equatable {
+  let id: String
+  let label: String
+  let isPrimary: Bool
+}
+
+/// The `AppNavigationTarget` shapes that have an addressable `ade://` form.
+/// Kinds with no URL form (`route`, `files-external`, or anything a newer host
+/// invents) parse to `nil`, which degrades the card to fallback text without a
+/// link rather than dropping the payload.
+enum WorkAdeCardNavTarget: Equatable {
+  case session(sessionId: String, laneId: String?)
+  case file(path: String, line: Int?, laneId: String?)
+  case commit(sha: String, laneId: String?)
+  case artifact(artifactId: String)
+  case lane(laneId: String)
+  case pr(
+    repoOwner: String,
+    repoName: String,
+    prNumber: Int,
+    detailTab: PrDetailTab?
+  )
+  case branch(repoOwner: String, repoName: String, branch: String, prNumber: Int?)
+  case linearIssue(issueIdentifier: String, branch: String?)
+}
+
+/// One `ade_card` transcript row.
+///
+/// `id` is the wire `cardId`: identity, not content. A repeat emit with the
+/// same id merges into this card (see `buildWorkAdeCards`) instead of appending
+/// a second row, so a long-running card stays one chronological entry as it
+/// progresses.
+struct WorkAdeCardModel: Identifiable, Equatable {
+  /// Variants this build knows how to render richly. Anything else degrades to
+  /// `fallbackText` + deeplink — that is what makes one wire contract safe to
+  /// ship across desktop auto-update, App Store review, and npm.
+  static let knownVariants: Set<String> = [
+    "proof_artifact",
+    "pr_ci",
+    "pr_review",
+    "pr_merged",
+    "pr_merge_ready",
+    "pr_conflict",
+  ]
+
+  let id: String
+  let variant: String
+  /// `state == "terminal"` on the wire. Live cards show the running treatment.
+  let isTerminal: Bool
+  let title: String
+  let subtitle: String?
+  let metrics: [WorkAdeCardMetric]
+  let rows: [WorkAdeCardRow]
+  let progress: WorkAdeCardProgress?
+  let navTarget: WorkAdeCardNavTarget?
+  let actions: [WorkAdeCardAction]
+  /// REQUIRED on the wire; never empty here — the parser substitutes a
+  /// generated description when an emitter sends a blank one.
+  let fallbackText: String
+  let turnId: String?
+  /// Timestamp of the FIRST envelope carrying this `cardId`. Updates keep the
+  /// card anchored where it entered the conversation instead of hopping to the
+  /// bottom on every progress emit. Stamped by `buildWorkAdeCards` from the
+  /// envelope, so the decoders that have no envelope context can leave it.
+  var timestamp: String = ""
+
+  var isKnownVariant: Bool {
+    Self.knownVariants.contains(variant.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  /// Later-wins merge for a repeat emit with the same `cardId`. Collections and
+  /// optionals only overwrite when the newer payload actually carries them, so
+  /// a terse progress ping cannot erase rows an earlier emit established.
+  func merging(_ incoming: WorkAdeCardModel) -> WorkAdeCardModel {
+    WorkAdeCardModel(
+      id: id,
+      variant: incoming.variant.isEmpty ? variant : incoming.variant,
+      isTerminal: incoming.isTerminal,
+      title: incoming.title.isEmpty ? title : incoming.title,
+      subtitle: incoming.subtitle ?? subtitle,
+      metrics: incoming.metrics.isEmpty ? metrics : incoming.metrics,
+      rows: incoming.rows.isEmpty ? rows : incoming.rows,
+      progress: incoming.progress ?? progress,
+      navTarget: incoming.navTarget ?? navTarget,
+      actions: incoming.actions.isEmpty ? actions : incoming.actions,
+      fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
+      turnId: incoming.turnId ?? turnId,
+      timestamp: timestamp
+    )
+  }
+}
+
 enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
@@ -455,6 +598,9 @@ enum WorkTimelinePayload: Equatable {
   /// Collapsed by default like tool calls; tap to reveal per-file rows.
   case changedFiles(WorkChangedFilesGroupModel)
   case eventCard(WorkEventCardModel)
+  /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
+  /// place as the card progresses.
+  case adeCard(WorkAdeCardModel)
   case usageSummary(WorkUsageSummary)
   case artifact(ComputerUseArtifactSummary)
   /// Centered time + model pill rendered between turns, matching the desktop
@@ -1021,6 +1167,10 @@ enum WorkChatEvent: Equatable {
   case completionReport(summary: String, status: String, artifacts: [WorkCompletionArtifactModel], blockerDescription: String?, turnId: String?)
   case command(command: String, cwd: String, output: String, status: WorkToolCardStatus, itemId: String, exitCode: Int?, durationMs: Int?, turnId: String?)
   case fileChange(path: String, diff: String, kind: String, status: WorkToolCardStatus, itemId: String, turnId: String?)
+  /// Generic emittable chat card. One associated value: the whole payload is
+  /// carried by `WorkAdeCardModel` so this union member never has to grow when
+  /// the wire contract adds a field.
+  case adeCard(WorkAdeCardModel)
   case unknown(type: String)
 
   var typeKey: String {
@@ -1062,6 +1212,7 @@ enum WorkChatEvent: Equatable {
     case .completionReport: return "completion_report"
     case .command: return "command"
     case .fileChange: return "file_change"
+    case .adeCard: return "ade_card"
     case .unknown(let type): return type
     }
   }

@@ -168,6 +168,7 @@ import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
+import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
 import {
@@ -7520,7 +7521,12 @@ export function AgentChatPane({
     const onInsertDraft = (event: Event) => {
       const detail = composerDetail(event);
       if (!detail || typeof detail.text !== "string") return;
-      insertComposerDraft(detail.text);
+      const queued = typeof detail.sessionId === "string"
+        ? takeAgentChatDraftHandoff({ sessionId: detail.sessionId })
+        : typeof detail.draftTargetId === "string"
+          ? takeAgentChatDraftHandoff({ draftTargetId: detail.draftTargetId })
+          : null;
+      insertComposerDraft(queued ?? detail.text);
     };
     const onAddIosContext = (event: Event) => {
       const detail = composerDetail(event);
@@ -7575,6 +7581,15 @@ export function AgentChatPane({
     forceDraft,
     insertComposerDraft,
   ]);
+
+  useEffect(() => {
+    const pending = selectedSessionId
+      ? takeAgentChatDraftHandoff({ sessionId: selectedSessionId })
+      : forceDraft && draftContextTargetId
+        ? takeAgentChatDraftHandoff({ draftTargetId: draftContextTargetId })
+        : null;
+    if (pending) insertComposerDraft(pending);
+  }, [draftContextTargetId, forceDraft, insertComposerDraft, selectedSessionId]);
 
   // Resend the most recent user message after a recoverable provider failure.
   // A forced provider refresh clears stale auth/capacity health before the new

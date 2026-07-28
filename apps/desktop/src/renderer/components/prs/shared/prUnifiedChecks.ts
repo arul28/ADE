@@ -1,17 +1,109 @@
-import type { PrActionRun, PrCheck } from "../../../../shared/types";
+import type { PrActionRun, PrActionStep, PrCheck, PrPipelineState } from "../../../../shared/types";
+import { pipelineStateOf } from "../../../../shared/prPipelineState";
+
+export { pipelineStateOf };
 
 export type UnifiedCheckItem = {
   id: string;
   name: string;
   displayName: string;
   status: "queued" | "in_progress" | "completed";
-  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  conclusion:
+    | "success"
+    | "failure"
+    | "neutral"
+    | "skipped"
+    | "cancelled"
+    | "timed_out"
+    | "action_required"
+    | null;
+  /** Final duration in whole seconds. Null while a job is still running — use {@link checkElapsedMs} for live elapsed. */
   duration: number | null;
   detailsUrl: string | null;
   source: "actions_job" | "check";
-  steps?: Array<{ number: number; name: string; status: string; conclusion: string | null }>;
+  /**
+   * Steps of the job, with their `startedAt`/`completedAt` intact. The service
+   * already fetches per-step timings; this type used to narrow them away, which
+   * is why in-node step progress had no durations to render.
+   */
+  steps?: PrActionStep[];
+  /** Workflow this job belongs to — the grouping key for the swimlane fallback. */
   workflowName?: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** GitHub Actions job id, the key for the failing-step log excerpt fetch. */
+  jobId: number | null;
+  /** Workflow run id, when this item came from an Actions run. */
+  runId: number | null;
+  /**
+   * Check-run id, so `rerunChecks({ checkRunIds })` is reachable for Checks API
+   * rows. Actions job ids and check-run ids are different namespaces.
+   */
+  checkRunId: number | null;
 };
+
+/**
+ * The ONE rollup of a check/job into a pipeline state. Three implementations
+ * used to disagree here — `cancelled` was a skip in one and a failure in
+ * another, and none of them partitioned the set, so the progress bar
+ * under-filled. Every consumer now goes through this.
+ *
+ * `cancelled` counts as a failure: it is not a green signal, it blocks merge,
+ * and it is re-runnable — which is exactly what the failure affordances offer.
+ */
+/** Counts per {@link PrPipelineState}. The six buckets always sum to `total`. */
+export type PrCheckBuckets = {
+  total: number;
+  passed: number;
+  failed: number;
+  running: number;
+  queued: number;
+  skipped: number;
+  unknown: number;
+};
+
+export const EMPTY_CHECK_BUCKETS: PrCheckBuckets = {
+  total: 0, passed: 0, failed: 0, running: 0, queued: 0, skipped: 0, unknown: 0,
+};
+
+export function summarizePipelineStates(
+  items: Array<{ status: "queued" | "in_progress" | "completed"; conclusion: string | null }>,
+): PrCheckBuckets {
+  const buckets: PrCheckBuckets = { ...EMPTY_CHECK_BUCKETS, total: items.length };
+  for (const item of items) {
+    buckets[pipelineStateOf(item)] += 1;
+  }
+  return buckets;
+}
+
+/**
+ * States that should be surfaced to the user rather than folded into "done":
+ * anything failing, unresolved, or still moving.
+ */
+export function isAttentionState(state: PrPipelineState): boolean {
+  return state === "failed" || state === "unknown" || state === "running" || state === "queued";
+}
+
+/** True when nothing is queued or running — the pipeline has settled. */
+export function isPipelineTerminal(buckets: PrCheckBuckets): boolean {
+  return buckets.running === 0 && buckets.queued === 0;
+}
+
+/**
+ * Live elapsed for a check/job, in milliseconds. A job that started 14 minutes
+ * ago and has not finished has `completedAt === null`, so the stored `duration`
+ * is null — measure against `now` instead of rendering nothing.
+ */
+export function checkElapsedMs(
+  item: { startedAt: string | null; completedAt: string | null },
+  now: number = Date.now(),
+): number | null {
+  if (!item.startedAt) return null;
+  const start = Date.parse(item.startedAt);
+  const end = item.completedAt ? Date.parse(item.completedAt) : now;
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return Math.max(0, end - start);
+}
 
 function normalizeCheckName(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -30,6 +122,17 @@ function isActionsRunUrl(detailsUrl: string | null | undefined): boolean {
   return /\/actions\/runs\/\d+(?:[/?#]|\/|$)/.test(detailsUrl ?? "");
 }
 
+/**
+ * Third-party check runs link to `https://github.com/o/r/runs/<check run id>`.
+ * Pulling the id out is what makes per-check re-run reachable for them.
+ */
+function extractCheckRunId(detailsUrl: string | null | undefined): number | null {
+  const match = (detailsUrl ?? "").match(/\/runs\/(\d+)(?:[/?#]|$)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function buildActionsJobDetailsUrl(runUrl: string, jobId: number): string | null {
   const trimmed = runUrl.trim();
   if (!trimmed) return null;
@@ -37,6 +140,15 @@ function buildActionsJobDetailsUrl(runUrl: string, jobId: number): string | null
     return `${trimmed.replace(/\/$/, "")}/job/${jobId}`;
   }
   return trimmed;
+}
+
+function completedDurationSeconds(
+  startedAt: string | null,
+  completedAt: string | null,
+): number | null {
+  return startedAt && completedAt
+    ? Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000)
+    : null;
 }
 
 export function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): UnifiedCheckItem[] {
@@ -74,9 +186,6 @@ export function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[])
       coveredNames.add(normalizeCheckComposite(run.name, job.name));
       if (job.id > 0) coveredActionJobIds.add(String(job.id));
 
-      const duration = job.startedAt && job.completedAt
-        ? Math.round((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)
-        : null;
       const detailsUrl = buildActionsJobDetailsUrl(run.htmlUrl, job.id);
 
       items.push({
@@ -85,11 +194,16 @@ export function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[])
         displayName: canonicalName,
         status: job.status,
         conclusion: job.conclusion,
-        duration,
+        duration: completedDurationSeconds(job.startedAt, job.completedAt),
         detailsUrl,
         source: "actions_job",
         steps: job.steps,
         workflowName: run.name,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        jobId: job.id > 0 ? job.id : null,
+        runId: run.id,
+        checkRunId: job.checkRunId ?? null,
       });
     }
   }
@@ -107,25 +221,33 @@ export function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[])
       if (coveredNames.has(normalizeCheckComposite(workflowPart, jobPart))) continue;
     }
 
-    const duration = check.startedAt && check.completedAt
-      ? Math.round((new Date(check.completedAt).getTime() - new Date(check.startedAt).getTime()) / 1000)
-      : null;
-
     items.push({
       id: `check-${check.name}`,
       name: check.name,
       displayName: check.name,
       status: check.status,
       conclusion: check.conclusion,
-      duration,
+      duration: completedDurationSeconds(check.startedAt, check.completedAt),
       detailsUrl: check.detailsUrl,
       source: "check",
+      startedAt: check.startedAt,
+      completedAt: check.completedAt,
+      jobId: Number(extractActionsJobId(check.detailsUrl)) || null,
+      runId: null,
+      // The service now carries the real check-run id; the URL is the fallback
+      // for combined-status rows and older runtimes.
+      checkRunId: check.id ?? extractCheckRunId(check.detailsUrl),
     });
   }
 
+  // failure/unknown → still moving → settled, then alphabetical. Uses the one
+  // shared rollup so ordering can't disagree with the counts again.
+  const sortRank: Record<PrPipelineState, number> = {
+    failed: 0, unknown: 0, running: 1, queued: 1, passed: 2, skipped: 2,
+  };
   items.sort((a, b) => {
-    const aPriority = a.conclusion === "failure" ? 0 : a.status !== "completed" ? 1 : 2;
-    const bPriority = b.conclusion === "failure" ? 0 : b.status !== "completed" ? 1 : 2;
+    const aPriority = sortRank[pipelineStateOf(a)];
+    const bPriority = sortRank[pipelineStateOf(b)];
     if (aPriority !== bPriority) return aPriority - bPriority;
     return a.name.localeCompare(b.name);
   });
@@ -177,7 +299,8 @@ export function unifiedChecksToPrChecks(checks: PrCheck[], actionRuns: PrActionR
     status: c.status,
     conclusion: c.conclusion,
     detailsUrl: c.detailsUrl,
-    startedAt: null,
-    completedAt: null,
+    // Carried through, not nulled: consumers compute live elapsed from these.
+    startedAt: c.startedAt,
+    completedAt: c.completedAt,
   }));
 }

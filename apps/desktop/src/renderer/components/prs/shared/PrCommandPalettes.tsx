@@ -12,7 +12,7 @@ import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
 
-export type PaletteKind = "commit" | "thread" | "file";
+export type PaletteKind = "commit" | "thread" | "file" | "check";
 
 export type PaletteCommit = { sha: string; subject: string; author: string };
 export type PaletteThread = {
@@ -23,6 +23,7 @@ export type PaletteThread = {
   firstCommentAuthor: string | null;
 };
 export type PaletteFile = { path: string; additions: number; deletions: number };
+export type PaletteCheck = { id: string; name: string; state: string; workflowName: string | null };
 
 export type PrCommandPalettesProps = {
   open: PaletteKind | null;
@@ -30,9 +31,12 @@ export type PrCommandPalettesProps = {
   commits: PaletteCommit[];
   threads: PaletteThread[];
   files: PaletteFile[];
+  /** Jump-to-check entries (`g k`). Optional so the overview call site is unchanged. */
+  checks?: PaletteCheck[];
   onPickCommit: (sha: string) => void;
   onPickThread: (id: string) => void;
   onPickFile: (path: string) => void;
+  onPickCheck?: (id: string) => void;
 };
 
 type PaletteItem = { id: string; primary: string; secondary: string };
@@ -54,12 +58,14 @@ function fuzzyMatch(haystack: string, needle: string): boolean {
 function paletteTitle(kind: PaletteKind): string {
   if (kind === "commit") return "Jump to commit";
   if (kind === "thread") return "Jump to review thread";
+  if (kind === "check") return "Jump to check";
   return "Jump to file";
 }
 
 function placeholder(kind: PaletteKind): string {
   if (kind === "commit") return "Search commits by SHA, subject, author…";
   if (kind === "thread") return "Search review threads by path, author, excerpt…";
+  if (kind === "check") return "Search checks by job, workflow, state…";
   return "Search files in this PR…";
 }
 
@@ -68,6 +74,7 @@ function buildItems(
   commits: PaletteCommit[],
   threads: PaletteThread[],
   files: PaletteFile[],
+  checks: PaletteCheck[],
 ): PaletteItem[] {
   if (kind === "commit") {
     return commits.map((c) => ({
@@ -86,6 +93,13 @@ function buildItems(
       secondary: t.firstCommentAuthor ?? "unknown",
     }));
   }
+  if (kind === "check") {
+    return checks.map((c) => ({
+      id: c.id,
+      primary: c.name,
+      secondary: c.workflowName ? `${c.state} · ${c.workflowName}` : c.state,
+    }));
+  }
   return files.map((f) => ({
     id: f.path,
     primary: f.path,
@@ -99,9 +113,11 @@ export const PrCommandPalettes = memo(function PrCommandPalettes({
   commits,
   threads,
   files,
+  checks = [],
   onPickCommit,
   onPickThread,
   onPickFile,
+  onPickCheck,
 }: PrCommandPalettesProps) {
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -114,8 +130,8 @@ export const PrCommandPalettes = memo(function PrCommandPalettes({
 
   const items = useMemo(() => {
     if (!open) return [];
-    return buildItems(open, commits, threads, files);
-  }, [open, commits, threads, files]);
+    return buildItems(open, commits, threads, files, checks);
+  }, [open, commits, threads, files, checks]);
 
   const filtered = useMemo(() => {
     const q = query.trim();
@@ -136,10 +152,11 @@ export const PrCommandPalettes = memo(function PrCommandPalettes({
       if (!open) return;
       if (open === "commit") onPickCommit(id);
       else if (open === "thread") onPickThread(id);
+      else if (open === "check") onPickCheck?.(id);
       else onPickFile(id);
       onClose();
     },
-    [open, onClose, onPickCommit, onPickThread, onPickFile],
+    [open, onClose, onPickCommit, onPickThread, onPickFile, onPickCheck],
   );
 
   const handleKeyDown = useCallback(
