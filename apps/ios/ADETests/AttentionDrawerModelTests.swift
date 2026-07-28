@@ -388,6 +388,73 @@ final class AttentionDrawerModelTests: XCTestCase {
         )
     }
 
+    func testAccountSnapshotRefreshesCachedMachinePresenceWithoutItemChanges() {
+        let now = Date()
+        let cachedMachine = AccountAttentionMachine(
+            machineKey: "studio",
+            accountMachineKey: "account-studio",
+            name: "Studio Mac",
+            online: false,
+            lastSeenAt: now.addingTimeInterval(-120)
+        )
+        let current = AccountAttentionSnapshot(
+            revision: 8,
+            generatedAt: now,
+            machines: [cachedMachine],
+            items: [
+                makeAccountItem(
+                    id: "cached",
+                    revision: 8,
+                    title: "Cached",
+                    now: now,
+                    machine: cachedMachine
+                ),
+            ]
+        )
+        let refreshedPresence = AccountAttentionMachine(
+            machineKey: "studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now.addingTimeInterval(1)
+        )
+        let unchangedRevision = AccountAttentionSnapshot(
+            revision: 8,
+            generatedAt: now.addingTimeInterval(1),
+            machines: [refreshedPresence],
+            items: []
+        )
+
+        let merged = current.merging(unchangedRevision)
+
+        XCTAssertEqual(merged.items.count, 1)
+        XCTAssertTrue(merged.items[0].machine.online)
+        XCTAssertEqual(merged.items[0].machine.lastSeenAt, refreshedPresence.lastSeenAt)
+        XCTAssertEqual(
+            merged.items[0].machine.accountMachineKey,
+            cachedMachine.accountMachineKey,
+            "Presence-only rows must not erase the canonical routing identity"
+        )
+        XCTAssertEqual(merged.machines, [refreshedPresence])
+    }
+
+    func testAccountSnapshotDuplicateItemIdsKeepHighestRevision() {
+        let now = Date()
+        let incoming = AccountAttentionSnapshot(
+            revision: 7,
+            generatedAt: now,
+            items: [
+                makeAccountItem(id: "duplicate", revision: 2, title: "Older", now: now),
+                makeAccountItem(id: "duplicate", revision: 7, title: "Newest", now: now),
+            ]
+        )
+
+        let committed = accountAttentionSnapshotForCommit(current: nil, incoming: incoming)
+
+        XCTAssertEqual(committed.items.count, 1)
+        XCTAssertEqual(committed.items[0].revision, 7)
+        XCTAssertEqual(committed.items[0].title, "Newest")
+    }
+
     func testOutOfOrderSnapshotCommitCannotRegressRevisionOrDropNewerItems() {
         let now = Date()
         let base = AccountAttentionSnapshot(
@@ -630,6 +697,48 @@ final class AttentionDrawerModelTests: XCTestCase {
         XCTAssertTrue(freshModel.items.isEmpty, "persisted dismissals should hide the same still-active attention")
     }
 
+    func testClearVisibleItemsOnlyDismissesNeedsYouItemsInSelectedProject() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        model.rebuild(from: AccountAttentionSnapshot(
+            revision: 2,
+            generatedAt: now,
+            items: [
+                makeAccountItem(
+                    id: "project-a",
+                    revision: 1,
+                    title: "Project A",
+                    now: now,
+                    eventKind: .agentNeedsYou,
+                    phase: .needsYou,
+                    projectId: "a",
+                    projectName: "Project A"
+                ),
+                makeAccountItem(
+                    id: "project-b",
+                    revision: 2,
+                    title: "Project B",
+                    now: now,
+                    eventKind: .agentNeedsYou,
+                    phase: .needsYou,
+                    projectId: "b",
+                    projectName: "Project B"
+                ),
+            ]
+        ))
+        model.selectProject("a")
+
+        model.clearVisibleItems()
+
+        XCTAssertEqual(model.items.map(\.id), ["project-b"])
+        XCTAssertNil(model.selectedProjectId)
+        XCTAssertEqual(model.unreadCount, 1)
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: AttentionDrawerModel.dismissedItemIDsKey) ?? []),
+            ["project-a"]
+        )
+    }
+
     func testClearedItemsReappearAfterBackingStateClears() {
         let model = AttentionDrawerModel(defaults: defaults)
         let now = Date()
@@ -839,22 +948,27 @@ final class AttentionDrawerModelTests: XCTestCase {
         id: String,
         revision: Int,
         title: String,
-        now: Date
+        now: Date,
+        machine: AccountAttentionMachine? = nil,
+        eventKind: AccountAttentionEventKind = .agentRunning,
+        phase: AccountAttentionPhase = .running,
+        projectId: String = "ade",
+        projectName: String = "ADE"
     ) -> AccountAttentionItem {
         AccountAttentionItem(
             id: id,
             revision: revision,
             fingerprint: "\(id):\(revision)",
             kind: .agent,
-            eventKind: .agentRunning,
-            phase: .running,
-            machine: .init(
+            eventKind: eventKind,
+            phase: phase,
+            machine: machine ?? .init(
                 machineKey: "studio",
                 name: "Studio Mac",
                 online: true,
                 lastSeenAt: now
             ),
-            project: .init(projectId: "ade", name: "ADE"),
+            project: .init(projectId: projectId, name: projectName),
             title: title,
             preview: "Working",
             privacyPreview: "Agent working",

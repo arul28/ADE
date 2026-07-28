@@ -135,7 +135,7 @@ describe("createPushPublisherService flush", () => {
     updatedAt: "",
   };
 
-  function makeHarness(deviceOverride = device) {
+  function makeHarness(deviceOverride = device, now?: () => number) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
     const publishAttention = vi.fn().mockResolvedValue(null);
     const store = {
@@ -182,6 +182,7 @@ describe("createPushPublisherService flush", () => {
         machineKey: "b".repeat(32),
         deviceId: "desktop-device",
       }),
+      now,
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
@@ -282,6 +283,57 @@ describe("createPushPublisherService flush", () => {
     });
     expect(payload.items[0].actions.map((action: { kind: string }) => action.kind))
       .toEqual(["approve", "deny", "open"]);
+
+    publisher.dispose();
+  });
+
+  it.each([
+    { unchanged: true },
+    { suppressed: true },
+  ])("delivers queued alerts when the Attention result is suppressed or unchanged", async (result) => {
+    const { publisher, publish, publishAttention, emit } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, ...result });
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0].notifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
+      ]),
+    );
+
+    publisher.dispose();
+  });
+
+  it("delivers queued alerts when the Attention fingerprint is locally unchanged", async () => {
+    const fixedNow = Date.parse("2026-07-05T12:00:00.000Z");
+    const { publisher, publish, publishAttention, emit } = makeHarness(
+      device,
+      () => fixedNow,
+    );
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(
+      (publish.mock.calls[0]?.[0].notifications ?? [])
+        .filter((item: { title: string }) => item.title),
+    ).toEqual([]);
+    publish.mockClear();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0].notifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
+      ]),
+    );
 
     publisher.dispose();
   });
@@ -1140,6 +1192,33 @@ describe("createPushPublisherService flush", () => {
       fullSnapshot: true,
       items: [],
     });
+    expect(vi.getTimerCount()).toBe(0);
+
+    publisher.dispose();
+  });
+
+  it("removes terminal recent runs before the last scope's empty Attention snapshot", async () => {
+    const { publisher, publishAttention, emit, detach } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "status", turnStatus: "completed" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publishAttention.mock.calls.at(-1)?.[0].items[0]).toMatchObject({
+      phase: "completed",
+    });
+
+    publishAttention.mockClear();
+    detach();
+    await vi.runAllTicks();
+    await Promise.resolve();
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention.mock.calls[0][0].items).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
 
     publisher.dispose();

@@ -248,7 +248,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
     }
 
     public var isAccountWide: Bool {
-        if accountWide == true { return true }
+        if let accountWide { return accountWide }
         let marker = machineName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return marker == "all machines" || marker == "account"
     }

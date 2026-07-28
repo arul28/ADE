@@ -396,6 +396,84 @@ describe("AttentionCenter", () => {
     });
   });
 
+  it("clears a closed save without letting its stale result interrupt a replacement", async () => {
+    let resolveStaleSave: () => void = () => {};
+    const staleSave = new Promise<void>((resolve) => {
+      resolveStaleSave = resolve;
+    });
+    let resolveReplacementSave: () => void = () => {};
+    const replacementSave = new Promise<void>((resolve) => {
+      resolveReplacementSave = resolve;
+    });
+    const putPreferences = vi.fn()
+      .mockImplementationOnce(() => staleSave)
+      .mockImplementationOnce(() => replacementSave);
+    const updateSettings = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.ade ?? {}),
+        attention: {
+          getSnapshot: vi.fn(),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+          putPreferences,
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(),
+          updateSettings,
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+    render(<AttentionCenter />);
+
+    const trigger = screen.getByRole("button", { name: "Attention settings" });
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Attention settings" })).toBeNull();
+    });
+
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(putPreferences).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy();
+    });
+
+    await act(async () => {
+      resolveStaleSave();
+      await staleSave;
+    });
+
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeTruthy();
+
+    await act(async () => {
+      resolveReplacementSave();
+      await replacementSave;
+    });
+    await waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Saved")).toBeTruthy();
+    });
+  });
+
   it("does not apply an earlier account's delayed preferences after switching accounts", async () => {
     let resolveAccountA: (preferences: typeof DEFAULT_ATTENTION_PREFERENCES) => void =
       () => {};

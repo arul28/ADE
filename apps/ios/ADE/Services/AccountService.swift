@@ -526,6 +526,9 @@ final class AccountService: ObservableObject {
         LiveActivityService.shared.prepareForAccountSignOut()
       }
       deviceOwnershipStore.transition(to: nextIdentity.userId)
+      // A live signed-in owner has committed the account boundary, including
+      // non-interactive Clerk session restoration.
+      isEndingAccountOwnership = false
       if identity?.userId != nextIdentity.userId {
         invalidatePairingAuthorization()
         clearAttentionSnapshot()

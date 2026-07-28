@@ -163,13 +163,17 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     const tooltip: SmartTooltipContent = {
       label: it.label,
       description: tooltipBase?.description ?? `Open the ${it.label} tab.`,
-      effect: !hasActiveProject
-        ? "Open or create a project first."
-        : showWelcome
-          ? "Finish choosing a project before navigating."
-          : isActive
-            ? "Already viewing this tab."
-            : `Opens ${it.label}.`,
+      effect: globallyAvailable
+        ? isActive
+          ? "Already viewing this tab."
+          : `Opens ${it.label}.`
+        : !hasActiveProject
+          ? "Open or create a project first."
+          : showWelcome
+            ? "Finish choosing a project before navigating."
+            : isActive
+              ? "Already viewing this tab."
+              : `Opens ${it.label}.`,
       docUrl: tooltipBase?.docUrl,
     };
 

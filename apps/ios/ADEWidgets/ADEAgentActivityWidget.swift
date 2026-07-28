@@ -623,6 +623,7 @@ private struct AgentRunRow: View {
                 .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
                 .lineLimit(1)
         }
+        .contentShape(Rectangle())
     }
 
     /// Approve / Deny capsules, aligned under the title (past the status glyph).

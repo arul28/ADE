@@ -548,7 +548,7 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     public let kind: AccountAttentionItemKind
     public let eventKind: AccountAttentionEventKind
     public let phase: AccountAttentionPhase
-    public let machine: AccountAttentionMachine
+    public private(set) var machine: AccountAttentionMachine
     public let project: AccountAttentionProject
     public let laneId: String?
     public let laneName: String?
@@ -624,6 +624,23 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.expiresAt = expiresAt
     }
 
+    fileprivate func updatingMachinePresence(
+        from presence: AccountAttentionMachine?
+    ) -> AccountAttentionItem {
+        guard let presence, presence.machineKey == machine.machineKey else {
+            return self
+        }
+        var updated = self
+        updated.machine = AccountAttentionMachine(
+            machineKey: machine.machineKey,
+            accountMachineKey: presence.accountMachineKey ?? machine.accountMachineKey,
+            name: presence.name,
+            online: presence.online,
+            lastSeenAt: presence.lastSeenAt
+        )
+        return updated
+    }
+
     public var isLive: Bool {
         switch phase {
         case .starting, .running, .needsYou, .blocked, .failed, .stale,
@@ -666,6 +683,9 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
     public let streamId: String?
     public let revision: Int
     public let generatedAt: Date
+    /// Current account-machine presence. Relay includes this even when no
+    /// attention items changed, so cached items can refresh their scope state.
+    public let machines: [AccountAttentionMachine]?
     public let items: [AccountAttentionItem]
     public let tombstones: [AccountAttentionTombstone]?
 
@@ -674,6 +694,7 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
         streamId: String? = nil,
         revision: Int,
         generatedAt: Date,
+        machines: [AccountAttentionMachine]? = nil,
         items: [AccountAttentionItem],
         tombstones: [AccountAttentionTombstone]? = nil
     ) {
@@ -681,6 +702,7 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
         self.streamId = streamId
         self.revision = revision
         self.generatedAt = generatedAt
+        self.machines = machines
         self.items = items
         self.tombstones = tombstones
     }
@@ -697,10 +719,12 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
         // resets any legacy/unknown account data.
         if let incomingStreamId = delta.streamId,
            incomingStreamId != streamId {
-            return delta
+            return normalizedAccountAttentionSnapshot(delta)
         }
         guard delta.revision >= revision else { return self }
-        var byId = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        var byId = Dictionary(items.map { ($0.id, $0) }) { lhs, rhs in
+            rhs.revision > lhs.revision ? rhs : lhs
+        }
         for item in delta.items {
             if let existing = byId[item.id], existing.revision > item.revision {
                 continue
@@ -714,15 +738,42 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
             }
             byId.removeValue(forKey: tombstone.id)
         }
-        return AccountAttentionSnapshot(
+        return normalizedAccountAttentionSnapshot(AccountAttentionSnapshot(
             contractVersion: contractVersion,
             streamId: delta.streamId ?? streamId,
             revision: delta.revision,
             generatedAt: delta.generatedAt,
+            machines: delta.machines ?? machines,
             items: Array(byId.values),
             tombstones: delta.tombstones
-        )
+        ))
     }
+}
+
+private func normalizedAccountAttentionSnapshot(
+    _ snapshot: AccountAttentionSnapshot
+) -> AccountAttentionSnapshot {
+    let machinesByKey = Dictionary(
+        (snapshot.machines ?? []).map { ($0.machineKey, $0) },
+        uniquingKeysWith: { _, latest in latest }
+    )
+    let itemsById = Dictionary(snapshot.items.map { item in
+        (
+            item.id,
+            item.updatingMachinePresence(from: machinesByKey[item.machine.machineKey])
+        )
+    }) { lhs, rhs in
+        rhs.revision > lhs.revision ? rhs : lhs
+    }
+    return AccountAttentionSnapshot(
+        contractVersion: snapshot.contractVersion,
+        streamId: snapshot.streamId,
+        revision: snapshot.revision,
+        generatedAt: snapshot.generatedAt,
+        machines: snapshot.machines,
+        items: Array(itemsById.values),
+        tombstones: snapshot.tombstones
+    )
 }
 
 /// Centralizes the read-before-commit merge used by account Attention refresh.
@@ -732,5 +783,5 @@ public func accountAttentionSnapshotForCommit(
     current: AccountAttentionSnapshot?,
     incoming: AccountAttentionSnapshot
 ) -> AccountAttentionSnapshot {
-    current?.merging(incoming) ?? incoming
+    current?.merging(incoming) ?? normalizedAccountAttentionSnapshot(incoming)
 }

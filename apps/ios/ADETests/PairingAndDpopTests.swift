@@ -702,12 +702,14 @@ final class PairingAndDpopTests: XCTestCase {
     XCTAssertTrue(
       ADEAgentRunsAttributes(machineName: "All machines").isAccountWide
     )
-    XCTAssertFalse(
-      ADEAgentRunsAttributes(
-        machineName: "Studio Mac",
-        accountWide: false
-      ).isAccountWide
-    )
+    for legacyMarker in ["All machines", "account"] {
+      XCTAssertFalse(
+        ADEAgentRunsAttributes(
+          machineName: legacyMarker,
+          accountWide: false
+        ).isAccountWide
+      )
+    }
   }
 
   // MARK: - Sealed account adoption

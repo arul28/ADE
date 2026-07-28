@@ -208,14 +208,8 @@ final class DeepLinkRouter {
       postSendToMac(url: url)
     case "pr":
       guard let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else { return true }
-      if let accountMachineKey = query["accountmachinekey"],
-         !ADEDeepLinkURLParsing.isValidOpaqueId(accountMachineKey) {
-        return true
-      }
-      if let eventId = query["event"],
-         !ADEDeepLinkURLParsing.isValidOpaqueId(eventId) {
-        return true
-      }
+      let accountMachineKey = accountMachineKey(from: url)
+      let eventId = eventId(from: url)
       let detailTab = prDetailTab(from: query["tab"])
       if query["repo"]?.isEmpty ?? true {
         post(
@@ -223,8 +217,8 @@ final class DeepLinkRouter {
           identifier: "\(number)",
           prNumber: number,
           detailTab: detailTab,
-          accountMachineKey: query["accountmachinekey"],
-          eventId: query["event"]
+          accountMachineKey: accountMachineKey,
+          eventId: eventId
         )
         return true
       }
@@ -236,8 +230,8 @@ final class DeepLinkRouter {
         repoOwner: repo.owner,
         repoName: repo.repo,
         detailTab: detailTab,
-        accountMachineKey: query["accountmachinekey"],
-        eventId: query["event"]
+        accountMachineKey: accountMachineKey,
+        eventId: eventId
       )
     case "linear-issue":
       guard let identifier = query["issue"],

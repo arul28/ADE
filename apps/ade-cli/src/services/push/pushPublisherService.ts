@@ -935,8 +935,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     return { item, commit };
   };
 
-  const publishAttentionSnapshot = async (nowMs: number): Promise<boolean> => {
-    if (typeof deps.relayClient.publishAttention !== "function") return false;
+  const publishAttentionSnapshot = async (
+    nowMs: number,
+  ): Promise<"published" | "unchanged" | "unavailable"> => {
+    if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
     // Bound the full snapshot before fingerprinting it. The relay treats the
     // published window as authoritative for this machine, so selection must be
     // deterministic and use the same canonical priority order as every ADE
@@ -952,7 +954,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       fingerprint === lastAttentionFingerprint
       && nowMs - lastAttentionPublishedAt < ATTENTION_HEARTBEAT_MS
     ) {
-      return true;
+      return "unchanged";
     }
     try {
       const result = await deps.relayClient.publishAttention({
@@ -963,13 +965,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (result) {
         lastAttentionFingerprint = fingerprint;
         lastAttentionPublishedAt = nowMs;
-        return true;
+        return result.unchanged === true || result.suppressed === true
+          ? "unchanged"
+          : "published";
       }
-      return false;
+      return "unavailable";
     } catch (error) {
       logWarn("attention.publish_failed", error);
       scheduleRetry();
-      return false;
+      return "unavailable";
     }
   };
 
@@ -978,7 +982,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     pruneRuns(nowMs);
     prunePrActivities(nowMs);
     await resolveMissingMeta();
-    const accountAttentionPublished = await publishAttentionSnapshot(nowMs);
+    const attentionPublishResult = await publishAttentionSnapshot(nowMs);
+    const accountAttentionPublished = attentionPublishResult === "published";
     if (isGated()) {
       pendingAlerts = [];
       return;
@@ -1506,6 +1511,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         removedContribution = true;
       }
     }
+    for (const [sessionId, run] of recentRuns) {
+      if (run.scopeKey === scopeKey) {
+        recentRuns.delete(sessionId);
+        removedContribution = true;
+      }
+    }
     const removedPrActivities = removePrActivitiesForScope(scopeKey);
     removedContribution = removedContribution || removedPrActivities;
     if (scopes.size === 0) {
@@ -1524,7 +1535,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       prActivities.clear();
       pendingAlerts = [];
       scheduleFinalAttentionSnapshot();
-    } else if (removedPrActivities) {
+    } else if (removedContribution) {
       scheduleFlush(false);
     }
   };

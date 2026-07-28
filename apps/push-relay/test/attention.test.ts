@@ -611,6 +611,88 @@ describe("account Attention contract", () => {
     }
   });
 
+  it("accepts the ownership epoch future boundary and rejects values beyond it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:00.000Z"));
+    const database = new SqliteD1Database();
+    try {
+      const maximumAcceptedEpoch = Date.now() + 5 * 60 * 1_000;
+      const accepted = await accountRoute(
+        database,
+        "account-a",
+        "PUT",
+        "/attention/account/devices/phone-boundary",
+        {
+          ownershipEpoch: maximumAcceptedEpoch,
+          apnsToken: "91".repeat(32),
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+        },
+      );
+      expect(accepted.status).toBe(200);
+
+      const rejected = await accountRoute(
+        database,
+        "account-a",
+        "PUT",
+        "/attention/account/devices/phone-too-far",
+        {
+          ownershipEpoch: maximumAcceptedEpoch + 1,
+          apnsToken: "92".repeat(32),
+          bundleId: "com.ade.ios",
+          apsEnvironment: "sandbox",
+        },
+      );
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toEqual({
+        ok: false,
+        error: "invalid ownership epoch",
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("persists only the consumed presence fields", async () => {
+    const database = new SqliteD1Database();
+    try {
+      const observedAt = "2026-07-28T08:00:00.000Z";
+      const response = await accountRoute(
+        database,
+        "account-a",
+        "POST",
+        "/attention/account/presence",
+        {
+          deviceId: "desktop-1",
+          deviceName: "Studio",
+          platform: "macOS",
+          appForeground: true,
+          ambientSurfaceVisible: true,
+          visibleItemIds: ["agent-1", "", "agent-2"],
+          observedAt,
+          untrusted: "x".repeat(300_000),
+        },
+      );
+      expect(response.status).toBe(200);
+
+      const presence = row<{ payload_json: string }>(database, `
+        select payload_json
+        from attention_presence
+        where user_id = 'account-a' and device_id = 'desktop-1'
+      `);
+      expect(JSON.parse(presence?.payload_json ?? "{}")).toEqual({
+        deviceId: "desktop-1",
+        platform: "macOS",
+        appForeground: true,
+        observedAt,
+        visibleItemIds: ["agent-1", "agent-2"],
+      });
+      expect(presence?.payload_json.length).toBeLessThan(1_000);
+    } finally {
+      database.close();
+    }
+  });
+
   it("imports legacy routes once without reclaiming a phone that changed accounts", async () => {
     const database = new SqliteD1Database();
     const env = makeAttentionEnv(database);

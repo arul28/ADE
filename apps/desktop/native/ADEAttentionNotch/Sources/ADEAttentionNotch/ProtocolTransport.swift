@@ -32,11 +32,11 @@ final class StandardIOTransport {
     }
 
     func send(_ output: NotchOutput) {
+        outputLock.lock()
+        defer { outputLock.unlock() }
         do {
             var data = try encoder.encode(output)
             data.append(0x0A)
-            outputLock.lock()
-            defer { outputLock.unlock() }
             FileHandle.standardOutput.write(data)
         } catch {
             let message = "ADE Attention Notch could not encode output: \(error)\n"

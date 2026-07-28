@@ -8,10 +8,11 @@ import {
   resolveAttentionNotchOutput,
 } from "./attentionNotchRouter";
 import type { AttentionItem, AttentionSnapshot } from "../../../shared/types";
+import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
   return {
-    contractVersion: 1,
+    contractVersion: ATTENTION_CONTRACT_VERSION,
     id: "agent-1",
     revision: 3,
     fingerprint: "agent-1:3",
@@ -60,7 +61,7 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
 
 function snapshot(attentionItem = item()): AttentionSnapshot {
   return {
-    contractVersion: 1,
+    contractVersion: ATTENTION_CONTRACT_VERSION,
     revision: 4,
     generatedAt: "2026-07-28T12:00:03.000Z",
     items: [attentionItem],

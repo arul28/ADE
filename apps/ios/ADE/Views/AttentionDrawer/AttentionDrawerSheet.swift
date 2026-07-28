@@ -43,7 +43,7 @@ struct AttentionDrawerSheet: View {
                         } label: {
                             Label("Dismiss pending", systemImage: "rectangle.stack.badge.minus")
                         }
-                        .disabled(drawer.items.isEmpty)
+                        .disabled(needsYou.isEmpty)
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }

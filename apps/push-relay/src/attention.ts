@@ -87,6 +87,7 @@ const ACCOUNT_MACHINE_ONLINE_WINDOW_MS = 90_000;
 const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
+const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 const EVENT_KINDS = new Set([
@@ -1285,6 +1286,7 @@ function parsedOwnershipEpoch(value: unknown): number | null {
   return typeof value === "number"
     && Number.isSafeInteger(value)
     && value > 0
+    && value <= Date.now() + MAX_OWNERSHIP_EPOCH_FUTURE_MS
     ? value
     : null;
 }
@@ -1970,9 +1972,16 @@ async function handlePresence(
   if (!deviceId || !observedAt) {
     return json({ ok: false, error: "invalid presence" }, { status: 400 });
   }
+  const platform = payload.platform === "macOS"
+    || payload.platform === "iOS"
+    || payload.platform === "web"
+    || payload.platform === "unknown"
+    ? payload.platform
+    : "unknown";
   const stored = {
-    ...payload,
     deviceId,
+    platform,
+    appForeground: payload.appForeground === true,
     observedAt,
     visibleItemIds,
   };

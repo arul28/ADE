@@ -6,6 +6,7 @@ import type {
   AttentionSnapshot,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 import type { AttentionNotchOutput } from "./attentionNotchHelper";
 
 const MAX_NOTCH_ITEMS = 256;
@@ -149,7 +150,7 @@ function isAttentionAction(value: unknown): boolean {
 function isAttentionItem(value: unknown): value is AttentionItem {
   if (!isRecord(value)) return false;
   if (
-    value.contractVersion !== 1
+    value.contractVersion !== ATTENTION_CONTRACT_VERSION
     || !isNonEmptyString(value.id, 512)
     || !Number.isSafeInteger(value.revision)
     || Number(value.revision) < 0
@@ -232,7 +233,7 @@ export function parseAttentionNotchSnapshot(input: unknown): AttentionSnapshot |
     return null;
   }
   if (
-    input.contractVersion !== 1
+    input.contractVersion !== ATTENTION_CONTRACT_VERSION
     || !isNullableString(input.streamId, 512)
     || !Number.isSafeInteger(input.revision)
     || Number(input.revision) < 0

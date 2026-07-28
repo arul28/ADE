@@ -56,6 +56,14 @@ class FakeD1Database {
     return new FakeD1Statement(sql, this);
   }
 
+  async batch(statements: FakeD1Statement[]): Promise<Array<{ success: boolean }>> {
+    const results: Array<{ success: boolean }> = [];
+    for (const statement of statements) {
+      results.push(await statement.run());
+    }
+    return results;
+  }
+
   first<T>(sql: string, values: unknown[]): T | null {
     if (sql.includes("from machines")) {
       const [machineKey] = values;

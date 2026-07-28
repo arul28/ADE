@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import { ATTENTION_CONTRACT_VERSION, type AttentionItem } from "../../../shared/types/attention";
 import type {
   OpenProjectBinding,
   RemoteRuntimeTarget,
@@ -1461,7 +1462,7 @@ describe("registerIpc sync bridge", () => {
 
   it("routes account Attention through the machine runtime without a project binding", async () => {
     const snapshot = {
-      contractVersion: 1,
+      contractVersion: ATTENTION_CONTRACT_VERSION,
       streamId: "account-stream",
       revision: 5,
       generatedAt: "2026-07-28T12:00:00.000Z",
@@ -1473,11 +1474,13 @@ describe("registerIpc sync bridge", () => {
       if (action === "getPreferences") return { account: { hideDetails: true } };
       return undefined;
     });
+    const openAttentionItem = vi.fn(async () => undefined);
     registerIpc({
       getCtx: () => ({
         logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
       }) as any,
       localRuntimeConnectionPool: { callAttention } as any,
+      getCurrentAccountOwnerId: () => "account-a",
       getWindowSession: () => ({
         windowId: 7,
         project: null,
@@ -1495,6 +1498,7 @@ describe("registerIpc sync bridge", () => {
       closeCurrentProject: vi.fn(),
       closeProjectByPath: vi.fn(),
       globalStatePath: "/tmp/ade-state.json",
+      openAttentionItem,
     });
 
     await expect(
@@ -1523,6 +1527,47 @@ describe("registerIpc sync bridge", () => {
         preferences: { account: { hideDetails: false } },
       },
     );
+    const attentionItem: AttentionItem = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      id: "attention-1",
+      revision: 5,
+      fingerprint: "attention-1:5",
+      kind: "agent",
+      eventKind: "agent_needs_you",
+      phase: "needs_you",
+      machine: {
+        machineKey: "machine-a",
+        name: "Machine A",
+        online: true,
+        lastSeenAt: "2026-07-28T12:00:00.000Z",
+      },
+      project: {
+        projectId: "project-a",
+        name: "Project A",
+        rootPath: "/repo",
+      },
+      provider: "codex",
+      model: "gpt-5",
+      title: "Needs approval",
+      preview: "Approve the command",
+      privacyPreview: "Agent needs attention",
+      detail: null,
+      recentActivity: [],
+      planProgress: null,
+      destination: {
+        kind: "session",
+        sessionId: "session-a",
+        itemId: "attention-1",
+        eventId: null,
+      },
+      actions: [],
+      occurredAt: "2026-07-28T12:00:00.000Z",
+      updatedAt: "2026-07-28T12:00:00.000Z",
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: null,
+    };
+    await ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem);
 
     expect(callAttention.mock.calls.map(([action]) => action)).toEqual([
       "getSnapshot",
@@ -1538,6 +1583,35 @@ describe("registerIpc sync bridge", () => {
       accountOwnerId: "account-a",
       preferences: { account: { hideDetails: false } },
     });
+    expect(openAttentionItem).toHaveBeenCalledWith(attentionItem);
+  });
+
+  it("rejects a stale renderer Attention preference owner before calling the runtime", async () => {
+    const callAttention = vi.fn();
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      getCurrentAccountOwnerId: () => "account-b",
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.attentionGetPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+      }),
+    ).rejects.toThrow(/account changed/i);
+    await expect(
+      ipcHandlers.get(IPC.attentionPutPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: true } },
+      }),
+    ).rejects.toThrow(/account changed/i);
+    expect(callAttention).not.toHaveBeenCalled();
   });
 
   it("validates recovery identifiers and target ownership before mutating chat state", async () => {

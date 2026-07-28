@@ -109,6 +109,7 @@ export function AttentionSettingsPopover() {
   const closePopover = (returnFocus: boolean) => {
     requestGenerationRef.current += 1;
     restoreTriggerFocusRef.current = returnFocus;
+    setSaving(false);
     setOpen(false);
   };
 
@@ -227,7 +228,8 @@ export function AttentionSettingsPopover() {
   const save = async () => {
     if (saving) return;
     const ownerId = accountOwnerId;
-    const generation = requestGenerationRef.current;
+    const generation = requestGenerationRef.current + 1;
+    requestGenerationRef.current = generation;
     const isCurrentRequest = () =>
       requestGenerationRef.current === generation
       && accountOwnerRef.current === ownerId;
@@ -245,8 +247,11 @@ export function AttentionSettingsPopover() {
       await window.ade?.attentionNotch?.updateSettings(
         attentionNotchSettingsFromPreferences(preferences, notchEnabled),
       );
+      if (!isCurrentRequest()) return;
       setSaved(true);
-      window.setTimeout(() => setSaved(false), 1_800);
+      window.setTimeout(() => {
+        if (isCurrentRequest()) setSaved(false);
+      }, 1_800);
     } catch (saveError) {
       if (!isCurrentRequest()) return;
       setError(

@@ -476,16 +476,16 @@ public final class AttentionDrawerModel: ObservableObject {
     /// dismissal is scoped to the active attention IDs and is pruned once the
     /// backing state clears, so a future CI/review/agent regression reappears.
     public func clearVisibleItems() {
-        guard !items.isEmpty else {
-            markAllSeen()
-            return
-        }
+        let visible = visibleItems(in: .needsYou)
+        guard !visible.isEmpty else { return }
 
-        dismissedItemIDs.formUnion(items.map(\.id))
-        let accountIds = accountBackedItemIDs.intersection(Set(items.map(\.id)))
+        let visibleIds = Set(visible.map(\.id))
+        dismissedItemIDs.formUnion(visibleIds)
+        let accountIds = accountBackedItemIDs.intersection(visibleIds)
         persistDismissedItems()
-        items.removeAll()
-        markAllSeen()
+        items.removeAll { visibleIds.contains($0.id) }
+        validateSelectedProject()
+        recomputeUnreadCount()
         if !accountIds.isEmpty {
             Task { await AccountService.shared.acknowledgeAttentionItems(Array(accountIds), dismiss: true) }
         }

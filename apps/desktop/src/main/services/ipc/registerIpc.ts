@@ -674,6 +674,7 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
+import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
@@ -1583,6 +1584,7 @@ export function registerIpc({
   publishAttentionNotchSnapshot,
   updateAttentionNotchSettings,
   openAttentionItem,
+  getCurrentAccountOwnerId,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1606,6 +1608,7 @@ export function registerIpc({
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
+  getCurrentAccountOwnerId?: () => string | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
   // same app launch do not repeat the account choice, while a full ADE relaunch
@@ -1634,6 +1637,24 @@ export function registerIpc({
         connectionPool: projectRecoveryConnectionPool,
       })
     : null;
+  const requireCurrentAttentionAccountOwner = (value: unknown): string => {
+    const accountOwnerId = typeof value === "string" ? value.trim() : "";
+    const currentOwnerId = (
+      getCurrentAccountOwnerId
+        ? getCurrentAccountOwnerId()
+        : (() => {
+            const status = getSharedAccountAuthService().getStatus();
+            return status.signedIn ? status.userId : null;
+          })()
+    )?.trim() || null;
+    if (!accountOwnerId) {
+      throw new Error("A valid Attention account owner is required.");
+    }
+    if (currentOwnerId !== accountOwnerId) {
+      throw new Error("The ADE account changed before Attention preferences could be used.");
+    }
+    return accountOwnerId;
+  };
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -3238,11 +3259,7 @@ export function registerIpc({
   ipcMain.handle(IPC.attentionGetPreferences, async (_event, input: unknown) => {
     if (!localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
     const record = isRecord(input) ? input : {};
-    const accountOwnerId =
-      typeof record.accountOwnerId === "string" ? record.accountOwnerId.trim() : "";
-    if (!accountOwnerId) {
-      throw new Error("A valid Attention account owner is required.");
-    }
+    const accountOwnerId = requireCurrentAttentionAccountOwner(record.accountOwnerId);
     return await localRuntimeConnectionPool.callAttention<AttentionPreferences>(
       "getPreferences",
       { accountOwnerId },
@@ -3256,11 +3273,7 @@ export function registerIpc({
     if (!isRecord(input) || !isRecord(input.preferences)) {
       throw new Error("A valid Attention preferences payload is required.");
     }
-    const accountOwnerId =
-      typeof input.accountOwnerId === "string" ? input.accountOwnerId.trim() : "";
-    if (!accountOwnerId) {
-      throw new Error("A valid Attention account owner is required.");
-    }
+    const accountOwnerId = requireCurrentAttentionAccountOwner(input.accountOwnerId);
     await localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
       {
@@ -3272,7 +3285,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot({
-      contractVersion: 1,
+      contractVersion: ATTENTION_CONTRACT_VERSION,
       streamId: null,
       revision: (
         typeof input === "object"

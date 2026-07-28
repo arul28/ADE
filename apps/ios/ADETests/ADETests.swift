@@ -819,6 +819,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.requestedPrNavigation?.detailTab, .files)
   }
 
+  @MainActor
+  func testDeepLinkRouterDropsInvalidOptionalHttpsPrScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42&accountMachineKey=not%20valid&event=%2F"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(42, repoOwner: "arul", repoName: "ADE")
+    )
+    XCTAssertNil(service.requestedPrNavigation?.accountMachineKey)
+    XCTAssertNil(service.requestedPrNavigation?.eventId)
+
+    service.requestedPrNavigation = nil
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=pr&number=43&accountMachineKey=%2F&event=not%20valid"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(43, repoOwner: nil, repoName: nil)
+    )
+    XCTAssertNil(service.requestedPrNavigation?.accountMachineKey)
+    XCTAssertNil(service.requestedPrNavigation?.eventId)
+  }
+
   func testSendToMacTargetParsesHttpsAdePrLinks() throws {
     let target = SendToMacTarget(
       url: try XCTUnwrap(URL(string: "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"))
