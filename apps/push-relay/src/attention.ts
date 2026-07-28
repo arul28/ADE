@@ -33,6 +33,12 @@ type AttentionTombstoneRow = {
   deleted_at: string;
 };
 
+type IncomingAttentionTombstone = {
+  id: string;
+  revision: number;
+  revivable: boolean;
+};
+
 type AttentionDeviceRow = {
   device_id: string;
   apns_token: string | null;
@@ -321,6 +327,85 @@ function attentionFullSnapshotUnchanged(
       && current.fingerprint === item.fingerprint
     );
   });
+}
+
+function implicitFullSnapshotTombstone(
+  item: { item_id: string; source_revision: number },
+  incomingItemCount: number,
+): IncomingAttentionTombstone {
+  return {
+    id: item.item_id,
+    revision: Math.max(0, Number(item.source_revision) || 0),
+    // A full snapshot at the transport ceiling cannot distinguish a true
+    // removal from an item displaced by a higher-priority row. Keep that
+    // omission revivable until a later below-capacity snapshot confirms it.
+    revivable: incomingItemCount === MAX_ATTENTION_ITEMS,
+  };
+}
+
+function attentionTombstoneBlocksItem(
+  tombstone: { source_revision: number; revivable: number },
+  itemRevision: number,
+): boolean {
+  return Number(tombstone.revivable) !== 1
+    && Number(tombstone.source_revision) >= itemRevision;
+}
+
+async function upsertAttentionTombstone(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    itemId: string;
+    sourceRevision: number;
+    accountRevision: number;
+    deletedAt: string;
+    revivable: boolean;
+  },
+): Promise<void> {
+  await env.DB.prepare(`
+    insert into attention_tombstones(
+      user_id, item_id, source_revision, account_revision, revivable, deleted_at
+    )
+    values (?, ?, ?, ?, ?, ?)
+    on conflict(user_id, item_id) do update set
+      source_revision = excluded.source_revision,
+      account_revision = excluded.account_revision,
+      revivable = case
+        when excluded.source_revision > attention_tombstones.source_revision
+          then excluded.revivable
+        else min(attention_tombstones.revivable, excluded.revivable)
+      end,
+      deleted_at = excluded.deleted_at
+    where excluded.source_revision >= attention_tombstones.source_revision
+  `).bind(
+    args.userId,
+    args.itemId,
+    args.sourceRevision,
+    args.accountRevision,
+    args.revivable ? 1 : 0,
+    args.deletedAt,
+  ).run();
+}
+
+async function sealCapacityTombstones(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<void> {
+  await env.DB.prepare(`
+    update attention_tombstones
+    set revivable = 0
+    where user_id = ?
+      and revivable = 1
+      and (
+        item_id like ?
+        or item_id like ?
+      )
+  `).bind(
+    userId,
+    `agent:${machineKey}:%`,
+    `pull-request:${machineKey}:%`,
+  ).run();
 }
 
 function mergedDevicePreferences(
@@ -1447,22 +1532,14 @@ async function linkMachineToAccount(
       .bind(machineKey, previous.user_id)
       .run();
     for (const item of previousItems.results) {
-      await env.DB.prepare(`
-        insert into attention_tombstones(
-          user_id, item_id, source_revision, account_revision, deleted_at
-        )
-        values (?, ?, ?, ?, ?)
-        on conflict(user_id, item_id) do update set
-          source_revision = excluded.source_revision,
-          account_revision = excluded.account_revision,
-          deleted_at = excluded.deleted_at
-      `).bind(
-        previous.user_id,
-        item.item_id,
-        Number(item.source_revision),
-        previousRevision,
-        now,
-      ).run();
+      await upsertAttentionTombstone(env, {
+        userId: previous.user_id,
+        itemId: item.item_id,
+        sourceRevision: Number(item.source_revision),
+        accountRevision: previousRevision,
+        deletedAt: now,
+        revivable: false,
+      });
     }
     const previousDevices = await env.DB
       .prepare("select device_id from attention_devices where user_id = ? and source_machine_key = ?")
@@ -1470,6 +1547,12 @@ async function linkMachineToAccount(
       .all<{ device_id: string }>();
     for (const device of previousDevices.results) {
       await deleteAttentionDeviceOwnership(env, previous.user_id, device.device_id);
+    }
+    if (previousItems.results.length > 0) {
+      // The destination account is delivered later in the publish flow, but
+      // other devices that remain signed into the previous account also need
+      // an update/end after this machine's rows leave that aggregate.
+      await deliverAccountLiveActivity(env, previous.user_id);
     }
   }
   if (freshOwnership) {
@@ -1633,8 +1716,11 @@ export async function handleAttentionMachinePublish(
   if ((parsedTombstones as Array<{ id: string }>).some((entry) => !ownsItemId(entry.id))) {
     return json({ ok: false, error: "foreign attention tombstone" }, { status: 403 });
   }
-  const tombstonesById = new Map(
-    (parsedTombstones as Array<{ id: string; revision: number }>).map((entry) => [entry.id, entry]),
+  const tombstonesById = new Map<string, IncomingAttentionTombstone>(
+    (parsedTombstones as Array<{ id: string; revision: number }>).map((entry) => [
+      entry.id,
+      { ...entry, revivable: false },
+    ]),
   );
   const publishedIds = new Set(
     (items as ParsedAttentionItem[]).map((item) => item.id),
@@ -1659,11 +1745,11 @@ export async function handleAttentionMachinePublish(
     }>();
     existingMachineItems = existing.results;
     for (const row of existing.results) {
-      if (!publishedIds.has(row.item_id)) {
-        tombstonesById.set(row.item_id, {
-          id: row.item_id,
-          revision: Math.max(Date.now(), Number(row.source_revision) || 0),
-        });
+      if (!publishedIds.has(row.item_id) && !tombstonesById.has(row.item_id)) {
+        tombstonesById.set(
+          row.item_id,
+          implicitFullSnapshotTombstone(row, rawItems.length),
+        );
       }
     }
   }
@@ -1708,12 +1794,15 @@ export async function handleAttentionMachinePublish(
 
   for (const item of items as ParsedAttentionItem[]) {
     const tombstone = await env.DB.prepare(`
-      select source_revision
+      select source_revision, revivable
       from attention_tombstones
       where user_id = ? and item_id = ?
       limit 1
-    `).bind(account.userId, item.id).first<{ source_revision: number }>();
-    if (tombstone && Number(tombstone.source_revision) >= item.revision) {
+    `).bind(account.userId, item.id).first<{
+      source_revision: number;
+      revivable: number;
+    }>();
+    if (tombstone && attentionTombstoneBlocksItem(tombstone, item.revision)) {
       continue;
     }
     await env.DB.prepare(`
@@ -1760,7 +1849,14 @@ export async function handleAttentionMachinePublish(
       .run();
   }
 
-  for (const tombstone of tombstones as Array<{ id: string; revision: number }>) {
+  if (fullSnapshot && rawItems.length < MAX_ATTENTION_ITEMS) {
+    // Any revivable tombstone still present after applying the incoming items
+    // is absent from an unsaturated authoritative snapshot, so it is now a
+    // genuine removal and must stop accepting stale same-revision revivals.
+    await sealCapacityTombstones(env, account.userId, machineKey);
+  }
+
+  for (const tombstone of tombstones) {
     const existing = await env.DB
       .prepare("select source_revision from attention_items where user_id = ? and machine_key = ? and item_id = ? limit 1")
       .bind(account.userId, machineKey, tombstone.id)
@@ -1772,23 +1868,14 @@ export async function handleAttentionMachinePublish(
       .prepare("delete from attention_items where user_id = ? and machine_key = ? and item_id = ? and source_revision <= ?")
       .bind(account.userId, machineKey, tombstone.id, tombstone.revision)
       .run();
-    await env.DB.prepare(`
-      insert into attention_tombstones(
-        user_id, item_id, source_revision, account_revision, deleted_at
-      )
-      values (?, ?, ?, ?, ?)
-      on conflict(user_id, item_id) do update set
-        source_revision = excluded.source_revision,
-        account_revision = excluded.account_revision,
-        deleted_at = excluded.deleted_at
-      where excluded.source_revision >= attention_tombstones.source_revision
-    `).bind(
-      account.userId,
-      tombstone.id,
-      tombstone.revision,
+    await upsertAttentionTombstone(env, {
+      userId: account.userId,
+      itemId: tombstone.id,
+      sourceRevision: tombstone.revision,
       accountRevision,
-      now,
-    ).run();
+      deletedAt: now,
+      revivable: tombstone.revivable,
+    });
   }
   await deliverAttentionNotifications(
     env,
@@ -2464,13 +2551,17 @@ export const attentionTestInternals = Object.freeze({
   activityRun,
   attentionAlertRoutingPayload,
   attentionFullSnapshotUnchanged,
+  attentionTombstoneBlocksItem,
   deepLinkForItem,
   deliverAttentionNotifications,
   desktopEscalationDelayMs,
   handleAuthorizedAttentionAccountRequest,
+  implicitFullSnapshotTombstone,
   linkMachineToAccount,
   notificationTitle,
   normalizedSnapshotCursor,
   parseAttentionItem,
   privacyPreservingActivityContentState,
+  sealCapacityTombstones,
+  upsertAttentionTombstone,
 });

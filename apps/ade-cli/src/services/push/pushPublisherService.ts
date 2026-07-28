@@ -984,6 +984,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     await resolveMissingMeta();
     const attentionPublishResult = await publishAttentionSnapshot(nowMs);
     const accountAttentionPublished = attentionPublishResult === "published";
+    const accountAttentionAvailable = attentionPublishResult !== "unavailable";
     if (isGated()) {
       pendingAlerts = [];
       return;
@@ -1066,7 +1067,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const liveActivityDeviceIds = devices
       .filter((device) => Boolean(device.pushToStartToken) && shouldDeliverLiveActivityForPrefs(device.prefs))
       .map((device) => device.deviceId);
-    const laPlan = accountAttentionPublished
+    // Once account Attention has accepted this machine's snapshot, it owns the
+    // Live Activity even when this flush is unchanged or relay-suppressed.
+    // Queued alerts still fall back above unless the account publish actually
+    // emitted the changed snapshot.
+    const laPlan = accountAttentionAvailable
       ? null
       : planLiveActivity(liveActivityDeviceIds, nowMs);
 

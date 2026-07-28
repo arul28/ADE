@@ -46,6 +46,7 @@ create table if not exists attention_tombstones (
   item_id text not null,
   source_revision integer not null,
   account_revision integer not null,
+  revivable integer not null default 0 check (revivable in (0, 1)),
   deleted_at text not null,
   primary key(user_id, item_id)
 );

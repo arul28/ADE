@@ -100,6 +100,20 @@ function makeAttentionEnv(
   return { DB: database as unknown as D1Database, ...overrides };
 }
 
+async function generateTestP8(): Promise<string> {
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const pkcs8 = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+  const bytes = new Uint8Array(pkcs8);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const body = btoa(binary).replace(/(.{64})/g, "$1\n");
+  return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`;
+}
+
 function row<T extends Record<string, unknown>>(
   database: SqliteD1Database,
   sql: string,
@@ -182,6 +196,7 @@ const MACHINE_KEY = "a".repeat(32);
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 function validAgentItem(): Record<string, unknown> {
@@ -331,6 +346,76 @@ describe("account Attention contract", () => {
     expect(
       attentionTestInternals.attentionFullSnapshotUnchanged(current, incoming, 1),
     ).toBe(false);
+  });
+
+  it("revives capacity-displaced items but seals confirmed removals", async () => {
+    const database = new SqliteD1Database();
+    const env = makeAttentionEnv(database);
+    const itemId = `agent:${MACHINE_KEY}:session-capacity`;
+    try {
+      const capacityTombstone = attentionTestInternals.implicitFullSnapshotTombstone({
+        item_id: itemId,
+        source_revision: 7,
+      }, 64);
+      expect(capacityTombstone).toEqual({
+        id: itemId,
+        revision: 7,
+        revivable: true,
+      });
+      expect(attentionTestInternals.implicitFullSnapshotTombstone({
+        item_id: itemId,
+        source_revision: 7,
+      }, 63).revivable).toBe(false);
+
+      await attentionTestInternals.upsertAttentionTombstone(env, {
+        userId: "account-a",
+        itemId,
+        sourceRevision: 7,
+        accountRevision: 1,
+        deletedAt: "2026-07-28T08:00:00.000Z",
+        revivable: true,
+      });
+      const displaced = row<{ source_revision: number; revivable: number }>(database, `
+        select source_revision, revivable
+        from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, itemId);
+      expect(displaced).toMatchObject({ source_revision: 7, revivable: 1 });
+      expect(attentionTestInternals.attentionTombstoneBlocksItem(displaced!, 7)).toBe(false);
+
+      await attentionTestInternals.sealCapacityTombstones(
+        env,
+        "account-a",
+        MACHINE_KEY,
+      );
+      const confirmedRemoval = row<{ source_revision: number; revivable: number }>(database, `
+        select source_revision, revivable
+        from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, itemId);
+      expect(confirmedRemoval).toMatchObject({ source_revision: 7, revivable: 0 });
+      expect(
+        attentionTestInternals.attentionTombstoneBlocksItem(confirmedRemoval!, 7),
+      ).toBe(true);
+
+      // A later ambiguous capacity omission cannot weaken an already
+      // authoritative same-revision removal.
+      await attentionTestInternals.upsertAttentionTombstone(env, {
+        userId: "account-a",
+        itemId,
+        sourceRevision: 7,
+        accountRevision: 2,
+        deletedAt: "2026-07-28T08:01:00.000Z",
+        revivable: true,
+      });
+      expect(row(database, `
+        select revivable
+        from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, itemId)?.revivable).toBe(0);
+    } finally {
+      database.close();
+    }
   });
 
   it("retries a due desktop-first alert without duplicating delivered or acknowledged notifications", async () => {
@@ -828,6 +913,113 @@ describe("account Attention contract", () => {
         from attention_tombstones
         where user_id = 'account-a' and item_id = ?
       `, itemId)).toBeUndefined();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("ends the previous account aggregate when a linked machine transfers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sendPush = vi.fn(async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) => new Response(null, {
+      status: 200,
+      headers: { "apns-id": "transfer-end" },
+    }));
+    vi.stubGlobal("fetch", sendPush);
+    const env = makeAttentionEnv(database, {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "MOVEKEY123",
+      APNS_TEAM_ID: "MOVETEAM1",
+    });
+    const parsed = attentionTestInternals.parseAttentionItem(
+      validAgentItem(),
+      MACHINE_KEY,
+    );
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-a",
+        MACHINE_KEY,
+        "Studio",
+      );
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "remaining-phone",
+        apnsToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_activity_state(
+          user_id, device_id, activity_id, started, fingerprint, updated_at
+        ) values (
+          'account-a', 'remaining-phone', 'agent-runs', 1, 'old-fingerprint',
+          '2026-07-28T08:00:00.000Z'
+        )
+      `).run();
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values (
+          'account-a', 'remaining-phone', 'agent-runs', ?,
+          '2026-07-28T08:00:00.000Z'
+        )
+      `).run("cd".repeat(32));
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (?, ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?)
+      `).run(
+        "account-a",
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      await attentionTestInternals.linkMachineToAccount(
+        env,
+        "account-b",
+        MACHINE_KEY,
+        "Studio",
+      );
+
+      expect(sendPush).toHaveBeenCalledTimes(1);
+      const request = sendPush.mock.calls[0]?.[1] as RequestInit;
+      expect(JSON.parse(String(request.body))).toMatchObject({
+        aps: {
+          event: "end",
+          "content-state": {
+            activeCount: 0,
+            runs: [],
+            prs: [],
+          },
+        },
+      });
+      expect(rows(database, `
+        select *
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'remaining-phone'
+      `)).toHaveLength(0);
+      expect(row(database, `
+        select revivable
+        from attention_tombstones
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)?.revivable).toBe(0);
     } finally {
       database.close();
     }

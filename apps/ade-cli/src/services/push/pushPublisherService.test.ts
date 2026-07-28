@@ -298,11 +298,13 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish.mock.calls[0][0].notifications).toEqual(
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
       ]),
     );
+    expect(payload.liveActivity).toBeUndefined();
 
     publisher.dispose();
   });
@@ -329,11 +331,13 @@ describe("createPushPublisherService flush", () => {
 
     expect(publishAttention).toHaveBeenCalledTimes(1);
     expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish.mock.calls[0][0].notifications).toEqual(
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ dedupeKey: "alert:s-1:approval" }),
       ]),
     );
+    expect(payload.liveActivity).toBeUndefined();
 
     publisher.dispose();
   });
