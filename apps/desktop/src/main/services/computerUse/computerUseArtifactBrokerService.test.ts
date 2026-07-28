@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
 
@@ -413,6 +413,45 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId })).toHaveLength(0);
   });
 
+  it("retains the file and database rows when stored-byte deletion fails", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const ingested = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "console_logs", title: "Retryable notes", text: "hello" }],
+    });
+    const artifactId = ingested.artifacts[0]!.id;
+    const filePath = path.join(projectRoot, ingested.artifacts[0]!.uri);
+    const canonicalFilePath = fs.realpathSync(filePath);
+    const originalRmSync = fs.rmSync;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (fs.realpathSync(String(candidate)) === canonicalFilePath) {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return originalRmSync(candidate, options);
+    }) as typeof fs.rmSync);
+
+    try {
+      const result = broker.deleteArtifacts({ artifactId });
+      expect(result.deleted).toEqual([]);
+      expect(result.failed).toEqual([
+        { artifactId, reason: "permission denied" },
+      ]);
+      expect(fs.existsSync(filePath)).toBe(true);
+      expect(broker.listArtifacts({ artifactId })).toHaveLength(1);
+      expect(
+        db.all(`select id from computer_use_artifact_links where artifact_id = ?`, [artifactId]),
+      ).toHaveLength(1);
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+
   it("prunes broken records and reports where a recoverable one still lives", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -452,6 +491,108 @@ describe("computerUseArtifactBrokerService", () => {
     const recovered = broker.recoverArtifact({ artifactId: "dead-1" });
     expect(recovered.availability).toBe("available");
     expect(broker.listBrokenArtifacts()).toHaveLength(0);
+  });
+
+  it("rejects ambiguous legacy recovery when multiple lanes contain the same relative path", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const firstLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    const secondLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-b");
+    for (const [root, contents] of [[firstLaneRoot, "first"], [secondLaneRoot, "second"]] as const) {
+      fs.mkdirSync(path.join(root, "screenshots"), { recursive: true });
+      fs.writeFileSync(path.join(root, "screenshots", "result.png"), contents, "utf8");
+    }
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, ?, null, ?)`,
+      [
+        "ambiguous-legacy",
+        "project-1",
+        "Ambiguous legacy proof",
+        "screenshots/result.png",
+        JSON.stringify({ sourcePath: "screenshots/result.png" }),
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+
+    expect(broker.listBrokenArtifacts()[0]).toMatchObject({
+      artifactId: "ambiguous-legacy",
+      recoverablePath: null,
+    });
+    expect(() => broker.recoverArtifact({ artifactId: "ambiguous-legacy" }))
+      .toThrow(/matches multiple surviving roots and cannot be recovered safely/);
+    expect(broker.listArtifacts({ artifactId: "ambiguous-legacy" })[0]?.uri)
+      .toBe("screenshots/result.png");
+  });
+
+  it("uses an artifact's lane owner to disambiguate legacy recovery", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const firstLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    const secondLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-b");
+    for (const [root, contents] of [[firstLaneRoot, "lane-a"], [secondLaneRoot, "lane-b"]] as const) {
+      fs.mkdirSync(path.join(root, "screenshots"), { recursive: true });
+      fs.writeFileSync(path.join(root, "screenshots", "result.png"), contents, "utf8");
+    }
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "lane-a",
+        "project-1",
+        "Lane A",
+        "main",
+        "feature/lane-a",
+        firstLaneRoot,
+        "active",
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, ?, null, ?)`,
+      [
+        "owned-legacy",
+        "project-1",
+        "Owned legacy proof",
+        "screenshots/result.png",
+        JSON.stringify({ sourcePath: "screenshots/result.png" }),
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+    db.run(
+      `insert into computer_use_artifact_links(
+         id, artifact_id, project_id, owner_kind, owner_id, relation, metadata_json, created_at
+       ) values (?, ?, ?, 'lane', ?, 'attached_to', null, ?)`,
+      [
+        "owned-legacy-link",
+        "owned-legacy",
+        "project-1",
+        "lane-a",
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+
+    const recovered = broker.recoverArtifact({ artifactId: "owned-legacy" });
+    expect(recovered.availability).toBe("available");
+    expect(fs.readFileSync(path.join(projectRoot, recovered.uri), "utf8")).toBe("lane-a");
   });
 
   it("prunes broken records that cannot be recovered", () => {

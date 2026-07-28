@@ -33,6 +33,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
 import {
   fileExists,
+  isEnoentError,
   isRecord,
   nowIso,
   resolvePathWithinRoot,
@@ -94,6 +95,11 @@ type ResolvedStoredArtifact = {
   mimeType: string | null;
   stagedFilePath: string | null;
 };
+
+type RecoverableSourceResolution =
+  | { status: "found"; path: string }
+  | { status: "missing" }
+  | { status: "ambiguous"; paths: string[] };
 
 type StoredLinkRow = {
   id: string;
@@ -611,53 +617,112 @@ export function createComputerUseArtifactBrokerService(args: {
    * caller's path and root in metadata, so a capture that was never imported
    * can be re-imported as long as its lane worktree still exists.
    */
-  const findRecoverableSourcePath = (record: ComputerUseArtifactRecord): string | null => {
+  const resolveArtifactLaneRoots = (record: ComputerUseArtifactRecord): string[] => {
+    const laneIds = new Set<string>();
+    if (record.laneId) laneIds.add(record.laneId);
+    for (const link of readLinkRows([record.id])) {
+      if (link.ownerKind === "lane") {
+        laneIds.add(link.ownerId);
+        continue;
+      }
+      if (link.ownerKind !== "chat_session") continue;
+      const session = db.get<{ lane_id: string | null }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [link.ownerId],
+      );
+      if (session?.lane_id) laneIds.add(session.lane_id);
+    }
+    if (!laneIds.size) return [];
+
+    const placeholders = [...laneIds].map(() => "?").join(", ");
+    const rows = db.all<{ worktree_path: string; attached_root_path: string | null }>(
+      `
+        select worktree_path, attached_root_path
+        from lanes
+        where project_id = ?
+          and id in (${placeholders})
+      `,
+      [projectId, ...[...laneIds].sort()],
+    );
+    return Array.from(new Set(
+      rows
+        .flatMap((row) => [row.attached_root_path, row.worktree_path])
+        .filter((root): root is string => Boolean(root))
+        .map((root) => path.resolve(root)),
+    )).sort();
+  };
+
+  const resolveCandidateAcrossRoots = (
+    candidate: string,
+    roots: string[],
+  ): RecoverableSourceResolution => {
+    const matches = new Set<string>();
+    for (const root of roots) {
+      let resolved: string;
+      try {
+        resolved = resolvePathWithinRoot(root, candidate, { allowMissing: true });
+      } catch {
+        continue;
+      }
+      if (fileExists(resolved)) matches.add(realpathOrSelf(path.resolve(resolved)));
+    }
+    const paths = [...matches].sort();
+    if (paths.length === 1) return { status: "found", path: paths[0]! };
+    if (paths.length > 1) return { status: "ambiguous", paths };
+    return { status: "missing" };
+  };
+
+  const resolveRecoverableSource = (record: ComputerUseArtifactRecord): RecoverableSourceResolution => {
     const candidates: string[] = [];
     const push = (value: string | null | undefined): void => {
       if (!value) return;
       const trimmed = value.trim();
       if (!trimmed || isHttpUrl(trimmed)) return;
-      candidates.push(trimmed);
+      if (!candidates.includes(trimmed)) candidates.push(trimmed);
     };
     push(toOptionalString(record.metadata?.absolutePath));
     push(toOptionalString(record.metadata?.sourcePath));
     push(record.uri);
 
     const metadataCallerRoot = toOptionalString(record.metadata?.callerRoot);
-    const roots = [
-      ...(metadataCallerRoot ? [metadataCallerRoot] : []),
-      projectRoot,
-      // Any surviving lane worktree — the capture usually came from the lane
-      // the agent was running in, whose name we no longer know for old rows.
-      ...listLaneWorktreeRoots(),
-    ];
+    const laneRoots = resolveArtifactLaneRoots(record);
+    const authoritativeRoots = metadataCallerRoot
+      ? [path.resolve(metadataCallerRoot)]
+      : laneRoots.length
+        ? laneRoots
+        : null;
+    const fallbackRoots = [projectRoot, ...listLaneWorktreeRoots()];
 
     for (const candidate of candidates) {
       if (path.isAbsolute(candidate)) {
-        if (fileExists(candidate)) return path.resolve(candidate);
+        if (fileExists(candidate)) return { status: "found", path: realpathOrSelf(path.resolve(candidate)) };
         continue;
       }
-      for (const root of roots) {
-        let resolved: string;
-        try {
-          resolved = resolvePathWithinRoot(root, candidate, { allowMissing: true });
-        } catch {
-          continue;
-        }
-        if (fileExists(resolved)) return resolved;
+      const resolution = resolveCandidateAcrossRoots(
+        candidate,
+        authoritativeRoots ?? fallbackRoots,
+      );
+      if (resolution.status !== "missing") {
+        return resolution;
       }
     }
-    return null;
+    return { status: "missing" };
   };
 
   const listLaneWorktreeRoots = (): string[] => {
     try {
       return fs.readdirSync(layout.worktreesDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
-        .map((entry) => path.join(layout.worktreesDir, entry.name));
+        .map((entry) => path.join(layout.worktreesDir, entry.name))
+        .sort();
     } catch {
       return [];
     }
+  };
+
+  const findRecoverableSourcePath = (record: ComputerUseArtifactRecord): string | null => {
+    const resolution = resolveRecoverableSource(record);
+    return resolution.status === "found" ? resolution.path : null;
   };
 
   const resolveAvailability = (record: ComputerUseArtifactRecord): ComputerUseArtifactAvailability => {
@@ -842,13 +907,17 @@ export function createComputerUseArtifactBrokerService(args: {
         if (filePath && !sharedReference) {
           try {
             const stat = fs.statSync(filePath);
-            if (stat.isFile()) {
-              freedBytes = stat.size;
-              fs.rmSync(filePath, { force: true });
-              fileRemoved = true;
+            if (!stat.isFile()) {
+              throw new Error(`Artifact storage path is not a regular file: ${filePath}`);
             }
-          } catch {
-            // Already gone (or never written). Rows still go.
+            freedBytes = stat.size;
+            fs.rmSync(filePath, { force: true });
+            fileRemoved = true;
+          } catch (error) {
+            // Absence is idempotent. Permission, lock, I/O, and other failures
+            // must retain both rows so the deletion can be retried rather than
+            // orphaning bytes that ADE can no longer manage.
+            if (!isEnoentError(error)) throw error;
           }
         }
         db.run("delete from computer_use_artifact_links where artifact_id = ?", [artifactId]);
@@ -1088,12 +1157,19 @@ export function createComputerUseArtifactBrokerService(args: {
       if (resolveAvailability(record) === "available") {
         return toArtifactView(record, readLinkRows([artifactId]));
       }
-      const sourcePath = findRecoverableSourcePath(record);
-      if (!sourcePath) {
+      const source = resolveRecoverableSource(record);
+      if (source.status === "ambiguous") {
+        throw new Error(
+          `The original file for "${record.title}" matches multiple surviving roots and cannot be recovered safely: `
+          + source.paths.join(", "),
+        );
+      }
+      if (source.status === "missing") {
         throw new Error(
           `The original file for "${record.title}" no longer exists, so it cannot be recovered. Remove the record instead.`,
         );
       }
+      const sourcePath = source.path;
       if (!isAllowedExternalArtifactSource(sourcePath, allowedImportRoots)
         || isDeniedArtifactSource(sourcePath, deniedImportRoots)) {
         throw new Error(`Artifact path is outside allowed import roots: ${sourcePath}`);
