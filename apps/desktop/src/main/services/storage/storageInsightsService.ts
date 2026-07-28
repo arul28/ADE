@@ -141,6 +141,13 @@ export type StorageInsightsServiceOptions = {
   laneService?: LaneLifecycleBackend | null;
   projectConfigService?: LaneCleanupConfigReader | null;
   releaseLaneRuntimeResources?: ((laneId: string) => void | Promise<void>) | null;
+  /**
+   * Drops the proof records whose stored file lived at or under a removed path.
+   * Injected rather than imported so this service keeps its single dependency
+   * on the filesystem; absent in the daemon-backed fallback instance, where the
+   * broker lives in the other process and prunes on its own next read.
+   */
+  purgeProofRecordsUnder?: (removedPath: string) => void;
 };
 
 export function isObsoleteRecoveryBackup(
@@ -1016,6 +1023,16 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }
       if (!stat.isFile()) return { valid: null, reason: "Recovery backups must be files." };
       label = "Recovery backup";
+    } else if (target.kind === "proof_attachments") {
+      if (await hasSymlinkAncestor(projectRoot, targetPath)) {
+        return { valid: null, reason: "Links cannot be used in a cleanup path." };
+      }
+      // Same jail the broker and the `ade-artifact://` handler enforce.
+      const proofRoots = [layout.artifactsDir, path.join(layout.adeDir, "attachments")];
+      if (!proofRoots.some((root) => isSameOrWithin(root, targetPath))) {
+        return { valid: null, reason: "This path is not proof or attachment storage." };
+      }
+      label = isSameOrWithin(layout.artifactsDir, targetPath) ? "Proof and recordings" : "Attachments";
     } else {
       return { valid: null, reason: "This cleanup target is not supported." };
     }
@@ -1122,6 +1139,18 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           await removeWorktree(checked.valid.path);
         } else {
           await fs.promises.rm(checked.valid.path, { recursive: true, force: false });
+        }
+        if (target.kind === "proof_attachments") {
+          // Rows must not outlive the bytes: a proof record whose file is gone
+          // renders as a permanently broken tile in the drawer.
+          try {
+            options.purgeProofRecordsUnder?.(checked.valid.path);
+          } catch (error) {
+            options.logger.warn("storage.cleanup_proof_records_failed", {
+              path: checked.valid.path,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
         removed.push({ path: checked.valid.path, bytes: checked.valid.bytes });
       } catch (error) {

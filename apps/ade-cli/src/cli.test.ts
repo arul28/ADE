@@ -5922,6 +5922,46 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("resolves a relative proof attach path against the caller's cwd", () => {
+    // The agent's cwd is its lane worktree; the runtime storing the artifact
+    // runs at the project root. Resolving here is what stops the runtime from
+    // having to guess which tree a bare "shots/proof.png" belongs to.
+    const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
+    expect(args.callerRoot).toBe(process.cwd());
+    expect((args.inputs as Array<{ path: string }>)[0]?.path).toBe(
+      path.resolve(process.cwd(), "shots/proof.png"),
+    );
+  });
+
+  it("maps proof rm and prune --broken to the delete actions", () => {
+    const rm = buildCliPlan(["proof", "rm", "artifact-1", "artifact-2"]);
+    expect(rm.kind).toBe("execute");
+    if (rm.kind !== "execute") return;
+    expect(rm.steps[0]?.params).toMatchObject({
+      name: "delete_computer_use_artifacts",
+      arguments: { artifactIds: ["artifact-1", "artifact-2"] },
+    });
+
+    const prune = buildCliPlan(["proof", "prune", "--broken"]);
+    expect(prune.kind).toBe("execute");
+    if (prune.kind !== "execute") return;
+    expect(prune.steps[0]?.params).toMatchObject({
+      name: "prune_broken_computer_use_artifacts",
+    });
+
+    // Bare `prune` only reports; removal has to be asked for explicitly.
+    const dryRun = buildCliPlan(["proof", "prune"]);
+    expect(dryRun.kind).toBe("execute");
+    if (dryRun.kind !== "execute") return;
+    expect(dryRun.steps[0]?.params).toMatchObject({
+      name: "list_broken_computer_use_artifacts",
+    });
+  });
+
   it("rejects invalid --role values", () => {
     expect(() => parseCliArgs(["--role", "bogus", "lanes", "list"])).toThrow(
       /--role must be one of/,

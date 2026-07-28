@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CaretDown, CaretRight, CheckCircle, Circle, Stop, XCircle } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, CaretDown, CaretRight, Stop } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import type { AgentChatSpawnKind } from "../../../shared/types";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import {
+  ChatCard,
+  ChatCardDetail,
+  ChatCardDetailRow,
+  ChatCardRow,
+  ChatCardTitle,
+  firstMeaningfulSummary,
+  humanizeAgentIdentity,
+} from "./chatCardPrimitives";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import type {
   BackgroundFinishChipRenderEvent,
@@ -119,10 +128,13 @@ export function SubagentSpawnCard({
   const childSessionId = event.childSessionId?.trim() || null;
   const navigable = Boolean(childSessionId);
   const typeAccent = spawnTypeAccent(event.spawnKind);
-  const resultSummary = !isRunning ? event.resultSummary?.trim() || null : null;
+  const agentIdentity = humanizeAgentIdentity(event.agentType);
+  // Never print `"Agent completed"` where a result belongs — that string is
+  // Codex filler, not an outcome.
+  const resultSummary = !isRunning ? firstMeaningfulSummary(event.resultSummary) : null;
 
   const cardShell = cn(
-    "w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
+    "w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
     typeAccent
       ? typeAccent.cardClass
       : "border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_6%,transparent)]",
@@ -145,9 +157,24 @@ export function SubagentSpawnCard({
               {typeAccent.label}
             </span>
           ) : null}
-          {event.agentType?.trim() && event.agentType.trim() !== "background" ? (
-            <span className="shrink-0 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_7%,transparent)] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-[color:var(--chat-accent)]">
-              {event.agentType.trim()}
+          {/* Role, not id. Codex hands us its internal agent path
+              (`/ROOT/SHIP_POLL_927`); `uppercase` on top of that made it shout a
+              file path at the reader. `humanizeAgentIdentity` turns the last
+              segment into a role and lifts a trailing issue/PR number into its
+              own chip; runtimes that never set an agent type (OpenCode, Droid)
+              get null and render no chip at all. The raw value stays as the
+              tooltip so nothing is lost. */}
+          {agentIdentity ? (
+            <span
+              title={agentIdentity.raw}
+              className="shrink-0 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_7%,transparent)] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-[color:var(--chat-accent)]"
+            >
+              {agentIdentity.label}
+            </span>
+          ) : null}
+          {agentIdentity?.ref ? (
+            <span className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] tabular-nums text-fg/50">
+              {agentIdentity.ref}
             </span>
           ) : null}
           {event.background ? (
@@ -207,11 +234,18 @@ export function SubagentSpawnCard({
 }
 
 /**
- * Result card at the chronological position where the agent ended. Status +
- * duration, a ~2-line preview of the final report, "View transcript", and a
- * "↑ jump to start" affordance. Warm terminal states: stopped → amber tone,
- * failed → reason chip + a `Details` disclosure with the error text (never a red
- * error block).
+ * Result card at the chronological position where the agent ended — the "role +
+ * result" shape: what it was, what it found, how long it took.
+ *
+ * The head line is the agent's TASK, not the word "Finished": a transcript full
+ * of `Finished / Finished / Finished` says nothing, and the status is already
+ * carried by the glyph and the tone. The body is the real report preview;
+ * runtime filler (`"Agent completed"`) is filtered out by
+ * {@link firstMeaningfulSummary} and falls back to the status word rather than
+ * printing placeholder text where a result belongs.
+ *
+ * Warm terminal states throughout: stopped → amber tone, failed → an `error`
+ * chip plus a `Details` disclosure. Never a red error block.
  */
 export function SubagentResultCard({
   event,
@@ -227,96 +261,90 @@ export function SubagentResultCard({
   const isStopped = event.status === "stopped";
   const isFailed = event.status === "failed";
   const duration = formatSubagentDurationMs(event.durationMs);
+  const statusWord = isSuccess ? "Finished" : isStopped ? "Stopped — interrupted" : "Failed";
+  const title = event.description?.trim() || statusWord;
+  const summary = firstMeaningfulSummary(event.summaryPreview);
 
-  const toneCard = isSuccess
-    ? "border-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_5%,transparent)]"
-    : isStopped
-      ? "border-amber-300/14 bg-amber-300/[0.045]"
-      : "border-amber-400/16 bg-amber-400/[0.05]";
-  const statusLabel = isSuccess ? "Finished" : isStopped ? "stopped — interrupted" : "Failed";
-  const statusColor = isSuccess ? "text-fg/70" : "text-amber-100/85";
+  const counters = [
+    typeof event.toolUseCount === "number" && event.toolUseCount > 0
+      ? `${event.toolUseCount} tool${event.toolUseCount === 1 ? "" : "s"}`
+      : null,
+    typeof event.totalTokens === "number" && event.totalTokens > 0
+      ? `${formatContextTokens(event.totalTokens)} tokens`
+      : null,
+  ].filter((part): part is string => Boolean(part));
 
   return (
-    <div className={cn("w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors", toneCard)}>
-      <div className="flex items-center gap-3 px-3.5 py-3">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center self-center">
-          {isSuccess ? (
-            <CheckCircle size={16} weight="bold" className="text-[color:var(--chat-accent)]" />
-          ) : isStopped ? (
-            <Circle size={14} weight="fill" className="text-amber-300/80" />
-          ) : (
-            <XCircle size={16} weight="bold" className="text-amber-300/85" />
-          )}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] font-semibold", statusColor)}>
-              {statusLabel}
-            </span>
-            {duration ? (
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">{duration}</span>
-            ) : null}
-            {typeof event.toolUseCount === "number" && event.toolUseCount > 0 ? (
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">
-                · {event.toolUseCount} tool{event.toolUseCount === 1 ? "" : "s"}
-              </span>
-            ) : null}
-            {typeof event.totalTokens === "number" && event.totalTokens > 0 ? (
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">
-                · {formatContextTokens(event.totalTokens)} tokens
-              </span>
-            ) : null}
-            {isFailed && event.error?.trim() ? (
-              <span className="rounded-md border border-amber-400/18 bg-amber-400/[0.07] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.12em] text-amber-100/75">
-                error
-              </span>
-            ) : null}
-            {event.worktreeBranch?.trim() ? (
+    <ChatCard skin={isSuccess ? "inset" : "rail"} tone={isSuccess ? "ok" : "warn"}>
+      <ChatCardRow
+        tone={isSuccess ? "ok" : isStopped ? "idle" : "warn"}
+        align="top"
+        meta={duration}
+        action={onViewTranscript || onJumpToStart ? (
+          <span className="flex flex-col items-end gap-1">
+            {onViewTranscript ? (
               <button
                 type="button"
-                onClick={() => void navigator.clipboard?.writeText(event.worktreePath || event.worktreeBranch || "")}
-                title={event.worktreePath || event.worktreeBranch}
-                className="rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold text-fg/55 transition-colors hover:text-fg/75"
+                onClick={onViewTranscript}
+                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
+                title="View transcript"
               >
-                worktree: {event.worktreeBranch}
+                View transcript
               </button>
             ) : null}
-            {event.parentLabel ? (
-              <span className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">spawned by {event.parentLabel}</span>
+            {onJumpToStart ? (
+              <button
+                type="button"
+                onClick={onJumpToStart}
+                className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
+                title="Jump to start"
+              >
+                <ArrowUp size={11} weight="bold" aria-hidden />
+                jump to start
+              </button>
             ) : null}
+          </span>
+        ) : null}
+      >
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+          <ChatCardTitle className={cn("shrink", !isSuccess && "text-amber-100/85")}>{title}</ChatCardTitle>
+          {!isSuccess && event.description?.trim() ? (
+            <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/60">
+              {statusWord.toLowerCase()}
+            </span>
+          ) : null}
+          {isFailed && event.error?.trim() ? (
+            <span className="shrink-0 rounded-md border border-amber-400/18 bg-amber-400/[0.07] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.12em] text-amber-100/75">
+              error
+            </span>
+          ) : null}
+          {event.worktreeBranch?.trim() ? (
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(event.worktreePath || event.worktreeBranch || "")}
+              title={event.worktreePath || event.worktreeBranch}
+              className="shrink-0 rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold text-fg/55 transition-colors hover:text-fg/75"
+            >
+              worktree: {event.worktreeBranch}
+            </button>
+          ) : null}
+          {event.parentLabel ? (
+            <span className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">spawned by {event.parentLabel}</span>
+          ) : null}
+        </div>
+        {summary ? (
+          <div className="mt-1 line-clamp-2 whitespace-normal text-[length:calc(var(--chat-font-size)*10.5/14)] leading-snug text-fg/66">
+            {summary}
           </div>
-          {event.summaryPreview?.trim() ? (
-            <div className="mt-1 line-clamp-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/66">
-              {event.summaryPreview.trim()}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1 self-center">
-          {onViewTranscript ? (
-            <button
-              type="button"
-              onClick={onViewTranscript}
-              className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors hover:text-[color:var(--chat-accent)]"
-              title="View transcript"
-            >
-              View transcript
-            </button>
-          ) : null}
-          {onJumpToStart ? (
-            <button
-              type="button"
-              onClick={onJumpToStart}
-              className="inline-flex items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
-              title="Jump to start"
-            >
-              <ArrowUp size={11} weight="bold" aria-hidden />
-              jump to start
-            </button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+        {counters.length ? (
+          <div className="mt-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/32">
+            {counters.join(" · ")}
+          </div>
+        ) : null}
+      </ChatCardRow>
       {isFailed && event.error?.trim() ? (
-        <div className="px-3.5 pb-3">
+        <div className="ml-[26px] mt-2">
           <button
             type="button"
             onClick={() => setDetailsOpen((value) => !value)}
@@ -333,7 +361,7 @@ export function SubagentResultCard({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </ChatCard>
   );
 }
 
@@ -354,7 +382,7 @@ export function BackgroundFinishChip({ event }: { event: BackgroundFinishChipRen
   return (
     <div
       className={cn(
-        "inline-flex max-w-[min(100%,70ch)] items-center gap-2 overflow-hidden rounded-md border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
+        "inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 overflow-hidden rounded-md border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
         ok
           ? "border-white/[0.07] bg-white/[0.025] text-fg/55"
           : "border-amber-300/14 bg-amber-300/[0.05] text-amber-100/75",
@@ -371,12 +399,14 @@ export function BackgroundFinishChip({ event }: { event: BackgroundFinishChipRen
 }
 
 /**
- * One calm card standing in for a run of subagents that were all stopped by a
- * single user interrupt — instead of a wall of identical "stopped — interrupted"
- * result cards. Collapsed by default: a single amber line reading "N agents
- * stopped when you interrupted" with a disclosure that lists each agent and a
- * "jump to start" link (reusing the same row-key scroll machinery as the result
- * cards). Never a red error block; inherits `--chat-accent` for the hover.
+ * The fan-in cell: ONE card standing in for a run of subagents that were all
+ * stopped by a single user interrupt, instead of a wall of identical "stopped —
+ * interrupted" result cards.
+ *
+ * Head row is the count; each agent is a detail row inside the same card, which
+ * is what keeps a mass interrupt (a dozen — or fifty — agents) legible at a
+ * glance. Collapsible, expanded by default up to a handful of agents. Never a
+ * red error block.
  */
 export function SubagentStoppedGroupCard({
   event,
@@ -385,55 +415,44 @@ export function SubagentStoppedGroupCard({
   event: SubagentStoppedGroupEvent;
   onJumpToStart?: (rowKey: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const count = event.count;
+  const [expanded, setExpanded] = useState(count <= 6);
   const headline = `${count} ${count === 1 ? "agent" : "agents"} stopped when you interrupted`;
 
   return (
-    <div
-      className={cn(
-        "w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
-        "border-amber-300/14 bg-amber-300/[0.045]",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-amber-300/[0.05]"
+    <ChatCard skin="rail" tone="warn">
+      <ChatCardRow
+        tone="warn"
+        icon={Stop}
+        action={(
+          <span className="text-amber-100/55">
+            {expanded ? <CaretDown size={12} weight="bold" aria-hidden /> : <CaretRight size={12} weight="bold" aria-hidden />}
+          </span>
+        )}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center self-center">
-          <Stop size={13} weight="fill" className="text-amber-300/80" aria-hidden />
-        </span>
-        <span className="min-w-0 flex-1 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] font-semibold text-amber-100/85">
-          {headline}
-        </span>
-        <span className="shrink-0 self-center text-amber-100/55">
-          {expanded ? <CaretDown size={12} weight="bold" aria-hidden /> : <CaretRight size={12} weight="bold" aria-hidden />}
-        </span>
-      </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="min-w-0 text-left"
+        >
+          <ChatCardTitle className="text-amber-100/85">{headline}</ChatCardTitle>
+        </button>
+      </ChatCardRow>
       {expanded ? (
-        <ul className="flex flex-col border-t border-amber-300/10 px-3.5 py-1.5">
+        <ChatCardDetail>
           {event.items.map((item) => (
-            <li key={item.agentKey} className="flex min-w-0 items-center gap-2 py-1">
-              <span className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/66">
-                {item.title}
-              </span>
-              {onJumpToStart ? (
-                <button
-                  type="button"
-                  onClick={() => onJumpToStart(item.jumpToStartRowKey)}
-                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38 transition-colors hover:text-[color:var(--chat-accent)]"
-                  title="Jump to start"
-                >
-                  <ArrowUp size={11} weight="bold" aria-hidden />
-                  jump to start
-                </button>
-              ) : null}
-            </li>
+            <ChatCardDetailRow
+              key={item.agentKey}
+              tone="idle"
+              label={item.title}
+              title={item.title}
+              value={onJumpToStart ? "jump to start" : undefined}
+              onClick={onJumpToStart ? () => onJumpToStart(item.jumpToStartRowKey) : undefined}
+            />
           ))}
-        </ul>
+        </ChatCardDetail>
       ) : null}
-    </div>
+    </ChatCard>
   );
 }

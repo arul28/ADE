@@ -42,7 +42,8 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
       <motion.div
         layout
         className={cn(
-          "inline-flex max-w-[min(100%,34rem)] items-center rounded-full px-3 py-1.5 ring-1 ring-inset",
+          // One transcript width for every row — see `--chat-content-width`.
+          "inline-flex max-w-[var(--chat-content-width,52rem)] items-center rounded-full px-3 py-1.5 ring-1 ring-inset",
           "bg-amber-500/[0.08] text-amber-100/85",
           tint.ring,
           tint.border,

@@ -3,7 +3,6 @@ import type {
   ComputerUseArtifactOwner,
   ComputerUseActivityItem,
   ComputerUseArtifactView,
-  ComputerUseBackendStatus,
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
 import type { ComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
@@ -43,42 +42,15 @@ export function collectRequiredComputerUseKindsFromPhases(
   return Array.from(required);
 }
 
-function buildActivity(
-  artifacts: ComputerUseArtifactView[],
-  backendStatus: ComputerUseBackendStatus,
-) : ComputerUseActivityItem[] {
-  const liveBackendActivity: ComputerUseActivityItem[] = [];
-  for (const backend of backendStatus.backends.slice(0, 4)) {
-    const at = new Date().toISOString();
-    if (backend.available && backend.state === "installed") {
-      liveBackendActivity.push({
-        id: `backend:${backend.name}:available`,
-        at,
-        kind: "backend_available",
-        title: `${backend.name} ready`,
-        detail: backend.detail,
-        backendName: backend.name,
-        artifactId: null,
-        severity: "success",
-      });
-      continue;
-    }
-    if (!backend.available || backend.state === "missing") {
-      liveBackendActivity.push({
-        id: `backend:${backend.name}:unavailable`,
-        at,
-        kind: "backend_unavailable",
-        title: `${backend.name} unavailable`,
-        detail: backend.detail,
-        backendName: backend.name,
-        artifactId: null,
-        severity: "warning",
-      });
-      continue;
-    }
-  }
-
-  const artifactActivity = artifacts.slice(0, 6).map((artifact) => ({
+/**
+ * Activity is a record of things that happened, so every entry is derived from
+ * a stored artifact and carries that artifact's real timestamp. Backend
+ * readiness is a *current* condition, not an event — synthesizing feed rows for
+ * it stamped with `Date.now()` put fabricated "just now" entries at the top of
+ * every scope, which is why that half is gone.
+ */
+function buildActivity(artifacts: ComputerUseArtifactView[]): ComputerUseActivityItem[] {
+  return artifacts.slice(0, 8).map((artifact) => ({
     id: `artifact:${artifact.id}`,
     at: artifact.createdAt,
     kind: "artifact_ingested" as const,
@@ -86,12 +58,10 @@ function buildActivity(
     detail: `${artifact.backendName} produced ${artifact.title}.`,
     artifactId: artifact.id,
     backendName: artifact.backendName,
-    severity: artifact.reviewState === "accepted" ? "success" as const : "info" as const,
+    severity: artifact.availability === "missing_file" || artifact.availability === "unimported"
+      ? ("warning" as const)
+      : ("success" as const),
   }));
-
-  return [...liveBackendActivity, ...artifactActivity]
-    .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
-    .slice(0, 8);
 }
 
 export function buildComputerUseOwnerSnapshot(args: {
@@ -138,6 +108,6 @@ export function buildComputerUseOwnerSnapshot(args: {
     activeBackend,
     artifacts,
     recentArtifacts,
-    activity: buildActivity(artifacts, backendStatus),
+    activity: buildActivity(artifacts),
   };
 }

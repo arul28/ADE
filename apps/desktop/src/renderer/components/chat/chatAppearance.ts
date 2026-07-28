@@ -50,6 +50,48 @@ export function transcriptBubblePaddingPx(density: ChatTranscriptDensity): {
   }
 }
 
+/**
+ * The transcript's ONE content width.
+ *
+ * Every row — prose, cards, plan, files-changed, activity bundles, pills —
+ * clamps to `--chat-content-width` and nothing else. Before this token there
+ * were seven disagreeing clamps (832 / 804 / 736 / 704 / 672 / 616 / 544 px),
+ * and the card clamp — 70 characters, which resolved against the browser's 16px
+ * default because no card sets a font-size — stopped ~26% short of the prose it
+ * sat under.
+ *
+ * It scales with the viewport on purpose: a fixed 832px wastes most of a 27"
+ * display. `min(100%, clamp(min, vw, max))` keeps the reading measure sane on a
+ * laptop, grows on a large screen, and never exceeds its container — so an open
+ * side pane (which shrinks the container, not the viewport) narrows the column
+ * rather than clipping it.
+ */
+export const CHAT_CONTENT_WIDTH_MIN_PX = 720;
+export const CHAT_CONTENT_WIDTH_MAX_PX = 1180;
+export const CHAT_CONTENT_WIDTH_VIEWPORT_RATIO = 0.62;
+
+/** CSS half of the token. Must stay in lockstep with {@link resolveChatContentWidthPx}. */
+export const CHAT_CONTENT_WIDTH_CSS =
+  `min(100%, clamp(${CHAT_CONTENT_WIDTH_MIN_PX}px, ${CHAT_CONTENT_WIDTH_VIEWPORT_RATIO * 100}vw, ${CHAT_CONTENT_WIDTH_MAX_PX}px))`;
+
+/**
+ * JS half of the token, for layout maths that cannot read a CSS `clamp()`
+ * (the chat pane's floating-pane reserve). Same inputs, same answer.
+ */
+export function resolveChatContentWidthPx(
+  availableWidthPx: number,
+  viewportWidthPx?: number,
+): number {
+  const viewport = Number.isFinite(viewportWidthPx) && (viewportWidthPx ?? 0) > 0
+    ? (viewportWidthPx as number)
+    : (typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : availableWidthPx);
+  const target = Math.min(
+    CHAT_CONTENT_WIDTH_MAX_PX,
+    Math.max(CHAT_CONTENT_WIDTH_MIN_PX, viewport * CHAT_CONTENT_WIDTH_VIEWPORT_RATIO),
+  );
+  return availableWidthPx > 0 ? Math.min(availableWidthPx, target) : target;
+}
+
 /** CSS vars for transcript + composer (scoped under `[data-chat-appearance-root]`). */
 export function buildChatAppearanceRootStyle(params: {
   chatFontSizePx: number;
@@ -64,6 +106,11 @@ export function buildChatAppearanceRootStyle(params: {
 
   return {
     ["--chat-font-size" as string]: `${params.chatFontSizePx}px`,
+    ["--chat-content-width" as string]: CHAT_CONTENT_WIDTH_CSS,
+    // `--chat-column` predates the token and is read by the composer and the
+    // pane's draft-launch rows. Aliasing it here keeps composer and transcript
+    // on ONE width instead of two independent definitions.
+    ["--chat-column" as string]: "var(--chat-content-width)",
     ["--chat-row-gap" as string]: `${gap}px`,
     ["--chat-timeline-pad-x" as string]: `${padX}px`,
     ["--chat-timeline-pad-top" as string]: `${padTop}px`,

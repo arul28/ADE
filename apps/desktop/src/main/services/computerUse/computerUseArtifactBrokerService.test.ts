@@ -43,7 +43,7 @@ describe("computerUseArtifactBrokerService", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("routes ingested artifacts to additional owners and persists review metadata", () => {
+  it("persists review metadata for ingested artifacts", () => {
     const events: Array<{ type: string; artifactId: string }> = [];
 
     const broker = createComputerUseArtifactBrokerService({
@@ -74,13 +74,8 @@ describe("computerUseArtifactBrokerService", () => {
     expect(initial[0]?.reviewState).toBe("accepted");
     expect(initial[0]?.workflowState).toBe("evidence_only");
 
-    const routed = broker.routeArtifact({
-      artifactId,
-      owner: { kind: "linear_issue", id: "issue-1" },
-    });
-    expect(routed.links.map((link) => `${link.ownerKind}:${link.ownerId}`)).toEqual([
+    expect(initial[0]?.links.map((link) => `${link.ownerKind}:${link.ownerId}`)).toEqual([
       "lane:lane-1",
-      "linear_issue:issue-1",
     ]);
 
     const reviewed = broker.updateArtifactReview({
@@ -101,7 +96,6 @@ describe("computerUseArtifactBrokerService", () => {
     expect(events.map((event) => event.type)).toEqual([
       "artifact-linked",
       "artifact-ingested",
-      "artifact-linked",
       "artifact-reviewed",
     ]);
   });
@@ -255,6 +249,235 @@ describe("computerUseArtifactBrokerService", () => {
       [ingested.artifacts[0]!.id],
     );
     expect(row?.backend_style).toBe("manual");
+  });
+
+  it("resolves a relative capture path against the caller's lane worktree", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+
+    // Agents run inside the lane worktree, so this is where their relative
+    // paths point — resolving against projectRoot silently lost every capture.
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    fs.mkdirSync(path.join(laneRoot, "shots"), { recursive: true });
+    fs.writeFileSync(path.join(laneRoot, "shots", "proof.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const ingested = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      callerRoot: laneRoot,
+      inputs: [{ kind: "screenshot", title: "Lane proof", path: "shots/proof.png" }],
+    });
+
+    const stored = ingested.artifacts[0]!;
+    // The bytes were copied into the artifact store, not merely referenced.
+    expect(stored.uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
+    expect(fs.existsSync(path.join(projectRoot, stored.uri))).toBe(true);
+    expect(broker.listArtifacts({ artifactId: stored.id })[0]?.availability).toBe("available");
+  });
+
+  it("throws instead of persisting a record when the capture file is not found", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        callerRoot: path.join(projectRoot, ".ade", "worktrees", "lane-a"),
+        inputs: [{ kind: "screenshot", title: "Missing proof", path: "shots/gone.png" }],
+      }),
+    ).toThrow(/Artifact file not found: shots\/gone\.png/);
+
+    // The whole point: no dead row survives a failed capture.
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+  });
+
+  it("deletes an artifact's rows and its stored file, and stays idempotent", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+
+    const ingested = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
+    });
+    const artifactId = ingested.artifacts[0]!.id;
+    const filePath = path.join(projectRoot, ingested.artifacts[0]!.uri);
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    const result = broker.deleteArtifacts({ artifactId });
+    expect(result.deleted[0]).toMatchObject({ artifactId, fileRemoved: true });
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(broker.listArtifacts({ artifactId })).toHaveLength(0);
+    expect(
+      db.all(`select id from computer_use_artifact_links where artifact_id = ?`, [artifactId]),
+    ).toHaveLength(0);
+
+    // Deleting again is not an error — the file may already be gone.
+    const repeat = broker.deleteArtifacts({ artifactId });
+    expect(repeat.missing).toEqual([artifactId]);
+    expect(repeat.failed).toEqual([]);
+  });
+
+  it("removes rows for records whose file was already deleted", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const ingested = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
+    });
+    const artifactId = ingested.artifacts[0]!.id;
+    fs.rmSync(path.join(projectRoot, ingested.artifacts[0]!.uri), { force: true });
+
+    expect(broker.listArtifacts({ artifactId })[0]?.availability).toBe("missing_file");
+    const result = broker.deleteArtifacts({ artifactId });
+    expect(result.deleted[0]?.fileRemoved).toBe(false);
+    expect(broker.listArtifacts({ artifactId })).toHaveLength(0);
+  });
+
+  it("prunes broken records and reports where a recoverable one still lives", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    // A record shaped like the ones the old silent fallback wrote: a raw
+    // relative path that never made it into `.ade/artifacts`.
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fs.writeFileSync(path.join(laneRoot, "survivor.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, ?, null, ?)`,
+      [
+        "dead-1",
+        "project-1",
+        "Orphan",
+        "survivor.png",
+        JSON.stringify({ sourcePath: "survivor.png" }),
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+
+    const broken = broker.listBrokenArtifacts();
+    expect(broken).toHaveLength(1);
+    expect(broken[0]).toMatchObject({ artifactId: "dead-1", reason: "outside_artifact_store" });
+    // Compared by suffix: the resolver realpaths, and on macOS the temp dir
+    // resolves through the /private symlink.
+    expect(broken[0]?.recoverablePath?.endsWith("/.ade/worktrees/lane-a/survivor.png")).toBe(true);
+
+    // Recovery re-imports the surviving bytes rather than dropping the record.
+    const recovered = broker.recoverArtifact({ artifactId: "dead-1" });
+    expect(recovered.availability).toBe("available");
+    expect(broker.listBrokenArtifacts()).toHaveLength(0);
+  });
+
+  it("prunes broken records that cannot be recovered", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', null, ?)`,
+      ["dead-2", "project-1", "Gone", "nowhere/missing.png", "2026-03-12T14:00:00.000Z"],
+    );
+
+    const pruned = broker.pruneBrokenArtifacts();
+    expect(pruned.deleted.map((entry) => entry.artifactId)).toEqual(["dead-2"]);
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+  });
+
+  it("refuses to promote files from the project secrets directory", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const secretPath = path.join(secretsDir, "api-keys.v1.bin");
+    fs.writeFileSync(secretPath, "token", "utf8");
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [{ kind: "console_logs", title: "Keys", path: secretPath }],
+      }),
+    ).toThrow(/not allowed as a proof source/);
+  });
+
+  // The import roots include the project root and every lane worktree, because
+  // agents capture next to the code they are changing. That puts credential
+  // files in the same directories as legitimate screenshots, and the artifact
+  // store syncs to paired phones — so the file-type gate, not the root list, is
+  // what keeps them out.
+  it.each([
+    [".env.local", "GEMINI_API_KEY=live-key"],
+    ["ade.db", "sqlite"],
+    ["ade.db-wal", "wal"],
+    ["id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----"],
+    ["server.pem", "-----BEGIN CERTIFICATE-----"],
+  ])("refuses to import %s from an allowed root", (name, contents) => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const sensitivePath = path.join(projectRoot, name);
+    fs.writeFileSync(sensitivePath, contents, "utf8");
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [{ kind: "screenshot", title: "Proof", path: sensitivePath }],
+      }),
+    ).toThrow(/not importable as proof/);
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+  });
+
+  it("still imports real proof from the project root", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const shotPath = path.join(projectRoot, "capture.png");
+    fs.writeFileSync(shotPath, "png-bytes", "utf8");
+
+    const result = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "screenshot", title: "Proof", path: shotPath }],
+    });
+
+    expect(result.artifacts).toHaveLength(1);
+    expect(result.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
   });
 
   it("rejects symlinked artifact paths that escape the project artifact directory", () => {

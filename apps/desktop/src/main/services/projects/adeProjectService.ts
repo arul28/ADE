@@ -461,7 +461,23 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
       deletedPaths.push(resolved);
     };
 
-    if (options.packs) rmrf(repair.paths.artifactsDir);
+    if (options.packs) {
+      rmrf(repair.paths.artifactsDir);
+      // Removing `.ade/artifacts` without the rows leaves every proof record
+      // pointing at bytes that no longer exist — the inverse of the orphan a
+      // lane delete used to create. Drop the records with the files.
+      try {
+        args.db.run(
+          "delete from computer_use_artifact_links where artifact_id in (select id from computer_use_artifacts where project_id = ?)",
+          [args.projectId],
+        );
+        args.db.run("delete from computer_use_artifacts where project_id = ?", [args.projectId]);
+      } catch (error) {
+        args.logger?.warn("ade.project.clear_local_data.artifact_rows_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (options.logs) rmrf(repair.paths.logsDir);
     if (options.transcripts) rmrf(repair.paths.transcriptsDir);
 

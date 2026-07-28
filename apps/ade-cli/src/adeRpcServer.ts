@@ -8,7 +8,6 @@ import {
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
-import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/proof/agentBrowserArtifactAdapter";
 import {
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
@@ -544,7 +543,7 @@ const TOOL_SPECS: ToolSpec[] = [
         backendName: { type: "string", minLength: 1 },
         toolName: { type: "string" },
         command: { type: "string" },
-        manifestPath: { type: "string" },
+        callerRoot: { type: "string", description: "Absolute directory that relative input paths are resolved against. Defaults to the agent's workspace root." },
         inputs: {
           type: "array",
           items: {
@@ -618,6 +617,44 @@ const TOOL_SPECS: ToolSpec[] = [
         kind: { type: "string", enum: ["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"] },
         limit: { type: "number", minimum: 1, maximum: 200, default: 50 },
       }
+    }
+  },
+  {
+    name: "delete_computer_use_artifacts",
+    description: "Delete stored proof artifacts: removes the database records and the stored file. Idempotent.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        artifactId: { type: "string", minLength: 1 },
+        artifactIds: { type: "array", items: { type: "string", minLength: 1 } },
+      }
+    }
+  },
+  {
+    name: "list_broken_computer_use_artifacts",
+    description: "List proof records whose stored file is missing or was never imported, with the path each can be recovered from when one survives.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 2000, default: 200 },
+      }
+    }
+  },
+  {
+    name: "prune_broken_computer_use_artifacts",
+    description: "Delete every proof record whose file is missing or was never imported.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "recover_computer_use_artifact",
+    description: "Re-import a broken proof record's original file when it still exists on disk.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["artifactId"],
+      properties: { artifactId: { type: "string", minLength: 1 } }
     }
   },
   {
@@ -1396,6 +1433,7 @@ const READ_ONLY_TOOLS = new Set([
   "getLinearIssueComments",
   "get_environment_info",
   "list_computer_use_artifacts",
+  "list_broken_computer_use_artifacts",
   "get_computer_use_backend_status",
 ]);
 
@@ -4347,39 +4385,20 @@ async function runTool(args: {
   if (name === "ingest_computer_use_artifacts") {
     const backendStyle = assertComputerUseBackendStyle(toolArgs.backendStyle, "backendStyle");
     const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
-    const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
-    let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
-    if (manifestPath) {
-      if (path.isAbsolute(manifestPath)) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "manifestPath must be relative to the project root");
-      }
-      let resolvedManifest: string;
-      try {
-        resolvedManifest = resolvePathWithinRoot(runtime.projectRoot, path.resolve(runtime.projectRoot, manifestPath));
-      } catch {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "manifestPath must stay within the project root");
-      }
-      inputs = loadAgentBrowserArtifactPayloadFromFile(resolvedManifest).map((entry) => ({
-        ...entry,
-        metadata: {
-          ...(isRecord(entry.metadata) ? entry.metadata : {}),
-          manifestPath: resolvedManifest,
-        },
-      }));
-    } else if (backendName === "agent-browser" && inputs.length === 1 && isRecord(inputs[0]?.json)) {
-      const adapted = parseAgentBrowserArtifactPayload(inputs[0].json);
-      if (adapted.length > 0) {
-        inputs = adapted.map((entry) => ({
-          ...entry,
-          metadata: {
-            ...(isRecord(entry.metadata) ? entry.metadata : {}),
-            adapter: "agent-browser-json",
-          },
-        }));
-      }
-    }
+    const inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
     if (inputs.length === 0) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide inputs or manifestPath for computer-use ingestion.");
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide inputs for computer-use ingestion.");
+    }
+    // Relative `input.path` values come from an agent whose cwd is its lane
+    // worktree, not the project root. Prefer an explicit callerRoot, then the
+    // caller's lane worktree, and only then the project root.
+    const callerRoot = asOptionalTrimmedString(toolArgs.callerRoot)
+      ?? resolveLaneWorktreePath(
+        runtime,
+        asOptionalTrimmedString(toolArgs.laneId) ?? resolveChatSessionLaneId(runtime, session),
+      );
+    if (callerRoot && !path.isAbsolute(callerRoot)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
     }
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
@@ -4388,6 +4407,7 @@ async function runTool(args: {
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
+      ...(callerRoot ? { callerRoot } : {}),
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),
         title: asOptionalTrimmedString(entry.title),
@@ -4414,6 +4434,37 @@ async function runTool(args: {
         limit: asNumber(toolArgs.limit, 50),
       }),
     };
+  }
+
+  if (name === "delete_computer_use_artifacts") {
+    const ids = [
+      ...(asOptionalTrimmedString(toolArgs.artifactId) ? [asOptionalTrimmedString(toolArgs.artifactId)!] : []),
+      ...(Array.isArray(toolArgs.artifactIds)
+        ? toolArgs.artifactIds.map((entry) => asOptionalTrimmedString(entry)).filter((entry): entry is string => Boolean(entry))
+        : []),
+    ];
+    if (!ids.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide artifactId or artifactIds to delete.");
+    }
+    return runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds: ids });
+  }
+
+  if (name === "list_broken_computer_use_artifacts") {
+    return {
+      broken: runtime.computerUseArtifactBrokerService.listBrokenArtifacts({
+        limit: asNumber(toolArgs.limit, 200),
+      }),
+    };
+  }
+
+  if (name === "prune_broken_computer_use_artifacts") {
+    return runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts();
+  }
+
+  if (name === "recover_computer_use_artifact") {
+    return runtime.computerUseArtifactBrokerService.recoverArtifact({
+      artifactId: assertNonEmptyString(toolArgs.artifactId, "artifactId"),
+    });
   }
 
   if (name === "get_computer_use_backend_status") {

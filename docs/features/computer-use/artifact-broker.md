@@ -144,7 +144,7 @@ only the collected artifact set.
 
 ## Routing and promotion
 
-`routeArtifact(args)` adds a new link to a different owner. The original link is preserved (to maintain provenance) and a new link is added with an appropriate `relation`.
+**Removed.** `routeArtifact` shipped with full IPC + preload + action-domain plumbing and never had a production caller. Re-linking an artifact to a second owner is done by ingesting with the owners you want.
 
 Example promotion flow:
 
@@ -186,7 +186,7 @@ Artifacts flow into downstream workflow surfaces:
 - **Linear issue** — a linked Linear issue can get a comment + optional state transition through the shared Linear write surface.
 - **Automations history** — linked automation run shows the artifact in the run log.
 
-Publication paths call `routeArtifact` or `reviewArtifact` depending on the transition — publication always preserves the original link for provenance.
+There is no publication path in the shipping product; `updateArtifactReview` exists only for the CTO operator tool.
 
 ## Invariants
 

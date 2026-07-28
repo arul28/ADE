@@ -2866,6 +2866,13 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_computer_use_artifacts_project_created on computer_use_artifacts(project_id, created_at)");
   db.run("create index if not exists idx_computer_use_artifacts_project_kind on computer_use_artifacts(project_id, artifact_kind)");
+  // Lane a capture belongs to, so deleting a lane can delete its proof instead
+  // of orphaning rows behind a removed worktree. Nullable and backfill-free:
+  // pre-existing rows keep `null` ("unknown lane") and are only reachable
+  // through the explicit prune/delete paths. Non-unique index only — a CRR
+  // table cannot carry a UNIQUE index besides its primary key.
+  safeAddColumn(db, "alter table computer_use_artifacts add column lane_id text");
+  db.run("create index if not exists idx_computer_use_artifacts_lane on computer_use_artifacts(project_id, lane_id)");
 
   db.run(`
     create table if not exists computer_use_artifact_links (

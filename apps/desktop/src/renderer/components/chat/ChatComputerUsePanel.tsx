@@ -3,7 +3,9 @@ import {
   Cube,
   FileText,
   ImageSquare,
+  MagnifyingGlass,
   SpinnerGap,
+  Trash,
   VideoCamera,
   WarningCircle,
   X,
@@ -46,6 +48,41 @@ function relativeTime(iso: string): string {
 
 function externalArtifactUrl(uri: string): string | null {
   return /^https?:\/\//i.test(uri) ? uri : null;
+}
+
+/**
+ * Hosts that predate availability reporting omit the field. Treat that as
+ * "available" and let the preview read decide, rather than showing a broken
+ * state we have no evidence for.
+ */
+function artifactAvailability(artifact: ComputerUseArtifactView): "available" | "missing_file" | "unimported" {
+  return artifact.availability ?? "available";
+}
+
+function isBrokenArtifact(artifact: ComputerUseArtifactView): boolean {
+  return artifactAvailability(artifact) !== "available";
+}
+
+function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
+  const source = artifact.metadata?.sourcePath ?? artifact.metadata?.absolutePath;
+  const value = typeof source === "string" ? source.trim() : "";
+  if (!value) return null;
+  const segments = value.split(/[\\/]/).filter(Boolean);
+  return segments.length > 2 ? `…/${segments.slice(-2).join("/")}` : value;
+}
+
+/**
+ * We know exactly why a tile is blank, so say it. "Preview unavailable" told
+ * the user nothing and offered nothing to do about it.
+ */
+function brokenArtifactExplanation(artifact: ComputerUseArtifactView): string {
+  const where = shortSourcePath(artifact);
+  if (artifactAvailability(artifact) === "unimported") {
+    return where
+      ? `Never copied into ADE's storage — it was left at ${where} in the lane it was captured in.`
+      : "Never copied into ADE's storage, so there are no bytes to show.";
+  }
+  return "The stored file has since been deleted.";
 }
 
 function localArtifactUrl(uri: string): string | null {
@@ -103,6 +140,9 @@ function useVisibleArtifactPreview(
       !visible
       || loaded
       || !artifact.uri
+      // The host already told us there are no bytes; asking for them anyway
+      // just burns an IPC round trip per tile to get null back.
+      || isBrokenArtifact(artifact)
       || (!isImageArtifact(artifact) && !isVideoArtifact(artifact))
     ) return;
     const directPreview = allowLocalArtifactProtocol
@@ -267,11 +307,15 @@ export function ChatProofArtifactCard({
             <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof preview" />
           </div>
         ) : mediaFailed || (loaded && !preview && (image || video)) ? (
-          <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-xl border border-white/[0.055] bg-black/16 px-4 text-center">
-            <WarningCircle size={17} className="text-muted-fg/28" />
-            <span className="font-sans text-[10px] leading-4 text-muted-fg/40">
-              Preview unavailable{externalUrl ? " here. Open the source to view it." : " from the connected runtime."}
-            </span>
+          // Broken proof shrinks. A full-height empty box wastes the most
+          // valuable space in a 322px rail to say nothing.
+          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
+            <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
+            <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
+              {externalUrl
+                ? "This proof lives at its source. Open it to view."
+                : brokenArtifactExplanation(artifact)}
+            </div>
           </div>
         ) : preview && image ? (
           <button
@@ -382,6 +426,152 @@ export function ChatProofTimeline({
   );
 }
 
+/**
+ * A drawer tile. The rail is ~322px wide, so this is a two-up thumbnail with
+ * the label underneath rather than the full timeline card at reduced height —
+ * that layout truncated every title to "ADE Attention Cen…" and collapsed the
+ * metadata line to "screens… · 7h ago".
+ */
+function DrawerProofTile({
+  artifact,
+  allowLocalArtifactProtocol,
+  busy,
+  onDelete,
+  onRecover,
+}: {
+  artifact: ComputerUseArtifactView;
+  allowLocalArtifactProtocol: boolean;
+  busy: boolean;
+  onDelete: (artifact: ComputerUseArtifactView) => void;
+  onRecover: (artifact: ComputerUseArtifactView) => void;
+}) {
+  const { containerRef, preview, loading } = useVisibleArtifactPreview(
+    artifact,
+    allowLocalArtifactProtocol,
+  );
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [mediaFailed, setMediaFailed] = useState(false);
+  const broken = isBrokenArtifact(artifact) || mediaFailed;
+  const image = isImageArtifact(artifact);
+  const video = isVideoArtifact(artifact);
+  const externalUrl = externalArtifactUrl(artifact.uri);
+  const recoverable = typeof artifact.metadata?.sourcePath === "string";
+
+  useEffect(() => {
+    setMediaFailed(false);
+  }, [artifact.id, artifact.uri, preview]);
+
+  return (
+    <div
+      ref={containerRef}
+      data-chat-proof-artifact={artifact.id}
+      className={cn(
+        "group/tile relative flex min-w-0 flex-col gap-1.5",
+        busy && "pointer-events-none opacity-45",
+      )}
+    >
+      <div
+        className={cn(
+          "relative overflow-hidden rounded-lg border bg-black/22",
+          broken
+            ? "border-amber-200/[0.11] bg-amber-300/[0.03]"
+            : "border-white/[0.07]",
+        )}
+      >
+        {broken ? (
+          // Broken items shrink to a short strip instead of an empty box.
+          <div className="flex h-14 items-center justify-center px-2">
+            <WarningCircle size={15} weight="duotone" className="text-amber-200/45" />
+          </div>
+        ) : loading ? (
+          <div className="flex h-[74px] items-center justify-center text-muted-fg/30">
+            <SpinnerGap size={15} className="animate-spin" aria-label="Loading proof preview" />
+          </div>
+        ) : preview && image ? (
+          <button
+            type="button"
+            className="block w-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+            aria-label={`Enlarge ${artifact.title}`}
+            onClick={() => setLightboxOpen(true)}
+          >
+            <img
+              src={preview}
+              alt={artifact.title}
+              onError={() => setMediaFailed(true)}
+              className="block h-[74px] w-full object-cover"
+            />
+          </button>
+        ) : preview && video ? (
+          <video
+            src={preview}
+            controls
+            preload="metadata"
+            onError={() => setMediaFailed(true)}
+            className="block h-[74px] w-full bg-black object-cover"
+          />
+        ) : (
+          <div className="flex h-[74px] items-center justify-center text-muted-fg/28">
+            <ArtifactKindIcon artifact={artifact} size={17} />
+          </div>
+        )}
+
+        <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover/tile:opacity-100 focus-within:opacity-100">
+          {externalUrl ? (
+            <button
+              type="button"
+              aria-label={`Open ${artifact.title} at its source`}
+              onClick={() => void window.ade.app.openExternal(externalUrl)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/62 text-fg/60 backdrop-blur-sm transition-colors hover:text-fg/95"
+            >
+              <ArrowSquareOut size={10} weight="bold" />
+            </button>
+          ) : null}
+          {broken && recoverable ? (
+            <button
+              type="button"
+              aria-label={`Locate ${artifact.title} in its lane`}
+              onClick={() => onRecover(artifact)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/62 text-fg/60 backdrop-blur-sm transition-colors hover:text-fg/95"
+            >
+              <MagnifyingGlass size={10} weight="bold" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={`Delete ${artifact.title}`}
+            onClick={() => onDelete(artifact)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/62 text-fg/60 backdrop-blur-sm transition-colors hover:bg-red-500/70 hover:text-white"
+          >
+            <Trash size={10} weight="bold" />
+          </button>
+        </div>
+      </div>
+
+      <div className="min-w-0">
+        <div className="truncate font-sans text-[10.5px] font-medium leading-[14px] text-fg/74" title={artifact.title}>
+          {artifact.title}
+        </div>
+        <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
+          {relativeTime(artifact.createdAt)}
+        </div>
+        {broken ? (
+          <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
+            {externalUrl ? "Stored at its source." : brokenArtifactExplanation(artifact)}
+          </div>
+        ) : null}
+      </div>
+
+      {lightboxOpen && preview && image ? (
+        <ArtifactLightbox
+          artifact={artifact}
+          preview={preview}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatComputerUsePanel({
   snapshot,
   onRefresh,
@@ -391,7 +581,60 @@ export function ChatComputerUsePanel({
   onRefresh: () => void | Promise<void>;
   allowLocalArtifactProtocol?: boolean;
 }) {
-  const artifacts = snapshot?.artifacts ?? [];
+  // Stable identity: `?? []` would hand every memo below a fresh array each
+  // render and defeat them.
+  const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  const brokenCount = useMemo(
+    () => artifacts.filter((artifact) => isBrokenArtifact(artifact)).length,
+    [artifacts],
+  );
+
+  const withBusy = useCallback(
+    async (ids: string[], run: () => Promise<unknown>) => {
+      setError(null);
+      setBusyIds((current) => new Set([...current, ...ids]));
+      try {
+        await run();
+        await onRefresh();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusyIds((current) => {
+          const next = new Set(current);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
+      }
+    },
+    [onRefresh],
+  );
+
+  const handleDelete = useCallback(
+    (artifact: ComputerUseArtifactView) => {
+      void withBusy([artifact.id], () =>
+        window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }),
+      );
+    },
+    [withBusy],
+  );
+
+  const handleRecover = useCallback(
+    (artifact: ComputerUseArtifactView) => {
+      void withBusy([artifact.id], () =>
+        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }),
+      );
+    },
+    [withBusy],
+  );
+
+  const handlePruneBroken = useCallback(() => {
+    const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
+    if (!ids.length) return;
+    void withBusy(ids, () => window.ade.computerUse.deleteArtifacts({ artifactIds: ids }));
+  }, [artifacts, withBusy]);
 
   if (!snapshot || artifacts.length === 0) {
     return (
@@ -408,10 +651,10 @@ export function ChatComputerUsePanel({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <div className="flex items-center justify-between gap-3 px-0.5">
+    <div className="flex min-w-0 flex-col gap-2.5">
+      <div className="flex items-center justify-between gap-2 px-0.5">
         <div className="font-sans text-[10.5px] text-muted-fg/42">
-          {artifacts.length} item{artifacts.length === 1 ? "" : "s"} collected
+          {artifacts.length} item{artifacts.length === 1 ? "" : "s"}
         </div>
         <button
           type="button"
@@ -421,13 +664,37 @@ export function ChatComputerUsePanel({
           Refresh
         </button>
       </div>
-      <div className="grid min-w-0 grid-cols-1 gap-2.5">
+
+      {brokenCount > 0 ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200/[0.1] bg-amber-300/[0.035] px-2.5 py-1.5">
+          <span className="min-w-0 font-sans text-[9.5px] leading-[13px] text-muted-fg/48">
+            {brokenCount} item{brokenCount === 1 ? " has" : "s have"} no stored file.
+          </span>
+          <button
+            type="button"
+            onClick={handlePruneBroken}
+            className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[9.5px] font-medium text-amber-100/60 transition-colors hover:bg-amber-300/[0.1] hover:text-amber-50/90"
+          >
+            Remove {brokenCount === 1 ? "it" : "them"}
+          </button>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="rounded-lg border border-red-400/20 bg-red-500/[0.06] px-2.5 py-1.5 font-sans text-[9.5px] leading-[13px] text-red-200/70">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
         {artifacts.map((artifact) => (
-          <ChatProofArtifactCard
+          <DrawerProofTile
             key={artifact.id}
             artifact={artifact}
-            variant="drawer"
             allowLocalArtifactProtocol={allowLocalArtifactProtocol}
+            busy={busyIds.has(artifact.id)}
+            onDelete={handleDelete}
+            onRecover={handleRecover}
           />
         ))}
       </div>

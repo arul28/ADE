@@ -31,6 +31,21 @@ function artifact(index: number, overrides: Partial<ComputerUseArtifactView> = {
   };
 }
 
+function snapshotOf(artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot {
+  return {
+    owner: { kind: "chat_session", id: "session-1" },
+    backendStatus: {
+      backends: [],
+      localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+    },
+    summary: `${artifacts.length} proof item`,
+    activeBackend: null,
+    artifacts,
+    recentArtifacts: artifacts,
+    activity: [],
+  };
+}
+
 beforeEach(() => {
   delete (window as unknown as { IntersectionObserver?: unknown }).IntersectionObserver;
   (window as unknown as { ade: unknown }).ade = {
@@ -126,6 +141,52 @@ describe("proof rendering", () => {
     expect(screen.getByText("Proof 7")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View 2 earlier proof items" }));
     expect(onOpenDrawer).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes a drawer item and refreshes, instead of leaving the user no way to remove it", async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    const deleteArtifacts = vi.fn().mockResolvedValue({ deleted: [], missing: [], failed: [], freedBytes: 0 });
+    (window.ade as any).computerUse.deleteArtifacts = deleteArtifacts;
+
+    render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={onRefresh} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Proof 1" }));
+
+    await waitFor(() => expect(deleteArtifacts).toHaveBeenCalledWith({ artifactId: "artifact-1" }));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalled());
+  });
+
+  it("explains why a never-imported capture is blank and offers to locate or remove it", async () => {
+    const readPreview = vi.mocked(window.ade.computerUse.readArtifactPreview);
+    const recoverArtifact = vi.fn().mockResolvedValue({});
+    (window.ade as any).computerUse.recoverArtifact = recoverArtifact;
+    (window.ade as any).computerUse.deleteArtifacts = vi.fn().mockResolvedValue({});
+
+    const broken = artifact(4, {
+      title: "Lost proof",
+      availability: "unimported",
+      uri: "shots/proof.png",
+      metadata: { sourcePath: "shots/proof.png" },
+    });
+    render(<ChatComputerUsePanel snapshot={snapshotOf([broken])} onRefresh={vi.fn()} />);
+
+    // Honest, specific copy — not "Preview unavailable from the connected runtime."
+    expect(await screen.findByText(/Never copied into ADE's storage/)).toBeTruthy();
+    expect(screen.getByText(/1 item has no stored file/)).toBeTruthy();
+    // No point asking the host for bytes it already told us do not exist.
+    expect(readPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Locate Lost proof in its lane" }));
+    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-4" }));
+  });
+
+  it("surfaces a failed delete instead of silently doing nothing", async () => {
+    (window.ade as any).computerUse.deleteArtifacts = vi.fn().mockRejectedValue(new Error("Artifact is locked"));
+
+    render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Proof 1" }));
+
+    expect(await screen.findByText("Artifact is locked")).toBeTruthy();
   });
 
   it("uses a remote-safe external action only for HTTP artifacts", async () => {

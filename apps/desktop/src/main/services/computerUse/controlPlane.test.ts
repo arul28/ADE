@@ -37,8 +37,33 @@ function createBackendStatus(): ComputerUseBackendStatus {
   };
 }
 
+function createArtifact(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "artifact-1",
+    kind: "screenshot",
+    backendStyle: "manual",
+    backendName: "ade-cli",
+    sourceToolName: null,
+    originalType: null,
+    title: "Checkout screen",
+    description: null,
+    uri: ".ade/artifacts/computer-use/shot.png",
+    storageKind: "file",
+    mimeType: "image/png",
+    metadata: {},
+    laneId: "lane-1",
+    createdAt: "2026-03-12T14:00:00.000Z",
+    links: [],
+    reviewState: "accepted",
+    workflowState: "evidence_only",
+    reviewNote: null,
+    availability: "available",
+    ...overrides,
+  } as any;
+}
+
 describe("computer use control plane", () => {
-  it("shows live backend activity when a backend is available", () => {
+  it("reports backend readiness in the summary without fabricating activity events", () => {
     const snapshot = buildComputerUseOwnerSnapshot({
       broker: {
         getBackendStatus: vi.fn(() => createBackendStatus()),
@@ -48,7 +73,39 @@ describe("computer use control plane", () => {
     });
 
     expect(snapshot.summary).toContain("Ghost OS is available and ready to capture proof");
-    expect(snapshot.activity.some((item) => item.kind === "backend_available")).toBe(true);
+    // Backend readiness is a current condition, not something that happened.
+    // It belongs in the summary, never as a feed row stamped "just now".
+    expect(snapshot.activity).toEqual([]);
+  });
+
+  it("derives activity from stored artifacts and keeps their real timestamps", () => {
+    const snapshot = buildComputerUseOwnerSnapshot({
+      broker: {
+        getBackendStatus: vi.fn(() => createBackendStatus()),
+        listArtifacts: vi.fn(() => [createArtifact()]),
+      } as any,
+      owner: { kind: "chat_session", id: "chat-1" },
+    });
+
+    expect(snapshot.activity).toHaveLength(1);
+    expect(snapshot.activity[0]).toMatchObject({
+      kind: "artifact_ingested",
+      artifactId: "artifact-1",
+      at: "2026-03-12T14:00:00.000Z",
+      severity: "success",
+    });
+  });
+
+  it("flags artifacts whose bytes were never imported as warnings", () => {
+    const snapshot = buildComputerUseOwnerSnapshot({
+      broker: {
+        getBackendStatus: vi.fn(() => createBackendStatus()),
+        listArtifacts: vi.fn(() => [createArtifact({ availability: "unimported" })]),
+      } as any,
+      owner: { kind: "chat_session", id: "chat-1" },
+    });
+
+    expect(snapshot.activity[0]?.severity).toBe("warning");
   });
 
   it("collects only supported proof kinds from required phases", () => {

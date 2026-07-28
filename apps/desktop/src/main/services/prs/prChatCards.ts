@@ -95,10 +95,14 @@ function compactCardText(value: string, maxChars = 480): string {
   return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
+/** Rows a CI card shows before it starts counting. Kept small; the rest is `+N more`. */
+const CI_ROW_CAP = 3;
+
 function ciRows(runs: PrActionRun[], checks: PrCheck[]): {
   rows: AdeCardRow[];
   progress: AdeCardProgress;
   other: number;
+  truncated: number;
 } {
   const jobs = runs.flatMap((run) => run.jobs);
   const items: Array<PrActionJob | PrCheck> = jobs.length > 0 ? jobs : checks;
@@ -121,7 +125,8 @@ function ciRows(runs: PrActionRun[], checks: PrCheck[]): {
   return {
     progress,
     other: ranked.filter((entry) => entry.bucket === "skipped" || entry.bucket === "unknown").length,
-    rows: ranked.slice(0, 3).map(({ item, bucket }) => ({
+    truncated: Math.max(0, ranked.length - CI_ROW_CAP),
+    rows: ranked.slice(0, CI_ROW_CAP).map(({ item, bucket }) => ({
       icon: jobIcon(bucket),
       text: item.name,
       detail: bucket,
@@ -151,8 +156,19 @@ export function buildPrCiCard(args: {
   pr: PrSummary;
   runs: PrActionRun[];
   checks: PrCheck[];
+  /**
+   * Why the job/check fetch produced nothing, when it failed.
+   *
+   * `[]` from a rejected GitHub call and `[]` from a PR that genuinely has no
+   * jobs are the same value but not the same fact: swallowing the difference
+   * rendered a content-free `[passing status]` chip under a green check while
+   * GitHub was returning 403. When this is set, the card says so and offers a
+   * retry instead of claiming a clean run.
+   */
+  fetchError?: string | null;
 }): AdeCardPayload {
   const { pr, runs, checks } = args;
+  const fetchError = args.fetchError?.trim() || null;
   const latestRuns = latestRunsByWorkflow(runs);
   const run = newestRun(latestRuns);
   const attempt = Math.max(1, ...latestRuns.map((entry) => entry.runAttempt ?? 1));
@@ -160,7 +176,7 @@ export function buildPrCiCard(args: {
     || run?.headSha?.trim()
     || `${pr.githubPrNumber}:unknown-head`;
   const episode = `${episodeHead}:${attempt}`;
-  const { rows, progress, other } = ciRows(latestRuns, checks);
+  const { rows, progress, other, truncated } = ciRows(latestRuns, checks);
   const state = pr.checksStatus === "pending" ? "live" : "terminal";
   const title = pr.checksStatus === "passing"
     ? "CI passed"
@@ -173,6 +189,9 @@ export function buildPrCiCard(args: {
       ? "success"
       : "accent";
   const total = progress.passed + progress.failed + progress.running + progress.queued + other;
+  // Only a zero-count card is actually degraded — if the jobs call failed but
+  // the checks call answered (or vice versa) we still have real detail to show.
+  const degraded = total === 0 && fetchError != null;
 
   return {
     cardId: `pr-ci:${pr.id}:${episode}`,
@@ -187,11 +206,22 @@ export function buildPrCiCard(args: {
           { label: "active", value: String(progress.running + progress.queued), tone: "accent" },
           ...(other > 0 ? [{ label: "other", value: String(other), tone: "neutral" as const }] : []),
         ]
-      : [{ label: "status", value: pr.checksStatus, tone }],
+      : degraded
+        ? []
+        : [{ label: "status", value: pr.checksStatus, tone }],
     rows,
     progress,
+    ...(truncated > 0 ? { rowsTruncated: truncated } : {}),
+    ...(degraded
+      ? {
+          degradedReason: `Couldn’t read the job list from GitHub — ${fetchError}`,
+          actions: [{ id: "retry", label: "Retry", kind: "primary" as const }],
+        }
+      : {}),
     navTarget: prNavTarget(pr, "checks"),
-    fallbackText: `PR #${pr.githubPrNumber} ${title.toLowerCase()}.`,
+    fallbackText: degraded
+      ? `PR #${pr.githubPrNumber} checks are ${pr.checksStatus}; job detail unavailable (${fetchError}).`
+      : `PR #${pr.githubPrNumber} ${title.toLowerCase()}.`,
   };
 }
 
@@ -353,11 +383,20 @@ export async function emitPrCardsForChange(args: {
 
   const cards: AdeCardPayload[] = [];
   if (checksChanged) {
-    const [runs, checks] = await Promise.all([
-      dataSource.getActionRuns(pr.id).catch(() => []),
-      dataSource.getChecks(pr.id).catch(() => []),
+    // Capture the failures instead of `.catch(() => [])`-ing them away: a
+    // rate-limited GitHub call and a PR with no jobs both produce `[]`, and
+    // only one of them means "everything is fine".
+    const [runsResult, checksResult] = await Promise.allSettled([
+      dataSource.getActionRuns(pr.id),
+      dataSource.getChecks(pr.id),
     ]);
-    cards.push(buildPrCiCard({ pr, runs, checks }));
+    const runs = runsResult.status === "fulfilled" ? runsResult.value : [];
+    const checks = checksResult.status === "fulfilled" ? checksResult.value : [];
+    const fetchError = [runsResult, checksResult]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)))
+      .join("; ") || null;
+    cards.push(buildPrCiCard({ pr, runs, checks, fetchError }));
   }
   if (reviewChanged) {
     const [reviews, threads] = await Promise.all([

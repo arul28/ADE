@@ -8750,10 +8750,14 @@ function buildProofPlan(args: string[]): CliPlan {
     };
   if (sub === "attach") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    const attachedPath = requireValue(
+    const rawPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
       "path",
     );
+    // The agent runs in its lane worktree; the runtime that stores the artifact
+    // runs at the project root. Resolve here, where the caller's cwd is known,
+    // so a relative path never has to be guessed at on the other side.
+    const attachedPath = path.resolve(process.cwd(), rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -8769,6 +8773,7 @@ function buildProofPlan(args: string[]): CliPlan {
             backendStyle: "manual",
             backendName: "ade-cli",
             toolName: "proof attach",
+            callerRoot: process.cwd(),
             ...proofOwnerBase(),
             inputs: [
               {
@@ -8780,6 +8785,65 @@ function buildProofPlan(args: string[]): CliPlan {
             ],
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "rm" || sub === "remove" || sub === "delete") {
+    const ids: string[] = [];
+    const explicitId = readValue(args, ["--id", "--artifact-id"]);
+    if (explicitId) ids.push(explicitId);
+    for (;;) {
+      const next = firstPositional(args);
+      if (!next) break;
+      ids.push(next);
+    }
+    if (!ids.length) requireValue(null, "artifact id");
+    return {
+      kind: "execute",
+      label: "proof rm",
+      steps: [
+        actionCallStep(
+          "result",
+          "delete_computer_use_artifacts",
+          collectGenericObjectArgs(args, { artifactIds: ids }),
+        ),
+      ],
+    };
+  }
+  if (sub === "prune") {
+    const broken = readFlag(args, ["--broken"]);
+    return {
+      kind: "execute",
+      label: broken ? "proof prune --broken" : "proof prune",
+      steps: [
+        broken
+          ? actionCallStep("result", "prune_broken_computer_use_artifacts", {})
+          : actionCallStep("result", "list_broken_computer_use_artifacts", {}),
+      ],
+    };
+  }
+  if (sub === "broken")
+    return {
+      kind: "execute",
+      label: "proof broken",
+      steps: [
+        actionCallStep(
+          "result",
+          "list_broken_computer_use_artifacts",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "recover") {
+    const artifactId = requireValue(
+      readValue(args, ["--id", "--artifact-id"]) ?? firstPositional(args),
+      "artifact id",
+    );
+    return {
+      kind: "execute",
+      label: "proof recover",
+      steps: [
+        actionCallStep("result", "recover_computer_use_artifact", { artifactId }),
       ],
     };
   }

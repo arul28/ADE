@@ -29,7 +29,7 @@ the remote host.
 
 ### Services (apps/desktop/src/main/services/computerUse/)
 
-- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingestArtifacts`), listing (`listArtifacts`), compatibility review-state management (`reviewArtifact`), routing (`routeArtifact`), backend status (`getBackendStatus`), and bounded preview reads (`readArtifactPreview`, 10 MiB maximum). Image previews cover BMP/GIF/JPEG/PNG/SVG/WebP; video previews cover M4V/MOV/MP4/OGV/WebM. Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
+- `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingest`), listing (`listArtifacts`), deletion (`deleteArtifacts`, `deleteArtifactsForLane`, `pruneBrokenArtifacts`, `purgeArtifactRecordsUnder`), recovery (`recoverArtifact`), broken-record reporting (`listBrokenArtifacts`), compatibility review-state management (`updateArtifactReview`), backend status (`getBackendStatus`), and bounded preview reads (`readArtifactPreview`, 10 MiB maximum). Image previews cover BMP/GIF/JPEG/PNG/SVG/WebP; video previews cover M4V/MOV/MP4/OGV/WebM. Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
 - `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities). Pure assembly layer over the broker.
 - `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
 
@@ -54,7 +54,10 @@ Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUs
 
 - `ade.proof.listArtifacts`
 - `ade.proof.getOwnerSnapshot`
-- `ade.proof.routeArtifact`
+- `ade.proof.deleteArtifacts`
+- `ade.proof.listBrokenArtifacts`
+- `ade.proof.pruneBrokenArtifacts`
+- `ade.proof.recoverArtifact`
 - `ade.proof.updateArtifactReview`
 - `ade.proof.readArtifactPreview`
 - `ade.proof.event` (push)

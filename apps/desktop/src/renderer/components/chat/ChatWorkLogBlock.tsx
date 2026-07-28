@@ -656,7 +656,24 @@ export function ChatToolActivityDetails({
   sessionId?: string | null;
 }) {
   const activityEntries = useMemo(() => dedupeChatToolActivityEntries(entries), [entries]);
+  // Keep the LAST call — the one that says what the agent is doing now — plus
+  // anything that FAILED, and fold the quiet successes behind a count. A 50-row
+  // scroll box of finished tool calls is noise; a rejected hook or a failed
+  // command is not, and must never be what the fold hides.
+  const [showHistory, setShowHistory] = useState(false);
+  const visibleEntries = useMemo(() => {
+    if (showHistory || activityEntries.length <= 1) return activityEntries;
+    const lastIndex = activityEntries.length - 1;
+    return activityEntries.filter((entry, index) => (
+      index === lastIndex
+      || entry.tone === "error"
+      || entry.status === "failed"
+      || entry.status === "interrupted"
+      || entry.status === "running"
+    ));
+  }, [activityEntries, showHistory]);
   if (activityEntries.length === 0) return null;
+  const hiddenCount = activityEntries.length - visibleEntries.length;
   return (
     <div className={cn("min-w-0 max-w-full overflow-hidden", className)}>
       <LocalhostServersStrip
@@ -665,8 +682,19 @@ export function ChatToolActivityDetails({
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
       />
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          onClick={() => setShowHistory(true)}
+          aria-expanded={false}
+          className="flex items-center gap-1.5 px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40 transition-colors hover:text-fg/70"
+        >
+          <CaretDown size={10} weight="bold" aria-hidden />
+          +{hiddenCount} previous tool call{hiddenCount === 1 ? "" : "s"}
+        </button>
+      ) : null}
       <div className="max-h-72 min-w-0 max-w-full space-y-0.5 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
-        {activityEntries.map((entry) => (
+        {visibleEntries.map((entry) => (
           <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
         ))}
       </div>

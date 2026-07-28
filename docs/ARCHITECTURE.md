@@ -1115,7 +1115,7 @@ Canonical tables:
 
 Channels (under `ade.proof.*`, renamed from `ade.computerUse.*`):
 
-- `ade.proof.listArtifacts`, `ade.proof.getOwnerSnapshot`, `ade.proof.routeArtifact`, `ade.proof.updateArtifactReview`, `ade.proof.readArtifactPreview`, plus a `ade.proof.event` push channel.
+- `ade.proof.listArtifacts`, `ade.proof.getOwnerSnapshot`, `ade.proof.deleteArtifacts`, `ade.proof.listBrokenArtifacts`, `ade.proof.pruneBrokenArtifacts`, `ade.proof.recoverArtifact`, `ade.proof.updateArtifactReview`, `ade.proof.readArtifactPreview`, plus a `ade.proof.event` push channel.
 - `ade proof capture` / `attach` / `list` in the ADE CLI are the cross-process surface; they call into the broker.
 
 Renderer surfaces:

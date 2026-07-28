@@ -3242,6 +3242,59 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     return { db, service, repoRoot, worktreesDir, childPath };
   }
 
+  it("deletes the lane's proof artifacts and their files, sparing proof shared with another lane", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service, repoRoot } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    const artifactsDir = path.join(repoRoot, ".ade", "artifacts", "computer-use");
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    const ownedFile = path.join(artifactsDir, "owned.png");
+    const sharedFile = path.join(artifactsDir, "shared.png");
+    fs.writeFileSync(ownedFile, "a");
+    fs.writeFileSync(sharedFile, "b");
+
+    const insertArtifact = (id: string, laneId: string, relative: string) => {
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, 'proj-delete', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', ?, ?)`,
+        [id, id, relative, laneId, "2026-03-12T14:00:00.000Z"],
+      );
+    };
+    insertArtifact("art-owned", "lane-child", ".ade/artifacts/computer-use/owned.png");
+    insertArtifact("art-shared", "lane-child", ".ade/artifacts/computer-use/shared.png");
+
+    // The shared artifact is also attached to a chat that lives in another
+    // lane, so deleting this lane must not take it away from that chat.
+    db.run(
+      `insert into terminal_sessions(id, lane_id, title, status, started_at, transcript_path)
+       values (?, ?, ?, 'exited', ?, ?)`,
+      ["chat-other", "lane-parent", "Other lane chat", "2026-03-12T14:00:00.000Z", "/tmp/other.log"],
+    );
+    db.run(
+      `insert into computer_use_artifact_links(
+         id, artifact_id, project_id, owner_kind, owner_id, relation, metadata_json, created_at
+       ) values (?, ?, ?, 'chat_session', ?, 'attached_to', null, ?)`,
+      ["link-1", "art-shared", "proj-delete", "chat-other", "2026-03-12T14:00:00.000Z"],
+    );
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    const remaining = db.all<{ id: string }>("select id from computer_use_artifacts").map((row) => row.id);
+    expect(remaining).toEqual(["art-shared"]);
+    expect(fs.existsSync(ownedFile)).toBe(false);
+    expect(fs.existsSync(sharedFile)).toBe(true);
+  });
+
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

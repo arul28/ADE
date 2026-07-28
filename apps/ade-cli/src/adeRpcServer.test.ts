@@ -1772,26 +1772,39 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("rejects computer-use manifests outside the project root", async () => {
+  it("forwards the caller's root so relative capture paths resolve in the agent's lane worktree", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    const outsideManifest = path.join(path.dirname(fixture.runtime.projectRoot), `ade-artifacts-${Date.now()}.json`);
-    fs.writeFileSync(outsideManifest, JSON.stringify([{ kind: "screenshot", path: "/tmp/shot.png" }]), "utf8");
+    const laneRoot = path.join(fixture.runtime.projectRoot, ".ade", "worktrees", "lane-a");
 
-    try {
-      await initialize(handler, { callerId: "chat-session-1", role: "agent" });
-      const response = await callTool(handler, "ingest_computer_use_artifacts", {
-        backendStyle: "external_cli",
-        backendName: "agent-browser",
-        manifestPath: `../${path.basename(outsideManifest)}`,
-      });
+    await initialize(handler, { callerId: "chat-session-1", role: "agent" });
+    await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      callerRoot: laneRoot,
+      inputs: [{ kind: "screenshot", title: "Lane proof", path: "shots/proof.png" }],
+    });
 
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("project root");
-      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
-    } finally {
-      fs.rmSync(outsideManifest, { force: true });
-    }
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({ callerRoot: laneRoot }),
+    );
+  });
+
+  it("rejects a relative caller root, which would resolve differently on each side", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "chat-session-1", role: "agent" });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      callerRoot: "../elsewhere",
+      inputs: [{ kind: "screenshot", title: "Proof", path: "shots/proof.png" }],
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("absolute");
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
   });
 
 

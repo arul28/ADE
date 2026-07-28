@@ -1477,13 +1477,42 @@ function CategoryCardBody({
   }
 
   if (categoryId === "proof_attachments") {
+    const cleanable = cleanableEntries(categoryId, category, laneIdByKey);
     return (
       <CardShell categoryId={categoryId} category={category} policyChip={policyChip}>
-        <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.45 }}>
-          {category.bytes > 0
-            ? "Review and remove individual items from the proof drawer, where you can see each screenshot and recording."
-            : "Nothing captured yet."}
-        </div>
+        {category.bytes > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {cleanable.map((entry) => (
+              <ItemRow
+                key={entry.item.id}
+                label={entry.item.label}
+                size={formatBytes(entry.item.bytes)}
+                detail={entry.item.lastModifiedAt ? `Last added ${relativeWhen(entry.item.lastModifiedAt)}` : entry.item.detail}
+                action={
+                  <ActionButton
+                    label="Remove…"
+                    icon={<Archive size={13} />}
+                    onClick={() =>
+                      onRequestCleanup({
+                        title: `Remove ${entry.item.label.toLowerCase()}`,
+                        intro:
+                          "These are the screenshots, recordings, and files agents attached as proof. Removing them deletes the files and the entries in every chat's proof drawer. Nothing else is affected.",
+                        targets: [entry.target],
+                      })
+                    }
+                  />
+                }
+              />
+            ))}
+            {cleanable.length === 0 ? (
+              <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.45 }}>
+                Proof storage is in use but cannot be removed from here.
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <EmptyLine label="Nothing captured yet." />
+        )}
       </CardShell>
     );
   }

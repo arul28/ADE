@@ -355,6 +355,44 @@ describe("storageInsightsService", () => {
     expect((await capped.getSnapshot()).truncated).toBe(true);
   });
 
+  it("removes proof storage and drops the matching proof records with it", async () => {
+    // Settings used to render this card with a size and no Remove button,
+    // pointing the user at a proof-drawer control that did not exist.
+    const artifactsDir = path.join(projectRoot, ".ade", "artifacts");
+    writeSized(path.join(artifactsDir, "computer-use", "shot.png"), 21);
+    const purged: string[] = [];
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      purgeProofRecordsUnder: (removedPath) => purged.push(removedPath),
+    });
+
+    const targets: StorageCleanupTarget[] = [{ kind: "proof_attachments", path: artifactsDir }];
+    const preview = await service.cleanupPreview(targets);
+    expect(preview.blocked).toEqual([]);
+    expect(preview.items[0]).toMatchObject({ path: artifactsDir, bytes: 21, label: "Proof and recordings" });
+
+    const result = await service.cleanup(targets, { preview });
+    expect(result.removed).toEqual([{ path: artifactsDir, bytes: 21 }]);
+    expect(fs.existsSync(artifactsDir)).toBe(false);
+    // Rows must never outlive the bytes.
+    expect(purged).toEqual([artifactsDir]);
+  });
+
+  it("refuses proof cleanup for paths outside the proof and attachment stores", async () => {
+    const outside = path.join(projectRoot, ".ade", "cache");
+    writeSized(path.join(outside, "blob.bin"), 4);
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const preview = await service.cleanupPreview([{ kind: "proof_attachments", path: outside }]);
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked).toEqual([
+      { path: outside, reason: "This path is not proof or attachment storage." },
+    ]);
+  });
+
   it("itemizes a removed target and a target deleted after preview", async () => {
     const first = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-old-first-"));
     const second = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-old-second-"));
