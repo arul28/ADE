@@ -2137,7 +2137,7 @@ private struct WorkChatComposerDraftInput: View {
         sending: sending,
         accessibilityLabelText: activeSendModeTitle,
         systemImageName: activeSendModeIcon,
-        minimumTapTargetSize: 44,
+        minimumTapTargetSize: 32,
         onSend: { text, attachments in
           await onSend(text, attachments, activeSendMode)
         },
@@ -2150,7 +2150,7 @@ private struct WorkChatComposerDraftInput: View {
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.14))
-          .frame(width: 44, height: 44)
+          .frame(width: 24, height: 32)
           .background(Color.white.opacity(0.9))
       }
       .buttonStyle(.plain)
@@ -2262,7 +2262,7 @@ private struct WorkChatComposerDraftInput: View {
         } label: {
           stopButtonModeIcon()
             .foregroundStyle(ADEColor.danger.opacity(0.85))
-            .frame(width: 44, height: 44)
+            .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(stopMode == .stopOnly ? "Stop turn and keep queue" : "Stop turn and clear queue")
@@ -2274,7 +2274,7 @@ private struct WorkChatComposerDraftInput: View {
           Image(systemName: "chevron.down")
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(ADEColor.danger.opacity(0.72))
-            .frame(width: 44, height: 44)
+            .frame(width: 24, height: 32)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("More stop options")
@@ -2302,11 +2302,11 @@ private struct WorkChatComposerDraftInput: View {
         }
       }
       .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
           .fill(ADEColor.danger.opacity(0.08))
       )
       .overlay {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
           .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
       }
       .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
