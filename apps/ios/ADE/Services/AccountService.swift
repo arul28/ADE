@@ -1,6 +1,7 @@
 import ClerkKit
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Build-time configuration for the account layer, sourced from Info.plist keys
 /// that are populated from build settings (`CLERK_PUBLISHABLE_KEY`,
@@ -14,6 +15,11 @@ enum AccountConfig {
 
   static var directoryBaseURL: URL? {
     guard let raw = infoValue("ADEAccountDirectoryBaseURL") else { return nil }
+    return URL(string: raw)
+  }
+
+  static var attentionRelayBaseURL: URL? {
+    guard let raw = infoValue("ADEPushRelayBaseURL") else { return nil }
     return URL(string: raw)
   }
 
@@ -78,6 +84,161 @@ struct AccountLocalSignOutState {
   }
 }
 
+struct AccountDeviceOwnershipState: Codable, Equatable {
+  static let maximumSafeEpoch = 9_007_199_254_740_991
+
+  let ownershipEpoch: Int
+  let ownerId: String?
+}
+
+struct AccountDeviceOwnershipStore {
+  private let defaults: UserDefaults
+  private let key: String
+
+  init(
+    defaults: UserDefaults = ADESharedContainer.defaults,
+    key: String = ADESharedContainer.accountDeviceOwnershipStateKey
+  ) {
+    self.defaults = defaults
+    self.key = key
+  }
+
+  var state: AccountDeviceOwnershipState {
+    guard let data = defaults.data(forKey: key),
+          let decoded = try? JSONDecoder().decode(AccountDeviceOwnershipState.self, from: data),
+          decoded.ownershipEpoch > 0,
+          decoded.ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch else {
+      return AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+    }
+    return decoded
+  }
+
+  /// Commits the account boundary before any network request is allowed to use
+  /// it. Repeating the same owner is stable; every owner/nil transition
+  /// advances the per-install epoch monotonically.
+  @discardableResult
+  func transition(to ownerId: String?) -> AccountDeviceOwnershipState {
+    let normalizedOwnerId = ownerId?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedOwnerId = normalizedOwnerId?.isEmpty == false ? normalizedOwnerId : nil
+    let current = state
+    guard current.ownerId != resolvedOwnerId else {
+      persist(current)
+      return current
+    }
+    let nextEpoch = min(
+      AccountDeviceOwnershipState.maximumSafeEpoch,
+      max(1, current.ownershipEpoch) + 1
+    )
+    let next = AccountDeviceOwnershipState(
+      ownershipEpoch: nextEpoch,
+      ownerId: resolvedOwnerId
+    )
+    persist(next)
+    return next
+  }
+
+  private func persist(_ state: AccountDeviceOwnershipState) {
+    guard let data = try? JSONEncoder().encode(state) else { return }
+    defaults.set(data, forKey: key)
+    defaults.synchronize()
+  }
+}
+
+/// Durable marker proving this installation still owes Relay a device
+/// revocation. It deliberately stores no Clerk credential: an explicit
+/// sign-out uses its live token immediately, while a later sign-in either
+/// retries under the same owner or atomically transfers the device to the new
+/// owner by registering it before clearing this marker.
+struct PendingAccountDeviceRevocation: Codable, Equatable {
+  let ownerId: String
+  let deviceId: String
+  let ownershipEpoch: Int
+  let createdAt: Date
+
+  private enum CodingKeys: String, CodingKey {
+    case ownerId
+    case deviceId
+    case ownershipEpoch
+    case createdAt
+  }
+
+  init(ownerId: String, deviceId: String, ownershipEpoch: Int, createdAt: Date) {
+    self.ownerId = ownerId
+    self.deviceId = deviceId
+    self.ownershipEpoch = ownershipEpoch
+    self.createdAt = createdAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    ownerId = try container.decode(String.self, forKey: .ownerId)
+    deviceId = try container.decode(String.self, forKey: .deviceId)
+    // v1 pending markers predate ownership epochs. Treat them as the oldest
+    // valid epoch so the next boundary safely replaces them.
+    ownershipEpoch = try container.decodeIfPresent(Int.self, forKey: .ownershipEpoch) ?? 1
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+  }
+}
+
+struct AccountDeviceRevocationStore {
+  private let defaults: UserDefaults
+  private let key: String
+
+  init(
+    defaults: UserDefaults = ADESharedContainer.defaults,
+    key: String = ADESharedContainer.pendingAccountDeviceRevocationKey
+  ) {
+    self.defaults = defaults
+    self.key = key
+  }
+
+  var pending: PendingAccountDeviceRevocation? {
+    guard let data = defaults.data(forKey: key) else { return nil }
+    return try? JSONDecoder().decode(PendingAccountDeviceRevocation.self, from: data)
+  }
+
+  @discardableResult
+  func mark(
+    ownerId: String,
+    deviceId: String,
+    ownershipEpoch: Int,
+    now: Date = Date()
+  ) -> PendingAccountDeviceRevocation? {
+    let normalizedOwnerId = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedOwnerId.isEmpty,
+          !normalizedDeviceId.isEmpty,
+          ownershipEpoch > 0,
+          ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch else {
+      return nil
+    }
+    // A newer boundary supersedes every older pending mutation for this
+    // installation. Preserve only an equal/newer marker.
+    if let existing = pending,
+       existing.deviceId == normalizedDeviceId,
+       existing.ownershipEpoch >= ownershipEpoch {
+      return existing
+    }
+    let record = PendingAccountDeviceRevocation(
+      ownerId: normalizedOwnerId,
+      deviceId: normalizedDeviceId,
+      ownershipEpoch: ownershipEpoch,
+      createdAt: now
+    )
+    guard let data = try? JSONEncoder().encode(record) else { return nil }
+    defaults.set(data, forKey: key)
+    defaults.synchronize()
+    return record
+  }
+
+  func clear(ifMatching record: PendingAccountDeviceRevocation? = nil) {
+    if let record, pending != record { return }
+    defaults.removeObject(forKey: key)
+    defaults.synchronize()
+  }
+}
+
 /// Keep token eligibility independently testable from ClerkKit. A cached Clerk
 /// session is not enough: ADE must currently publish the same signed-in user
 /// and must not be under a device-local sign-out boundary.
@@ -99,6 +260,14 @@ func accountSessionStatusAllowsAccess(_ status: Session.SessionStatus?) -> Bool 
   status == .active
 }
 
+func accountDeviceMutationMatchesCurrentOwnership(
+  ownerId: String,
+  ownershipEpoch: Int,
+  state: AccountDeviceOwnershipState
+) -> Bool {
+  ownershipEpoch == state.ownershipEpoch && ownerId == state.ownerId
+}
+
 /// A point-in-time account authorization used by account-created pairing.
 /// Pairing performs network work, so owner identity alone is insufficient: the
 /// generation also changes on local sign-out and account switches, invalidating
@@ -111,6 +280,55 @@ struct AccountPairingAuthorization: Equatable, Sendable {
 struct AccountPairingSession: Sendable {
   let authorization: AccountPairingAuthorization
   let token: String
+}
+
+private struct AccountAttentionDeviceRegistrationRequest {
+  let authorization: AccountPairingAuthorization
+  let deviceId: String
+  let ownershipEpoch: Int
+  let apnsToken: String?
+  let pushToStartToken: String?
+  let bundleId: String
+  let apsEnvironment: String
+  let preferences: [String: Any]
+}
+
+/// Serializes account device PUTs while coalescing queued refreshes to the most
+/// recent request. An in-flight request is allowed to finish because Relay's
+/// ownership epoch makes it harmless after an account boundary; no later PUT
+/// can overtake it.
+@MainActor
+final class LatestAccountRegistrationQueue<Request> {
+  private var inFlight: Task<Bool, Never>?
+  private var pending: Request?
+
+  func submit(
+    _ request: Request,
+    perform: @escaping @MainActor (Request) async -> Bool
+  ) async -> Bool {
+    pending = request
+    if let inFlight {
+      return await inFlight.value
+    }
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return false }
+      var result = false
+      while let request = self.pending {
+        self.pending = nil
+        result = await perform(request)
+      }
+      // This runs without an actor suspension after observing an empty queue,
+      // so a new submit can never attach to a completed drain.
+      self.inFlight = nil
+      return result
+    }
+    inFlight = task
+    return await task.value
+  }
+
+  func discardPending() {
+    pending = nil
+  }
 }
 
 struct AccountRelayTokenPolicy: Equatable {
@@ -195,6 +413,9 @@ final class AccountService: ObservableObject {
   @Published private(set) var machines: [AccountMachine] = []
   @Published private(set) var machinesState: MachinesState = .idle
   @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
+  /// Bumped after a new account Attention snapshot is committed to the App
+  /// Group. The in-app model observes this alongside SyncService revisions.
+  @Published private(set) var attentionSnapshotRevision = 0
   /// Transient, user-facing error from the last sign-in attempt.
   @Published var lastError: String?
 
@@ -202,11 +423,33 @@ final class AccountService: ObservableObject {
   private var eventTask: Task<Void, Never>?
   private var emailVerificationKind: AccountEmailVerificationKind?
   private let directory = AccountDirectoryClient()
+  private let attentionRelay = AccountAttentionRelayClient()
   private let localSignOutState = AccountLocalSignOutState()
+  private let deviceRevocationStore = AccountDeviceRevocationStore()
+  private let deviceOwnershipStore = AccountDeviceOwnershipStore()
   private var pairingAuthorizationGeneration: UInt64 = 0
+  private var lastRelayCredential: (ownerId: String, token: String)?
+  private var attentionRefreshTask: Task<Void, Never>?
+  private var attentionRefreshId: UUID?
+  private var isEndingAccountOwnership = false
+  private let accountRegistrationQueue =
+    LatestAccountRegistrationQueue<AccountAttentionDeviceRegistrationRequest>()
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
+  var hasPendingAttentionDeviceRevocation: Bool {
+    deviceRevocationStore.pending != nil
+  }
+
+  /// Stable identity used for every account Attention device endpoint. It
+  /// intentionally matches the machine-registration device identity whenever
+  /// SyncService is available so registration, prefs, activities, and sign-out
+  /// all target the same relay row.
+  var attentionDeviceId: String {
+    SyncService.shared?.deviceId
+      ?? UIDevice.current.identifierForVendor?.uuidString.lowercased()
+      ?? "ios-device"
+  }
 
   private init() {}
 
@@ -259,8 +502,33 @@ final class AccountService: ObservableObject {
        let user = Clerk.shared.user {
       let nextIdentity = Self.identity(from: user)
       let shouldRefreshMachines = identity?.userId != nextIdentity.userId || phase != .signedIn
+      let previousOwnership = deviceOwnershipStore.state
+      let previousOwnerId = previousOwnership.ownerId
+      let ownerChanged = previousOwnerId != nextIdentity.userId
+      let accountSwitched = ownerChanged && previousOwnerId != nil
+      var switchRevocation: PendingAccountDeviceRevocation?
+      var switchCredential: (ownerId: String, token: String)?
+      if accountSwitched, let previousOwnerId {
+        // A direct account switch is two ownership boundaries. The old
+        // account's DELETE uses the unowned epoch; the new account's PUT gets
+        // the following epoch, so equal-epoch foreign-owner requests can never
+        // race at Relay.
+        let unowned = deviceOwnershipStore.transition(to: nil)
+        switchRevocation = deviceRevocationStore.mark(
+          ownerId: previousOwnerId,
+          deviceId: attentionDeviceId,
+          ownershipEpoch: unowned.ownershipEpoch
+        )
+        switchCredential = lastRelayCredential
+        lastRelayCredential = nil
+        accountRegistrationQueue.discardPending()
+        cancelAttentionRefresh()
+        LiveActivityService.shared.prepareForAccountSignOut()
+      }
+      deviceOwnershipStore.transition(to: nextIdentity.userId)
       if identity?.userId != nextIdentity.userId {
         invalidatePairingAuthorization()
+        clearAttentionSnapshot()
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
@@ -268,7 +536,28 @@ final class AccountService: ObservableObject {
         phase = .signedIn
       }
       if shouldRefreshMachines {
-        Task { await self.loadMachines() }
+        Task {
+          if accountSwitched {
+            await LiveActivityService.shared.handleAccountSignOut(immediate: true)
+            if let switchRevocation,
+               let switchCredential,
+               switchCredential.ownerId == switchRevocation.ownerId {
+              await self.attemptDeviceRevocation(
+                switchRevocation,
+                token: switchCredential.token
+              )
+            }
+          }
+          await self.processPendingDeviceRevocationAfterSignIn()
+          // Transfer/revoke this installation before slower directory and
+          // snapshot hydration, minimizing any window where the prior account
+          // could still target the same APNs token.
+          await PushNotificationService.shared.resumeAccountRegistrationIfAuthorized()
+          async let machines: Void = self.loadMachines()
+          async let attention: Void = self.refreshAttentionSnapshot()
+          _ = await (machines, attention)
+          await LiveActivityService.shared.handleAccountSignIn()
+        }
       }
     } else {
       publishSignedOut()
@@ -276,16 +565,53 @@ final class AccountService: ObservableObject {
   }
 
   private func publishSignedOut() {
+    isEndingAccountOwnership = true
+    let previousOwnerId = identity?.userId ?? deviceOwnershipStore.state.ownerId
+    let signedOutOwnership = deviceOwnershipStore.transition(to: nil)
+    let cachedCredential = lastRelayCredential
+    let pendingRevocation: PendingAccountDeviceRevocation?
+    if !localSignOutState.isSuppressed, let previousOwnerId {
+      pendingRevocation = deviceRevocationStore.mark(
+        ownerId: previousOwnerId,
+        deviceId: attentionDeviceId,
+        ownershipEpoch: signedOutOwnership.ownershipEpoch
+      )
+    } else {
+      pendingRevocation = nil
+    }
+    lastRelayCredential = nil
+    accountRegistrationQueue.discardPending()
+    cancelAttentionRefresh()
     invalidatePairingAuthorization()
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
     machines = []
     machinesState = .idle
     phase = .signedOut
+    clearAttentionSnapshot()
+    LiveActivityService.shared.prepareForAccountSignOut()
+    PushNotificationService.shared.handleAccountSignOut()
+    Task {
+      await LiveActivityService.shared.handleAccountSignOut(immediate: true)
+      if let pendingRevocation,
+         let cachedCredential,
+         cachedCredential.ownerId == pendingRevocation.ownerId {
+        await self.attemptDeviceRevocation(
+          pendingRevocation,
+          token: cachedCredential.token
+        )
+      }
+    }
   }
 
   private func invalidatePairingAuthorization() {
     pairingAuthorizationGeneration &+= 1
+  }
+
+  private func cancelAttentionRefresh() {
+    attentionRefreshTask?.cancel()
+    attentionRefreshTask = nil
+    attentionRefreshId = nil
   }
 
   /// Called only after an explicit sign-in operation completes and Clerk has
@@ -294,6 +620,7 @@ final class AccountService: ObservableObject {
   private func finishInteractiveSignIn() {
     guard accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
           Clerk.shared.user != nil else { return }
+    isEndingAccountOwnership = false
     localSignOutState.clearAfterInteractiveSignIn()
     syncFromClerk()
   }
@@ -375,11 +702,20 @@ final class AccountService: ObservableObject {
   }
 
   func signOut() async {
-    // Make the user's local choice authoritative before attempting network
-    // revocation. If that request fails, cached Clerk state and subsequent auth
-    // events still cannot restore account machines or issue a session token.
+    // Capture the current credential and persist the cleanup obligation before
+    // invalidating local authorization. The UI/account boundary is then
+    // committed before the bounded Relay request begins.
+    isEndingAccountOwnership = true
+    accountRegistrationQueue.discardPending()
+    let revocation = await prepareAttentionDeviceRevocationForSignOut()
+    // Make the user's local choice authoritative before Clerk revocation. If
+    // that request fails, cached Clerk state and subsequent auth events still
+    // cannot restore account machines or issue a session token.
     localSignOutState.suppress()
     publishSignedOut()
+    if let revocation, let token = revocation.token {
+      await attemptDeviceRevocation(revocation.pending, token: token)
+    }
     do {
       try await Clerk.shared.auth.signOut()
     } catch {
@@ -389,6 +725,70 @@ final class AccountService: ObservableObject {
     authenticationOutcome = .unknown
     emailVerificationKind = nil
     syncFromClerk()
+  }
+
+  private func prepareAttentionDeviceRevocationForSignOut() async -> (
+    pending: PendingAccountDeviceRevocation,
+    token: String?
+  )? {
+    guard let ownerId = identity?.userId ?? deviceOwnershipStore.state.ownerId else {
+      return nil
+    }
+    let cachedToken = lastRelayCredential?.ownerId == ownerId
+      ? lastRelayCredential?.token
+      : nil
+    let token: String?
+    if let cachedToken {
+      token = cachedToken
+    } else {
+      token = (await pairingSession())?.token
+    }
+    // Token acquisition may suspend, so device registration is blocked by
+    // `isEndingAccountOwnership` above. Commit the epoch only after that await
+    // and immediately before publishing the local sign-out boundary.
+    let signedOutOwnership = deviceOwnershipStore.transition(to: nil)
+    guard let pending = deviceRevocationStore.mark(
+      ownerId: ownerId,
+      deviceId: attentionDeviceId,
+      ownershipEpoch: signedOutOwnership.ownershipEpoch
+    ), pending.ownerId == ownerId else {
+      return nil
+    }
+    return (pending, token)
+  }
+
+  private func attemptDeviceRevocation(
+    _ pending: PendingAccountDeviceRevocation,
+    token: String
+  ) async {
+    guard let baseURL = AccountConfig.attentionRelayBaseURL else { return }
+    do {
+      try await attentionRelay.unregisterDevice(
+        baseURL: baseURL,
+        token: token,
+        deviceId: pending.deviceId,
+        ownershipEpoch: pending.ownershipEpoch,
+        timeoutInterval: 2
+      )
+      deviceRevocationStore.clear(ifMatching: pending)
+    } catch AccountAttentionRelayClient.RelayError.staleOwnership {
+      // Relay has already accepted a newer ownership boundary for this
+      // installation. Retrying this older DELETE can never improve state.
+      deviceRevocationStore.clear(ifMatching: pending)
+    } catch {
+      // Keep the durable marker. The same owner can retry on its next login;
+      // another owner clears it only after Relay atomically transfers the
+      // device during registration.
+    }
+  }
+
+  private func processPendingDeviceRevocationAfterSignIn() async {
+    guard let pending = deviceRevocationStore.pending,
+          pending.ownerId == identity?.userId,
+          let session = await pairingSession() else {
+      return
+    }
+    await attemptDeviceRevocation(pending, token: session.token)
   }
 
   // MARK: - Token
@@ -426,6 +826,7 @@ final class AccountService: ObservableObject {
     guard let authorization = currentPairingAuthorization,
           let token = try? await Clerk.shared.auth.getToken(),
           isPairingCommitAuthorized(authorization) else { return nil }
+    lastRelayCredential = (authorization.ownerId, token)
     return AccountPairingSession(authorization: authorization, token: token)
   }
 
@@ -457,6 +858,7 @@ final class AccountService: ObservableObject {
       }
       throw AccountRelayTokenError.tokenUnavailable
     }
+    lastRelayCredential = (authorization.ownerId, session.token)
     return session
   }
 
@@ -465,6 +867,307 @@ final class AccountService: ObservableObject {
   func sessionToken() async -> String? {
     guard isConfigured else { return nil }
     return await pairingSession()?.token
+  }
+
+  // MARK: - Account Attention
+
+  /// Fetch the account delta using a server-fresh Clerk token, merge it with
+  /// the last complete App Group snapshot, and notify app/widgets. Failures are
+  /// deliberately quiet: the current workspace snapshot remains usable.
+  func refreshAttentionSnapshot() async {
+    if let attentionRefreshTask {
+      await attentionRefreshTask.value
+      return
+    }
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.performAttentionSnapshotRefresh()
+    }
+    let refreshId = UUID()
+    attentionRefreshTask = task
+    attentionRefreshId = refreshId
+    await task.value
+    if attentionRefreshId == refreshId {
+      attentionRefreshTask = nil
+      attentionRefreshId = nil
+    }
+  }
+
+  private func performAttentionSnapshotRefresh() async {
+    guard isSignedIn,
+          !isEndingAccountOwnership,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      return
+    }
+
+    let existing = ADESharedContainer.readAttentionSnapshot()
+    do {
+      let delta = try await attentionRelay.fetchSnapshot(
+        baseURL: baseURL,
+        token: initialSession.token,
+        since: existing?.revision ?? 0,
+        streamId: existing?.streamId,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(initialSession.authorization) else {
+            return nil
+          }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: initialSession.authorization
+          ).token
+        }
+      )
+      guard isPairingCommitAuthorized(initialSession.authorization),
+            identity?.userId == requestedOwnerId else {
+        return
+      }
+      // Another writer may have committed a newer response while this request
+      // was suspended. Always merge against the latest durable snapshot, never
+      // the stale preflight read used to construct `since`.
+      let complete = accountAttentionSnapshotForCommit(
+        current: ADESharedContainer.readAttentionSnapshot(),
+        incoming: delta
+      )
+      guard ADESharedContainer.writeAttentionSnapshot(complete) else { return }
+      attentionSnapshotRevision &+= 1
+      WidgetReloadBridge.reloadAllTimelines()
+    } catch {
+      // Keep the last-known account snapshot and machine-local fallback.
+    }
+  }
+
+  func acknowledgeAttentionItems(_ itemIds: [String], dismiss: Bool) async {
+    let ids = Array(Set(itemIds.filter { !$0.isEmpty })).prefix(64)
+    guard !ids.isEmpty,
+          isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      return
+    }
+    do {
+      try await attentionRelay.acknowledge(
+        baseURL: baseURL,
+        token: initialSession.token,
+        itemIds: Array(ids),
+        dismiss: dismiss,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(initialSession.authorization) else {
+            return nil
+          }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: initialSession.authorization
+          ).token
+        }
+      )
+      await refreshAttentionSnapshot()
+    } catch {
+      // The local seen state remains useful offline. A later snapshot refresh
+      // will reconcile shared acknowledgment.
+    }
+  }
+
+  func updateAttentionPresence(
+    centerVisible: Bool,
+    visibleItemIds: [String]
+  ) async {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      return
+    }
+    try? await attentionRelay.updatePresence(
+      baseURL: baseURL,
+      token: initialSession.token,
+      deviceId: attentionDeviceId,
+      deviceName: UIDevice.current.name,
+      foreground: true,
+      attentionVisible: centerVisible,
+      visibleItemIds: visibleItemIds,
+      refreshToken: { [weak self] in
+        guard let self,
+              self.isPairingCommitAuthorized(initialSession.authorization) else {
+          return nil
+        }
+        return try? await self.freshRelaySession(
+          expectedAuthorization: initialSession.authorization
+        ).token
+      }
+    )
+  }
+
+  func registerAttentionDevice(
+    deviceId: String,
+    apnsToken: String?,
+    pushToStartToken: String?,
+    bundleId: String,
+    apsEnvironment: String,
+    preferences: [String: Any]
+  ) async -> Bool {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          AccountConfig.attentionRelayBaseURL != nil,
+          let authorization = currentPairingAuthorization,
+          authorization.ownerId == requestedOwnerId else {
+      return false
+    }
+    let ownership = deviceOwnershipStore.transition(to: requestedOwnerId)
+    let request = AccountAttentionDeviceRegistrationRequest(
+      authorization: authorization,
+      deviceId: deviceId,
+      ownershipEpoch: ownership.ownershipEpoch,
+      apnsToken: apnsToken,
+      pushToStartToken: pushToStartToken,
+      bundleId: bundleId,
+      apsEnvironment: apsEnvironment,
+      preferences: preferences
+    )
+    return await accountRegistrationQueue.submit(request) { [weak self] request in
+      guard let self else { return false }
+      return await self.performAttentionDeviceRegistration(request)
+    }
+  }
+
+  private func performAttentionDeviceRegistration(
+    _ request: AccountAttentionDeviceRegistrationRequest
+  ) async -> Bool {
+    guard let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = try? await freshRelaySession(
+            expectedAuthorization: request.authorization
+          ),
+          accountDeviceMutationMatchesCurrentOwnership(
+            ownerId: request.authorization.ownerId,
+            ownershipEpoch: request.ownershipEpoch,
+            state: deviceOwnershipStore.state
+          ) else {
+      return false
+    }
+    do {
+      let pendingRevocation = deviceRevocationStore.pending
+      if let pendingRevocation,
+         pendingRevocation.ownerId == request.authorization.ownerId,
+         pendingRevocation.deviceId == request.deviceId,
+         pendingRevocation.ownershipEpoch <= request.ownershipEpoch {
+        // Same-account retry: delete the stale row first when possible. A
+        // failed delete does not block PUT—the registration is idempotent and
+        // still renews this owner's lease.
+        await attemptDeviceRevocation(
+          pendingRevocation,
+          token: initialSession.token
+        )
+      }
+      try await attentionRelay.registerDevice(
+        baseURL: baseURL,
+        token: initialSession.token,
+        deviceId: request.deviceId,
+        ownershipEpoch: request.ownershipEpoch,
+        apnsToken: request.apnsToken,
+        pushToStartToken: request.pushToStartToken,
+        bundleId: request.bundleId,
+        apsEnvironment: request.apsEnvironment,
+        deviceName: UIDevice.current.name,
+        preferences: request.preferences,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(request.authorization),
+                accountDeviceMutationMatchesCurrentOwnership(
+                  ownerId: request.authorization.ownerId,
+                  ownershipEpoch: request.ownershipEpoch,
+                  state: self.deviceOwnershipStore.state
+                ) else {
+            return nil
+          }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: request.authorization
+          ).token
+        }
+      )
+      guard isPairingCommitAuthorized(request.authorization),
+            accountDeviceMutationMatchesCurrentOwnership(
+              ownerId: request.authorization.ownerId,
+              ownershipEpoch: request.ownershipEpoch,
+              state: deviceOwnershipStore.state
+            ) else {
+        return false
+      }
+      // Registration is Relay's atomic ownership-transfer boundary. Clear a
+      // prior account's durable revocation only after this device is confirmed
+      // under the current account.
+      if let pendingRevocation,
+         pendingRevocation.deviceId == request.deviceId,
+         pendingRevocation.ownershipEpoch <= request.ownershipEpoch {
+        deviceRevocationStore.clear(ifMatching: pendingRevocation)
+      }
+      return true
+    } catch AccountAttentionRelayClient.RelayError.staleOwnership {
+      // A newer boundary already won at Relay. This request is permanently
+      // superseded and must not enter the retry loop.
+      if let pendingRevocation = deviceRevocationStore.pending,
+         pendingRevocation.deviceId == request.deviceId,
+         pendingRevocation.ownershipEpoch <= request.ownershipEpoch {
+        deviceRevocationStore.clear(ifMatching: pendingRevocation)
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  func reportAttentionActivityToken(
+    deviceId: String,
+    activityId: String,
+    token: String
+  ) async -> Bool {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.attentionRelayBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      return false
+    }
+    do {
+      try await attentionRelay.reportActivityToken(
+        baseURL: baseURL,
+        token: initialSession.token,
+        deviceId: deviceId,
+        activityId: activityId,
+        activityToken: token,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(initialSession.authorization) else {
+            return nil
+          }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: initialSession.authorization
+          ).token
+        }
+      )
+      return isPairingCommitAuthorized(initialSession.authorization)
+    } catch {
+      return false
+    }
+  }
+
+  private func clearAttentionSnapshot() {
+    guard ADESharedContainer.defaults.data(
+      forKey: ADESharedContainer.attentionSnapshotKey
+    ) != nil else {
+      return
+    }
+    ADESharedContainer.clearAttentionSnapshot()
+    attentionSnapshotRevision &+= 1
+    WidgetReloadBridge.reloadAllTimelines()
   }
 
   // MARK: - Machines

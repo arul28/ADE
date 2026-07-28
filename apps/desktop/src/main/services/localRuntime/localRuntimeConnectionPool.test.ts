@@ -3181,6 +3181,30 @@ describe("local runtime connection pool", () => {
     });
   });
 
+  it("routes Attention through the machine scope without adding a project id", async () => {
+    const call = vi.fn().mockResolvedValue({ revision: 4, items: [] });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: () => false },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await expect(pool.callAttention("getSnapshot", {
+      since: 3,
+      streamId: "account-stream",
+    })).resolves.toEqual({ revision: 4, items: [] });
+    expect(call).toHaveBeenCalledWith("attention.call", {
+      action: "getSnapshot",
+      args: { since: 3, streamId: "account-stream" },
+    });
+  });
+
   it("keeps foreground catalog metadata authoritative while routing background actions", async () => {
     const rootPath = path.resolve("/repo");
     const project = {

@@ -108,6 +108,17 @@ import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
+  AttentionNotchHelper,
+  resolveAttentionNotchExecutablePath,
+  type AttentionNotchOutput,
+} from "./services/attention/attentionNotchHelper";
+import {
+  attentionRemoteBindingMatches,
+  attentionItemNavigationRequest,
+  resolveAttentionNotchOutput,
+  type AttentionNotchResolvedOutput,
+} from "./services/attention/attentionNotchRouter";
+import {
   detectDefaultBaseRef,
   resolveRepoRoot,
   toProjectInfo,
@@ -130,6 +141,10 @@ import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobi
 import type {
   OpenProjectBinding,
   AppNavigationRequest,
+  AttentionItem,
+  AttentionNotchAcknowledgeRequest,
+  AttentionNotchSettings,
+  AttentionSnapshot,
   AppZoomCommand,
   CloneProjectInput,
   CreateProjectInput,
@@ -5669,6 +5684,7 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
+  let attentionNotchHelper: AttentionNotchHelper | null = null;
 
   const shutdownOpenCodeServersBestEffort = (): void => {
     try {
@@ -5689,6 +5705,12 @@ app.whenReady().then(async () => {
   };
 
   const runImmediateProcessCleanup = (reason: string): void => {
+    try {
+      attentionNotchHelper?.dispose();
+    } catch {
+      // ignore
+    }
+    attentionNotchHelper = null;
     try {
       autoUpdateService?.dispose();
     } catch {
@@ -6598,7 +6620,208 @@ app.whenReady().then(async () => {
 
   installApplicationMenu();
 
-  registerIpc({
+  let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
+  let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
+
+  const attentionWindow = async (): Promise<BrowserWindow | null> => {
+    const existing =
+      BrowserWindow.getFocusedWindow()
+      ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+      ?? null;
+    if (existing) return existing;
+    const opened = await openAdeWindow();
+    return opened.windowId == null ? null : BrowserWindow.fromId(opened.windowId);
+  };
+
+  const sendAttentionNotchAcknowledge = async (
+    request: AttentionNotchAcknowledgeRequest,
+    preferredWindow?: BrowserWindow | null,
+  ): Promise<void> => {
+    const target = preferredWindow && !preferredWindow.isDestroyed()
+      ? preferredWindow
+      : await attentionWindow();
+    if (!target || target.isDestroyed()) return;
+    target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
+  };
+
+  const matchingRemoteAttentionWindow = (
+    item: AttentionItem,
+    targetId?: string | null,
+    requiresExactMachine = false,
+  ): BrowserWindow | null => {
+    for (const [windowId, binding] of windowProjectBindings) {
+      if (!attentionRemoteBindingMatches(
+        item,
+        binding,
+        targetId ?? null,
+        requiresExactMachine,
+      )) continue;
+      const win = BrowserWindow.fromId(windowId);
+      if (win && !win.isDestroyed()) return win;
+    }
+    return null;
+  };
+
+  const foregroundAttentionWindow = (win: BrowserWindow): void => {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  };
+
+  const navigateFromAttentionItem = async (
+    item: AttentionItem,
+    request: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["request"],
+    options: {
+      acknowledge: boolean;
+      fallbackAction?: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>["fallbackAction"];
+    },
+  ): Promise<void> => {
+    const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
+    const localMachineKey = attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "";
+    const targetId = accountMachineKey
+      ? attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null
+      : null;
+    const requiresRemoteMachine = Boolean(
+      accountMachineKey
+      && accountMachineKey !== localMachineKey,
+    );
+    let remoteWindow = matchingRemoteAttentionWindow(
+      item,
+      targetId,
+      requiresRemoteMachine,
+    );
+
+    if (requiresRemoteMachine && !remoteWindow) {
+      const win = await attentionWindow();
+      if (!win || win.isDestroyed() || !attentionIpcBridge) {
+        throw new Error("ADE could not open the remote Attention destination.");
+      }
+      const binding = await attentionIpcBridge.openAttentionProject({
+        machineKey: accountMachineKey,
+        projectId: item.project.projectId,
+        windowId: win.id,
+      });
+      remoteWindow = binding.targetId
+        ? matchingRemoteAttentionWindow(item, binding.targetId) ?? win
+        : win;
+    }
+
+    if (remoteWindow) {
+      foregroundAttentionWindow(remoteWindow);
+      remoteWindow.webContents.send(IPC.appNavigate, request);
+      if (options.acknowledge) {
+        await sendAttentionNotchAcknowledge(
+          { itemId: item.id, mode: "seen" },
+          remoteWindow,
+        );
+      }
+      return;
+    }
+
+    // A canonical foreign-machine identity must never fall through to a local
+    // project with a coincidentally matching path.
+    if (requiresRemoteMachine) {
+      throw new Error("The owning ADE machine could not be connected.");
+    }
+
+    const projectRoot = item.project.rootPath?.trim() ?? "";
+    if (projectRoot && fs.existsSync(projectRoot)) {
+      const delivered = await deliverAppNavigationToProject(projectRoot, request);
+      const win = delivered.ok ? BrowserWindow.fromId(delivered.windowId) : null;
+      if (options.acknowledge) {
+        await sendAttentionNotchAcknowledge(
+          { itemId: item.id, mode: "seen" },
+          win,
+        );
+      }
+      if (options.fallbackAction) {
+        getActiveContext().logger.info("attention.notch_action_opened_destination", {
+          itemId: item.id,
+          actionKind: options.fallbackAction.kind,
+          reason: "inline_action_not_safe_for_account_scope",
+        });
+      }
+      return;
+    }
+
+    dispatchOrQueueAppNavigationRequest(request);
+    if (options.acknowledge) {
+      await sendAttentionNotchAcknowledge({
+        itemId: item.id,
+        mode: "seen",
+      });
+    }
+    if (options.fallbackAction) {
+      getActiveContext().logger.info("attention.notch_action_opened_destination", {
+        itemId: item.id,
+        actionKind: options.fallbackAction.kind,
+        reason: "remote_destination_not_connected",
+      });
+    }
+  };
+
+  const navigateFromAttentionNotch = async (
+    resolved: Extract<AttentionNotchResolvedOutput, { kind: "navigate" }>,
+  ): Promise<void> => {
+    await navigateFromAttentionItem(resolved.item, resolved.request, {
+      acknowledge: true,
+      fallbackAction: resolved.fallbackAction,
+    });
+  };
+
+  const handleAttentionNotchOutput = (output: AttentionNotchOutput): void => {
+    if (output.type === "surface") {
+      getActiveContext().logger.info("attention.notch_surface", {
+        displayId: output.displayId,
+        surface: output.surface,
+      });
+      return;
+    }
+    if (output.type === "protocol_error") {
+      getActiveContext().logger.warn("attention.notch_protocol_error", {
+        message: output.message,
+      });
+      return;
+    }
+    const resolved = resolveAttentionNotchOutput(output, latestAttentionNotchSnapshot);
+    if (resolved.kind === "ignore") {
+      getActiveContext().logger.warn("attention.notch_output_ignored", {
+        itemId: output.itemId,
+        reason: resolved.reason,
+      });
+      return;
+    }
+    if (resolved.kind === "acknowledge") {
+      void sendAttentionNotchAcknowledge({
+        itemId: resolved.item.id,
+        mode: resolved.mode,
+      }).catch((error: unknown) => {
+        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
+          itemId: resolved.item.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
+    void navigateFromAttentionNotch(resolved).catch((error: unknown) => {
+      getActiveContext().logger.warn("attention.notch_navigation_failed", {
+        itemId: resolved.item.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  attentionNotchHelper = new AttentionNotchHelper({
+    executablePath: resolveAttentionNotchExecutablePath({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    }),
+    logger: getActiveContext().logger,
+    onOutput: handleAttentionNotchOutput,
+  });
+
+  attentionIpcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
@@ -6637,6 +6860,20 @@ app.whenReady().then(async () => {
     globalStatePath,
     builtInBrowserService,
     productAnalyticsService,
+    publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
+      latestAttentionNotchSnapshot = snapshot;
+      attentionNotchHelper?.publishSnapshot(snapshot);
+    },
+    updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
+      attentionNotchHelper?.updateSettings(settings);
+    },
+    openAttentionItem: async (item: AttentionItem) => {
+      await navigateFromAttentionItem(
+        item,
+        attentionItemNavigationRequest(item),
+        { acknowledge: false },
+      );
+    },
   });
 
   // Explicit project launches still bind a project before the renderer boots;

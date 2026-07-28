@@ -480,6 +480,8 @@ ade storage compress --text                          # losslessly compress old c
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
 ade actions list --domain chat --text
+ade --role cto actions list --domain attention --text # discover account-wide Attention actions
+ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
 ade cursor cloud agents list --text

@@ -16,6 +16,17 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import type {
+  AttentionItem,
+  AttentionNotchSettings,
+  AttentionPreferences,
+  AttentionPresence,
+  AttentionSnapshot,
+} from "../../../shared/types/attention";
+import {
+  ATTENTION_CONTRACT_VERSION,
+  DEFAULT_ATTENTION_PREFERENCES,
+} from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
@@ -95,6 +106,10 @@ import {
   toShallowRecentProjectSummary,
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
+import {
+  parseAttentionNotchSettings,
+  parseAttentionNotchSnapshot,
+} from "../attention/attentionNotchRouter";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -1565,6 +1580,9 @@ export function registerIpc({
   globalStatePath,
   builtInBrowserService,
   productAnalyticsService,
+  publishAttentionNotchSnapshot,
+  updateAttentionNotchSettings,
+  openAttentionItem,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1585,6 +1603,9 @@ export function registerIpc({
   globalStatePath: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
+  publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
+  updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
+  openAttentionItem?: (item: AttentionItem) => Promise<void>;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
   // same app launch do not repeat the account choice, while a full ADE relaunch
@@ -1796,6 +1817,7 @@ export function registerIpc({
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
     [IPC.accountRemoveMachine]: new Set(["machineKey"]),
+    [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -3138,6 +3160,134 @@ export function registerIpc({
     const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
     app.setBadgeCount(normalized);
     return { ok: true } as const;
+  });
+
+  ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
+    const snapshot = parseAttentionNotchSnapshot(input);
+    if (!snapshot) throw new Error("Invalid Attention Notch snapshot.");
+    publishAttentionNotchSnapshot?.(snapshot);
+  });
+
+  ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {
+    const settings = parseAttentionNotchSettings(input);
+    if (!settings) throw new Error("Invalid Attention Notch settings.");
+    updateAttentionNotchSettings?.(settings);
+  });
+
+  ipcMain.handle(IPC.attentionGetSnapshot, async (_event, input: unknown) => {
+    const record = isRecord(input) ? input : {};
+    const since = Number.isFinite(Number(record.since))
+      ? Math.max(0, Math.trunc(Number(record.since)))
+      : 0;
+    const streamId =
+      typeof record.streamId === "string" && record.streamId.trim()
+        ? record.streamId.trim()
+        : null;
+    if (!localRuntimeConnectionPool) {
+      return {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        streamId: null,
+        revision: 0,
+        generatedAt: new Date().toISOString(),
+        items: [],
+        tombstones: [],
+      } satisfies AttentionSnapshot;
+    }
+    return await localRuntimeConnectionPool.callAttention<AttentionSnapshot>(
+      "getSnapshot",
+      { since, streamId },
+    );
+  });
+
+  ipcMain.handle(IPC.attentionAcknowledge, async (_event, input: unknown) => {
+    if (!localRuntimeConnectionPool) {
+      throw new Error("Account Attention is unavailable until the ADE brain is ready.");
+    }
+    const record = isRecord(input) ? input : {};
+    const itemIds = Array.isArray(record.itemIds)
+      ? record.itemIds
+        .filter((value): value is string =>
+          typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
+        .slice(0, 64)
+      : [];
+    if (itemIds.length === 0) {
+      throw new Error("At least one Attention item id is required.");
+    }
+    await localRuntimeConnectionPool.callAttention<void>("acknowledge", {
+      itemIds,
+      ...(typeof record.seenAt === "string" ? { seenAt: record.seenAt } : {}),
+      ...(record.dismissedAt === null || typeof record.dismissedAt === "string"
+        ? { dismissedAt: record.dismissedAt }
+        : {}),
+    });
+  });
+
+  ipcMain.handle(IPC.attentionReportPresence, async (_event, input: unknown) => {
+    if (!localRuntimeConnectionPool) return;
+    const presence = isRecord(input) ? input : null;
+    if (!presence || typeof presence.deviceId !== "string" || !presence.deviceId.trim()) {
+      throw new Error("A valid Attention presence payload is required.");
+    }
+    await localRuntimeConnectionPool.callAttention<void>(
+      "reportPresence",
+      presence as AttentionPresence & Record<string, unknown>,
+    );
+  });
+
+  ipcMain.handle(IPC.attentionGetPreferences, async (_event, input: unknown) => {
+    if (!localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
+    const record = isRecord(input) ? input : {};
+    const accountOwnerId =
+      typeof record.accountOwnerId === "string" ? record.accountOwnerId.trim() : "";
+    if (!accountOwnerId) {
+      throw new Error("A valid Attention account owner is required.");
+    }
+    return await localRuntimeConnectionPool.callAttention<AttentionPreferences>(
+      "getPreferences",
+      { accountOwnerId },
+    );
+  });
+
+  ipcMain.handle(IPC.attentionPutPreferences, async (_event, input: unknown) => {
+    if (!localRuntimeConnectionPool) {
+      throw new Error("Account Attention is unavailable until the ADE brain is ready.");
+    }
+    if (!isRecord(input) || !isRecord(input.preferences)) {
+      throw new Error("A valid Attention preferences payload is required.");
+    }
+    const accountOwnerId =
+      typeof input.accountOwnerId === "string" ? input.accountOwnerId.trim() : "";
+    if (!accountOwnerId) {
+      throw new Error("A valid Attention account owner is required.");
+    }
+    await localRuntimeConnectionPool.callAttention<void>(
+      "putPreferences",
+      {
+        accountOwnerId,
+        preferences: input.preferences,
+      },
+    );
+  });
+
+  ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
+    const snapshot = parseAttentionNotchSnapshot({
+      contractVersion: 1,
+      streamId: null,
+      revision: (
+        typeof input === "object"
+        && input !== null
+        && Number.isSafeInteger((input as { revision?: unknown }).revision)
+      )
+        ? Number((input as { revision: number }).revision)
+        : 0,
+      generatedAt: new Date().toISOString(),
+      items: [input],
+      tombstones: [],
+    });
+    const item = snapshot?.items[0] ?? null;
+    if (!item) throw new Error("Invalid Attention item.");
+    await openAttentionItem?.(item);
   });
 
   ipcMain.handle(
@@ -10304,4 +10454,25 @@ export function registerIpc({
     getCtx().autoUpdateService?.dismissInstalledNotice();
   });
 
+  return {
+    getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    async openAttentionProject(args: {
+      machineKey: string;
+      projectId: string;
+      windowId: number | null;
+    }) {
+      const machineKey = args.machineKey.trim();
+      if (!machineKey) throw new Error("Attention machine identity is required.");
+      let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
+      if (!targetId) {
+        targetId = (await accountBridge.pairMachine(machineKey)).targetId;
+      }
+      return await runtimeBridge.openRemoteProjectForWindow({
+        targetId,
+        projectId: args.projectId,
+        windowId: args.windowId,
+      });
+    },
+  };
 }

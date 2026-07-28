@@ -1,6 +1,112 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
 
+describe("preload Attention Notch bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  it("publishes typed helper state and cleans up acknowledgement listeners", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    const snapshot = {
+      contractVersion: 1,
+      revision: 1,
+      generatedAt: "2026-07-28T12:00:00.000Z",
+      items: [],
+      tombstones: [],
+    };
+    const settings = {
+      enabled: true,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    };
+    await bridge.attentionNotch.publishSnapshot(snapshot);
+    await bridge.attentionNotch.updateSettings(settings);
+    const item = { id: "agent-1" };
+    await bridge.attention.getSnapshot(7, "account-stream");
+    await bridge.attention.acknowledge({
+      itemIds: ["agent-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
+    });
+    const presence = { deviceId: "desktop-1", platform: "macOS" };
+    await bridge.attention.reportPresence(presence);
+    await bridge.attention.getPreferences("account-a");
+    const preferences = { account: { hideDetails: true } };
+    await bridge.attention.putPreferences("account-a", preferences);
+    await bridge.attention.openItem(item);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchPublishSnapshot, snapshot);
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionNotchUpdateSettings, settings);
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionGetSnapshot, {
+      since: 7,
+      streamId: "account-stream",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionAcknowledge, {
+      itemIds: ["agent-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionReportPresence, presence);
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionGetPreferences, {
+      accountOwnerId: "account-a",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionPutPreferences, {
+      accountOwnerId: "account-a",
+      preferences,
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.attentionOpenItem, item);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.attentionNotch.onAcknowledgeRequested(callback);
+    expect(on).toHaveBeenCalledWith(
+      IPC.attentionNotchAcknowledgeRequested,
+      expect.any(Function),
+    );
+    const listener = on.mock.calls.at(-1)?.[1];
+    listener({}, { itemId: "agent-1", mode: "seen" });
+    expect(callback).toHaveBeenCalledWith({ itemId: "agent-1", mode: "seen" });
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(
+      IPC.attentionNotchAcknowledgeRequested,
+      listener,
+    );
+  });
+});
+
 describe("preload OAuth bridge", () => {
   beforeEach(() => {
     vi.resetModules();

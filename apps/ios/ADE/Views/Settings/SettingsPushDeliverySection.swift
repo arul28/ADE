@@ -15,9 +15,11 @@ struct SettingsPushDeliverySnapshot: Equatable {
     var lastError: String?
     var relayRefreshError: String?
     var canRefreshRelayStatus = false
-    /// Whether this device is paired to a machine. Notifications can't be
-    /// enabled until it is, so the enable affordance stays disabled while false.
+    /// Whether this device has a current machine command path.
     var isPaired = false
+    /// Signed-in accounts register directly with the account Attention relay,
+    /// so push delivery does not require a currently paired Mac.
+    var accountDeliveryAvailable = false
 
     var liveActivityTokenPresent = false
 
@@ -34,6 +36,10 @@ struct SettingsPushDeliverySnapshot: Equatable {
 
     var needsPermissionPrompt: Bool {
         permissionStatus == .notDetermined || permissionStatus == .denied
+    }
+
+    var canEnableNotifications: Bool {
+        isPaired || accountDeliveryAvailable
     }
 }
 
@@ -67,6 +73,12 @@ struct SettingsPushDeliverySection: View {
                     title: "Live Activities",
                     subtitle: "Agent runs on the Lock Screen",
                     isOn: liveActivitiesBinding
+                )
+                PushToggleRow(
+                    symbol: "eye.slash",
+                    title: "Hide details",
+                    subtitle: "Use private Lock Screen previews",
+                    isOn: hideDetailsBinding
                 )
                 PushToggleRow(
                     symbol: "moon",
@@ -104,12 +116,10 @@ struct SettingsPushDeliverySection: View {
     @ViewBuilder
     private var enableNotificationsControl: some View {
         let permissionStatus = pushService.permissionStatus
-        if !snapshot.isPaired {
-            // Nothing to register with until a Mac is paired: show the affordance
-            // disabled with a reason rather than a button that can't succeed (M8).
+        if !snapshot.canEnableNotifications {
             VStack(alignment: .leading, spacing: 6) {
                 enableNotificationsButton(label: "Enable notifications", enabled: false, action: {})
-                Text("Pair a Mac to enable notifications")
+                Text("Sign in or pair a Mac to enable notifications")
                     .font(.caption)
                     .foregroundStyle(ADEColor.textMuted)
                     .padding(.horizontal, 4)
@@ -350,6 +360,13 @@ struct SettingsPushDeliverySection: View {
         )
     }
 
+    private var hideDetailsBinding: Binding<Bool> {
+        Binding(
+            get: { pushService.prefs.hideDetails },
+            set: { newValue in pushService.updatePrefs { $0.hideDetails = newValue } }
+        )
+    }
+
     private var quietHoursBinding: Binding<Bool> {
         Binding(
             get: { pushService.prefs.quietHoursEnabled },
@@ -393,7 +410,10 @@ struct SettingsPushDeliverySection: View {
         case .waitingForMachine: return "Waiting for machine"
         case .failed: return "Failed"
         case .permissionDenied: return "Permission off"
-        case .unsupported: return "Pair a machine first"
+        case .unsupported:
+            return snapshot.accountDeliveryAvailable
+                ? "Not registered"
+                : "Sign in or pair a machine"
         case .notDetermined: return "Not enabled"
         }
     }
@@ -405,7 +425,7 @@ struct SettingsPushDeliverySection: View {
 
     private var refreshButtonLabel: String {
         if pushService.isRefreshingStatus { return "Checking relay…" }
-        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect to refresh"
+        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect a Mac to refresh"
     }
 
     private var inlineStatusMessage: String? {

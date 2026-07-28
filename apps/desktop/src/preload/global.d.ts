@@ -1169,6 +1169,43 @@ declare global {
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
       };
+      attention: {
+        getSnapshot: (
+          since?: number,
+          streamId?: string | null,
+        ) => Promise<import("../shared/types").AttentionSnapshot>;
+        acknowledge: (args: {
+          itemIds: string[];
+          seenAt?: string;
+          dismissedAt?: string | null;
+        }) => Promise<void>;
+        reportPresence: (
+          presence: import("../shared/types").AttentionPresence,
+        ) => Promise<void>;
+        getPreferences: (accountOwnerId: string) => Promise<
+          import("../shared/types").AttentionPreferences
+        >;
+        putPreferences: (
+          accountOwnerId: string,
+          preferences: import("../shared/types").AttentionPreferences,
+        ) => Promise<void>;
+        openItem: (
+          item: import("../shared/types").AttentionItem,
+        ) => Promise<void>;
+      };
+      attentionNotch: {
+        publishSnapshot: (
+          snapshot: import("../shared/types").AttentionSnapshot,
+        ) => Promise<void>;
+        updateSettings: (
+          settings: import("../shared/types").AttentionNotchSettings,
+        ) => Promise<void>;
+        onAcknowledgeRequested: (
+          cb: (
+            request: import("../shared/types").AttentionNotchAcknowledgeRequest,
+          ) => void,
+        ) => () => void;
+      };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
         getSnapshot: () => Promise<UsageSnapshot | null>;

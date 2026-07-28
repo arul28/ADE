@@ -41,6 +41,8 @@
   <string>$(CLERK_PUBLISHABLE_KEY)</string>
   <key>ADEAccountDirectoryBaseURL</key>
   <string>$(ADE_ACCOUNT_DIRECTORY_BASE_URL)</string>
+  <key>ADEPushRelayBaseURL</key>
+  <string>$(ADE_PUSH_RELAY_BASE_URL)</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSAppTransportSecurity</key>

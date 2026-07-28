@@ -18,17 +18,19 @@
     "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
+    "build:notch": "node ./scripts/build-attention-notch.mjs",
+    "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
-    "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --publish never",
-    "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
-    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --publish never",
+    "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac --publish never",
+    "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
+    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac --publish never",
     "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
-    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac zip --universal --prepackaged release/mac-universal/ADE.app --publish never && node ./scripts/create-mac-dmg.mjs",
-    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --universal --publish never",
-    "dist:mac:perarch:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --arm64 --publish never && cp release/latest-mac.yml release/latest-mac-arm64.yml && node ./scripts/create-mac-dmg.mjs --app=release/mac-arm64/ADE.app --arch=arm64 && electron-builder --mac zip --x64 --publish never && cp release/latest-mac.yml release/latest-mac-x64.yml && node ./scripts/create-mac-dmg.mjs --app=release/mac/ADE.app --arch=x64 && node ./scripts/merge-mac-latest-yml.mjs release/latest-mac-arm64.yml release/latest-mac-x64.yml release/latest-mac.yml",
-    "dist:mac:arm64:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --arm64 --publish never && node ./scripts/create-mac-dmg.mjs --app=release/mac-arm64/ADE.app --arch=arm64",
-    "dist:mac:x64:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --x64 --publish never && node ./scripts/create-mac-dmg.mjs --app=release/mac/ADE.app --arch=x64",
+    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac zip --universal --prepackaged release/mac-universal/ADE.app --publish never && node ./scripts/create-mac-dmg.mjs",
+    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac zip --universal --publish never",
+    "dist:mac:perarch:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac zip --arm64 --publish never && cp release/latest-mac.yml release/latest-mac-arm64.yml && node ./scripts/create-mac-dmg.mjs --app=release/mac-arm64/ADE.app --arch=arm64 && electron-builder --mac zip --x64 --publish never && cp release/latest-mac.yml release/latest-mac-x64.yml && node ./scripts/create-mac-dmg.mjs --app=release/mac/ADE.app --arch=x64 && node ./scripts/merge-mac-latest-yml.mjs release/latest-mac-arm64.yml release/latest-mac-x64.yml release/latest-mac.yml",
+    "dist:mac:arm64:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac zip --arm64 --publish never && node ./scripts/create-mac-dmg.mjs --app=release/mac-arm64/ADE.app --arch=arm64",
+    "dist:mac:x64:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac zip --x64 --publish never && node ./scripts/create-mac-dmg.mjs --app=release/mac/ADE.app --arch=x64",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
     "materialize:runtime-resources": "node ./scripts/materialize-runtime-resources.mjs",
@@ -377,7 +379,20 @@
       "notarize": true,
       "mergeASARs": false,
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,whisper-cli}{,/**}",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "resources/native/ade-attention-notch",
+          "to": "native/ade-attention-notch"
+        },
+        {
+          "from": "resources/native/ADEAttentionNotch_ADEAttentionNotch.bundle",
+          "to": "native/ADEAttentionNotch_ADEAttentionNotch.bundle",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "fileAssociations": [
       {

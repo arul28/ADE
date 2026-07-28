@@ -2251,6 +2251,11 @@ describe("runtime account actions", () => {
     expect(isCtoOnlyAdeAction("account", "listMachines")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "pairMachine")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "status")).toBe(false);
+    expect(isCtoOnlyAdeAction("attention", "getSnapshot")).toBe(true);
+    expect(isCtoOnlyAdeAction("attention", "acknowledge")).toBe(true);
+    expect(isCtoOnlyAdeAction("attention", "reportPresence")).toBe(true);
+    expect(isCtoOnlyAdeAction("attention", "getPreferences")).toBe(true);
+    expect(isCtoOnlyAdeAction("attention", "putPreferences")).toBe(true);
     const fullStatus = {
       signedIn: true,
       userId: "user_123",

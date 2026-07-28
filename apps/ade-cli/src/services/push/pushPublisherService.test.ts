@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_ATTENTION_PREFERENCES } from "../../../../desktop/src/shared/types/attention";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import type { PushQuietHours } from "../../../../desktop/src/shared/types/push";
 import { createPushRegistrationStore, type PushRegistrationStore } from "./pushRegistrationStore";
@@ -136,15 +137,22 @@ describe("createPushPublisherService flush", () => {
 
   function makeHarness(deviceOverride = device) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
+    const publishAttention = vi.fn().mockResolvedValue(null);
     const store = {
       hasRegisteredDevices: () => true,
+      getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
       getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: 1, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
       listDevices: () => [deviceOverride],
       getDevice: () => deviceOverride,
       recordPublishResult: vi.fn(),
       recordRelayContact: vi.fn(),
     };
-    const relayClient = { publish, health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }), baseUrl: "https://relay.test" };
+    const relayClient = {
+      publish,
+      publishAttention,
+      health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }),
+      baseUrl: "https://relay.test",
+    };
     let chatCb: ((env: AgentChatEventEnvelope) => void) | null = null;
     const agentChatService = {
       subscribeToEvents: (cb: (env: AgentChatEventEnvelope) => void) => {
@@ -170,16 +178,30 @@ describe("createPushPublisherService flush", () => {
       store: store as never,
       relayClient: relayClient as never,
       machineName: "MacBook",
+      getAccountMachineIdentity: () => ({
+        machineKey: "b".repeat(32),
+        deviceId: "desktop-device",
+      }),
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
     const cliSessions = new Map<string, { title: string | null; toolType?: string | null; chatSessionId?: string | null }>();
-    publisher.attachSources("scope-1", {
+    const detach = publisher.attachSources("scope-1", {
       agentChatService: agentChatService as never,
+      projectName: "ADE",
+      projectRoot: "/projects/ADE",
       resolveLaneName: (laneId: string) => laneId,
       resolveCliSession: (sessionId: string) => cliSessions.get(sessionId) ?? null,
     });
-    return { publisher, publish, emit: (env: AgentChatEventEnvelope) => chatCb?.(env), store, cliSessions };
+    return {
+      publisher,
+      publish,
+      publishAttention,
+      emit: (env: AgentChatEventEnvelope) => chatCb?.(env),
+      store,
+      cliSessions,
+      detach,
+    };
   }
 
   const approval: AgentChatEventEnvelope = {
@@ -223,6 +245,43 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.dispose();
+  });
+
+  it("publishes one account-wide Attention item with exact project and approval actions", async () => {
+    const { publisher, publishAttention, emit } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    const payload = publishAttention.mock.calls[0][0];
+    expect(payload.fullSnapshot).toBe(true);
+    expect(payload.machineName).toBe("MacBook");
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toMatchObject({
+      kind: "agent",
+      eventKind: "agent_needs_you",
+      phase: "needs_you",
+      machine: {
+        machineKey: "a".repeat(40),
+        accountMachineKey: "b".repeat(32),
+        deviceId: "desktop-device",
+      },
+      project: {
+        projectId: "scope-1",
+        name: "ADE",
+        rootPath: "/projects/ADE",
+      },
+      destination: {
+        kind: "session",
+        sessionId: "s-1",
+        itemId: "i-1",
+      },
+    });
+    expect(payload.items[0].actions.map((action: { kind: string }) => action.kind))
+      .toEqual(["approve", "deny", "open"]);
 
     publisher.dispose();
   });
@@ -1010,6 +1069,29 @@ describe("createPushPublisherService flush", () => {
 
     publisher.dispose();
   });
+
+  it("publishes an empty full Attention snapshot when the last contributing scope detaches", async () => {
+    const { publisher, publishAttention, emit, detach } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publishAttention.mock.calls[0]?.[0].items).toHaveLength(1);
+
+    publishAttention.mockClear();
+    detach();
+    await vi.runAllTicks();
+    await Promise.resolve();
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention).toHaveBeenCalledWith({
+      machineName: "MacBook",
+      fullSnapshot: true,
+      items: [],
+    });
+    expect(vi.getTimerCount()).toBe(0);
+
+    publisher.dispose();
+  });
 });
 
 describe("createPushRegistrationStore", () => {
@@ -1234,5 +1316,74 @@ describe("createPushRelayClient", () => {
       '{"notifications":[{"title":"parity","phase":"waiting"}]}',
     );
     expect(signature).toBe("sha256=5c5c3a3081a0c6bec96c4191a88ab17b59382b902c6071672ea6d8daa30764f3"); // gitleaks:allow
+  });
+
+  it("publishes Attention with both machine HMAC and account bearer authorization", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+    });
+    await client.publishAttention({
+      machineName: "MacBook",
+      fullSnapshot: true,
+      items: [],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`https://relay.test/machines/${MACHINE_KEY}/attention`);
+    expect(init.headers.authorization).toBe("Bearer account-access-token");
+    expect(init.headers["x-ade-push-signature"]).toBe(
+      expectedSignature(
+        MACHINE_SECRET,
+        init.headers["x-ade-push-timestamp"],
+        "POST",
+        new URL(url).pathname,
+        init.body,
+      ),
+    );
+  });
+
+  it("binds incremental snapshot cursors to the authenticated stream", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+    });
+    await client.getAttentionSnapshot(12, "account-a");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "https://relay.test/attention/account/snapshot?since=12&streamId=account-a",
+    );
+    expect(init.headers.authorization).toBe("Bearer account-access-token");
+  });
+
+  it("does not authorize an account-A preference write with account B's refreshed token", async () => {
+    let currentAccountUserId: string | null = "account-a";
+    let resolveToken: (token: string | null) => void = () => {};
+    const tokenPromise = new Promise<string | null>((resolve) => {
+      resolveToken = resolve;
+    });
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: () => tokenPromise,
+      getAccountUserId: () => currentAccountUserId,
+    });
+
+    const write = client.putAttentionPreferences(
+      "account-a",
+      DEFAULT_ATTENTION_PREFERENCES,
+    );
+    await Promise.resolve();
+    currentAccountUserId = "account-b";
+    resolveToken("account-b-access-token");
+
+    await expect(write).rejects.toThrow(/account changed/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

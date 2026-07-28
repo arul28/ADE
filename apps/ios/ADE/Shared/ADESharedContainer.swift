@@ -45,14 +45,31 @@ public enum ADESharedContainer {
     /// Widgets read it in their `TimelineProvider`; the main app writes it and
     /// calls `WidgetCenter.shared.reloadAllTimelines()` on change.
     public static let workspaceSnapshotKey = "ade.workspaceSnapshot"
+    public static let attentionSnapshotKey = "ade.attentionSnapshot.v1"
+    public static let pushPreferencesKey = "ade.push.prefs"
+    public static let pendingAccountDeviceRevocationKey =
+        "ade.attention.pending-account-device-revocation.v1"
+    public static let accountDeviceOwnershipStateKey =
+        "ade.attention.account-device-ownership.v1"
+    public static let pendingAccountActivityTokenKey =
+        "ade.attention.pending-account-activity-token.v1"
+
+    /// Privacy preference shared with Lock Screen widgets and Live Activities.
+    /// Decode only the field extensions need so app-side preference evolution
+    /// does not couple WidgetKit to the full settings model.
+    public static var hideAttentionDetails: Bool {
+        guard let data = defaults.data(forKey: pushPreferencesKey) else {
+            return false
+        }
+        return (try? JSONDecoder().decode(SharedPushPrivacyPreferences.self, from: data).hideDetails) ?? false
+    }
 
     /// Decodes the most recent snapshot, if any.
     public static func readWorkspaceSnapshot() -> WorkspaceSnapshot? {
         guard let data = defaults.data(forKey: workspaceSnapshotKey) else {
             return nil
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = attentionJSONDecoder()
         return try? decoder.decode(WorkspaceSnapshot.self, from: data)
     }
 
@@ -66,6 +83,82 @@ public enum ADESharedContainer {
         defaults.set(data, forKey: workspaceSnapshotKey)
         defaults.synchronize()
         return true
+    }
+
+    /// Account-wide snapshot written by the signed-in attention transport.
+    /// This is additive: callers fall back to `WorkspaceSnapshot` until the
+    /// account publisher has produced a revision for this device.
+    public static func readAttentionSnapshot() -> AccountAttentionSnapshot? {
+        guard let data = defaults.data(forKey: attentionSnapshotKey) else {
+            return nil
+        }
+        guard let snapshot = decodeAttentionSnapshot(from: data),
+              snapshot.contractVersion == ADEAttentionContractVersion else {
+            return nil
+        }
+        return snapshot
+    }
+
+    public static func decodeAttentionSnapshot(from data: Data) -> AccountAttentionSnapshot? {
+        try? attentionJSONDecoder().decode(AccountAttentionSnapshot.self, from: data)
+    }
+
+    @discardableResult
+    public static func writeAttentionSnapshot(_ snapshot: AccountAttentionSnapshot) -> Bool {
+        guard snapshot.contractVersion == ADEAttentionContractVersion else { return false }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(snapshot) else { return false }
+        defaults.set(data, forKey: attentionSnapshotKey)
+        defaults.synchronize()
+        return true
+    }
+
+    public static func clearAttentionSnapshot() {
+        defaults.removeObject(forKey: attentionSnapshotKey)
+        defaults.synchronize()
+    }
+
+    /// Relay timestamps include fractional seconds while Swift-written widget
+    /// snapshots historically did not. Accept both shapes (and unix seconds)
+    /// so one malformed timestamp never blanks an otherwise valid snapshot.
+    private static func attentionJSONDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            if let seconds = try? container.decode(Double.self) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+            let raw = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: raw) {
+                return date
+            }
+            let standard = ISO8601DateFormatter()
+            standard.formatOptions = [.withInternetDateTime]
+            if let date = standard.date(from: raw) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ISO-8601 attention timestamp"
+            )
+        }
+        return decoder
+    }
+
+    private struct SharedPushPrivacyPreferences: Decodable {
+        let hideDetails: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case hideDetails
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            hideDetails = try container.decodeIfPresent(Bool.self, forKey: .hideDetails) ?? false
+        }
     }
 
     /// One-line summary used by the lock-screen inline accessory and the

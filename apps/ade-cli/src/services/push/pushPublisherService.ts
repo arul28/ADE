@@ -1,6 +1,18 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import {
+  ATTENTION_CONTRACT_VERSION,
+  DEFAULT_ATTENTION_PREFERENCES,
+  sanitizeAttentionPreview,
+  type AttentionEventKind,
+  type AttentionItem,
+  type AttentionPhase,
+  type AttentionPreferences,
+  type AttentionPresence,
+  type AttentionSnapshot,
+} from "../../../../desktop/src/shared/types/attention";
 import type { PtyExitEvent } from "../../../../desktop/src/shared/types/sessions";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
 import type {
@@ -41,9 +53,11 @@ const FAILED_DETAIL = "Run failed";
 const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
+const ATTENTION_RECENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
+const ATTENTION_HEARTBEAT_MS = 30_000;
 const APNS_HEALTH_CACHE_MS = 24 * 60 * 60 * 1000;
 
 export type AgentRunPhase =
@@ -91,6 +105,7 @@ export type PushSessionAttentionRequest = {
 
 export type PushPrNotification = {
   kind: PrNotificationKind;
+  prId?: string | null;
   prNumber: number;
   prTitle: string | null;
   laneId: string | null;
@@ -100,6 +115,8 @@ export type PushPrNotification = {
 
 export type PrLiveActivityState = {
   id: string;
+  scopeKey: string;
+  prId: string | null;
   prNumber: number;
   title: string;
   phase: PrNotificationKind;
@@ -140,6 +157,10 @@ export type PushPublisherDeps = {
   store: PushRegistrationStore;
   relayClient: PushRelayClient;
   machineName: string;
+  getAccountMachineIdentity?: () => {
+    machineKey: string;
+    deviceId?: string | null;
+  } | null;
   /** Test seams. */
   now?: () => number;
   flushDebounceMs?: number;
@@ -158,6 +179,8 @@ export type PushPublisherSources = {
   /** Injected bridge over prPollingService's `pr-notification` events. */
   subscribePrNotifications?: (cb: (event: PushPrNotification) => void) => () => void;
   resolveLaneName?: (laneId: string) => string | null | undefined;
+  projectName?: string;
+  projectRoot?: string;
   /**
    * Resolves a tracked terminal session for CLI-run metadata. Returning a
    * record with a `chatSessionId` (a chat-attached shell) or null (unknown /
@@ -399,16 +422,59 @@ function providerDisplayName(provider: string | null | undefined): string | null
   }
 }
 
+function fingerprintAttentionItem(value: Omit<AttentionItem, "fingerprint">): string {
+  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
+}
+
+function agentAttentionPhase(phase: AgentRunPhase): AttentionPhase {
+  if (phase === "waiting_for_approval" || phase === "waiting_for_input") return "needs_you";
+  return phase;
+}
+
+function agentAttentionEventKind(phase: AgentRunPhase): AttentionEventKind {
+  if (phase === "waiting_for_approval" || phase === "waiting_for_input") return "agent_needs_you";
+  if (phase === "failed") return "agent_failed";
+  if (phase === "completed") return "agent_completed";
+  return "agent_running";
+}
+
+function prAttentionState(kind: PrNotificationKind): {
+  phase: AttentionPhase;
+  eventKind: AttentionEventKind;
+  tab: "overview" | "activity" | "checks";
+} {
+  switch (kind) {
+    case "checks_failing":
+      return { phase: "checks_failing", eventKind: "pr_checks_failing", tab: "checks" };
+    case "review_requested":
+      return { phase: "review_requested", eventKind: "pr_review_requested", tab: "activity" };
+    case "changes_requested":
+      return { phase: "changes_requested", eventKind: "pr_changes_requested", tab: "activity" };
+    case "merge_ready":
+      return { phase: "merge_ready", eventKind: "pr_merge_ready", tab: "overview" };
+    case "merged":
+      return { phase: "merged", eventKind: "pr_merged", tab: "overview" };
+    case "closed":
+      return { phase: "closed", eventKind: "pr_closed", tab: "overview" };
+    case "opened":
+    case "reopened":
+      return { phase: "open", eventKind: "pr_opened", tab: "overview" };
+  }
+}
+
 export function createPushPublisherService(deps: PushPublisherDeps) {
   const now = deps.now ?? (() => Date.now());
   const flushDebounceMs = deps.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS;
   const promptFlushMs = deps.promptFlushMs ?? DEFAULT_PROMPT_FLUSH_MS;
 
   const runs = new Map<string, AgentRunState>();
+  const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
   let pendingAlerts: PendingAlert[] = [];
   const lastAlertFingerprintByKey = new Map<string, string>();
   let lastLiveActivityFingerprint: string | null = null;
+  let lastAttentionFingerprint: string | null = null;
+  let lastAttentionPublishedAt = 0;
   let liveActivityStarted = false;
   /**
    * Last app-icon badge count delivered per device (absent = never sent).
@@ -420,8 +486,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   let flushTimer: NodeJS.Timeout | null = null;
   let prExpiryTimer: NodeJS.Timeout | null = null;
+  let attentionHeartbeatTimer: NodeJS.Timeout | null = null;
   let flushFireAt = 0;
   let flushing = false;
+  let finalAttentionSnapshotPending = false;
+  let finalAttentionSnapshotQueued = false;
   let disposed = false;
   let warmed = false;
 
@@ -429,6 +498,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     agentChatService?: PushAgentChatService | null;
     resolveLaneName?: (laneId: string) => string | null | undefined;
     resolveCliSession?: PushPublisherSources["resolveCliSession"];
+    projectName: string;
+    projectRoot: string | null;
     unsubscribes: Array<() => void>;
   };
   const scopes = new Map<string, AttachedScope>();
@@ -466,6 +537,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       };
       runs.set(sessionId, run);
     }
+    recentRuns.delete(sessionId);
     return run;
   };
 
@@ -474,6 +546,184 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const laneTitleLine = (run: AgentRunState): string => {
     const parts = [run.lane?.trim(), run.title?.trim()].filter((part): part is string => Boolean(part));
     return parts.length > 0 ? parts.join(" · ") : run.title?.trim() || "Agent run";
+  };
+
+  const buildAttentionItems = (nowMs: number): AttentionItem[] => {
+    const { machineKey } = deps.store.getOrCreateIdentity();
+    const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
+    const machine = {
+      machineKey,
+      accountMachineKey: accountMachineIdentity?.machineKey ?? null,
+      deviceId: accountMachineIdentity?.deviceId ?? null,
+      name: deps.machineName,
+      online: true,
+      lastSeenAt: null,
+    };
+    const attentionRuns = new Map<string, AgentRunState>([
+      ...recentRuns,
+      ...runs,
+    ]);
+    const runItems = [...attentionRuns.values()].map((run): AttentionItem => {
+      const scope = scopes.get(run.scopeKey);
+      const phase = agentAttentionPhase(run.phase);
+      const eventKind = agentAttentionEventKind(run.phase);
+      const subject = runSubject(run);
+      const preview = sanitizeAttentionPreview(
+        run.detail?.trim() || laneTitleLine(run),
+      );
+      const expiresAt = new Date(
+        run.lastActiveAt
+          + (
+            run.phase === "running" || run.phase === "starting" || run.phase === "stale"
+              ? RUNNING_TTL_MS
+              : ATTENTION_RECENT_TTL_MS
+          ),
+      ).toISOString();
+      const actions: AttentionItem["actions"] = [
+        { id: "open", kind: "open", label: "Open" },
+      ];
+      if (run.phase === "waiting_for_approval" && run.itemId) {
+        actions.unshift(
+          {
+            id: "approve",
+            kind: "approve",
+            label: "Approve",
+            payload: { sessionId: run.sessionId, itemId: run.itemId },
+          },
+          {
+            id: "deny",
+            kind: "deny",
+            label: "Deny",
+            destructive: true,
+            payload: { sessionId: run.sessionId, itemId: run.itemId },
+          },
+        );
+      } else if (run.phase === "waiting_for_input") {
+        actions.unshift({
+          id: "answer",
+          kind: "answer",
+          label: "Answer",
+          payload: { sessionId: run.sessionId },
+        });
+      }
+      const withoutFingerprint: Omit<AttentionItem, "fingerprint"> = {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        id: `agent:${machineKey}:${run.sessionId}`,
+        revision: run.lastActiveAt,
+        kind: "agent",
+        eventKind,
+        phase,
+        machine,
+        project: {
+          projectId: run.scopeKey,
+          name: scope?.projectName ?? "ADE project",
+          rootPath: scope?.projectRoot ?? null,
+        },
+        laneId: null,
+        laneName: run.lane,
+        provider: run.agent,
+        model: run.model,
+        title: phase === "needs_you"
+          ? `${subject} needs you`
+          : phase === "failed"
+            ? `${subject} failed`
+            : phase === "completed"
+              ? `${subject} finished`
+              : `${subject} is working`,
+        preview,
+        privacyPreview: phase === "needs_you"
+          ? "An ADE agent needs your input."
+          : phase === "failed"
+            ? "An ADE agent run failed."
+            : phase === "completed"
+              ? "An ADE agent finished."
+              : "An ADE agent is working.",
+        detail: run.detail ? sanitizeAttentionPreview(run.detail, 1_000) : null,
+        recentActivity: run.detail ? [sanitizeAttentionPreview(run.detail)] : [],
+        planProgress: null,
+        destination: {
+          kind: "session",
+          sessionId: run.sessionId,
+          itemId: run.itemId,
+        },
+        actions,
+        occurredAt: new Date(run.startedAt).toISOString(),
+        updatedAt: new Date(run.lastActiveAt).toISOString(),
+        seenAt: null,
+        dismissedAt: null,
+        expiresAt,
+      };
+      return {
+        ...withoutFingerprint,
+        fingerprint: fingerprintAttentionItem(withoutFingerprint),
+      };
+    });
+
+    const prItems = [...prActivities.values()].map((pr): AttentionItem => {
+      const scopeKey = pr.scopeKey;
+      const scope = scopes.get(scopeKey);
+      const mapped = prAttentionState(pr.phase);
+      const title = prNotificationCopy({
+        kind: pr.phase,
+        prNumber: pr.prNumber,
+        prTitle: pr.title,
+        laneId: null,
+      }).title;
+      const actions: AttentionItem["actions"] = [
+        { id: "open", kind: "open", label: "Open pull request" },
+      ];
+      if (pr.phase === "checks_failing" && pr.prId) {
+        actions.unshift({
+          id: "rerun_checks",
+          kind: "rerun_checks",
+          label: "Rerun checks",
+          payload: { prId: pr.prId, prNumber: pr.prNumber },
+        });
+      }
+      const withoutFingerprint: Omit<AttentionItem, "fingerprint"> = {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        id: `pull-request:${machineKey}:${pr.id}`,
+        revision: pr.updatedAt,
+        kind: "pull_request",
+        eventKind: mapped.eventKind,
+        phase: mapped.phase,
+        machine,
+        project: {
+          projectId: scopeKey,
+          name: scope?.projectName ?? "ADE project",
+          rootPath: scope?.projectRoot ?? null,
+        },
+        laneId: null,
+        laneName: pr.lane,
+        provider: "GitHub",
+        model: null,
+        title,
+        preview: sanitizeAttentionPreview(pr.title),
+        privacyPreview: `Pull request #${pr.prNumber} changed state.`,
+        detail: null,
+        recentActivity: [],
+        planProgress: null,
+        destination: {
+          kind: "pull_request",
+          prId: pr.prId,
+          repoOwner: pr.repoOwner,
+          repoName: pr.repoName,
+          number: pr.prNumber,
+          tab: mapped.tab,
+        },
+        actions,
+        occurredAt: new Date(pr.updatedAt).toISOString(),
+        updatedAt: new Date(pr.updatedAt).toISOString(),
+        seenAt: null,
+        dismissedAt: null,
+        expiresAt: new Date(pr.updatedAt + ATTENTION_RECENT_TTL_MS).toISOString(),
+      };
+      return {
+        ...withoutFingerprint,
+        fingerprint: fingerprintAttentionItem(withoutFingerprint),
+      };
+    });
+    return [...runItems, ...prItems];
   };
 
   const enqueueAlert = (alert: PendingAlert): void => {
@@ -514,13 +764,20 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         && age > WAITING_TTL_MS
       ) {
         runs.delete(sessionId);
+      } else if (isTerminalPhase(run.phase) && age > ATTENTION_RECENT_TTL_MS) {
+        runs.delete(sessionId);
+      }
+    }
+    for (const [sessionId, run] of recentRuns) {
+      if (nowMs - run.lastActiveAt > ATTENTION_RECENT_TTL_MS) {
+        recentRuns.delete(sessionId);
       }
     }
   };
 
   const prunePrActivities = (nowMs: number): void => {
     for (const [id, pr] of prActivities) {
-      if (nowMs - pr.updatedAt > PR_LIVE_ACTIVITY_TTL_MS) {
+      if (nowMs - pr.updatedAt > ATTENTION_RECENT_TTL_MS) {
         prActivities.delete(id);
       }
     }
@@ -528,7 +785,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const dropTerminalRuns = (): void => {
     for (const [sessionId, run] of runs) {
-      if (isTerminalPhase(run.phase)) runs.delete(sessionId);
+      if (!isTerminalPhase(run.phase)) continue;
+      recentRuns.set(sessionId, { ...run });
+      runs.delete(sessionId);
     }
   };
 
@@ -539,7 +798,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     let nextExpiryMs = Number.POSITIVE_INFINITY;
     for (const pr of prActivities.values()) {
-      nextExpiryMs = Math.min(nextExpiryMs, pr.updatedAt + PR_LIVE_ACTIVITY_TTL_MS);
+      const expiryMs = pr.updatedAt + PR_LIVE_ACTIVITY_TTL_MS;
+      if (expiryMs > nowMs) nextExpiryMs = Math.min(nextExpiryMs, expiryMs);
     }
     if (!Number.isFinite(nextExpiryMs)) return;
     const delayMs = Math.max(250, nextExpiryMs - nowMs + 250);
@@ -598,9 +858,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (deviceIds.length === 0) return null;
     prunePrActivities(nowMs);
     schedulePrActivityExpiry(nowMs);
-    if (prActivities.size > 0) dropTerminalRuns();
+    const recentPrActivities = [...prActivities.values()]
+      .filter((pr) => nowMs - pr.updatedAt <= PR_LIVE_ACTIVITY_TTL_MS);
+    if (recentPrActivities.length > 0) dropTerminalRuns();
     const allRuns = [...runs.values()];
-    const allPrActivities = [...prActivities.values()];
+    const allPrActivities = recentPrActivities;
     const contentState = buildAgentRunsContentState(allRuns, nowMs, allPrActivities);
     const activeCount = contentState.activeCount;
     const prActivityCount = allPrActivities.length;
@@ -663,7 +925,6 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (event === "end") {
         liveActivityStarted = false;
         lastLiveActivityFingerprint = null;
-        // Once the aggregate ends, drop terminal rows so the next run starts fresh.
         dropTerminalRuns();
       }
     };
@@ -671,14 +932,49 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     return { item, commit };
   };
 
+  const publishAttentionSnapshot = async (nowMs: number): Promise<boolean> => {
+    if (typeof deps.relayClient.publishAttention !== "function") return false;
+    const items = buildAttentionItems(nowMs);
+    const fingerprint = JSON.stringify(items.map((item) => ({
+      id: item.id,
+      revision: item.revision,
+      fingerprint: item.fingerprint,
+    })));
+    if (
+      fingerprint === lastAttentionFingerprint
+      && nowMs - lastAttentionPublishedAt < ATTENTION_HEARTBEAT_MS
+    ) {
+      return true;
+    }
+    try {
+      const result = await deps.relayClient.publishAttention({
+        machineName: deps.machineName,
+        fullSnapshot: true,
+        items,
+      });
+      if (result) {
+        lastAttentionFingerprint = fingerprint;
+        lastAttentionPublishedAt = nowMs;
+        return true;
+      }
+      return false;
+    } catch (error) {
+      logWarn("attention.publish_failed", error);
+      scheduleRetry();
+      return false;
+    }
+  };
+
   const flush = async (): Promise<void> => {
     const nowMs = now();
+    pruneRuns(nowMs);
+    prunePrActivities(nowMs);
+    await resolveMissingMeta();
+    const accountAttentionPublished = await publishAttentionSnapshot(nowMs);
     if (isGated()) {
       pendingAlerts = [];
       return;
     }
-    pruneRuns(nowMs);
-    await resolveMissingMeta();
 
     const devices = deps.store.listDevices();
     const consumedAlerts = pendingAlerts;
@@ -688,7 +984,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const alertItems: PushRelayAlertItem[] = [];
     const alertCommits: Array<[string, string]> = [];
-    for (const alert of consumedAlerts) {
+    for (const alert of accountAttentionPublished ? [] : consumedAlerts) {
       const eligibleIds = devices
         .filter((device) => Boolean(device.apnsToken) && shouldDeliverAlertForPrefs(device.prefs, alert.sessionId, nowMs))
         .map((device) => device.deviceId);
@@ -757,7 +1053,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const liveActivityDeviceIds = devices
       .filter((device) => Boolean(device.pushToStartToken) && shouldDeliverLiveActivityForPrefs(device.prefs))
       .map((device) => device.deviceId);
-    const laPlan = planLiveActivity(liveActivityDeviceIds, nowMs);
+    const laPlan = accountAttentionPublished
+      ? null
+      : planLiveActivity(liveActivityDeviceIds, nowMs);
 
     if (alertItems.length === 0 && !laPlan) return;
 
@@ -835,7 +1133,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const scheduleRetry = (): void => {
-    if (disposed) return;
+    // With no attached scope there is no active work loop to retry. The final
+    // detach snapshot is deliberately one-shot/nonblocking; a later attach or
+    // heartbeat will naturally reconcile if that best-effort publish failed.
+    if (disposed || scopes.size === 0) return;
     const fireAt = now() + PUBLISH_RETRY_MS;
     if (flushTimer && flushFireAt > 0 && flushFireAt <= fireAt) return;
     if (flushTimer) clearTimeout(flushTimer);
@@ -850,7 +1151,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runFlush = async (): Promise<void> => {
     if (disposed) return;
     if (flushing) {
-      scheduleFlush(false);
+      if (scopes.size > 0) scheduleFlush(false);
       return;
     }
     flushing = true;
@@ -860,7 +1161,23 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       logWarn("push.flush_failed", error);
     } finally {
       flushing = false;
+      if (finalAttentionSnapshotPending) scheduleFinalAttentionSnapshot();
     }
+  };
+
+  const scheduleFinalAttentionSnapshot = (): void => {
+    if (disposed || !finalAttentionSnapshotPending || finalAttentionSnapshotQueued) return;
+    finalAttentionSnapshotQueued = true;
+    queueMicrotask(() => {
+      finalAttentionSnapshotQueued = false;
+      if (disposed || !finalAttentionSnapshotPending) return;
+      // An in-flight flush observes the already-pruned aggregate. Let it
+      // complete, then the finally block above schedules this final pass only
+      // if another authoritative snapshot is still needed.
+      if (flushing) return;
+      finalAttentionSnapshotPending = false;
+      void runFlush();
+    });
   };
 
   const onChatEvent = (scopeKey: string, envelope: AgentChatEventEnvelope): void => {
@@ -951,6 +1268,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         break;
       }
     }
+    if (isTerminalPhase(run.phase)) {
+      recentRuns.set(sessionId, { ...run });
+    }
 
     scheduleFlush(immediate);
   };
@@ -1016,6 +1336,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (run && run.kind === "cli") {
       run.phase = event.exitCode == null || event.exitCode === 0 ? "completed" : "failed";
       run.lastActiveAt = now();
+      recentRuns.set(run.sessionId, { ...run });
       scheduleFlush(false);
     }
     // Keep it simple: only surface non-clean exits of tracked CLI sessions.
@@ -1097,6 +1418,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const activityId = prActivityId(scopeKey, notification);
     prActivities.set(activityId, {
       id: activityId,
+      scopeKey,
+      prId: notification.prId?.trim() || null,
       prNumber: notification.prNumber,
       title: notification.prTitle?.trim() || `Pull request #${notification.prNumber}`,
       phase: notification.kind,
@@ -1168,11 +1491,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     scopes.delete(scopeKey);
     // A closed project stops contributing to the aggregate Live Activity.
+    let removedContribution = false;
     for (const [sessionId, run] of runs) {
-      if (run.scopeKey === scopeKey) runs.delete(sessionId);
+      if (run.scopeKey === scopeKey) {
+        runs.delete(sessionId);
+        removedContribution = true;
+      }
     }
     const removedPrActivities = removePrActivitiesForScope(scopeKey);
+    removedContribution = removedContribution || removedPrActivities;
     if (scopes.size === 0) {
+      if (removedContribution && !disposed) {
+        finalAttentionSnapshotPending = true;
+      }
       // Nothing attached — stop the flush loop so no timer lingers. The shared
       // instance stays memoized and resumes when a project re-attaches.
       if (flushTimer) clearTimeout(flushTimer);
@@ -1180,8 +1511,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       flushFireAt = 0;
       if (prExpiryTimer) clearTimeout(prExpiryTimer);
       prExpiryTimer = null;
+      if (attentionHeartbeatTimer) clearInterval(attentionHeartbeatTimer);
+      attentionHeartbeatTimer = null;
       prActivities.clear();
       pendingAlerts = [];
+      scheduleFinalAttentionSnapshot();
     } else if (removedPrActivities) {
       scheduleFlush(false);
     }
@@ -1192,8 +1526,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     for (const scopeKey of [...scopes.keys()]) detachScope(scopeKey);
     if (flushTimer) clearTimeout(flushTimer);
     if (prExpiryTimer) clearTimeout(prExpiryTimer);
+    if (attentionHeartbeatTimer) clearInterval(attentionHeartbeatTimer);
     flushTimer = null;
     prExpiryTimer = null;
+    attentionHeartbeatTimer = null;
   };
 
   return {
@@ -1228,8 +1564,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         agentChatService: sources.agentChatService ?? null,
         resolveLaneName: sources.resolveLaneName,
         resolveCliSession: sources.resolveCliSession,
+        projectName: sources.projectName?.trim() || "ADE project",
+        projectRoot: sources.projectRoot?.trim() || null,
         unsubscribes: scopeUnsubscribes,
       });
+      if (!attentionHeartbeatTimer) {
+        attentionHeartbeatTimer = setInterval(() => scheduleFlush(false), ATTENTION_HEARTBEAT_MS);
+        attentionHeartbeatTimer.unref?.();
+      }
       return () => detachScope(scopeKey);
     },
 
@@ -1324,6 +1666,45 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     getDeliveryStatus(deviceId: string | null): Promise<PushDeliveryStatus> {
       return buildDeliveryStatus(deviceId);
+    },
+
+    async getAttentionSnapshot(
+      since = 0,
+      streamId?: string | null,
+    ): Promise<AttentionSnapshot> {
+      const snapshot = await deps.relayClient.getAttentionSnapshot?.(since, streamId);
+      return snapshot ?? {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        streamId: null,
+        revision: 0,
+        generatedAt: new Date(now()).toISOString(),
+        items: [],
+        tombstones: [],
+      };
+    },
+
+    async acknowledgeAttention(args: {
+      itemIds: string[];
+      seenAt?: string;
+      dismissedAt?: string | null;
+    }): Promise<void> {
+      await deps.relayClient.acknowledgeAttention?.(args);
+    },
+
+    async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
+      await deps.relayClient.reportAttentionPresence?.(presence);
+    },
+
+    async getAttentionPreferences(accountOwnerId: string): Promise<AttentionPreferences> {
+      return await deps.relayClient.getAttentionPreferences?.(accountOwnerId)
+        ?? DEFAULT_ATTENTION_PREFERENCES;
+    },
+
+    async putAttentionPreferences(
+      accountOwnerId: string,
+      preferences: AttentionPreferences,
+    ): Promise<void> {
+      await deps.relayClient.putAttentionPreferences?.(accountOwnerId, preferences);
     },
 
     dispose,

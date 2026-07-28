@@ -24,6 +24,20 @@ struct ADELockScreenWidget: Widget {
 struct ADEStatusEntry: TimelineEntry {
     let date: Date
     let snapshot: WorkspaceSnapshot
+    let attentionSnapshot: AccountAttentionSnapshot?
+    let hideDetails: Bool
+
+    init(
+        date: Date,
+        snapshot: WorkspaceSnapshot,
+        attentionSnapshot: AccountAttentionSnapshot? = nil,
+        hideDetails: Bool = false
+    ) {
+        self.date = date
+        self.snapshot = snapshot
+        self.attentionSnapshot = attentionSnapshot
+        self.hideDetails = hideDetails
+    }
 }
 
 struct ADEStatusTimelineProvider: TimelineProvider {
@@ -33,13 +47,28 @@ struct ADEStatusTimelineProvider: TimelineProvider {
 
     func getSnapshot(in context: Context, completion: @escaping (ADEStatusEntry) -> Void) {
         let snapshot = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
-        completion(ADEStatusEntry(date: Date(), snapshot: snapshot))
+        completion(ADEStatusEntry(
+            date: Date(),
+            snapshot: snapshot,
+            attentionSnapshot: ADESharedContainer.readAttentionSnapshot(),
+            hideDetails: ADESharedContainer.hideAttentionDetails
+        ))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<ADEStatusEntry>) -> Void) {
         let now = Date()
         let snapshot = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
-        completion(Timeline(entries: [ADEStatusEntry(date: now, snapshot: snapshot)], policy: .after(now.addingTimeInterval(60))))
+        completion(Timeline(
+            entries: [
+                ADEStatusEntry(
+                    date: now,
+                    snapshot: snapshot,
+                    attentionSnapshot: ADESharedContainer.readAttentionSnapshot(),
+                    hideDetails: ADESharedContainer.hideAttentionDetails
+                )
+            ],
+            policy: .after(now.addingTimeInterval(60))
+        ))
     }
 }
 
@@ -48,7 +77,19 @@ struct LockScreenWidgetEntryView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        let status = LockScreenPriorityStatus(snapshot: entry.snapshot)
+        let status: LockScreenPriorityStatus
+        if let account = entry.attentionSnapshot,
+           Date().timeIntervalSince(account.generatedAt) <= 86_400 {
+            status = LockScreenPriorityStatus(
+                attentionSnapshot: account,
+                hideDetails: entry.hideDetails
+            )
+        } else {
+            status = LockScreenPriorityStatus(
+                snapshot: entry.snapshot,
+                hideDetails: entry.hideDetails
+            )
+        }
 
         return Group {
             switch family {
@@ -63,6 +104,7 @@ struct LockScreenWidgetEntryView: View {
             }
         }
         .widgetURL(status.destinationURL)
+        .privacySensitive()
     }
 }
 
@@ -99,7 +141,90 @@ private struct LockScreenPriorityStatus {
         let symbol: String
     }
 
-    init(snapshot: WorkspaceSnapshot) {
+    init(attentionSnapshot: AccountAttentionSnapshot, hideDetails: Bool = false) {
+        let now = Date()
+        let visible = attentionSnapshot.items.filter { item in
+            item.dismissedAt == nil
+                && (item.expiresAt == nil || item.expiresAt! > now)
+        }
+        let ordered = visible.sorted { lhs, rhs in
+            let priority = Self.priority(lhs.phase) - Self.priority(rhs.phase)
+            if priority != 0 { return priority < 0 }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+        let inbox = visible.filter(\.needsInbox)
+        let live = visible.filter(\.isLive)
+        let machines = Set(visible.map(\.machine.machineKey))
+        let onlineMachines = Set(visible.filter(\.machine.online).map(\.machine.machineKey))
+        let metrics = [
+            inbox.isEmpty ? nil : Metric(id: "needs", label: "\(inbox.count) need", symbol: "bell.fill"),
+            live.isEmpty ? nil : Metric(id: "live", label: "\(live.count) live", symbol: "waveform.path.ecg"),
+            machines.isEmpty ? nil : Metric(id: "machines", label: "\(machines.count) Mac", symbol: "desktopcomputer"),
+        ].compactMap { $0 }
+
+        guard let focus = ordered.first else {
+            self = .init(
+                kind: .idle,
+                title: "ADE idle",
+                detail: "No work needs attention",
+                inlineText: "ADE · idle",
+                count: 0,
+                symbol: "moon.zzz.fill",
+                shortLabel: "IDLE",
+                tint: ADESharedTheme.statusIdle,
+                destinationURL: Self.workspaceURL,
+                metrics: []
+            )
+            return
+        }
+
+        if onlineMachines.isEmpty, !machines.isEmpty {
+            self = .init(
+                kind: .offline,
+                title: hideDetails
+                    ? "Mac offline"
+                    : (machines.count == 1 ? "\(focus.machine.name) offline" : "\(machines.count) Macs offline"),
+                detail: hideDetails ? "Open ADE for details" : "Last known work · \(focus.project.name)",
+                inlineText: "ADE · offline",
+                count: 0,
+                symbol: "wifi.slash",
+                shortLabel: "OFF",
+                tint: ADESharedTheme.statusIdle,
+                destinationURL: focus.deepLinkURL ?? Self.workspaceURL,
+                metrics: metrics
+            )
+            return
+        }
+
+        let presentation = Self.presentation(for: focus.phase)
+        let scope = "\(focus.machine.name) · \(focus.project.name)"
+        let attentionCount = inbox.count
+        let ambientCount = visible.count
+        let privateTitle = focus.privacyPreview
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self = .init(
+            kind: presentation.kind,
+            title: hideDetails
+                ? (privateTitle.isEmpty ? "Attention update" : privateTitle)
+                : focus.title,
+            detail: hideDetails ? "Across your signed-in machines" : scope,
+            inlineText: attentionCount > 0
+                ? "ADE · \(attentionCount) need you"
+                : live.isEmpty
+                    ? "ADE · \(ambientCount) recent"
+                    : "ADE · \(live.count) live",
+            count: attentionCount > 0
+                ? attentionCount
+                : (live.isEmpty ? ambientCount : live.count),
+            symbol: presentation.symbol,
+            shortLabel: presentation.label,
+            tint: presentation.tint,
+            destinationURL: focus.deepLinkURL ?? Self.workspaceURL,
+            metrics: metrics
+        )
+    }
+
+    init(snapshot: WorkspaceSnapshot, hideDetails: Bool = false) {
         let running = snapshot.runningAgents.sorted { $0.lastActivityAt > $1.lastActivityAt }
         let awaiting = snapshot.agents.filter { agent in
             agent.awaitingInput || agent.status.lowercased() == "awaiting_input"
@@ -118,6 +243,8 @@ private struct LockScreenPriorityStatus {
         }
         let waitingCount = max(snapshot.awaitingInputCount, awaiting.count)
         let idleCount = snapshot.idleCount
+        let snapshotAge = Date().timeIntervalSince(snapshot.generatedAt)
+        let isStale = snapshot.generatedAt.timeIntervalSince1970 > 0 && snapshotAge > 90
 
         let metrics = Self.metrics(
             runningCount: running.count,
@@ -126,12 +253,31 @@ private struct LockScreenPriorityStatus {
             idleCount: idleCount
         )
 
-        if waitingCount > 0 {
+        if isStale {
+            let machine = snapshot.machineName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let minutes = max(1, Int(snapshotAge / 60))
+            self = .init(
+                kind: .offline,
+                title: hideDetails
+                    ? "Mac offline"
+                    : "\((machine?.isEmpty == false ? machine : nil) ?? "Mac") offline",
+                detail: minutes == 1 ? "Last update 1 minute ago" : "Last update \(minutes) minutes ago",
+                inlineText: "ADE · offline \(minutes)m",
+                count: 0,
+                symbol: "wifi.slash",
+                shortLabel: "OFF",
+                tint: ADESharedTheme.statusIdle,
+                destinationURL: Self.workspaceURL,
+                metrics: metrics
+            )
+        } else if waitingCount > 0 {
             let first = awaiting.first
             self = .init(
                 kind: .awaitingInput,
                 title: waitingCount == 1 ? "1 chat waiting" : "\(waitingCount) chats waiting",
-                detail: first.map { Self.agentTitle($0) } ?? "Reply or approve in ADE",
+                detail: hideDetails
+                    ? "Open ADE to reply or approve"
+                    : (first.map { Self.agentTitle($0) } ?? "Reply or approve in ADE"),
                 inlineText: "ADE · \(waitingCount) waiting",
                 count: waitingCount,
                 symbol: "bell.badge.fill",
@@ -144,7 +290,7 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .failed,
                 title: failed.count == 1 ? "Agent failed" : "\(failed.count) agents failed",
-                detail: Self.agentTitle(first),
+                detail: hideDetails ? "Open ADE for details" : Self.agentTitle(first),
                 inlineText: "ADE · \(failed.count) failed",
                 count: failed.count,
                 symbol: "xmark.octagon.fill",
@@ -157,7 +303,7 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .ciFailing,
                 title: ciFailing.count == 1 ? "CI failing" : "\(ciFailing.count) PRs failing",
-                detail: Self.prTitle(first),
+                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
                 inlineText: "ADE · \(ciFailing.count) CI failing",
                 count: ciFailing.count,
                 symbol: "exclamationmark.triangle.fill",
@@ -174,12 +320,12 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .reviewRequested,
                 title: title,
-                detail: Self.prTitle(first),
+                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
                 inlineText: "ADE · \(reviewRequested.count) review",
                 count: reviewRequested.count,
                 symbol: "eye.fill",
                 shortLabel: "REV",
-                tint: ADESharedTheme.warningAmber,
+                tint: changes > 0 ? ADESharedTheme.statusFailed : ADESharedTheme.statusReview,
                 destinationURL: Self.prURL(first),
                 metrics: metrics
             )
@@ -187,7 +333,7 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .mergeReady,
                 title: mergeReady.count == 1 ? "Ready to merge" : "\(mergeReady.count) PRs ready",
-                detail: Self.prTitle(first),
+                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
                 inlineText: "ADE · \(mergeReady.count) ready",
                 count: mergeReady.count,
                 symbol: "checkmark.seal.fill",
@@ -200,12 +346,12 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .running,
                 title: running.count == 1 ? "1 agent running" : "\(running.count) agents running",
-                detail: Self.runningDetail(first),
+                detail: hideDetails ? "Agent work is in progress" : Self.runningDetail(first),
                 inlineText: "ADE · \(running.count) running",
                 count: running.count,
                 symbol: "circle.dotted",
                 shortLabel: "RUN",
-                tint: ADESharedTheme.statusSuccess,
+                tint: ADESharedTheme.statusRunning,
                 destinationURL: Self.sessionURL(first.sessionId),
                 metrics: metrics
             )
@@ -213,12 +359,12 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .openPullRequests,
                 title: openPrs.count == 1 ? "1 open PR" : "\(openPrs.count) open PRs",
-                detail: Self.prTitle(first),
+                detail: hideDetails ? "Open ADE for details" : Self.prTitle(first),
                 inlineText: "ADE · \(openPrs.count) PRs",
                 count: openPrs.count,
                 symbol: "arrow.triangle.pull",
                 shortLabel: "PR",
-                tint: ADESharedTheme.brandCursor,
+                tint: ADESharedTheme.statusRunning,
                 destinationURL: Self.prURL(first),
                 metrics: metrics
             )
@@ -349,6 +495,47 @@ private struct LockScreenPriorityStatus {
         }
         return Array(result.prefix(3))
     }
+
+    private static func priority(_ phase: AccountAttentionPhase) -> Int {
+        switch phase {
+        case .needsYou: return 0
+        case .failed, .checksFailing, .changesRequested: return 1
+        case .reviewRequested, .mergeReady, .blocked: return 2
+        case .starting, .running: return 3
+        case .open, .stale: return 4
+        case .completed, .merged: return 5
+        case .closed: return 6
+        }
+    }
+
+    private static func presentation(
+        for phase: AccountAttentionPhase
+    ) -> (kind: Kind, symbol: String, label: String, tint: Color) {
+        switch phase {
+        case .needsYou, .blocked:
+            return (.awaitingInput, "bell.badge.fill", "YOU", ADESharedTheme.warningAmber)
+        case .failed:
+            return (.failed, "xmark.octagon.fill", "FAIL", ADESharedTheme.statusFailed)
+        case .checksFailing, .changesRequested:
+            return (.ciFailing, "exclamationmark.triangle.fill", "CHECK", ADESharedTheme.statusFailed)
+        case .reviewRequested:
+            return (.reviewRequested, "eye.fill", "REV", ADESharedTheme.statusReview)
+        case .mergeReady:
+            return (.mergeReady, "checkmark.seal.fill", "READY", ADESharedTheme.statusSuccess)
+        case .starting, .running:
+            return (.running, "waveform.path.ecg", "LIVE", ADESharedTheme.statusRunning)
+        case .open:
+            return (.idle, "arrow.triangle.pull", "OPEN", ADESharedTheme.statusRunning)
+        case .stale:
+            return (.offline, "wifi.slash", "OFF", ADESharedTheme.statusIdle)
+        case .completed:
+            return (.idle, "checkmark.circle.fill", "DONE", ADESharedTheme.statusSuccess)
+        case .merged:
+            return (.idle, "arrow.triangle.merge", "MERGED", ADESharedTheme.statusSuccess)
+        case .closed:
+            return (.idle, "xmark.circle.fill", "CLOSED", ADESharedTheme.statusIdle)
+        }
+    }
 }
 
 // MARK: - Rectangular
@@ -360,39 +547,53 @@ private struct LockScreenRectangularView: View {
     var body: some View {
         ZStack {
             AccessoryWidgetBackground()
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(status.tint.opacity(0.16))
                     Image(systemName: status.symbol)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(status.tint)
-                        .widgetAccentable()
-                        .frame(width: 14, alignment: .center)
-                    Text(status.title)
                         .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(status.tint)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                Text(status.detail)
-                    .font(.system(size: 10.5, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if !status.metrics.isEmpty {
+                .frame(width: 30, height: 30)
+                .widgetAccentable()
+
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        ForEach(status.metrics) { metric in
-                            Label(metric.label, systemImage: metric.symbol)
-                                .font(.system(size: 9, weight: .semibold))
-                                .labelStyle(.titleAndIcon)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                                .foregroundStyle(.secondary)
+                        Text(status.title)
+                            .font(.footnote.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(status.shortLabel)
+                            .font(.system(size: status.shortLabel.count > 4 ? 7 : 8, weight: .bold, design: .rounded))
+                            .foregroundStyle(status.tint)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(status.tint.opacity(0.12), in: Capsule())
+                            .widgetAccentable()
+                    }
+                    Text(status.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                    if !status.metrics.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(status.metrics.prefix(2)) { metric in
+                                Label(metric.label, systemImage: metric.symbol)
+                                    .font(.caption2.weight(.semibold))
+                                    .labelStyle(.titleAndIcon)
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
                     }
                 }
             }
+            .padding(.horizontal, 1)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .opacity(isLuminanceReduced ? 0.85 : 1)
         }
@@ -409,31 +610,28 @@ private struct LockScreenCircularView: View {
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
-        Group {
-            if status.count > 0 {
-                Gauge(value: 1, in: 0...1) {
-                    EmptyView()
-                } currentValueLabel: {
-                    VStack(spacing: -1) {
+        ZStack {
+            AccessoryWidgetBackground()
+            Gauge(value: status.count > 0 ? 0.84 : 0.18, in: 0...1) {
+                EmptyView()
+            } currentValueLabel: {
+                VStack(spacing: -1) {
+                    if status.count > 0 {
                         Text("\(min(status.count, 99))")
-                            .font(.system(size: status.count >= 10 ? 16 : 20, weight: .black))
-                            .minimumScaleFactor(0.7)
-                            .lineLimit(1)
-                        Text(status.shortLabel)
-                            .font(.system(size: status.shortLabel.count > 4 ? 7 : 8, weight: .semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
+                            .font(.system(size: status.count >= 10 ? 15 : 18, weight: .black, design: .rounded))
+                    } else {
+                        Image(systemName: status.symbol)
+                            .font(.system(size: 15, weight: .semibold))
+                            .contentTransition(.symbolEffect(.replace))
                     }
-                }
-                .gaugeStyle(.accessoryCircular)
-            } else {
-                ZStack {
-                    AccessoryWidgetBackground()
-                    Image(systemName: status.symbol)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(status.tint)
+                    Text(status.shortLabel)
+                        .font(.system(size: status.shortLabel.count > 4 ? 6.5 : 7.5, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
             }
+            .gaugeStyle(.accessoryCircular)
+            .tint(status.tint)
         }
         .widgetAccentable()
         .opacity(isLuminanceReduced ? 0.85 : 1)
@@ -449,7 +647,8 @@ private struct LockScreenInlineView: View {
     let status: LockScreenPriorityStatus
 
     var body: some View {
-        Text(status.inlineText)
+        Label(status.inlineText, systemImage: status.symbol)
+            .labelStyle(.titleAndIcon)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .accessibilityLabel("ADE")

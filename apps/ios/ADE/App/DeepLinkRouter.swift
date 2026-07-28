@@ -51,6 +51,9 @@ final class DeepLinkRouter {
         repoOwner: scope.repoOwner,
         repoName: scope.repoName,
         branch: scope.branch,
+        accountMachineKey: scope.accountMachineKey,
+        itemId: scope.itemId,
+        eventId: scope.eventId,
         event: scope.event,
         offset: scope.offset
       )
@@ -71,12 +74,20 @@ final class DeepLinkRouter {
           prNumber: number,
           repoOwner: owner,
           repoName: repo,
-          detailTab: prDetailTab(from: url)
+          detailTab: prDetailTab(from: url),
+          accountMachineKey: accountMachineKey(from: url),
+          eventId: eventId(from: url)
         )
         return
       }
       guard let raw = pathComponents.first, !raw.isEmpty else { return }
-      post(kind: "pr", identifier: raw, detailTab: prDetailTab(from: url))
+      post(
+        kind: "pr",
+        identifier: raw,
+        detailTab: prDetailTab(from: url),
+        accountMachineKey: accountMachineKey(from: url),
+        eventId: eventId(from: url)
+      )
     case "lane":
       // Lanes are a local-only desktop concept — the iOS client has no
       // counterpart UI, so we surface a "Send to your Mac" card instead of
@@ -175,6 +186,9 @@ final class DeepLinkRouter {
         repoOwner: scope.repoOwner,
         repoName: scope.repoName,
         branch: scope.branch,
+        accountMachineKey: scope.accountMachineKey,
+        itemId: scope.itemId,
+        eventId: scope.eventId,
         event: scope.event,
         offset: scope.offset
       )
@@ -194,9 +208,24 @@ final class DeepLinkRouter {
       postSendToMac(url: url)
     case "pr":
       guard let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else { return true }
+      if let accountMachineKey = query["accountmachinekey"],
+         !ADEDeepLinkURLParsing.isValidOpaqueId(accountMachineKey) {
+        return true
+      }
+      if let eventId = query["event"],
+         !ADEDeepLinkURLParsing.isValidOpaqueId(eventId) {
+        return true
+      }
       let detailTab = prDetailTab(from: query["tab"])
       if query["repo"]?.isEmpty ?? true {
-        post(kind: "pr", identifier: "\(number)", prNumber: number, detailTab: detailTab)
+        post(
+          kind: "pr",
+          identifier: "\(number)",
+          prNumber: number,
+          detailTab: detailTab,
+          accountMachineKey: query["accountmachinekey"],
+          eventId: query["event"]
+        )
         return true
       }
       guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]) else { return true }
@@ -206,7 +235,9 @@ final class DeepLinkRouter {
         prNumber: number,
         repoOwner: repo.owner,
         repoName: repo.repo,
-        detailTab: detailTab
+        detailTab: detailTab,
+        accountMachineKey: query["accountmachinekey"],
+        eventId: query["event"]
       )
     case "linear-issue":
       guard let identifier = query["issue"],
@@ -235,7 +266,10 @@ final class DeepLinkRouter {
         laneId: stringValue(from: userInfo["laneId"]),
         repoOwner: stringValue(from: userInfo["repoOwner"]),
         repoName: stringValue(from: userInfo["repoName"]),
-        branch: stringValue(from: userInfo["branch"])
+        branch: stringValue(from: userInfo["branch"]),
+        accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        itemId: stringValue(from: userInfo["itemId"]),
+        eventId: stringValue(from: userInfo["eventId"])
       )
       return
     }
@@ -244,7 +278,9 @@ final class DeepLinkRouter {
         kind: "pr",
         identifier: prId,
         prNumber: prNumberValue(from: userInfo["prNumber"]),
-        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"]))
+        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"])),
+        accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        eventId: stringValue(from: userInfo["eventId"])
       )
       return
     }
@@ -257,7 +293,9 @@ final class DeepLinkRouter {
         prNumber: prNumberValue(from: userInfo["prNumber"]),
         repoOwner: stringValue(from: userInfo["repoOwner"]),
         repoName: stringValue(from: userInfo["repoName"]),
-        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"]))
+        detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"])),
+        accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        eventId: stringValue(from: userInfo["eventId"])
       )
     }
   }
@@ -271,6 +309,9 @@ final class DeepLinkRouter {
     repoName: String? = nil,
     detailTab: PrDetailTab? = nil,
     branch: String? = nil,
+    accountMachineKey: String? = nil,
+    itemId: String? = nil,
+    eventId: String? = nil,
     event: Int? = nil,
     offset: Int? = nil
   ) {
@@ -295,11 +336,20 @@ final class DeepLinkRouter {
     let scopedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedAccountMachineKey = accountMachineKey?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedEventId = eventId?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let scopedLaneId, !scopedLaneId.isEmpty { userInfo["laneId"] = scopedLaneId }
     if let scopedRepoOwner, !scopedRepoOwner.isEmpty { userInfo["repoOwner"] = scopedRepoOwner }
     if let scopedRepoName, !scopedRepoName.isEmpty { userInfo["repoName"] = scopedRepoName }
     if let detailTab { userInfo["detailTab"] = detailTab.rawValue }
     if let scopedBranch, !scopedBranch.isEmpty { userInfo["branch"] = scopedBranch }
+    if let scopedAccountMachineKey, !scopedAccountMachineKey.isEmpty {
+      userInfo["accountMachineKey"] = scopedAccountMachineKey
+    }
+    if let scopedItemId, !scopedItemId.isEmpty { userInfo["itemId"] = scopedItemId }
+    if let scopedEventId, !scopedEventId.isEmpty { userInfo["eventId"] = scopedEventId }
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
       object: nil,
@@ -312,6 +362,9 @@ final class DeepLinkRouter {
         repoOwner: scopedRepoOwner,
         repoName: scopedRepoName,
         branch: scopedBranch,
+        accountMachineKey: scopedAccountMachineKey,
+        itemId: scopedItemId,
+        eventId: scopedEventId,
         event: event,
         offset: offset
       )
@@ -327,18 +380,24 @@ final class DeepLinkRouter {
           prNumber: number,
           repoOwner: scopedRepoOwner,
           repoName: scopedRepoName,
-          detailTab: detailTab
+          detailTab: detailTab,
+          accountMachineKey: scopedAccountMachineKey,
+          eventId: scopedEventId
         )
       } else if let prId = resolvePrId(from: trimmed) {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
           prId: prId,
           prNumber: prNumber ?? Int(trimmed),
-          detailTab: detailTab
+          detailTab: detailTab,
+          accountMachineKey: scopedAccountMachineKey,
+          eventId: scopedEventId
         )
       } else if let prNumber = Int(trimmed), prNumber > 0 {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
           prNumber: prNumber,
-          detailTab: detailTab
+          detailTab: detailTab,
+          accountMachineKey: scopedAccountMachineKey,
+          eventId: scopedEventId
         )
       }
     }
@@ -351,6 +410,24 @@ final class DeepLinkRouter {
     return prDetailTab(
       from: components.queryItems?.first(where: { $0.name.lowercased() == "tab" })?.value
     )
+  }
+
+  private func accountMachineKey(from url: URL) -> String? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["accountmachinekey"]
+    guard ADEDeepLinkURLParsing.isValidOpaqueId(value) else { return nil }
+    return value
+  }
+
+  private func eventId(from url: URL) -> String? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["event"]
+    guard ADEDeepLinkURLParsing.isValidOpaqueId(value) else { return nil }
+    return value
   }
 
   private func prDetailTab(from rawValue: String?) -> PrDetailTab? {
@@ -368,7 +445,17 @@ final class DeepLinkRouter {
 
   private func sessionNavigationScope(
     from url: URL
-  ) -> (laneId: String?, repoOwner: String?, repoName: String?, branch: String?, event: Int?, offset: Int?)? {
+  ) -> (
+    laneId: String?,
+    repoOwner: String?,
+    repoName: String?,
+    branch: String?,
+    accountMachineKey: String?,
+    itemId: String?,
+    eventId: String?,
+    event: Int?,
+    offset: Int?
+  )? {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
       return nil
     }
@@ -377,7 +464,17 @@ final class DeepLinkRouter {
 
   private func sessionNavigationScope(
     from query: [String: String]
-  ) -> (laneId: String?, repoOwner: String?, repoName: String?, branch: String?, event: Int?, offset: Int?)? {
+  ) -> (
+    laneId: String?,
+    repoOwner: String?,
+    repoName: String?,
+    branch: String?,
+    accountMachineKey: String?,
+    itemId: String?,
+    eventId: String?,
+    event: Int?,
+    offset: Int?
+  )? {
     if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
       return nil
     }
@@ -386,8 +483,23 @@ final class DeepLinkRouter {
     if let branch = query["branch"], !ADEDeepLinkURLParsing.isValidBranch(branch) {
       return nil
     }
-    let event = ADEDeepLinkURLParsing.nonNegativeInteger(query["event"])
-    if query["event"] != nil && event == nil { return nil }
+    if let accountMachineKey = query["accountmachinekey"],
+       !ADEDeepLinkURLParsing.isValidOpaqueId(accountMachineKey) {
+      return nil
+    }
+    if let itemId = query["item"],
+       !ADEDeepLinkURLParsing.isValidOpaqueId(itemId) {
+      return nil
+    }
+    let rawEvent = query["event"]
+    let event = ADEDeepLinkURLParsing.nonNegativeInteger(rawEvent)
+    let eventId: String?
+    if event == nil, let rawEvent {
+      guard ADEDeepLinkURLParsing.isValidOpaqueId(rawEvent) else { return nil }
+      eventId = rawEvent
+    } else {
+      eventId = nil
+    }
     let offset = ADEDeepLinkURLParsing.nonNegativeInteger(query["offset"])
     if query["offset"] != nil && offset == nil { return nil }
     return (
@@ -395,6 +507,9 @@ final class DeepLinkRouter {
       repoOwner: repo?.owner,
       repoName: repo?.repo,
       branch: query["branch"],
+      accountMachineKey: query["accountmachinekey"],
+      itemId: query["item"],
+      eventId: eventId,
       event: event,
       offset: offset
     )

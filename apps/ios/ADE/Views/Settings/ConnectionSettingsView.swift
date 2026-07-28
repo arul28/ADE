@@ -295,6 +295,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
   private weak var boundService: SyncService?
   private var cancellable: AnyCancellable?
   private var pushCancellable: AnyCancellable?
+  private var accountCancellable: AnyCancellable?
 
   func bind(to syncService: SyncService) {
     guard boundService !== syncService else {
@@ -315,6 +316,11 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     // Push-delivery state lives on its own singleton; mirror its changes into
     // the panel snapshot so the section stays a pure function of Equatable state.
     pushCancellable = PushNotificationService.shared.objectWillChange
+      .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
+      .sink { [weak self] _ in
+        Task { @MainActor in self?.refreshPushSnapshot() }
+      }
+    accountCancellable = AccountService.shared.objectWillChange
       .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
       .sink { [weak self] _ in
         Task { @MainActor in self?.refreshPushSnapshot() }
@@ -386,6 +392,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     snapshot.relayRefreshError = push.relayRefreshError
     snapshot.canRefreshRelayStatus = boundService?.canSendPushCommands == true
     snapshot.isPaired = boundService?.hasPairedHost == true
+    snapshot.accountDeliveryAvailable = AccountService.shared.isSignedIn
     snapshot.liveActivityTokenPresent = diagnostics.liveActivityPushToStartTokenSuffix != nil
     if let relay = push.relayStatus {
       snapshot.relayResolved = true

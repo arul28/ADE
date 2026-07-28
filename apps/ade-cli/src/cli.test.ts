@@ -2276,10 +2276,11 @@ describe("ADE CLI", () => {
     expect(sendParams).toMatchObject({
       arguments: {
         domain: "chat",
-        action: "sendMessage",
+        action: "messageSession",
         args: {
           sessionId: "chat-new",
           text: "Fix the tests",
+          kind: "auto",
         },
       },
     });
@@ -2351,10 +2352,11 @@ describe("ADE CLI", () => {
       name: "run_ade_action",
       arguments: {
         domain: "chat",
-        action: "sendMessage",
+        action: "messageSession",
         args: {
           sessionId: "chat-new",
           text: "Fix login",
+          kind: "auto",
         },
       },
     });
@@ -2768,10 +2770,11 @@ describe("ADE CLI", () => {
       },
       afterCreate: [
         {
-          action: "chat.sendMessage",
+          action: "chat.messageSession",
           input: {
             sessionId: "<created-session-id>",
             text: "Fix the tests",
+            kind: "auto",
           },
         },
       ],
@@ -2811,9 +2814,10 @@ describe("ADE CLI", () => {
           },
         },
         {
-          action: "chat.sendMessage",
+          action: "chat.messageSession",
           input: {
             sessionId: "<created-session-id>",
+            kind: "auto",
           },
         },
       ],
@@ -5507,7 +5511,7 @@ describe("ADE CLI", () => {
           },
           result: {
             domain: "chat",
-            action: "sendMessage",
+            action: "messageSession",
             result: { ok: true, accepted: true, sessionId: "chat-new" },
           },
         },
@@ -5530,7 +5534,7 @@ describe("ADE CLI", () => {
           },
           result: {
             domain: "chat",
-            action: "sendMessage",
+            action: "messageSession",
             result: { ok: true, accepted: true, sessionId: "chat-new" },
           },
         },
@@ -7116,7 +7120,11 @@ describe("ADE CLI", () => {
       chat: { domain: "chat", action: "createSession", result: { id: "session-new" } },
     });
     expect(sendParams).toMatchObject({
-      arguments: { domain: "chat", action: "sendMessage", args: { sessionId: "session-new" } },
+      arguments: {
+        domain: "chat",
+        action: "messageSession",
+        args: { sessionId: "session-new", kind: "auto" },
+      },
     });
     const sendArgs = (sendParams.arguments as { args: { text: string } }).args;
     expect(sendArgs.text).toContain("ENG-431");

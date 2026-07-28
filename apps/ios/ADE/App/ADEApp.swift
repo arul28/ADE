@@ -65,6 +65,7 @@ struct ADEApp: App {
           // process while the bridge wasn't reachable (cold launch drains via
           // register(); this covers warm foregrounds).
           Task { await ADEIntentCommandRegistry.drainPendingCommands() }
+          Task { await accountService.refreshAttentionSnapshot() }
           guard didBootstrapSync else { return }
           let now = Date()
           guard now.timeIntervalSince(lastActivationSyncAt) > 1.0 else { return }

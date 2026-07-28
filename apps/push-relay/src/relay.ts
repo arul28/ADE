@@ -5,6 +5,11 @@ import {
   type ApnsPushType,
   type ApnsSendResult,
 } from "./apns";
+import {
+  handleAttentionAccountRequest,
+  handleAttentionMachinePublish,
+  pruneAttentionState,
+} from "./attention";
 
 export type PushRelayEnv = {
   DB: D1Database;
@@ -29,6 +34,16 @@ export type PushRelayEnv = {
   IP_RATE_LIMIT_PER_MIN?: string;
   /** `/claim` requests allowed per IP per 60s (unauthenticated-write gate). */
   CLAIM_RATE_LIMIT_PER_MIN?: string;
+  /** Clerk JWKS endpoint used to verify account-scoped Attention bearer tokens. */
+  CLERK_JWKS_URL?: string;
+  /** Expected Clerk issuer for account-scoped Attention bearer tokens. */
+  CLERK_ISSUER?: string;
+  /** OAuth client id accepted as the Attention token audience/authorized party. */
+  CLERK_OAUTH_CLIENT_ID?: string;
+  /** Optional second Clerk instance (typically development iOS builds). */
+  CLERK_SECONDARY_JWKS_URL?: string;
+  CLERK_SECONDARY_ISSUER?: string;
+  CLERK_SECONDARY_OAUTH_CLIENT_ID?: string;
 };
 
 type MachineRow = {
@@ -633,6 +648,7 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
     .prepare("delete from rate_counters where bucket like 'budget:%' and updated_at < ?")
     .bind(budgetCutoff)
     .run();
+  await pruneAttentionState(env);
 }
 
 function phaseExpiration(phase: PushPhase, nowSeconds = Math.floor(Date.now() / 1000)): number {
@@ -1167,6 +1183,9 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     return rateLimitedResponse();
   }
 
+  const attentionAccountResponse = await handleAttentionAccountRequest(request, env, url);
+  if (attentionAccountResponse) return attentionAccountResponse;
+
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);
   const { machineKey, rest } = route;
@@ -1200,6 +1219,15 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   }
   if (rest.length === 1 && rest[0] === "publish" && request.method === "POST") {
     return await handlePublish(request, env, machineKey);
+  }
+  if (rest.length === 1 && rest[0] === "attention" && request.method === "POST") {
+    const body = await request.arrayBuffer();
+    if (body.byteLength > MAX_BODY_BYTES) {
+      return json({ ok: false, error: "payload too large" }, { status: 413 });
+    }
+    const auth = await assertMachineAuthorized(request, env, machineKey, body);
+    if ("response" in auth) return auth.response;
+    return await handleAttentionMachinePublish(request, env, machineKey, body);
   }
   return text("not found", 404);
 }

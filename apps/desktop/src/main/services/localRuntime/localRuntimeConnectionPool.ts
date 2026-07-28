@@ -1401,6 +1401,13 @@ export class LocalRuntimeConnectionPool {
     return await entry.client.call(method, params) as T;
   }
 
+  async callAttention<T>(
+    action: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    return await this.callSync<T>("attention.call", { action, args });
+  }
+
   async callActionForRoot(
     rootPath: string,
     request: RemoteRuntimeActionRequest,

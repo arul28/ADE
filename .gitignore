@@ -81,6 +81,10 @@ package-lock.json
 /apps/desktop/release-alpha
 /apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*
+apps/desktop/resources/native/ade-attention-notch
+apps/desktop/resources/native/ADEAttentionNotch_ADEAttentionNotch.bundle/
+apps/desktop/native/ADEAttentionNotch/.build/
+apps/desktop/native/ADEAttentionNotch/.build-*/
 # Large whisper.cpp binary + ~140 MB ggml model are materialized at build time,
 # never committed (see scripts/materialize-whisper-resources.mjs). Keep the dir +
 # its README/.gitkeep tracked; ignore the heavy binaries/model.

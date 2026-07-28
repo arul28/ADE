@@ -1,210 +1,297 @@
-# Mobile Push & Live Activities
+# Attention, notifications, and Live Activities
 
-ADE pushes agent-state transitions to paired iPhones through a small
-Cloudflare Worker relay (`apps/push-relay/`), so the phone learns
-"Claude needs input" / "turn failed" / "PR merge-ready" even when the
-app is closed and no direct transport exists. A companion ActivityKit
-Live Activity mirrors up to three active agent runs on the lock screen
-and Dynamic Island.
+ADE uses one account-wide Attention contract for agent work and pull requests
+across every signed-in machine and project. Desktop Attention, ADE Notch, the
+iOS Attention Center, APNs notifications, Lock Screen widgets, and Live
+Activities all render the same items and route to the same destination.
+
+The product name for the shared system is **ADE Attention**. The compact native
+macOS presentation is **ADE Notch**.
+
+## Product rules
+
+- Running work is ambient. It belongs in Attention, ADE Notch, widgets, and
+  Live Activities, not in a stream of toast or push interruptions.
+- `needs_you`, failures, failing checks, changes requested, and review requests
+  can notify according to the user's policy.
+- Completed and merged work remains visible until it is seen or dismissed.
+- Every row owns an exact ADE destination. A PR can target Overview, Checks, or
+  Review; an agent item can target a session, question, approval, or event.
+- Account views group work by machine and project. They never assume the
+  currently open project or the current machine is the whole account.
+- Remote actions are conservative. Account items from another machine open the
+  correct context; they do not execute a current-host App Intent by accident.
+- Notification previews, Live Activity content, and ADE Notch honor the same
+  `hideDetails` preference.
 
 ## Topology
 
-```
+```text
 agentChatService ─┐
-ptyService.onExit ├─ pushPublisherService (brain, debounced + deduped)
-prPollingService ─┘        │  HMAC-signed HTTPS
-                           ▼
-              ade-push-relay (Cloudflare Worker + D1)
-                           │  APNs HTTP/2 (ES256 .p8 JWT)
-                           ▼
-                    APNs sandbox/production
-                           │
-                           ▼
-   iPhone: alert pushes (deep links) + Live Activity updates
+pty/session state ├─ pushPublisherService (brain; canonical item derivation)
+prPollingService ─┘          │
+                            │ HMAC machine auth + signed-in account token
+                            ▼
+                ade-push-relay (Cloudflare Worker + D1)
+                    │                       │
+                    │ account snapshots     │ APNs alert / Live Activity
+                    ▼                       ▼
+         Desktop + iOS Attention       iPhone system surfaces
+                    │
+                    └─ desktop renderer snapshot
+                              ▼
+                     native ADE Notch helper
 ```
 
-The phone never talks to the relay. It hands its APNs tokens and
-notification preferences to the brain over the paired sync WebSocket
-(`push.registerDevice`, `push.setPrefs`, `push.reportLiveActivityToken`,
-`push.getStatus`, `push.unregisterDevice` — all runtime-scoped commands),
-and the brain forwards registrations to the relay.
+Each brain publishes a bounded full snapshot for its machine. The relay merges
+machine snapshots into an account revision stream. Signed-in desktop and iOS
+clients read that stream incrementally, acknowledge items, report presence, and
+update account/device preferences.
 
-## Relay (`apps/push-relay/`)
+The legacy paired-machine push routes remain available for older clients. Once
+an account Attention publish succeeds, the brain suppresses duplicate legacy
+alerts and the legacy per-machine Live Activity.
 
-- Deployed at `https://ade-push-relay.arulsharma1028.workers.dev`
-  (override with `ADE_PUSH_RELAY_URL`).
-- Trust model: the brain claims an unguessable 32-hex `machineKey` with a
-  machine secret; every later call carries `x-ade-push-timestamp` +
-  `x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`.
-- D1 tables: `machines`, `device_registrations` (APNs token,
-  push-to-start token, bundleId, apsEnvironment), `live_activity_tokens`
-  (per-activity update tokens), `publish_suppression` (dedupe hashes),
-  `rate_counters` (per-IP rate-limit + daily-budget windows).
-- Spend + abuse controls (Cloudflare has no native hard billing cap, so the
-  worker enforces its own): a per-IP limit on every route
-  (`IP_RATE_LIMIT_PER_MIN`, default 120), a tighter per-IP limit on the
-  unauthenticated `/claim` write (`CLAIM_RATE_LIMIT_PER_MIN`, default 10),
-  and a hard daily request budget (`DAILY_REQUEST_BUDGET`, default
-  500,000/day → `429` until midnight UTC once blown; sized — counting the
-  guards' own ~2 D1 counter writes/request — to keep a full month ≈ $1.50 of
-  overage, safely under ~$10). All three are wrangler vars. Structured JSON
-  logs (`rate_limited`/`budget_exceeded`/`auth_failed`/`apns_error`/
-  `claim_conflict`) via enabled observability — see `apps/push-relay/README.md`.
-- APNs: ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY`,
-  `APNS_KEY_ID`, `APNS_TEAM_ID`), cached ~45 min per isolate. Pushes route
-  to sandbox/production per registration and use the registration's
-  bundleId as `apns-topic` (`<bundleId>.push-type.liveactivity` for Live
-  Activities) so dev/TestFlight/App Store builds coexist.
-- Phase-dependent TTLs: `running` → 2 h, `waiting`/`terminal` → 24 h.
-- Dead tokens (410 / BadDeviceToken / Unregistered / DeviceTokenNotForTopic
-  / ExpiredToken) are cleared automatically; the phone re-registers.
-- Live Activity `start` pushes set `"input-push-token": 1` so ActivityKit
-  mints a per-activity update token, and default `stale-date` to +10 min.
+## Shared contract
 
-## Brain publisher (`apps/ade-cli/src/services/push/`)
+The TypeScript source of truth is
+`apps/desktop/src/shared/types/attention.ts`.
 
-Subscribes to the SAME signal sources the widget snapshot uses — it never
-re-derives state:
+An `AttentionItem` includes:
 
-- `agentChatService.subscribeToEvents` — `approval_request` /
-  `structured_question` → waiting phases + alert; `pending_input_resolved`
-  clears; failed turn statuses → alert.
-- `ptyService.onSessionRuntimeSignal` — tracked CLI sessions' OSC 133-derived
-  state (`running` / `waiting-input`) feeds Live Activity run rows **only**,
-  never alert pushes: a CLI agent returns to its prompt after every turn, so
-  alerting on waiting-input would ping once per turn. Chat-attached shells and
-  untitled infra rows are filtered out (the chat run already represents them).
-- `ptyService.onExit` — CLI session ended: flips the run to
-  completed/failed in the aggregate; a non-zero exit also alerts.
-- `prPollingService`'s `pr-notification` events — `merge_ready` /
-  `checks_failing` alerts (edge-transition gated by that service).
+- stable `id`, source `revision`, `fingerprint`, occurrence/update/expiry time;
+- kind, event, and phase;
+- machine and project identity;
+- optional lane, provider, model, plan progress, and recent activity;
+- public preview plus a separate privacy-safe preview;
+- exact session or PR destination;
+- bounded actions such as open, approve, deny, restart, rerun checks, mark
+  seen, and dismiss;
+- `seenAt` and `dismissedAt` acknowledgment state.
 
-Behavior: gated off until a device registers; trailing-edge debounce with
-prompt delivery for waiting transitions; two dedupe lines (in-memory JSON
-fingerprint, then the relay's `dedupeKey` content-hash suppression);
-suppressed Live Activity updates never fall back to alert pushes.
+Contract version 1 limits text, actions, progress counts, snapshots, and
+tombstones before data is stored or delivered. Relay validation also enforces:
 
-Approval alerts are **actionable**: the publisher stamps top-level
-`sessionId` + `itemId` and `aps.category: "ADE_APPROVAL"` on the payload,
-and iOS binds Approve/Deny notification actions to that category (routed
-through the same intent command registry the widgets use — `chat.approve`
-with `decision: accept|decline`), so approvals resolve from the lock
-screen without opening the app.
+- agent ids/events cannot masquerade as PR ids/events, and vice versa;
+- the item id and embedded machine identity must match the authenticated
+  publishing machine;
+- session and PR destinations use the expected shape and known PR tabs;
+- action payloads contain only bounded scalar values;
+- plan progress is finite, non-negative, and internally consistent.
 
-Every alert also carries `aps.badge` = the machine-wide count of runs in
-`waiting_for_*` phases (`countAwaitingAttentionRuns`). When that count
-changes, the publisher also emits a silent, title-less badge-only item
-(`dedupeKey: "alert:badge"`, no sound) so the icon tracks *drops* too — an
-approval answered on the Mac produces no alert but must still lower the
-badge. That badge-only item targets every alert-enabled device that is
-**not** already carrying an alert in the same flush (a muted session still
-needs the fresh count even though its own alert push is skipped); the
-relay's content-hash suppression absorbs unchanged resends, and the
-relay accepts a title-less item only when it carries a `badge`. iOS
-clears the badge on every foreground.
+Source revisions are independent from account cursor revisions. Tombstones
+carry the source revision that deleted the item, so delayed snapshots cannot
+resurrect old work and delayed tombstones cannot remove a newer item.
 
-On daemon shutdown the publisher makes a best-effort Live Activity `end`
-(`dismissalDate` now + 60 s, still-active runs re-stamped `stale`),
-bounded by a short timeout so exit never hangs — dead agents don't linger
-on the lock screen until the stale-date dim.
+## Relay and trust model
 
-Per-device preferences are enforced brain-side before publishing: master
-enable, per-session mutes, and quiet hours (evaluated in the device's
-timezone; may span midnight). Live Activity updates ignore quiet hours
-(silent) but honor `liveActivitiesEnabled`.
+The Worker lives in `apps/push-relay/`.
 
-## Live Activity contract
+Machine publishing requires both:
 
-One aggregate activity per machine (`activityId: "agent-runs"`,
-`attributesType: "ADEAgentRunsAttributes"`, attributes
-`{ machineName }`). Content state (JSON, mirrored by the Swift
-`ActivityAttributes.ContentState`):
+1. the existing HMAC-signed machine request; and
+2. a verified Clerk bearer token for the account receiving the snapshot.
 
-```json
-{
-  "updatedAt": 1751712000,
-  "activeCount": 2,
-  "runs": [
-    { "id": "<sessionId>", "title": "fix-login-flow", "phase": "waiting_for_input",
-      "model": "claude-fable-5", "lane": "auth-lane", "detail": "Approve the plan" }
-  ]
-}
+Account clients use the verified bearer token for snapshot, acknowledgment,
+presence, preferences, device registration, and activity-token routes. Clerk
+production and optional secondary/development issuers are verified separately.
+The relay hashes verified issuer plus subject into the D1 account key so equal
+opaque subjects from different Clerk instances cannot share data.
+
+Every iOS installation also persists a positive, JavaScript-safe monotonic
+`ownershipEpoch`. Account device PUT and DELETE bodies both carry that epoch.
+Sign-out commits an unowned epoch before revocation; a direct account switch
+commits `account A → unowned → account B`, so the old-account DELETE and the
+new-account PUT never tie. Relay retains the latest epoch even after deletion
+and returns `409` for a stale or equal-epoch foreign-owner mutation. The phone
+treats that response as safely superseded rather than retrying an obsolete
+request. Registration PUTs are serialized and queued refreshes coalesce to the
+latest request, so network reordering cannot restore an earlier account owner.
+
+The account routes are:
+
+```text
+GET    /attention/account/snapshot?since=<revision>
+POST   /attention/account/ack
+POST   /attention/account/presence
+GET    /attention/account/preferences
+PUT    /attention/account/preferences
+PUT    /attention/account/devices/:deviceId
+DELETE /attention/account/devices/:deviceId
+PUT    /attention/account/devices/:deviceId/activities/:activityId
+DELETE /attention/account/devices/:deviceId/activities/:activityId
+POST   /machines/:machineKey/attention
 ```
 
-Additive optional field: a `waiting_for_approval` row carries `itemId`
-(the pending approval item), which the widget uses to render Approve/Deny
-`Button(intent:)` on the lock-screen presentation. Older widgets ignore
-it; the Swift decode stays lenient.
+D1 stores account revisions, machine links, items, tombstones, device
+registrations, Live Activity state/tokens, presence, preferences, and delivery
+receipts. Snapshots and fan-out are capped. Expired items, old tombstones, and
+stale presence are pruned.
 
-Phases: `starting | running | waiting_for_approval | waiting_for_input |
-completed | failed | stale`. Runs are capped at 3 (most recent first),
-`detail` at 160 chars, and a `failed` run's detail is redacted to a fixed
-string before it reaches the lock screen. Stuck runs age out of the
-aggregate (2 h running / 24 h waiting) so dead sessions cannot pin
-`activeCount`. `start` fires on 0→N running, `end` (dismissal +5 min)
-when all runs reach a terminal phase.
+APNs registrations and invalid-token cleanup retain the existing push relay
+behavior. See `apps/push-relay/README.md` for deployment variables, Clerk
+issuer configuration, APNs configuration, abuse limits, and migrations.
 
-## One status vocabulary
+## Brain publisher
 
-`apps/desktop/src/shared/sessionCanonicalState.ts` is the canonical mapping
-from session inputs to a phase + attention badge, consumed by the Work tab
-(desktop and the iOS mirror). Its `needs_you` covers the Live Activity's
-`waiting_for_approval`/`waiting_for_input` (wire names unchanged);
-`failed`/`stale`/`running` correspond directly. Its 3-hour stale threshold
-is the human-facing "running but silent" bar — distinct from the relay's APNs
-delivery TTLs and the Live Activity's 10-minute lock-screen stale-date.
+`apps/ade-cli/src/services/push/pushPublisherService.ts` owns machine item
+derivation. It publishes the same state that desktop and mobile display rather
+than rebuilding notification meaning in each client.
 
-## iOS
+The publisher:
 
-- `aps-environment` entitlement + `remote-notification` background mode +
-  `NSSupportsLiveActivities(FrequentUpdates)`.
-- Registration happens only after pairing (never on first launch);
-  re-registration on every foreground transition also re-reports Live
-  Activity tokens and ends orphaned activities. Unpair/forget sends
-  `push.unregisterDevice` and ends local activities.
-- Alert payloads carry a top-level `deepLink` (`ade://session/<id>`,
-  `ade://pr/<n>`) routed through
-  `DeepLinkRouter.handleNotificationUserInfo`.
-- Settings > Push delivery panel shows registration state, token suffix,
-  environment, last push received, relay reachability (via
-  `push.getStatus`), plus notification/Live-Activity toggles, per-session
-  mutes, and quiet hours. Runtime-scoped push commands are never queued:
-  when the paired machine cannot answer live `push.*` commands, the panel
-  keeps the last good relay status, disables manual refresh, and renders a
-  transient "connect to the machine" state instead of persisting the
-  transport miss as a failed registration.
-- Per-session mute is also one tap away in the Work list: the session
-  row's context menu (and the open chat's header menu) offers
-  "Mute notifications" / "Unmute notifications", and muted rows show a
-  subtle `bell.slash` glyph. A muted session still counts toward the
-  badge and Live Activity — only its alert pushes are skipped.
-- Approve/Deny actions appear on approval alerts (long-press or pull
-  down) and on `waiting_for_approval` Live Activity rows. On the alert,
-  `ADEAppDelegate` registers the `ADE_APPROVAL` `UNNotificationCategory`
-  (`ADE_APPROVE` / `ADE_DENY` actions) and its `didReceive response`
-  routes those action ids to `chat.approve`. On the Live Activity, the
-  buttons fire `ApproveSessionIntent` / `DenySessionIntent`, which conform
-  to **`LiveActivityIntent`** (not plain `AppIntent`) precisely so the
-  intent executes in the *app* process — where the command bridge is
-  registered — instead of the widget extension where the bridge is nil.
-  Both paths dispatch through `ADEIntentCommandRegistry`, which queues the
-  command when the bridge isn't live yet; `register()` drains the queue on
-  cold launch and every warm foreground also calls `drainPendingCommands()`,
-  so an approval tapped while the app was dead still lands on the next open.
+- observes chat approvals/questions/failures/completions, tracked CLI session
+  state, and PR notification transitions;
+- republishes a full bounded machine snapshot on changes and a 30-second
+  heartbeat so presence and long-running state recover after disconnects;
+- includes every active project known to that brain, not just the foreground
+  desktop project;
+- keeps recent terminal outcomes long enough for acknowledgment;
+- emits exact PR tabs and exact session pending-item/event anchors;
+- skips duplicate legacy notifications and Live Activities after a successful
+  account publish.
 
-## What needs a physical device
+## Delivery policy and preferences
 
-Simulators cannot receive real APNs pushes or mint push-to-start tokens.
-Fully verifiable on-device only: end-to-end alert delivery, Live Activity
-push-to-start, background `liveactivity` updates, TTL/stale behavior.
-Everything else (registration flow, command routing, publisher logic,
-relay auth/suppression) is covered by unit tests and simulator builds.
+Balanced defaults:
 
-## Operator setup
+| Event | Default |
+| --- | --- |
+| Running / progress | Ambient |
+| Needs you | Notify |
+| Failed / checks failing / changes requested | Notify |
+| Review requested / merge ready | Notify |
+| Completed / merged / opened / closed | Ambient |
 
-1. Create an APNs auth key (Apple Developer → Keys) and upload it:
-   `wrangler secret put APNS_KEY / APNS_KEY_ID / APNS_TEAM_ID` in
-   `apps/push-relay` (see its README). Until then the relay's `/health`
-   reports `apnsConfigured: false` and publishes return 503.
-2. Nothing else — the brain self-claims its machine key on first
-   registration and the phone registers itself after pairing.
+Preferences support account defaults plus device and project overrides:
+
+- event delivery policies;
+- notifications;
+- Live Activities;
+- desktop-first delivery and its delay;
+- sounds (off by default);
+- celebrations;
+- hidden preview details;
+- quiet hours;
+- muted sessions.
+
+When desktop-first delivery is enabled and a foreground Mac recently reported
+presence, the relay waits for the configured bounded delay before notifying the
+phone. The next machine heartbeat escalates an item that remains unseen.
+
+Notification delivery is receipt-deduped per item/device/fingerprint. Quiet
+hours, muted sessions, preview privacy, sound, and exact deep links are applied
+before APNs fan-out. `needs_you` can use time-sensitive interruption; other
+notifying events use active interruption.
+
+## Desktop Attention
+
+The renderer keeps the account snapshot warm even when `/attention` is not
+open, so the sidebar badge and ADE Notch stay truthful.
+
+Desktop reads and mutates Attention through a dedicated machine-scoped brain
+method. It never follows the window's current local/remote project binding, so
+the welcome screen and a window viewing another machine still show the signed-in
+desktop user's own account stream.
+
+The Attention route provides:
+
+- Needs-you/inbox, live, and recent views;
+- all-machine, machine, and project scopes;
+- a machine → project → item roster;
+- an exact detail view with plan progress, recent activity, safe actions,
+  seen/dismiss state, offline explanation, and retryable acknowledgment;
+- account delivery/privacy controls.
+
+Presence reports include foreground state, whether an ambient Attention surface
+is visible, and the currently visible item ids. Acknowledgments are optimistic
+with rollback when the account write fails.
+
+## ADE Notch
+
+ADE launches one native SwiftUI/AppKit helper from the desktop lifecycle. The
+Electron renderer supplies the already-synced Attention snapshot and settings;
+the helper does not create a second account poller.
+
+The helper uses a borderless non-activating `NSPanel` above the status bar,
+joins Spaces/full-screen, and keeps the outer window fixed while the inner
+silhouette animates.
+
+On a MacBook with a physical notch:
+
+- geometry comes from `safeAreaInsets`, `auxiliaryTopLeftArea`, and
+  `auxiliaryTopRightArea`;
+- compact content lives in the visible side ears, never under the camera
+  housing;
+- the black silhouette remains visually connected to the hardware notch.
+
+On other displays it uses the same top-center virtual island behavior.
+
+Interaction rules:
+
+- compact state identifies focused work and phase with a real provider mark;
+- hover opens immediately and close uses short cancellable hysteresis;
+- needs-you can open automatically; ordinary running work remains calm;
+- incoming updates do not replace a card currently under the pointer;
+- completion remains until seen/dismissed;
+- celebrations are bounded one-shot effects and respect Reduce Motion;
+- hit testing covers only the drawn/interactive shape, leaving the menu bar
+  usable.
+
+The helper sends open and acknowledgment requests back through typed IPC. Exact
+ADE destinations are validated before the desktop navigates.
+
+## iOS Attention Center
+
+The mobile app stores the account snapshot in the App Group container using the
+same delta/tombstone/expiry rules as desktop.
+
+The global Attention Center shows all signed-in machines and projects. Project
+drawers are lenses over that same account model, not separate notification
+inboxes. Tapping an item follows its exact destination. Remote items expose only
+actions that are safe without assuming the currently paired host owns them.
+
+Account-only signed-in users can register APNs and Live Activity tokens without
+pairing a machine. Sign-out best-effort deletes the account device registration
+and ends account-wide local Live Activities.
+
+## Live Activity and widgets
+
+There is one account-wide `agent-runs` Live Activity per iPhone. The relay
+prioritizes and caps up to three agent rows and two PR rows.
+
+- Ordinary open PRs do not keep the activity alive.
+- Running, starting, needs-you, and blocked agent work contributes to the active
+  count.
+- Completed/merged outcomes remain until seen, then disappear.
+- Disabling Live Activities actively ends an existing account activity.
+- When `hideDetails` is enabled, per-device content is redacted before APNs
+  delivery while preserving internal ids needed for exact routing.
+
+The Lock Screen and Dynamic Island lead with one focused item and show a small
+overflow count instead of presenting a miniature monitoring dashboard. Each
+secondary row owns an element-level `Link`, so tapping a PR or agent opens that
+row rather than one activity-wide fallback URL.
+
+Account Live Activity `Run` and `PullRequest` rows carry the source
+`accountMachineKey` as an additive optional wire field. Their exact ADE links
+preserve that key together with the session item/event or PR tab anchor. Older
+payloads without the field remain decodable, but account-wide payloads include
+it so the app can adopt/select the owning machine before opening the row.
+Account APNs alert payloads carry the same routing key.
+
+Interactive approval App Intents remain available only where the activity is
+known to belong to the current host. Account-wide remote items use exact Open
+or Reply navigation instead of executing an action against the wrong machine.
+
+The Lock Screen widget reads the same App Group snapshot and applies the same
+priority, phase vocabulary, privacy, and routing rules.
+
+## Validation boundaries
+
+Simulator and unit validation can prove snapshot merging, expiry/tombstones,
+preference mapping, exact links, intent safety, widget decoding, and rendering.
+
+A physical iPhone is still required to prove real APNs delivery,
+push-to-start-token minting, background Live Activity updates, and system
+notification presentation.

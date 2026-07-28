@@ -1459,6 +1459,87 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("routes account Attention through the machine runtime without a project binding", async () => {
+    const snapshot = {
+      contractVersion: 1,
+      streamId: "account-stream",
+      revision: 5,
+      generatedAt: "2026-07-28T12:00:00.000Z",
+      items: [],
+      tombstones: [],
+    };
+    const callAttention = vi.fn(async (action: string) => {
+      if (action === "getSnapshot") return snapshot;
+      if (action === "getPreferences") return { account: { hideDetails: true } };
+      return undefined;
+    });
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: {
+          kind: "remote",
+          key: "remote:other-machine:project",
+          targetId: "other-machine",
+          runtimeName: "Other machine",
+          projectId: "remote-project",
+          rootPath: "/srv/remote",
+          displayName: "Remote",
+        },
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.attentionGetSnapshot)?.(eventForSender(), {
+        since: 4,
+        streamId: "account-stream",
+      }),
+    ).resolves.toEqual(snapshot);
+    await ipcHandlers.get(IPC.attentionAcknowledge)?.(eventForSender(), {
+      itemIds: ["attention-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
+    });
+    await ipcHandlers.get(IPC.attentionReportPresence)?.(eventForSender(), {
+      deviceId: "desktop-1",
+      platform: "macOS",
+    });
+    await expect(
+      ipcHandlers.get(IPC.attentionGetPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+      }),
+    ).resolves.toEqual({ account: { hideDetails: true } });
+    await ipcHandlers.get(IPC.attentionPutPreferences)?.(
+      eventForSender(),
+      {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: false } },
+      },
+    );
+
+    expect(callAttention.mock.calls.map(([action]) => action)).toEqual([
+      "getSnapshot",
+      "acknowledge",
+      "reportPresence",
+      "getPreferences",
+      "putPreferences",
+    ]);
+    expect(callAttention).toHaveBeenNthCalledWith(4, "getPreferences", {
+      accountOwnerId: "account-a",
+    });
+    expect(callAttention).toHaveBeenNthCalledWith(5, "putPreferences", {
+      accountOwnerId: "account-a",
+      preferences: { account: { hideDetails: false } },
+    });
+  });
+
   it("validates recovery identifiers and target ownership before mutating chat state", async () => {
     const assertRecoveryTargetOwned = vi.fn(async (args: {
       sessionId: string;

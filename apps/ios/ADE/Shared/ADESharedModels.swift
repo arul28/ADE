@@ -151,6 +151,13 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public let awaitingInputCount: Int
     /// Chats connected but not currently producing output.
     public let idleCount: Int
+    /// Optional scope carried by account-aware publishers. Older, machine-local
+    /// snapshots omit these fields and continue to decode as the current
+    /// connected workspace.
+    public let machineId: String?
+    public let machineName: String?
+    public let projectId: String?
+    public let projectName: String?
 
     public init(
         generatedAt: Date,
@@ -158,7 +165,11 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         prs: [PrSnapshot],
         connection: String,
         awaitingInputCount: Int = 0,
-        idleCount: Int = 0
+        idleCount: Int = 0,
+        machineId: String? = nil,
+        machineName: String? = nil,
+        projectId: String? = nil,
+        projectName: String? = nil
     ) {
         self.generatedAt = generatedAt
         self.agents = agents
@@ -166,10 +177,15 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         self.connection = connection
         self.awaitingInputCount = awaitingInputCount
         self.idleCount = idleCount
+        self.machineId = machineId
+        self.machineName = machineName
+        self.projectId = projectId
+        self.projectName = projectName
     }
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt, agents, prs, connection, awaitingInputCount, idleCount
+        case machineId, machineName, projectId, projectName
     }
 
     public init(from decoder: Decoder) throws {
@@ -199,6 +215,10 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
                 if agent.status.lowercased() == "idle" { count += 1 }
             }
         }
+        self.machineId = try c.decodeIfPresent(String.self, forKey: .machineId)
+        self.machineName = try c.decodeIfPresent(String.self, forKey: .machineName)
+        self.projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        self.projectName = try c.decodeIfPresent(String.self, forKey: .projectName)
     }
 
     /// Subset of `agents` that are *actively producing output* right now.
@@ -222,4 +242,495 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         prs: [],
         connection: "disconnected"
     )
+}
+
+// MARK: - Account attention contract
+
+/// Swift mirror of the versioned account-wide attention contract used by the
+/// desktop and relay. The current iOS sync path still writes
+/// `WorkspaceSnapshot`; these DTOs let the app and widgets consume an account
+/// snapshot as soon as one is available without changing their presentation
+/// model again.
+public let ADEAttentionContractVersion = 1
+
+public enum AccountAttentionItemKind: String, Codable, Hashable, Sendable {
+    case agent
+    case pullRequest = "pull_request"
+}
+
+public enum AccountAttentionPhase: String, Codable, Hashable, Sendable {
+    case starting
+    case running
+    case needsYou = "needs_you"
+    case blocked
+    case failed
+    case completed
+    case stale
+    case checksFailing = "checks_failing"
+    case reviewRequested = "review_requested"
+    case changesRequested = "changes_requested"
+    case mergeReady = "merge_ready"
+    case open
+    case merged
+    case closed
+
+    public var displayLabel: String {
+        switch self {
+        case .starting: return "Starting"
+        case .running: return "Running"
+        case .needsYou: return "Needs you"
+        case .blocked: return "Blocked"
+        case .failed: return "Failed"
+        case .completed: return "Completed"
+        case .stale: return "Stale"
+        case .checksFailing: return "Checks failing"
+        case .reviewRequested: return "Review requested"
+        case .changesRequested: return "Changes requested"
+        case .mergeReady: return "Ready to merge"
+        case .open: return "Open"
+        case .merged: return "Merged"
+        case .closed: return "Closed"
+        }
+    }
+}
+
+public enum AccountAttentionEventKind: String, Codable, Hashable, Sendable {
+    case agentRunning = "agent_running"
+    case agentNeedsYou = "agent_needs_you"
+    case agentFailed = "agent_failed"
+    case agentCompleted = "agent_completed"
+    case prChecksFailing = "pr_checks_failing"
+    case prReviewRequested = "pr_review_requested"
+    case prChangesRequested = "pr_changes_requested"
+    case prMergeReady = "pr_merge_ready"
+    case prMerged = "pr_merged"
+    case prOpened = "pr_opened"
+    case prClosed = "pr_closed"
+}
+
+public struct AccountAttentionMachine: Codable, Hashable, Sendable {
+    public let machineKey: String
+    /// Canonical account-directory/sync relay key. `machineKey` remains the
+    /// Attention publisher identity; this key is what exact mobile deep links
+    /// use to select the owning remote machine.
+    public let accountMachineKey: String?
+    public let name: String
+    public let online: Bool
+    public let lastSeenAt: Date?
+
+    public init(
+        machineKey: String,
+        accountMachineKey: String? = nil,
+        name: String,
+        online: Bool,
+        lastSeenAt: Date?
+    ) {
+        self.machineKey = machineKey
+        self.accountMachineKey = accountMachineKey
+        self.name = name
+        self.online = online
+        self.lastSeenAt = lastSeenAt
+    }
+}
+
+public struct AccountAttentionProject: Codable, Hashable, Sendable {
+    public let projectId: String
+    public let name: String
+    public let rootPath: String?
+
+    public init(projectId: String, name: String, rootPath: String? = nil) {
+        self.projectId = projectId
+        self.name = name
+        self.rootPath = rootPath
+    }
+}
+
+public enum AccountAttentionDestination: Hashable, Sendable {
+    case session(sessionId: String, itemId: String?, eventId: String?)
+    case pullRequest(
+        prId: String?,
+        repoOwner: String?,
+        repoName: String?,
+        number: Int,
+        tab: String,
+        eventId: String?
+    )
+
+    public var deepLinkURL: URL? {
+        deepLinkURL(accountMachineKey: nil)
+    }
+
+    public func deepLinkURL(accountMachineKey: String?) -> URL? {
+        let normalizedAccountMachineKey = accountMachineKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let machineQueryItem = normalizedAccountMachineKey?.isEmpty == false
+            ? URLQueryItem(name: "accountMachineKey", value: normalizedAccountMachineKey)
+            : nil
+        switch self {
+        case .session(let sessionId, let itemId, let eventId):
+            guard let encoded = Self.encodePathSegment(sessionId) else { return nil }
+            var components = URLComponents(string: "ade://session/\(encoded)")
+            let queryItems = [
+                itemId.map { URLQueryItem(name: "item", value: $0) },
+                eventId.map { URLQueryItem(name: "event", value: $0) },
+                machineQueryItem,
+            ].compactMap { $0 }
+            components?.queryItems = queryItems.isEmpty ? nil : queryItems
+            return components?.url
+
+        case .pullRequest(_, let owner, let repo, let number, let tab, let eventId):
+            guard number > 0 else { return nil }
+            let base: String
+            if let owner = Self.encodePathSegment(owner),
+               let repo = Self.encodePathSegment(repo) {
+                base = "ade://pr/\(owner)/\(repo)/\(number)"
+            } else {
+                base = "ade://pr/\(number)"
+            }
+            var components = URLComponents(string: base)
+            let queryItems = [
+                tab == "overview" ? nil : URLQueryItem(name: "tab", value: tab),
+                eventId.map { URLQueryItem(name: "event", value: $0) },
+                machineQueryItem,
+            ].compactMap { $0 }
+            components?.queryItems = queryItems.isEmpty ? nil : queryItems
+            return components?.url
+        }
+    }
+
+    private static func encodePathSegment(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed)
+    }
+}
+
+extension AccountAttentionDestination: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind, sessionId, itemId, eventId
+        case prId, repoOwner, repoName, number, tab
+    }
+
+    private enum Kind: String, Codable {
+        case session
+        case pullRequest = "pull_request"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .session:
+            self = .session(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+                eventId: try container.decodeIfPresent(String.self, forKey: .eventId)
+            )
+        case .pullRequest:
+            self = .pullRequest(
+                prId: try container.decodeIfPresent(String.self, forKey: .prId),
+                repoOwner: try container.decodeIfPresent(String.self, forKey: .repoOwner),
+                repoName: try container.decodeIfPresent(String.self, forKey: .repoName),
+                number: try container.decode(Int.self, forKey: .number),
+                tab: try container.decodeIfPresent(String.self, forKey: .tab) ?? "overview",
+                eventId: try container.decodeIfPresent(String.self, forKey: .eventId)
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .session(let sessionId, let itemId, let eventId):
+            try container.encode(Kind.session, forKey: .kind)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encodeIfPresent(itemId, forKey: .itemId)
+            try container.encodeIfPresent(eventId, forKey: .eventId)
+        case .pullRequest(let prId, let owner, let repo, let number, let tab, let eventId):
+            try container.encode(Kind.pullRequest, forKey: .kind)
+            try container.encodeIfPresent(prId, forKey: .prId)
+            try container.encodeIfPresent(owner, forKey: .repoOwner)
+            try container.encodeIfPresent(repo, forKey: .repoName)
+            try container.encode(number, forKey: .number)
+            try container.encode(tab, forKey: .tab)
+            try container.encodeIfPresent(eventId, forKey: .eventId)
+        }
+    }
+}
+
+public enum AccountAttentionActionKind: String, Codable, Hashable, Sendable {
+    case approve
+    case deny
+    case answer
+    case restart
+    case rerunChecks = "rerun_checks"
+    case markSeen = "mark_seen"
+    case dismiss
+    case open
+}
+
+public enum AccountAttentionPayloadValue: Codable, Hashable, Sendable {
+    case string(String)
+    case integer(Int)
+    case number(Double)
+    case boolean(Bool)
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .boolean(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
+public struct AccountAttentionAction: Codable, Hashable, Sendable {
+    public let id: String
+    public let kind: AccountAttentionActionKind
+    public let label: String
+    public let destructive: Bool?
+    public let payload: [String: AccountAttentionPayloadValue]?
+
+    public init(
+        id: String,
+        kind: AccountAttentionActionKind,
+        label: String,
+        destructive: Bool? = nil,
+        payload: [String: AccountAttentionPayloadValue]? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.label = label
+        self.destructive = destructive
+        self.payload = payload
+    }
+}
+
+public struct AccountAttentionPlanProgress: Codable, Hashable, Sendable {
+    public let completed: Int
+    public let total: Int
+    public let current: String?
+
+    public init(completed: Int, total: Int, current: String? = nil) {
+        self.completed = completed
+        self.total = total
+        self.current = current
+    }
+}
+
+public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
+    public let contractVersion: Int
+    public let id: String
+    public let revision: Int
+    public let fingerprint: String
+    public let kind: AccountAttentionItemKind
+    public let eventKind: AccountAttentionEventKind
+    public let phase: AccountAttentionPhase
+    public let machine: AccountAttentionMachine
+    public let project: AccountAttentionProject
+    public let laneId: String?
+    public let laneName: String?
+    public let provider: String?
+    public let model: String?
+    public let title: String
+    public let preview: String
+    public let privacyPreview: String
+    public let detail: String?
+    public let recentActivity: [String]?
+    public let planProgress: AccountAttentionPlanProgress?
+    public let destination: AccountAttentionDestination
+    public let actions: [AccountAttentionAction]
+    public let occurredAt: Date
+    public let updatedAt: Date
+    public let seenAt: Date?
+    public let dismissedAt: Date?
+    public let expiresAt: Date?
+
+    public init(
+        contractVersion: Int = ADEAttentionContractVersion,
+        id: String,
+        revision: Int,
+        fingerprint: String,
+        kind: AccountAttentionItemKind,
+        eventKind: AccountAttentionEventKind,
+        phase: AccountAttentionPhase,
+        machine: AccountAttentionMachine,
+        project: AccountAttentionProject,
+        laneId: String? = nil,
+        laneName: String? = nil,
+        provider: String? = nil,
+        model: String? = nil,
+        title: String,
+        preview: String,
+        privacyPreview: String,
+        detail: String? = nil,
+        recentActivity: [String]? = nil,
+        planProgress: AccountAttentionPlanProgress? = nil,
+        destination: AccountAttentionDestination,
+        actions: [AccountAttentionAction] = [],
+        occurredAt: Date,
+        updatedAt: Date,
+        seenAt: Date? = nil,
+        dismissedAt: Date? = nil,
+        expiresAt: Date? = nil
+    ) {
+        self.contractVersion = contractVersion
+        self.id = id
+        self.revision = revision
+        self.fingerprint = fingerprint
+        self.kind = kind
+        self.eventKind = eventKind
+        self.phase = phase
+        self.machine = machine
+        self.project = project
+        self.laneId = laneId
+        self.laneName = laneName
+        self.provider = provider
+        self.model = model
+        self.title = title
+        self.preview = preview
+        self.privacyPreview = privacyPreview
+        self.detail = detail
+        self.recentActivity = recentActivity
+        self.planProgress = planProgress
+        self.destination = destination
+        self.actions = actions
+        self.occurredAt = occurredAt
+        self.updatedAt = updatedAt
+        self.seenAt = seenAt
+        self.dismissedAt = dismissedAt
+        self.expiresAt = expiresAt
+    }
+
+    public var isLive: Bool {
+        switch phase {
+        case .starting, .running, .needsYou, .blocked, .failed, .stale,
+             .checksFailing, .reviewRequested, .changesRequested, .mergeReady:
+            return true
+        case .open, .completed, .merged, .closed:
+            return false
+        }
+    }
+
+    public var needsInbox: Bool {
+        guard dismissedAt == nil else { return false }
+        switch phase {
+        case .needsYou, .failed, .checksFailing, .changesRequested,
+             .reviewRequested, .mergeReady:
+            return true
+        case .completed, .merged:
+            return seenAt == nil
+        case .starting, .running, .blocked, .open, .stale, .closed:
+            return false
+        }
+    }
+
+    public var deepLinkURL: URL? {
+        destination.deepLinkURL(accountMachineKey: machine.accountMachineKey)
+    }
+}
+
+public struct AccountAttentionTombstone: Codable, Hashable, Identifiable, Sendable {
+    public let id: String
+    public let revision: Int
+    public let deletedAt: Date
+}
+
+public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
+    public let contractVersion: Int
+    /// Opaque account stream identity assigned by Relay. Older relays and
+    /// snapshots omit it; once present, a change is an account boundary and
+    /// the incoming snapshot must replace—not merge with—the prior stream.
+    public let streamId: String?
+    public let revision: Int
+    public let generatedAt: Date
+    public let items: [AccountAttentionItem]
+    public let tombstones: [AccountAttentionTombstone]?
+
+    public init(
+        contractVersion: Int = ADEAttentionContractVersion,
+        streamId: String? = nil,
+        revision: Int,
+        generatedAt: Date,
+        items: [AccountAttentionItem],
+        tombstones: [AccountAttentionTombstone]? = nil
+    ) {
+        self.contractVersion = contractVersion
+        self.streamId = streamId
+        self.revision = revision
+        self.generatedAt = generatedAt
+        self.items = items
+        self.tombstones = tombstones
+    }
+
+    /// Apply an incremental relay response to the last full snapshot. Relay
+    /// deltas contain only items/tombstones newer than `since`; merging here
+    /// keeps widgets and the app backed by one complete App Group snapshot.
+    public func merging(_ delta: AccountAttentionSnapshot) -> AccountAttentionSnapshot {
+        guard delta.contractVersion == contractVersion else {
+            return self
+        }
+        // A non-nil Relay stream id is authoritative. nil remains compatible
+        // with snapshots from older servers, while nil -> value intentionally
+        // resets any legacy/unknown account data.
+        if let incomingStreamId = delta.streamId,
+           incomingStreamId != streamId {
+            return delta
+        }
+        guard delta.revision >= revision else { return self }
+        var byId = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        for item in delta.items {
+            if let existing = byId[item.id], existing.revision > item.revision {
+                continue
+            }
+            byId[item.id] = item
+        }
+        for tombstone in delta.tombstones ?? [] {
+            guard let existing = byId[tombstone.id],
+                  existing.revision <= tombstone.revision else {
+                continue
+            }
+            byId.removeValue(forKey: tombstone.id)
+        }
+        return AccountAttentionSnapshot(
+            contractVersion: contractVersion,
+            streamId: delta.streamId ?? streamId,
+            revision: delta.revision,
+            generatedAt: delta.generatedAt,
+            items: Array(byId.values),
+            tombstones: delta.tombstones
+        )
+    }
+}
+
+/// Centralizes the read-before-commit merge used by account Attention refresh.
+/// Re-reading at commit time prevents a slower rev11 request from overwriting a
+/// rev12 snapshot that completed while it was suspended on the network.
+public func accountAttentionSnapshotForCommit(
+    current: AccountAttentionSnapshot?,
+    incoming: AccountAttentionSnapshot
+) -> AccountAttentionSnapshot {
+    current?.merging(incoming) ?? incoming
 }

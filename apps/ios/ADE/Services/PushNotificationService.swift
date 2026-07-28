@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import UserNotifications
+import WidgetKit
 
 /// Owns iOS remote-push registration and the local diagnostics the "Push
 /// delivery" settings panel renders. A single instance (`shared`) is driven by
@@ -38,7 +39,7 @@ final class PushNotificationService: ObservableObject {
     private var registerPending = false
 
     private let defaults = ADESharedContainer.defaults
-    private let prefsKey = "ade.push.prefs"
+    private let prefsKey = ADESharedContainer.pushPreferencesKey
     private let diagnosticsKey = "ade.push.diagnostics"
 
     private init() {
@@ -69,11 +70,11 @@ final class PushNotificationService: ObservableObject {
     }
 
     /// Request notification authorization (full prompt, not provisional) and
-    /// register for remote notifications — but only when a machine is paired.
-    /// Safe to call repeatedly (pairing success, every foreground); it no-ops
-    /// once authorization has been resolved and a token is on file.
+    /// register for remote notifications once ADE has either a paired machine
+    /// or a signed-in account. Safe to call repeatedly.
     func enableIfPaired() async {
-        guard SyncService.shared?.hasPairedHost == true else {
+        guard SyncService.shared?.hasPairedHost == true
+                || AccountService.shared.isSignedIn else {
             setRegistrationState(.unsupported)
             relayRefreshError = nil
             return
@@ -107,6 +108,49 @@ final class PushNotificationService: ObservableObject {
             setRegistrationState(.awaitingToken)
         }
         UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    /// Rebind an already-authorized APNs installation after account sign-in or
+    /// switching accounts without presenting a surprise permission prompt.
+    /// If iOS has not issued a token in this process yet, asking UIApplication
+    /// to register causes the normal delegate callback with the stable token.
+    func resumeAccountRegistrationIfAuthorized() async {
+        guard AccountService.shared.isSignedIn else { return }
+        // A failed/remote sign-out can leave a durable old-owner revocation.
+        // Renew the account device row even before notification authorization
+        // is resolved so Relay can atomically transfer this installation away
+        // from the prior account. This does not prompt and nil tokens do not
+        // create a deliverable APNs target.
+        if AccountService.shared.hasPendingAttentionDeviceRevocation {
+            _ = await registerAccountAttentionDevice()
+        }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        permissionStatus = settings.authorizationStatus
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            if apnsTokenHex != nil {
+                await registerDevice()
+            } else {
+                setRegistrationState(.awaitingToken)
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+        case .denied:
+            setRegistrationState(.permissionDenied)
+        case .notDetermined:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    /// Account auth ended. Keep the APNs token for any independently paired
+    /// machine, but do not leave account-only settings claiming registration.
+    func handleAccountSignOut() {
+        registerPending = false
+        guard SyncService.shared?.hasPairedHost != true else { return }
+        relayStatus = nil
+        relayRefreshError = nil
+        setRegistrationState(.unsupported)
     }
 
     // MARK: - APNs token lifecycle (from ADEAppDelegate)
@@ -160,13 +204,29 @@ final class PushNotificationService: ObservableObject {
     // MARK: - Registration command
 
     private func registerDevice() async {
+        let accountRegistered = await registerAccountAttentionDevice()
         guard let sync = SyncService.shared, sync.hasPairedHost else {
-            setRegistrationState(.unsupported)
+            setRegistrationState(accountRegistered ? .registered : .unsupported)
             relayRefreshError = nil
+            if accountRegistered {
+                updateDiagnostics { diag in
+                    diag.lastRegisteredAt = Date()
+                    diag.lastError = nil
+                }
+            }
             return
         }
         guard sync.canSendPushCommands else {
-            setRegistrationWaitingForMachine()
+            if accountRegistered {
+                setRegistrationState(.registered)
+                relayRefreshError = nil
+                updateDiagnostics { diag in
+                    diag.lastRegisteredAt = Date()
+                    diag.lastError = nil
+                }
+            } else {
+                setRegistrationWaitingForMachine()
+            }
             return
         }
         // Coalesce instead of dropping: a push-to-start / APNs token that arrives
@@ -202,7 +262,14 @@ final class PushNotificationService: ObservableObject {
                     diag.lastError = nil
                 }
             } catch {
-                if let message = PushNotificationService.machineUnavailableMessage(
+                if accountRegistered {
+                    setRegistrationState(.registered)
+                    relayRefreshError = nil
+                    updateDiagnostics { diag in
+                        diag.lastRegisteredAt = Date()
+                        diag.lastError = nil
+                    }
+                } else if let message = PushNotificationService.machineUnavailableMessage(
                     for: error,
                     fallback: PushNotificationService.machineSetupUnavailableMessage
                 ) {
@@ -213,6 +280,20 @@ final class PushNotificationService: ObservableObject {
                 }
             }
         } while registerPending
+    }
+
+    /// Signed-in devices register their APNs and push-to-start tokens directly
+    /// with the account Attention relay. Machine-scoped registration remains
+    /// below for mixed-version brains and per-machine Live Activity updates.
+    private func registerAccountAttentionDevice() async -> Bool {
+        return await AccountService.shared.registerAttentionDevice(
+            deviceId: AccountService.shared.attentionDeviceId,
+            apnsToken: apnsTokenHex,
+            pushToStartToken: liveActivityPushToStartTokenHex,
+            bundleId: Self.bundleId,
+            apsEnvironment: Self.apsEnvironment,
+            preferences: prefs.commandPayload
+        )
     }
 
     // MARK: - Preferences
@@ -238,10 +319,15 @@ final class PushNotificationService: ObservableObject {
     }
 
     private func syncPrefs() async {
+        let accountSynced = await registerAccountAttentionDevice()
         guard let sync = SyncService.shared, sync.hasPairedHost else { return }
         guard sync.canSendPushCommands else {
-            relayRefreshError = PushNotificationService.machinePrefsUnavailableMessage
-            clearTransientDiagnosticsError()
+            if accountSynced {
+                relayRefreshError = nil
+            } else {
+                relayRefreshError = PushNotificationService.machinePrefsUnavailableMessage
+                clearTransientDiagnosticsError()
+            }
             return
         }
         let args: [String: Any] = [
@@ -252,7 +338,10 @@ final class PushNotificationService: ObservableObject {
             _ = try await sync.sendPushCommand(action: "push.setPrefs", args: args)
             relayRefreshError = nil
         } catch {
-            if let message = PushNotificationService.machineUnavailableMessage(
+            if accountSynced {
+                relayRefreshError = nil
+                updateDiagnostics { $0.lastError = nil }
+            } else if let message = PushNotificationService.machineUnavailableMessage(
                 for: error,
                 fallback: PushNotificationService.machinePrefsUnavailableMessage
             ) {
@@ -316,10 +405,12 @@ final class PushNotificationService: ObservableObject {
 
     // MARK: - Unregister (forget machine / unpair)
 
-    /// Best-effort unregister on unpair: tell the brain to drop the device,
-    /// clear local diagnostics, and end any running Live Activities.
+    /// Best-effort unregister from the forgotten machine. When the user remains
+    /// signed in, preserve the direct account relay registration and aggregate
+    /// Live Activity so work on their other machines stays visible.
     func handleUnpair() {
         let deviceId = SyncService.shared?.deviceId
+        let preserveAccountAttention = AccountService.shared.isSignedIn
         Task {
             if let sync = SyncService.shared, let deviceId {
                 _ = try? await sync.sendPushCommand(
@@ -327,17 +418,30 @@ final class PushNotificationService: ObservableObject {
                     args: ["deviceId": deviceId]
                 )
             }
-            await LiveActivityService.shared.endAll(immediate: true)
+            if preserveAccountAttention {
+                await LiveActivityService.shared.endMachineScopedActivities(immediate: true)
+                if apnsTokenHex != nil {
+                    await registerDevice()
+                } else {
+                    await enableIfPaired()
+                }
+            } else {
+                await LiveActivityService.shared.endAll(immediate: true)
+            }
         }
-        apnsTokenHex = nil
-        liveActivityPushToStartTokenHex = nil
         relayStatus = nil
         relayRefreshError = nil
-        setRegistrationState(.unsupported)
-        updateDiagnostics { diag in
-            diag.tokenSuffix = nil
-            diag.liveActivityPushToStartTokenSuffix = nil
-            diag.lastRegisteredAt = nil
+        if preserveAccountAttention {
+            setRegistrationState(apnsTokenHex == nil ? .awaitingToken : .registering)
+        } else {
+            apnsTokenHex = nil
+            liveActivityPushToStartTokenHex = nil
+            setRegistrationState(.unsupported)
+            updateDiagnostics { diag in
+                diag.tokenSuffix = nil
+                diag.liveActivityPushToStartTokenSuffix = nil
+                diag.lastRegisteredAt = nil
+            }
         }
     }
 
@@ -383,6 +487,8 @@ final class PushNotificationService: ObservableObject {
     private func persistPrefs() {
         if let data = try? JSONEncoder().encode(prefs) {
             defaults.set(data, forKey: prefsKey)
+            defaults.synchronize()
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
 
@@ -455,9 +561,9 @@ final class PushNotificationService: ObservableObject {
 // MARK: - Registration state
 
 enum PushRegistrationState: String, Sendable {
-    /// Never asked (no pairing yet).
+    /// Never asked.
     case notDetermined
-    /// Not applicable — no paired machine.
+    /// Not applicable — neither a signed-in account nor a paired machine.
     case unsupported
     /// User declined the system prompt.
     case permissionDenied
@@ -465,7 +571,7 @@ enum PushRegistrationState: String, Sendable {
     case awaitingToken
     /// Sending the registration to the brain.
     case registering
-    /// Authorized locally, waiting for a live machine command path.
+    /// Authorized locally, waiting for the legacy machine command path.
     case waitingForMachine
     /// Registered with the brain / relay.
     case registered
@@ -480,6 +586,7 @@ enum PushRegistrationState: String, Sendable {
 struct PushPrefs: Codable, Equatable {
     var enabled = true
     var liveActivitiesEnabled = true
+    var hideDetails = false
     var mutedSessionIds: [String] = []
     var quietHoursEnabled = false
     var quietHoursStart = "22:00"
@@ -492,6 +599,7 @@ struct PushPrefs: Codable, Equatable {
         var payload: [String: Any] = [
             "enabled": enabled,
             "liveActivitiesEnabled": liveActivitiesEnabled,
+            "hideDetails": hideDetails,
             "mutedSessionIds": mutedSessionIds,
         ]
         if quietHoursEnabled {
@@ -504,6 +612,32 @@ struct PushPrefs: Codable, Equatable {
             payload["quietHours"] = NSNull()
         }
         return payload
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case liveActivitiesEnabled
+        case hideDetails
+        case mutedSessionIds
+        case quietHoursEnabled
+        case quietHoursStart
+        case quietHoursEnd
+        case quietHoursTimezone
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        liveActivitiesEnabled = try container.decodeIfPresent(Bool.self, forKey: .liveActivitiesEnabled) ?? true
+        hideDetails = try container.decodeIfPresent(Bool.self, forKey: .hideDetails) ?? false
+        mutedSessionIds = try container.decodeIfPresent([String].self, forKey: .mutedSessionIds) ?? []
+        quietHoursEnabled = try container.decodeIfPresent(Bool.self, forKey: .quietHoursEnabled) ?? false
+        quietHoursStart = try container.decodeIfPresent(String.self, forKey: .quietHoursStart) ?? "22:00"
+        quietHoursEnd = try container.decodeIfPresent(String.self, forKey: .quietHoursEnd) ?? "08:00"
+        quietHoursTimezone = try container.decodeIfPresent(String.self, forKey: .quietHoursTimezone)
+            ?? TimeZone.current.identifier
     }
 }
 
