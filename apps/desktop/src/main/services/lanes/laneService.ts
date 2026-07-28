@@ -5809,6 +5809,17 @@ export function createLaneService({
         broadcastDeleteEvent(progress);
       };
 
+      let storageLock: ReturnType<typeof acquireStorageLifecycleLock>;
+      try {
+        storageLock = acquireStorageLifecycleLock({
+          laneId,
+          worktreePath: row.worktree_path,
+          ownerLabel: `Delete: ${row.name}`,
+        });
+      } catch (error) {
+        finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
       broadcastDeleteEvent(progress);
 
       try {
@@ -6052,6 +6063,8 @@ export function createLaneService({
         finalize("failed");
         finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
+      } finally {
+        laneStorageWorktreeLocks.release({ token: storageLock.token });
       }
     },
 

@@ -93,6 +93,11 @@ import type {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
+import {
+  ensureActiveLanePortLease,
+  releaseLaneRuntimeResources,
+  restoreRecreatedLaneRuntime,
+} from "../lanes/laneRuntimeLifecycle";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { runGit } from "../git/git";
@@ -2195,13 +2200,6 @@ async function resolveLaneOverlayContext(runtime: AdeRuntime, laneId: string) {
   };
 }
 
-async function ensureLanePortLease(runtime: AdeRuntime, laneId: string): Promise<PortLease | null> {
-  await resolveLane(runtime, laneId);
-  const portAllocationService = runtime.portAllocationService;
-  if (!portAllocationService) return null;
-  return portAllocationService.getLease(laneId) ?? portAllocationService.acquire(laneId);
-}
-
 async function ensureLanePreviewInfo(runtime: AdeRuntime, laneId: string): Promise<LanePreviewInfo | null> {
   const laneProxyService = runtime.laneProxyService;
   const portAllocationService = runtime.portAllocationService;
@@ -2305,6 +2303,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         ...(record.acknowledgeActiveWork === true ? { acknowledgeActiveWork: true } : {}),
       });
     },
+    archive: async (args?: { laneId?: string }): Promise<void> => {
+      const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      runtime.laneService.archive({ laneId });
+      releaseLaneRuntimeResources(runtime, laneId);
+    },
     delete: async (args?: DeleteLaneArgs): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const laneEnvironmentService = runtime.laneEnvironmentService;
@@ -2323,7 +2326,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           }
         : undefined;
       await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
-      runtime.portAllocationService?.release(laneId);
+      releaseLaneRuntimeResources(runtime, laneId);
     },
     archiveAndReclaim: async (args?: ArchiveAndReclaimLaneArgs) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
@@ -2347,22 +2350,15 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         },
         { teardownEnv },
       );
-      runtime.portAllocationService?.release(laneId);
+      releaseLaneRuntimeResources(runtime, laneId);
       return result;
     },
     unarchive: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const result = await runtime.laneService.unarchive({ laneId });
-      if (!result.worktreeRecreated || !runtime.laneEnvironmentService) return result;
+      if (!result.worktreeRecreated) return result;
       try {
-        const context = await resolveLaneOverlayContext(runtime, laneId);
-        if (context.envInitConfig) {
-          await runtime.laneEnvironmentService.initLaneEnvironment(
-            context.lane,
-            context.envInitConfig,
-            context.overrides,
-          );
-        }
+        await restoreRecreatedLaneRuntime(runtime, laneId);
         return result;
       } catch (error) {
         return { ...result, setupWarning: getErrorMessage(error) };
@@ -2435,19 +2431,19 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     portGetLease: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      await ensureLanePortLease(runtime, laneId);
+      await ensureActiveLanePortLease(runtime, laneId);
       return runtime.portAllocationService?.getLease(laneId) ?? null;
     },
     portListLeases: () => runtime.portAllocationService?.listLeases() ?? [],
     portAcquire: async (args?: { laneId?: string }) => {
-      const lease = await ensureLanePortLease(runtime, requireNonEmptyString(args?.laneId, "laneId"));
+      const lease = await ensureActiveLanePortLease(runtime, requireNonEmptyString(args?.laneId, "laneId"));
       if (!lease) throw new Error("Port allocation service not available.");
       return lease;
     },
     portRelease: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       await resolveLane(runtime, laneId);
-      runtime.portAllocationService?.release(laneId);
+      releaseLaneRuntimeResources(runtime, laneId);
     },
     portListConflicts: () => runtime.portAllocationService?.listConflicts() ?? [],
     portRecoverOrphans: async () => {

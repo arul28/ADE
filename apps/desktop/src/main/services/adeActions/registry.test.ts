@@ -1863,7 +1863,13 @@ describe("runtime lane snapshot actions", () => {
         cleanupLaneEnvironment,
       },
       portAllocationService: {
-        getLease: vi.fn(() => null),
+        getLease: vi.fn(() => ({
+          laneId: lane.id,
+          rangeStart: 4100,
+          rangeEnd: 4199,
+          status: "active",
+          leasedAt: TEST_NOW,
+        })),
         release,
       },
       logger: {

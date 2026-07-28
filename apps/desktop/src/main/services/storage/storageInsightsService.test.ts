@@ -1114,6 +1114,7 @@ describe("storageMaintenanceJournal", () => {
         },
       }),
     };
+    const releaseLaneRuntimeResources = vi.fn();
     const service = createStorageInsightsService({
       projectRoot,
       adeHome,
@@ -1122,12 +1123,15 @@ describe("storageMaintenanceJournal", () => {
       projectId: "project-1",
       laneService,
       projectConfigService,
+      releaseLaneRuntimeResources,
     });
 
     await service.runLifecycleScanNow();
     await service.runLifecycleScanNow();
 
     expect(archive).toHaveBeenCalledTimes(2);
+    expect(releaseLaneRuntimeResources.mock.calls.map(([laneId]) => laneId))
+      .toEqual(archive.mock.calls.map(([args]) => args.laneId));
     expect(db.get("select reclaim_state from local_lane_storage_state where lane_id = ?", ["lane-retained"]))
       .toMatchObject({ reclaim_state: "ready_for_review" });
     expect(fs.existsSync(retainedPath)).toBe(true);

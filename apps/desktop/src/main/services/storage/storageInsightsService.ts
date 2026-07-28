@@ -140,6 +140,7 @@ export type StorageInsightsServiceOptions = {
   stagingTmpDir?: string;
   laneService?: LaneLifecycleBackend | null;
   projectConfigService?: LaneCleanupConfigReader | null;
+  releaseLaneRuntimeResources?: ((laneId: string) => void | Promise<void>) | null;
 };
 
 export function isObsoleteRecoveryBackup(
@@ -432,6 +433,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         try {
           if (hasActiveLaneWorktreeLock(candidate.laneId)) continue;
           laneService.archive({ laneId: candidate.laneId });
+          await options.releaseLaneRuntimeResources?.(candidate.laneId);
           archivedAutomatically += 1;
           if (stillNeedsArchive > 0) stillNeedsArchive -= 1;
         } catch (error) {

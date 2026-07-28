@@ -452,8 +452,39 @@ describe("lane storage lifecycle", () => {
     await expect(service.unarchive({ laneId: "12345678-lane" })).rejects.toThrow(/wait for archive & reclaim/i);
     await expect(secondService.unarchive({ laneId: "12345678-lane" }))
       .rejects.toThrow(/blocked by archive & reclaim.*before changing or restoring this lane/i);
+    await expect(secondService.delete({ laneId: "12345678-lane", deleteBranch: false }))
+      .rejects.toThrow(/blocked by archive & reclaim.*before changing or restoring this lane/i);
+    expect(secondService.listDeleteProgress()).toEqual([]);
     release();
     await first;
+    db.close();
+  });
+
+  it("holds the persistent lifecycle lock while deleting a lane", async () => {
+    const { root, db, service, projectId, worktreesDir, worktreePath } = await fixture();
+    const secondService = createLaneService({
+      db,
+      projectRoot: root,
+      projectId,
+      defaultBaseRef: "main",
+      worktreesDir,
+      logger: logger as any,
+    });
+    fs.mkdirSync(worktreePath, { recursive: true });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let removeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { removeStarted = resolve; });
+    installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+
+    const deletion = service.delete({ laneId: "12345678-lane", deleteBranch: false });
+    await started;
+    await expect(secondService.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/blocked by delete.*before changing or restoring this lane/i);
+    release();
+    await deletion;
     db.close();
   });
 

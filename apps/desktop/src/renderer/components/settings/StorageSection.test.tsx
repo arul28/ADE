@@ -13,7 +13,12 @@ import type {
   StorageSnapshot,
   StorageSnapshotExtras,
 } from "../../../shared/types/storage";
-import type { AppResourceUsageSnapshot, LaneCleanupConfig, LaneReclaimRisk } from "../../../shared/types";
+import type {
+  AppResourceUsageSnapshot,
+  LaneCleanupConfig,
+  LaneReclaimRisk,
+  ProjectConfigCandidate,
+} from "../../../shared/types";
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -273,7 +278,7 @@ function installAdeMock(options: {
     generatedDataRemoved: true,
     warnings: [],
   }));
-  const saveProjectConfig = vi.fn(async () => undefined);
+  const saveProjectConfig = vi.fn(async (_candidate: ProjectConfigCandidate) => undefined);
   (globalThis.window as any).ade = {
     storage,
     lanes: {
@@ -394,7 +399,7 @@ describe("StorageSection", () => {
       reclaimRisk: {
         dirty: true,
         blockedReasons: [{
-          code: "dirty",
+          code: "dirty_worktree",
           disposition: "confirmation_required",
           message: "This lane has uncommitted changes.",
         }],
@@ -462,10 +467,12 @@ describe("StorageSection", () => {
 
     await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1));
     const saved = saveProjectConfig.mock.calls[0]![0];
-    expect(saved.local.laneCleanup.maxActiveLanes).toBe(3);
-    expect(saved.local.laneCleanup.autoArchiveAfterHours).toBeUndefined();
-    expect(saved.local.laneCleanup.cleanupIntervalHours).toBeUndefined();
-    expect(saved.local.laneCleanup.reclaimArchivedAfterHours).toBeUndefined();
+    const savedLaneCleanup = saved.local.laneCleanup;
+    expect(savedLaneCleanup).toBeDefined();
+    expect(savedLaneCleanup!.maxActiveLanes).toBe(3);
+    expect(savedLaneCleanup!.autoArchiveAfterHours).toBeUndefined();
+    expect(savedLaneCleanup!.cleanupIntervalHours).toBeUndefined();
+    expect(savedLaneCleanup!.reclaimArchivedAfterHours).toBeUndefined();
   });
 
   it("hides the compress action when compressNow is unavailable", async () => {
