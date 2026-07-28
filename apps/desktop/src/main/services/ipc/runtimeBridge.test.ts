@@ -1460,6 +1460,58 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("dispatches lane archived automation once after IPC reclaim archives, even when removal later fails", async () => {
+    const onLaneArchived = vi.fn();
+    const archiveAndReclaim = vi.fn()
+      .mockImplementationOnce(async (
+        _args: unknown,
+        options?: { onArchived?: () => void },
+      ) => {
+        expect(onLaneArchived).not.toHaveBeenCalled();
+        options?.onArchived?.();
+        throw new Error("disk is busy");
+      })
+      .mockRejectedValueOnce(new Error("confirmation required"));
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        laneService: {
+          list: vi.fn(async () => [{
+            id: "lane-1",
+            name: "Feature",
+            branchRef: "refs/heads/feature",
+            folder: "feature",
+          }]),
+          archiveAndReclaim,
+        },
+        automationService: { onLaneArchived },
+      }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const handler = ipcHandlers.get(IPC.lanesArchiveAndReclaim);
+    await expect(handler?.(eventForSender(), {
+      laneId: "lane-1",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/disk is busy/i);
+    expect(onLaneArchived).toHaveBeenCalledTimes(1);
+    expect(onLaneArchived).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      laneName: "Feature",
+      branchRef: "refs/heads/feature",
+      folder: "feature",
+    });
+
+    await expect(handler?.(eventForSender(), {
+      laneId: "lane-1",
+      confirmation: "invalid",
+    })).rejects.toThrow(/confirmation required/i);
+    expect(onLaneArchived).toHaveBeenCalledTimes(1);
+  });
+
   it("routes account Attention through the machine runtime without a project binding", async () => {
     const snapshot = {
       contractVersion: ATTENTION_CONTRACT_VERSION,

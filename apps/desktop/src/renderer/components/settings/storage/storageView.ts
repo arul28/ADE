@@ -575,33 +575,25 @@ export function buildSafeCleanupPlan(
     whatHappens.push("Clean up data ADE keeps but no longer needs.");
   }
 
-  // Filesystem-safe targets for the legacy fallback. The doctor has a narrower
-  // filesystem policy, so only targets it actually reaps are shown in its plan.
+  // Filesystem-safe targets are removed through the preview-bound cleanup API
+  // in every runtime. The maintenance doctor separately handles compression and
+  // database retention.
   const fsTargets: StorageCleanupTarget[] = [];
   const fsRows: Array<{ label: string; size: string }> = [];
-  const maintenanceFsRows: Array<{ label: string; size: string }> = [];
   let fsBytes = 0;
-  let maintenanceFsBytes = 0;
   for (const category of snapshot.categories) {
     if (category.id !== "caches" && category.id !== "build_release") continue;
     for (const entry of cleanableEntries(category.id, category, laneIdByKey)) {
       fsTargets.push(entry.target);
       fsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
       fsBytes += entry.item.bytes;
-      const doctorDeletesTarget = entry.target.kind === "stale_tmp_staging"
-        || (entry.target.kind === "rebuildable_cache"
-          && /[\\/]\.ade[\\/]cache[\\/]ios-simulator[\\/]DerivedData[\\/]?$/.test(entry.target.path));
-      if (doctorDeletesTarget) {
-        maintenanceFsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
-        maintenanceFsBytes += entry.item.bytes;
-      }
     }
   }
   const fsGroup: SafeCleanupGroup | null = fsRows.length > 0
     ? { heading: "Temporary & rebuildable files", rows: fsRows }
     : null;
-  if (maintenanceFsRows.length > 0) {
-    groups.push({ heading: "Temporary & rebuildable files", rows: maintenanceFsRows });
+  if (fsGroup) {
+    groups.push(fsGroup);
     whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
   }
 
@@ -624,6 +616,10 @@ export function buildSafeCleanupPlan(
   );
   const obsoleteBackupBytes = obsoleteBackups.reduce((sum, item) => sum + item.bytes, 0);
   if (obsoleteBackups.length > 0) {
+    for (const item of obsoleteBackups) {
+      fsTargets.push({ kind: "recovery_backup", path: item.path });
+      fsBytes += item.bytes;
+    }
     groups.push({
       heading: "Obsolete recovery backups",
       rows: obsoleteBackups.map((item) => ({ label: item.label, size: formatBytes(item.bytes) })),
@@ -633,13 +629,10 @@ export function buildSafeCleanupPlan(
 
   whatHappens.push("Your chats, projects, and active lanes are never touched, and your newest backup is always kept.");
 
-  // The daemon estimate includes every filesystem target offered by the legacy
-  // cleanup API. Remove targets the doctor will not touch, then add disclosed
-  // obsolete backups (which the daemon intentionally excludes from its CTA sum).
-  const estimatedBytes = Math.max(
-    0,
-    daemonEstimatedBytes - fsBytes + maintenanceFsBytes + obsoleteBackupBytes,
-  );
+  // The daemon estimate covers the validated staging/cache targets. Recovery
+  // backups are intentionally excluded there because cleanup always keeps the
+  // newest one, so add only the obsolete backups disclosed above.
+  const estimatedBytes = Math.max(0, daemonEstimatedBytes + obsoleteBackupBytes);
 
   return { fsTargets, fsBytes, groups, fsGroup, whatHappens, estimatedBytes };
 }

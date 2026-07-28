@@ -74,11 +74,24 @@ export function releaseLaneRuntimeResources(
   dependencies: Pick<LaneRuntimeLifecycleDependencies, "portAllocationService" | "laneProxyService">,
   laneId: string,
 ): void {
-  dependencies.laneProxyService?.removeRoute(laneId);
-  const allocator = dependencies.portAllocationService;
-  if (allocator?.getLease(laneId)?.status === "active") {
-    allocator.release(laneId);
+  let routeError: unknown;
+  let routeFailed = false;
+  try {
+    dependencies.laneProxyService?.removeRoute(laneId);
+  } catch (error) {
+    routeFailed = true;
+    routeError = error;
   }
+  try {
+    const allocator = dependencies.portAllocationService;
+    if (allocator?.getLease(laneId)?.status === "active") {
+      allocator.release(laneId);
+    }
+  } catch (releaseError) {
+    if (routeFailed) throw routeError;
+    throw releaseError;
+  }
+  if (routeFailed) throw routeError;
 }
 
 export async function restoreRecreatedLaneRuntime(

@@ -298,22 +298,24 @@ describe("buildSafeCleanupPlan", () => {
 
   it("groups compressible history, database rows, and filesystem targets", () => {
     const plan = buildSafeCleanupPlan({ categories, extras }, new Map());
-    expect(plan.estimatedBytes).toBe(420 * MB);
+    expect(plan.estimatedBytes).toBe(720 * MB);
     expect(plan.groups.map((g) => g.heading)).toEqual([
       "Chats & terminal history",
       "Project database",
       "Temporary & rebuildable files",
       "Obsolete recovery backups",
     ]);
-    expect(plan.fsTargets).toHaveLength(2);
-    expect(plan.fsBytes).toBe(500 * MB);
+    expect(plan.fsTargets).toHaveLength(3);
+    expect(plan.fsBytes).toBe(560 * MB);
     expect(plan.fsGroup?.rows).toHaveLength(2);
     expect(plan.groups.find((group) => group.heading === "Temporary & rebuildable files")?.rows)
-      .toEqual([{ label: "iOS build data", size: "200 MB" }]);
+      .toEqual([
+        { label: "npm", size: "300 MB" },
+        { label: "iOS build data", size: "200 MB" },
+      ]);
     expect(plan.groups.find((group) => group.heading === "Obsolete recovery backups")?.rows)
       .toEqual([{ label: "Obsolete recovery backup", size: "60.0 MB" }]);
     expect(plan.groups.flatMap((group) => group.rows).some((row) => row.label === "Newest recovery backup")).toBe(false);
-    expect(plan.estimatedBytes).not.toBe(500 * MB);
     expect(plan.whatHappens.at(-1)).toContain("never touched");
     expect(plan.whatHappens.at(-1)).toContain("newest backup is always kept");
   });

@@ -501,15 +501,15 @@ describe("StorageSection", () => {
     expectNoJargon(container.textContent ?? "");
   });
 
-  it("hides the safe-cleanup primary when the daemon reports no reclaimable space", async () => {
+  it("still offers safe cleanup for an obsolete backup when the daemon cache estimate is zero", async () => {
     installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
     render(<StorageSection />);
     await screen.findByText(/ADE is using/);
-    expect(screen.queryByRole("button", { name: /clean up safely/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /clean up safely/i })).toBeTruthy();
   });
 
-  it("runs the doctor from the safe-cleanup primary and reports what it reclaimed", async () => {
-    const { runMaintenanceNow } = installAdeMock({ withExtras: true });
+  it("previews and removes safe filesystem targets before running maintenance", async () => {
+    const { cleanupPreview, cleanup: cleanupFn, runMaintenanceNow } = installAdeMock({ withExtras: true });
     render(<StorageSection />);
 
     const primary = await screen.findByRole("button", { name: /clean up safely/i });
@@ -517,15 +517,27 @@ describe("StorageSection", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("iOS build data")).toBeTruthy();
-    expect(within(dialog).queryByText("npm")).toBeNull();
+    expect(within(dialog).getByText("npm")).toBeTruthy();
     expect(within(dialog).getByText("Obsolete recovery backup")).toBeTruthy();
     expect(within(dialog).queryByText("Newest recovery backup")).toBeNull();
     expect(within(dialog).getAllByText(/newest (recovery )?backup/i).length).toBeGreaterThan(0);
+    await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(1));
+    const previewTargets = cleanupPreview.mock.calls[0][0];
+    expect(previewTargets).toEqual([
+      { kind: "rebuildable_cache", path: `${PROJECT}/.ade/cache/ios-simulator/DerivedData` },
+      { kind: "rebuildable_cache", path: `${PROJECT}/.ade/cache/npm` },
+      { kind: "recovery_backup", path: `${PROJECT}/.ade/ade.db.bak-2026-06-01` },
+    ]);
     const confirm = await within(dialog).findByRole("button", { name: /clean up safely/i });
     fireEvent.click(confirm);
 
+    await waitFor(() => expect(cleanupFn).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
-    expect(await within(dialog).findByText(/Reclaimed 481 MB/)).toBeTruthy();
+    expect(cleanupFn).toHaveBeenCalledWith(previewTargets, {
+      preview: await cleanupPreview.mock.results[0]!.value,
+    });
+    expect(cleanupFn.mock.invocationCallOrder[0]).toBeLessThan(runMaintenanceNow.mock.invocationCallOrder[0]!);
+    expect(await within(dialog).findByText(/Freed 2\.0 GB/)).toBeTruthy();
   });
 
   it("shows the database breakdown and runs maintenance from an inline action", async () => {
@@ -581,7 +593,7 @@ describe("StorageSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(await within(dialog).findByRole("button", { name: /clean up safely/i }));
-    expect(await within(dialog).findByText("Some cleanup steps couldn't finish.")).toBeTruthy();
+    expect(await within(dialog).findByText(/some cleanup steps couldn't finish/i)).toBeTruthy();
     expect(within(dialog).queryByText("Storage is already tidy.")).toBeNull();
   });
 

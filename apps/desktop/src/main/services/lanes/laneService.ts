@@ -247,15 +247,37 @@ async function managedTreeBytes(targetPath: string): Promise<number> {
 async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
   const root = normAbs(rootPath);
   const target = normAbs(targetPath);
-  if (path.dirname(target) !== root) return true;
-  for (const candidate of [root, target]) {
+  const relative = path.relative(root, target);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return true;
+  const segments = relative ? relative.split(path.sep) : [];
+  let candidate = root;
+  const candidates = [candidate];
+  for (const segment of segments) {
+    candidate = path.join(candidate, segment);
+    candidates.push(candidate);
+  }
+  for (const pathToCheck of candidates) {
     try {
-      if ((await fs.promises.lstat(candidate)).isSymbolicLink()) return true;
+      if ((await fs.promises.lstat(pathToCheck)).isSymbolicLink()) return true;
     } catch {
-      // A missing target is safe to recreate only when its managed root is real.
+      // Missing descendants cannot redirect traversal. Existing ancestors are
+      // still checked before any recursive removal or recreation.
     }
   }
   return false;
+}
+
+function lanePackDirectory(projectRoot: string, laneId: string): {
+  adeDir: string;
+  lanePackDir: string;
+} {
+  const layout = resolveAdeLayout(projectRoot);
+  const lanesDir = normAbs(path.join(layout.packsDir, "lanes"));
+  const lanePackDir = normAbs(path.join(lanesDir, laneId));
+  if (path.dirname(lanePackDir) !== lanesDir) {
+    throw new Error("The generated lane data path is outside ADE's managed storage.");
+  }
+  return { adeDir: layout.adeDir, lanePackDir };
 }
 
 function cloneLaneStatus(status: LaneStatus): LaneStatus {
@@ -959,6 +981,8 @@ async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
 }
 
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
+const STORAGE_LIFECYCLE_LOCK_LEASE_MS = 15 * 60_000;
+const STORAGE_LIFECYCLE_LOCK_HEARTBEAT_MS = 60_000;
 
 function branchNameForDelete(branchRef: string, remoteName = "origin"): string {
   const trimmed = branchRef.trim().replace(/^refs\/heads\//, "");
@@ -2891,14 +2915,54 @@ export function createLaneService({
     ownerLabel: string;
   }) => {
     const operationToken = randomUUID();
-    return laneStorageWorktreeLocks.acquire({
+    const acquired = laneStorageWorktreeLocks.acquire({
       ...args,
       worktreePath: stablePathThroughExistingAncestor(args.worktreePath),
       ownerKind: "storage_lifecycle",
       ownerSessionId: operationToken,
       token: operationToken,
-      leaseMs: 15 * 60_000,
+      leaseMs: STORAGE_LIFECYCLE_LOCK_LEASE_MS,
     });
+    let released = false;
+    const heartbeatTimer = setInterval(() => {
+      if (released) return;
+      try {
+        const lock = laneStorageWorktreeLocks.heartbeat(
+          acquired.token,
+          STORAGE_LIFECYCLE_LOCK_LEASE_MS,
+        );
+        if (!lock) {
+          logger.warn("lane.storage.lock_heartbeat_lost", {
+            laneId: args.laneId,
+            ownerLabel: args.ownerLabel,
+          });
+        }
+      } catch (error) {
+        logger.warn("lane.storage.lock_heartbeat_failed", {
+          laneId: args.laneId,
+          ownerLabel: args.ownerLabel,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, STORAGE_LIFECYCLE_LOCK_HEARTBEAT_MS);
+    heartbeatTimer.unref?.();
+    return {
+      ...acquired,
+      release: (): void => {
+        if (released) return;
+        released = true;
+        clearInterval(heartbeatTimer);
+        try {
+          laneStorageWorktreeLocks.release({ token: acquired.token });
+        } catch (error) {
+          logger.warn("lane.storage.lock_release_failed", {
+            laneId: args.laneId,
+            ownerLabel: args.ownerLabel,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    };
   };
 
   const runGitWorktreeMutation = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -5240,10 +5304,11 @@ export function createLaneService({
         }
       }
       const worktreeAvailable = Boolean(registeredWorktree);
-      const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
+      const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
+      const packSymlinkPath = await hasSymlinkInManagedPath(packAdeDir, lanePackDir);
       const [worktreeBytes, generatedBytes] = await Promise.all([
         worktreeAvailable && !symlinkPath ? managedTreeBytes(normalizedWorktree) : Promise.resolve(0),
-        managedTreeBytes(lanePackDir),
+        packSymlinkPath ? Promise.resolve(0) : managedTreeBytes(lanePackDir),
       ]);
       const branchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
       let unmerged = false;
@@ -5276,10 +5341,12 @@ export function createLaneService({
           disposition: "blocked",
         });
       }
-      if (symlinkPath) {
+      if (symlinkPath || packSymlinkPath) {
         blockedReasons.push({
           code: "symlink_path",
-          message: "The folder or its managed root is a link.",
+          message: packSymlinkPath
+            ? "The generated data folder or one of its managed parent folders is a link."
+            : "The folder or its managed root is a link.",
           disposition: "blocked",
         });
       }
@@ -5382,6 +5449,10 @@ export function createLaneService({
       const now = new Date().toISOString();
       const startedAtMs = Date.now();
       try {
+        const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, args.laneId);
+        if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+          throw new Error("ADE will not reclaim generated data through a symbolic link.");
+        }
         laneServiceApi.archive({ laneId: args.laneId });
         runtimeOpts?.onArchived?.();
         db.run(
@@ -5467,7 +5538,9 @@ export function createLaneService({
         }
         if (!worktreeRemoved) throw new Error("The managed worktree folder could not be removed.");
 
-        const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", args.laneId);
+        if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+          throw new Error("ADE will not reclaim generated data through a symbolic link.");
+        }
         try {
           await fs.promises.rm(lanePackDir, { recursive: true, force: true });
         } catch (error) {
@@ -5525,7 +5598,7 @@ export function createLaneService({
         throw error;
       } finally {
         laneReclaimInFlight.delete(args.laneId);
-        laneStorageWorktreeLocks.release({ token: storageLock.token });
+        storageLock.release();
       }
     },
 
@@ -5652,7 +5725,7 @@ export function createLaneService({
         });
         return { lane, worktreeRecreated: true };
       } finally {
-        laneStorageWorktreeLocks.release({ token: storageLock.token });
+        storageLock.release();
       }
     },
 
@@ -5827,6 +5900,10 @@ export function createLaneService({
       broadcastDeleteEvent(progress);
 
       try {
+        const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
+        if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+          throw new Error("ADE will not delete generated lane data through a symbolic link.");
+        }
         if (hasWorktree) {
           await runStep("git_status", async () => {
             if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
@@ -6008,7 +6085,9 @@ export function createLaneService({
         }
 
         await runStep("pack_dir_remove", async () => {
-          const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
+          if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+            throw new Error("ADE will not delete generated lane data through a symbolic link.");
+          }
           try {
             await fs.promises.rm(lanePackDir, { recursive: true, force: true });
             return { detail: lanePackDir };
@@ -6068,7 +6147,7 @@ export function createLaneService({
         finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
       } finally {
-        laneStorageWorktreeLocks.release({ token: storageLock.token });
+        storageLock.release();
       }
     },
 

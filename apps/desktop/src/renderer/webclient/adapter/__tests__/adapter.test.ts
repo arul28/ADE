@@ -294,6 +294,33 @@ describe("createAdeWebAdapter", () => {
       worktreeRecreated: true,
     });
     expect(lifecycleEvents).toEqual([{
+      type: "lane-restored",
+      laneId: lane.id,
+      laneName: lane.name,
+      color: lane.color,
+      lane,
+    }]);
+
+    adapter.dispose();
+  });
+
+  it("emits an unarchived lane when web restore does not recreate its worktree", async () => {
+    fake.descriptors = descriptors(["lanes.unarchive"]);
+    const lane = {
+      id: "lane-unarchived",
+      name: "Unarchived lane",
+      branchRef: "feature/unarchived",
+      color: "#5eead4",
+    };
+    fake.commandResults.set("lanes.unarchive", { lane, worktreeRecreated: false });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const lifecycleEvents: unknown[] = [];
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+
+    await adapter.ade.lanes.unarchive({ laneId: lane.id });
+
+    expect(lifecycleEvents).toEqual([{
       type: "lane-unarchived",
       laneId: lane.id,
       laneName: lane.name,

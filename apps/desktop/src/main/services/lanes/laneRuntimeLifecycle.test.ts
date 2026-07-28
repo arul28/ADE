@@ -93,4 +93,24 @@ describe("lane runtime lifecycle", () => {
     expect(removeRoute).toHaveBeenCalledWith(lane.id);
     expect(release).toHaveBeenCalledWith(lane.id);
   });
+
+  it("releases an active lease before reporting a proxy route failure", () => {
+    const routeError = new Error("proxy route is busy");
+    const release = vi.fn();
+
+    expect(() => releaseLaneRuntimeResources({
+      laneProxyService: {
+        removeRoute: vi.fn(() => {
+          throw routeError;
+        }),
+      },
+      portAllocationService: {
+        getLease: vi.fn(() => lease),
+        acquire: vi.fn(() => lease),
+        release,
+      },
+    }, lane.id)).toThrow(routeError);
+
+    expect(release).toHaveBeenCalledWith(lane.id);
+  });
 });

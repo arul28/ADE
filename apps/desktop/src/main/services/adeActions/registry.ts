@@ -2251,6 +2251,22 @@ async function ensureLanePreviewInfo(runtime: AdeRuntime, laneId: string): Promi
 
 function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   const laneService = runtime.laneService as unknown as OpaqueService;
+  const findLaneForArchive = async (laneId: string) => {
+    if (typeof runtime.laneService.list !== "function") return null;
+    return runtime.laneService
+      .list({ includeArchived: true, includeStatus: false })
+      .then((lanes) => lanes.find((lane) => lane.id === laneId) ?? null)
+      .catch(() => null);
+  };
+  const notifyLaneArchived = (lane: Awaited<ReturnType<typeof findLaneForArchive>>): void => {
+    if (!lane) return;
+    runtime.automationService?.onLaneArchived?.({
+      laneId: lane.id,
+      laneName: lane.name,
+      branchRef: lane.branchRef,
+      folder: lane.folder ?? null,
+    });
+  };
   return {
     ...laneService,
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -2305,8 +2321,13 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     archive: async (args?: { laneId?: string }): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      const lane = await findLaneForArchive(laneId);
       runtime.laneService.archive({ laneId });
-      releaseLaneRuntimeResources(runtime, laneId);
+      try {
+        releaseLaneRuntimeResources(runtime, laneId);
+      } finally {
+        notifyLaneArchived(lane);
+      }
     },
     delete: async (args?: DeleteLaneArgs): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
@@ -2333,6 +2354,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       if (args?.confirmation !== "RECLAIM") {
         throw new Error('archiveAndReclaim requires confirmation: "RECLAIM".');
       }
+      const lane = await findLaneForArchive(laneId);
       const laneEnvironmentService = runtime.laneEnvironmentService;
       const envContext = laneEnvironmentService
         ? await resolveLaneOverlayContext(runtime, laneId).catch(() => null)
@@ -2349,7 +2371,13 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           ...(args.forceDirty === true ? { forceDirty: true } : {}),
         },
         {
-          onArchived: () => releaseLaneRuntimeResources(runtime, laneId),
+          onArchived: () => {
+            try {
+              releaseLaneRuntimeResources(runtime, laneId);
+            } finally {
+              notifyLaneArchived(lane);
+            }
+          },
           teardownEnv,
         },
       );

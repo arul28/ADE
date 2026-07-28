@@ -146,6 +146,60 @@ describe("lane storage lifecycle", () => {
     db.close();
   });
 
+  it("rejects reclaim when a generated-data ancestor is a symbolic link", async () => {
+    const { root, db, service, worktreePath } = await fixture();
+    const outsidePacks = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-packs-outside-"));
+    roots.push(outsidePacks);
+    const packsDir = path.join(root, ".ade", "artifacts", "packs");
+    const linkedLanesDir = path.join(packsDir, "lanes");
+    const outsideLanePack = path.join(outsidePacks, "12345678-lane");
+    fs.mkdirSync(packsDir, { recursive: true });
+    fs.mkdirSync(outsideLanePack, { recursive: true });
+    fs.writeFileSync(path.join(outsideLanePack, "keep.txt"), "outside project");
+    fs.symlinkSync(outsidePacks, linkedLanesDir, "dir");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "keep.txt"), "lane work");
+    installGitStub();
+
+    await expect(service.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/generated data.*link/i);
+
+    expect(fs.readFileSync(path.join(outsideLanePack, "keep.txt"), "utf8")).toBe("outside project");
+    expect(fs.existsSync(worktreePath)).toBe(true);
+    expect(db.get<{ status: string }>("select status from lanes where id = ?", ["12345678-lane"])?.status)
+      .toBe("active");
+    db.close();
+  });
+
+  it("rejects delete when a generated-data ancestor is a symbolic link", async () => {
+    const { root, db, service, worktreePath } = await fixture();
+    const outsidePacks = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-delete-packs-outside-"));
+    roots.push(outsidePacks);
+    const packsDir = path.join(root, ".ade", "artifacts", "packs");
+    const linkedLanesDir = path.join(packsDir, "lanes");
+    const outsideLanePack = path.join(outsidePacks, "12345678-lane");
+    fs.mkdirSync(packsDir, { recursive: true });
+    fs.mkdirSync(outsideLanePack, { recursive: true });
+    fs.writeFileSync(path.join(outsideLanePack, "keep.txt"), "outside project");
+    fs.symlinkSync(outsidePacks, linkedLanesDir, "dir");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "keep.txt"), "lane work");
+    installGitStub();
+
+    await expect(service.delete({
+      laneId: "12345678-lane",
+      deleteBranch: false,
+    })).rejects.toThrow(/generated lane data.*symbolic link/i);
+
+    expect(fs.readFileSync(path.join(outsideLanePack, "keep.txt"), "utf8")).toBe("outside project");
+    expect(fs.existsSync(worktreePath)).toBe(true);
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["12345678-lane"])?.id)
+      .toBe("12345678-lane");
+    db.close();
+  });
+
   it("rechecks dirtiness immediately before removal and requires the explicit dirty override", async () => {
     const { db, service, worktreePath } = await fixture();
     fs.mkdirSync(worktreePath, { recursive: true });
@@ -465,6 +519,52 @@ describe("lane storage lifecycle", () => {
     release();
     await first;
     db.close();
+  });
+
+  it("renews a lifecycle lock while reclaim runs longer than its initial lease", async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, db, service, projectId, worktreesDir, worktreePath } = await fixture({ status: "archived" });
+      const secondService = createLaneService({
+        db,
+        projectRoot: root,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir,
+        logger: logger as any,
+      });
+      fs.mkdirSync(worktreePath, { recursive: true });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let removeStarted!: () => void;
+      const started = new Promise<void>((resolve) => { removeStarted = resolve; });
+      installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+
+      const reclaim = service.archiveAndReclaim({
+        laneId: "12345678-lane",
+        confirmation: "RECLAIM",
+      });
+      await started;
+      await vi.advanceTimersByTimeAsync(16 * 60_000);
+
+      const lock = db.get<{ heartbeat_at: string; expires_at: string }>(
+        "select heartbeat_at, expires_at from lane_worktree_locks where lane_id = ?",
+        ["12345678-lane"],
+      );
+      expect(Date.parse(lock?.expires_at ?? "")).toBeGreaterThan(Date.now());
+      await expect(secondService.unarchive({ laneId: "12345678-lane" }))
+        .rejects.toThrow(/blocked by archive & reclaim/i);
+
+      release();
+      await reclaim;
+      expect(db.get<{ count: number }>(
+        "select count(1) as count from lane_worktree_locks where lane_id = ?",
+        ["12345678-lane"],
+      )?.count).toBe(0);
+      db.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("holds the persistent lifecycle lock while deleting a lane", async () => {

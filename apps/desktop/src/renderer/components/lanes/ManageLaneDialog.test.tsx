@@ -209,7 +209,7 @@ describe("ManageLaneDialog tabs", () => {
       ...reclaimRisk,
       dirty: true,
       blockedReasons: [{
-        code: "dirty",
+        code: "dirty_worktree",
         disposition: "confirmation_required",
         message: "This lane has uncommitted changes.",
       }],

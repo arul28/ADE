@@ -106,7 +106,10 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
         idempotent: false,
       });
-      emitLifecycle(lifecycleFromLane("lane-unarchived", result.lane));
+      emitLifecycle(lifecycleFromLane(
+        result.worktreeRecreated ? "lane-restored" : "lane-unarchived",
+        result.lane,
+      ));
       return result;
     },
     delete: async (args: unknown) => {

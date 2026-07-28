@@ -1026,6 +1026,16 @@ function notifyLaneCreated(ctx: AppContext, lane: LaneSummary): void {
   });
 }
 
+function notifyLaneArchived(ctx: AppContext, lane: LaneSummary | null): void {
+  if (!lane) return;
+  ctx.automationService?.onLaneArchived?.({
+    laneId: lane.id,
+    laneName: lane.name,
+    branchRef: lane.branchRef,
+    folder: lane.folder ?? null,
+  });
+}
+
 function clampLayout(layout: DockLayout): DockLayout {
   const out: DockLayout = {};
   for (const [k, v] of Object.entries(layout)) {
@@ -5805,14 +5815,10 @@ export function registerIpc({
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
       .catch(() => null);
     ctx.laneService.archive(arg);
-    releaseLaneRuntimeResources(ctx, arg.laneId);
-    if (lane) {
-      ctx.automationService?.onLaneArchived?.({
-        laneId: lane.id,
-        laneName: lane.name,
-        branchRef: lane.branchRef,
-        folder: lane.folder ?? null,
-      });
+    try {
+      releaseLaneRuntimeResources(ctx, arg.laneId);
+    } finally {
+      notifyLaneArchived(ctx, lane);
     }
   });
 
@@ -5820,6 +5826,10 @@ export function registerIpc({
     IPC.lanesArchiveAndReclaim,
     async (_event, arg: ArchiveAndReclaimLaneArgs): Promise<ArchiveAndReclaimLaneResult> => {
       const ctx = ensureLaneContext();
+      const lane = await ctx.laneService
+        .list({ includeArchived: true, includeStatus: false })
+        .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
+        .catch(() => null);
       const envContext = ctx.laneEnvironmentService
         ? await resolveLaneOverlayContext(ctx, arg.laneId).catch(() => null)
         : null;
@@ -5829,7 +5839,13 @@ export function registerIpc({
           }
         : undefined;
       return await ctx.laneService.archiveAndReclaim(arg, {
-        onArchived: () => releaseLaneRuntimeResources(ctx, arg.laneId),
+        onArchived: () => {
+          try {
+            releaseLaneRuntimeResources(ctx, arg.laneId);
+          } finally {
+            notifyLaneArchived(ctx, lane);
+          }
+        },
         teardownEnv,
       });
     },
