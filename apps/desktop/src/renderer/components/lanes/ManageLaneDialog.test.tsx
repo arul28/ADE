@@ -186,6 +186,55 @@ describe("ManageLaneDialog tabs", () => {
     expect((reclaimButton as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("keeps reclaim disabled until the risk preview is available", async () => {
+    let resolveRisk!: (risk: LaneReclaimRisk) => void;
+    (globalThis.window as any).ade.lanes.getReclaimRisk.mockReturnValue(
+      new Promise<LaneReclaimRisk>((resolve) => {
+        resolveRisk = resolve;
+      }),
+    );
+    render(<ManageLaneDialog {...makeProps()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Archive" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "RECLAIM" } });
+
+    const measuring = screen.getByRole("button", { name: /measuring/i });
+    expect((measuring as HTMLButtonElement).disabled).toBe(true);
+
+    resolveRisk(reclaimRisk);
+    expect(await screen.findByRole("button", { name: /reclaim 2\.1 GB/i })).toBeTruthy();
+  });
+
+  it("requires an explicit acknowledgement before discarding dirty changes", async () => {
+    (globalThis.window as any).ade.lanes.getReclaimRisk.mockResolvedValue({
+      ...reclaimRisk,
+      dirty: true,
+      blockedReasons: [{
+        code: "dirty",
+        disposition: "confirmation_required",
+        message: "This lane has uncommitted changes.",
+      }],
+    });
+    render(<ManageLaneDialog {...makeProps()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Archive" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "RECLAIM" } });
+
+    const checkbox = await screen.findByRole("checkbox", { name: /discard uncommitted changes/i });
+    const blockedButton = screen.getByRole("button", { name: /confirm discarded changes/i });
+    expect((blockedButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(checkbox);
+    const reclaimButton = screen.getByRole("button", { name: /reclaim 2\.1 GB/i });
+    expect((reclaimButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(reclaimButton);
+
+    await waitFor(() => {
+      expect((globalThis.window as any).ade.lanes.archiveAndReclaim).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        confirmation: "RECLAIM",
+        forceDirty: true,
+      });
+    });
+  });
+
   it("disables the delete button when nothing is selected", async () => {
     render(<ManageLaneDialog {...makeProps({ deleteSelection: EMPTY_LANE_DELETE_SELECTION })} />);
 

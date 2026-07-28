@@ -99,13 +99,16 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
         idempotent: false,
       }),
-    unarchive: (args: unknown) =>
-      commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), {
+    unarchive: async (args: unknown) => {
+      const result = await commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), {
         fallback: () => {
           throw new Error("Restoring a reclaimed lane is unavailable on the connected ADE host.");
         },
         idempotent: false,
-      }),
+      });
+      emitLifecycle(lifecycleFromLane("lane-unarchived", result.lane));
+      return result;
+    },
     delete: async (args: unknown) => {
       await call("lanes.delete", args, undefined, false);
       const record = asRecord(args);

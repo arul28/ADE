@@ -1191,6 +1191,50 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, {});
   });
 
+  it("passes the lane record to the runtime reclaim preview on a bound project", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const risk = { laneId: "lane-1", reclaimableBytes: 42 };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) return { result: risk };
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.lanes.getReclaimRisk({ laneId: "lane-1" })).resolves.toEqual(risk);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: {
+        domain: "lane",
+        action: "getReclaimRisk",
+        args: { laneId: "lane-1" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesGetReclaimRisk, expect.anything());
+  });
+
   it("does not fall back chat create when local runtime callAction times out", async () => {
     const binding = {
       kind: "local",

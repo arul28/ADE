@@ -306,6 +306,23 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
+function stablePathThroughExistingAncestor(targetPath: string): string {
+  const absolute = path.resolve(targetPath);
+  let existingAncestor = absolute;
+  const missingSegments: string[] = [];
+  while (!fs.existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) return absolute;
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  try {
+    return path.join(fs.realpathSync.native(existingAncestor), ...missingSegments);
+  } catch {
+    return absolute;
+  }
+}
+
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
 
 async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean> {
@@ -327,6 +344,14 @@ async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean>
     // their existing path without weakening production validation.
     return /^Unexpected git call:/i.test(message);
   }
+}
+
+async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000): Promise<boolean> {
+  const result = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs });
+  if (result.exitCode !== 0) {
+    throw new Error("ADE could not verify whether the lane has uncommitted files.");
+  }
+  return result.stdout.trim().length > 0;
 }
 
 async function assertExpectedGitWorktreeRoot(worktreePath: string): Promise<void> {
@@ -2857,9 +2882,24 @@ export function createLaneService({
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
   const laneReclaimInFlight = new Set<string>();
   const laneStorageWorktreeLocks = createLaneWorktreeLockService({ db, logger });
-  const laneStorageLockOwnerId = randomUUID();
   let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
   const gitWorktreeMutationOwner = new AsyncLocalStorage<boolean>();
+
+  const acquireStorageLifecycleLock = (args: {
+    laneId: string;
+    worktreePath: string;
+    ownerLabel: string;
+  }) => {
+    const operationToken = randomUUID();
+    return laneStorageWorktreeLocks.acquire({
+      ...args,
+      worktreePath: stablePathThroughExistingAncestor(args.worktreePath),
+      ownerKind: "storage_lifecycle",
+      ownerSessionId: operationToken,
+      token: operationToken,
+      leaseMs: 15 * 60_000,
+    });
+  };
 
   const runGitWorktreeMutation = async <T>(work: () => Promise<T>): Promise<T> => {
     if (gitWorktreeMutationOwner.getStore()) {
@@ -2958,7 +2998,34 @@ export function createLaneService({
     db.run("delete from lane_worktree_locks where lane_id = ?", [laneId]);
     db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from local_lane_storage_state where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+  };
+
+  const commitLaneRestoreState = (laneId: string, worktreePath?: string): void => {
+    db.run("begin immediate");
+    try {
+      if (worktreePath) {
+        db.run(
+          "update lanes set worktree_path = ?, status = 'active', archived_at = null where id = ? and project_id = ?",
+          [worktreePath, laneId, projectId],
+        );
+      } else {
+        db.run(
+          "update lanes set status = 'active', archived_at = null where id = ? and project_id = ?",
+          [laneId, projectId],
+        );
+      }
+      db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+      db.run("commit");
+    } catch (error) {
+      try {
+        db.run("rollback");
+      } catch {
+        // Preserve the original activation error.
+      }
+      throw error;
+    }
   };
 
   async function cleanupCreatedWorktreeLaneAfterCreateFailure(args: {
@@ -5302,17 +5369,15 @@ export function createLaneService({
       if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
         throw new Error("This lane is already being deleted.");
       }
-      const storageLock = laneStorageWorktreeLocks.acquire({
+      const storageLock = acquireStorageLifecycleLock({
         laneId: args.laneId,
         worktreePath: normalizedWorktree,
-        ownerKind: "storage_lifecycle",
         ownerLabel: `Archive & Reclaim: ${row.name}`,
-        ownerSessionId: laneStorageLockOwnerId,
-        leaseMs: 15 * 60_000,
       });
       laneReclaimInFlight.add(args.laneId);
       const warnings: string[] = [];
       const now = new Date().toISOString();
+      const startedAtMs = Date.now();
       try {
         laneServiceApi.archive({ laneId: args.laneId });
         db.run(
@@ -5362,21 +5427,32 @@ export function createLaneService({
             ) {
               throw new Error("The lane worktree changed while ADE was preparing cleanup.");
             }
+            const dirtyBeforeRemove = await readWorktreeDirty(normalizedWorktree);
+            if (dirtyBeforeRemove && args.forceDirty !== true) {
+              throw new Error("This lane gained uncommitted files during cleanup. Confirm that those changes may be lost.");
+            }
             const remove = await runGit(
               ["worktree", "remove", "--force", normalizedWorktree],
               { cwd: projectRoot, timeoutMs: 120_000 },
             );
             if (remove.exitCode !== 0 || fs.existsSync(normalizedWorktree)) {
-              const residualStat = await fs.promises.lstat(normalizedWorktree);
-              if (
-                !residualStat.isDirectory()
-                || residualStat.isSymbolicLink()
-                || residualStat.dev !== initialStat.dev
-                || residualStat.ino !== initialStat.ino
-              ) {
-                throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+              let residualStat: fs.Stats | null = null;
+              try {
+                residualStat = await fs.promises.lstat(normalizedWorktree);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
               }
-              await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
+              if (residualStat) {
+                if (
+                  !residualStat.isDirectory()
+                  || residualStat.isSymbolicLink()
+                  || residualStat.dev !== initialStat.dev
+                  || residualStat.ino !== initialStat.ino
+                ) {
+                  throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+                }
+                await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
+              }
             }
             const prune = await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
             if (prune.exitCode !== 0) {
@@ -5414,6 +5490,13 @@ export function createLaneService({
           laneName: row.name,
           color: row.color,
         });
+        logger.info("lane.storage.reclaim.completed", {
+          laneId: args.laneId,
+          reclaimedBytes: risk.reclaimableBytes,
+          forceDirty: args.forceDirty === true,
+          warningCount: warnings.length,
+          durationMs: Date.now() - startedAtMs,
+        });
         return {
           laneId: args.laneId,
           reclaimedBytes: risk.reclaimableBytes,
@@ -5429,6 +5512,12 @@ export function createLaneService({
             where project_id = ? and lane_id = ?`,
           [message, new Date().toISOString(), projectId, args.laneId],
         );
+        logger.warn("lane.storage.reclaim.failed", {
+          laneId: args.laneId,
+          forceDirty: args.forceDirty === true,
+          errorType: error instanceof Error ? error.name : "UnknownError",
+          durationMs: Date.now() - startedAtMs,
+        });
         throw error;
       } finally {
         laneReclaimInFlight.delete(args.laneId);
@@ -5479,8 +5568,7 @@ export function createLaneService({
         return { lane, worktreeRecreated: false };
       }
       if (row.lane_type !== "worktree") {
-        db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
-        db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+        commitLaneRestoreState(laneId);
         invalidateLaneListCache();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -5498,13 +5586,10 @@ export function createLaneService({
       const canonicalPath = path.join(normalizedRoot, `${slugify(row.name)}-${laneId.slice(0, 8)}`);
       const savedPathIsManaged = path.dirname(savedPath) === normalizedRoot;
       const targetPath = savedPathIsManaged ? savedPath : canonicalPath;
-      const storageLock = laneStorageWorktreeLocks.acquire({
+      const storageLock = acquireStorageLifecycleLock({
         laneId,
         worktreePath: targetPath,
-        ownerKind: "storage_lifecycle",
         ownerLabel: `Restore lane: ${row.name}`,
-        ownerSessionId: laneStorageLockOwnerId,
-        leaseMs: 15 * 60_000,
       });
       try {
         if (savedPathIsManaged && fs.existsSync(savedPath)) {
@@ -5512,8 +5597,7 @@ export function createLaneService({
           if (!registered) {
             throw new Error("The saved lane folder is occupied by a different or unregistered Git worktree.");
           }
-          db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
-          db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+          commitLaneRestoreState(laneId);
           invalidateLaneListCache();
           const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
           if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -5544,11 +5628,7 @@ export function createLaneService({
           await runGitOrThrow(addArgs, { cwd: projectRoot, timeoutMs: 120_000 });
         });
         try {
-          db.run(
-            "update lanes set worktree_path = ?, status = 'active', archived_at = null where id = ? and project_id = ?",
-            [targetPath, laneId, projectId],
-          );
-          db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+          commitLaneRestoreState(laneId, targetPath);
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 120_000 });
@@ -5737,8 +5817,7 @@ export function createLaneService({
             if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
               return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
             }
-            const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
-            const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
+            const dirty = await readWorktreeDirty(row.worktree_path);
             if (dirty && !force) {
               throw new Error("Lane has uncommitted changes. Enable force delete after confirming warnings.");
             }
@@ -5987,8 +6066,7 @@ export function createLaneService({
       const worktreeUsable = worktreeExists && await isExpectedGitWorktreeRoot(row.worktree_path);
       let dirty = false;
       if (worktreeUsable) {
-        const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 6_000 });
-        dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
+        dirty = await readWorktreeDirty(row.worktree_path, 6_000);
       }
       let hasUnpushedCommits = false;
       let unpushedCommitCount = 0;

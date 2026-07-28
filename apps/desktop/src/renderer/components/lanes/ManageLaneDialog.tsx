@@ -414,6 +414,7 @@ export function ManageLaneDialog({
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
   const [reclaimRisk, setReclaimRisk] = useState<LaneReclaimRisk | null>(null);
   const [reclaimConfirm, setReclaimConfirm] = useState("");
+  const [discardDirtyConfirmed, setDiscardDirtyConfirmed] = useState(false);
   const [reclaimBusy, setReclaimBusy] = useState(false);
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
@@ -441,6 +442,7 @@ export function ManageLaneDialog({
       setDeleteRisk(null);
       setReclaimRisk(null);
       setReclaimConfirm("");
+      setDiscardDirtyConfirmed(false);
       setReclaimError(null);
       setDeleteProgress(null);
       return;
@@ -466,6 +468,7 @@ export function ManageLaneDialog({
         if (!cancelled) {
           setDeleteRisk(deleteResult);
           setReclaimRisk(reclaimResult);
+          setDiscardDirtyConfirmed(false);
         }
       })
       .catch(() => {
@@ -493,14 +496,19 @@ export function ManageLaneDialog({
   const reclaimBlocked = reclaimRisk?.blockedReasons.some((reason) => reason.disposition === "blocked") ?? false;
 
   const archiveAndReclaim = async () => {
-    if (!singleLane || reclaimConfirm !== "RECLAIM") return;
+    if (
+      !singleLane
+      || !reclaimRisk
+      || reclaimConfirm !== "RECLAIM"
+      || (reclaimRisk.dirty && !discardDirtyConfirmed)
+    ) return;
     setReclaimBusy(true);
     setReclaimError(null);
     try {
       await window.ade.lanes.archiveAndReclaim({
         laneId: singleLane.id,
         confirmation: "RECLAIM",
-        forceDirty: reclaimRisk?.dirty === true,
+        ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
       });
       await onAppearanceChanged?.();
       onOpenChange(false);
@@ -653,6 +661,18 @@ export function ManageLaneDialog({
                         {reason.message}
                       </div>
                     ))}
+                    {reclaimRisk?.dirty ? (
+                      <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-amber-100/80">
+                        <input
+                          type="checkbox"
+                          checked={discardDirtyConfirmed}
+                          onChange={(event) => setDiscardDirtyConfirmed(event.target.checked)}
+                          disabled={reclaimBusy || laneActionBusy}
+                          className="mt-0.5"
+                        />
+                        <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+                      </label>
+                    ) : null}
                     <label className="mt-3 block text-[11px] text-muted-fg/80">
                       Type <strong className="text-fg">RECLAIM</strong> to confirm
                       <input
@@ -667,15 +687,26 @@ export function ManageLaneDialog({
                       <Button
                         size="sm"
                         variant="primary"
-                        disabled={laneActionBusy || reclaimBusy || reclaimBlocked || reclaimConfirm !== "RECLAIM"}
+                        disabled={
+                          !reclaimRisk
+                          || laneActionBusy
+                          || reclaimBusy
+                          || reclaimBlocked
+                          || (reclaimRisk.dirty && !discardDirtyConfirmed)
+                          || reclaimConfirm !== "RECLAIM"
+                        }
                         onClick={() => void archiveAndReclaim()}
                       >
                         {reclaimBusy ? <CircleNotch size={13} className="animate-spin" /> : <FolderDashed size={13} />}
                         {reclaimBusy
                           ? "Reclaiming…"
-                          : reclaimBlocked
-                            ? "Cannot reclaim this folder"
-                            : `Reclaim ${formatBytesCompact(reclaimRisk?.reclaimableBytes ?? 0)}`}
+                          : !reclaimRisk
+                            ? "Measuring…"
+                            : reclaimBlocked
+                              ? "Cannot reclaim this folder"
+                              : reclaimRisk.dirty && !discardDirtyConfirmed
+                                ? "Confirm discarded changes"
+                                : `Reclaim ${formatBytesCompact(reclaimRisk.reclaimableBytes)}`}
                       </Button>
                     </div>
                   </div>

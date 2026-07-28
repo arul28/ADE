@@ -13,7 +13,7 @@ import type {
   StorageSnapshot,
   StorageSnapshotExtras,
 } from "../../../shared/types/storage";
-import type { AppResourceUsageSnapshot } from "../../../shared/types";
+import type { AppResourceUsageSnapshot, LaneCleanupConfig, LaneReclaimRisk } from "../../../shared/types";
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -192,6 +192,12 @@ function installAdeMock(options: {
   withApp?: boolean;
   maintenanceReport?: MaintenanceRunReport;
   resourceUsage?: AppResourceUsageSnapshot;
+  reclaimRisk?: Partial<LaneReclaimRisk>;
+  config?: {
+    shared?: { laneCleanup?: LaneCleanupConfig };
+    local?: { laneCleanup?: LaneCleanupConfig };
+    effective?: { laneCleanup?: LaneCleanupConfig };
+  };
 } = {}) {
   const cleanupPreview = vi.fn(
     async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> => ({
@@ -238,6 +244,36 @@ function installAdeMock(options: {
   if (options.withExtras || options.extras) storage.runMaintenanceNow = runMaintenanceNow;
 
   const includeApp = options.withApp ?? (options.withExtras || options.extras != null);
+  const getReclaimRisk = vi.fn(async ({ laneId }: { laneId: string }) => ({
+    laneId,
+    laneName: "Old feature",
+    branchRef: "feature/old",
+    worktreePath: ARCHIVED_PATH,
+    dirty: false,
+    hasUnpushedCommits: false,
+    unpushedCommitCount: 0,
+    remoteBranchExists: true,
+    activeChatCount: 0,
+    activePtyCount: 0,
+    activeWatcherCount: 0,
+    envInitialized: false,
+    worktreeBytes: 1.5 * 1024 ** 3,
+    generatedBytes: 0,
+    reclaimableBytes: 1.5 * 1024 ** 3,
+    worktreeAvailable: true,
+    blockedReasons: [],
+    lastFailure: null,
+    retryCount: 0,
+    ...options.reclaimRisk,
+  }));
+  const archiveAndReclaim = vi.fn(async ({ laneId }: { laneId: string }) => ({
+    laneId,
+    reclaimedBytes: 1.5 * 1024 ** 3,
+    worktreeRemoved: true,
+    generatedDataRemoved: true,
+    warnings: [],
+  }));
+  const saveProjectConfig = vi.fn(async () => undefined);
   (globalThis.window as any).ade = {
     storage,
     lanes: {
@@ -245,34 +281,8 @@ function installAdeMock(options: {
         { id: "lane-old", name: "Old feature", worktreePath: ARCHIVED_PATH, archivedAt: "2026-07-02T00:00:00.000Z", status: { dirty: false } },
         { id: "lane-main", name: "main-lane", worktreePath: ACTIVE_PATH, archivedAt: null, status: { dirty: false } },
       ]),
-      getReclaimRisk: vi.fn(async ({ laneId }: { laneId: string }) => ({
-        laneId,
-        laneName: "Old feature",
-        branchRef: "feature/old",
-        worktreePath: ARCHIVED_PATH,
-        dirty: false,
-        hasUnpushedCommits: false,
-        unpushedCommitCount: 0,
-        remoteBranchExists: true,
-        activeChatCount: 0,
-        activePtyCount: 0,
-        activeWatcherCount: 0,
-        envInitialized: false,
-        worktreeBytes: 1.5 * 1024 ** 3,
-        generatedBytes: 0,
-        reclaimableBytes: 1.5 * 1024 ** 3,
-        worktreeAvailable: true,
-        blockedReasons: [],
-        lastFailure: null,
-        retryCount: 0,
-      })),
-      archiveAndReclaim: vi.fn(async ({ laneId }: { laneId: string }) => ({
-        laneId,
-        reclaimedBytes: 1.5 * 1024 ** 3,
-        worktreeRemoved: true,
-        generatedDataRemoved: true,
-        warnings: [],
-      })),
+      getReclaimRisk,
+      archiveAndReclaim,
       unarchive: vi.fn(async () => ({
         lane: { id: "lane-old", name: "Old feature" },
         worktreeRecreated: true,
@@ -280,15 +290,25 @@ function installAdeMock(options: {
     },
     projectConfig: {
       get: vi.fn(async () => ({
-        shared: {},
-        local: {},
-        effective: { laneCleanup: {} },
+        shared: options.config?.shared ?? {},
+        local: options.config?.local ?? {},
+        effective: options.config?.effective ?? { laneCleanup: {} },
       })),
-      save: vi.fn(async () => undefined),
+      save: saveProjectConfig,
     },
     ...(includeApp ? { app: { getResourceUsage, getRuntimeHealth } } : {}),
   };
-  return { cleanupPreview, cleanup: cleanupFn, compressNow, runMaintenanceNow, getRuntimeHealth, getResourceUsage };
+  return {
+    cleanupPreview,
+    cleanup: cleanupFn,
+    compressNow,
+    runMaintenanceNow,
+    getRuntimeHealth,
+    getResourceUsage,
+    getReclaimRisk,
+    archiveAndReclaim,
+    saveProjectConfig,
+  };
 }
 
 describe("StorageSection", () => {
@@ -367,6 +387,85 @@ describe("StorageSection", () => {
     // Cleanup uses the exact same targets it previewed.
     expect(cleanupFn.mock.calls[0][0]).toEqual(previewTargets);
     expect(await within(dialog).findByText(/Freed 1\.5 GB/)).toBeTruthy();
+  });
+
+  it("requires a separate acknowledgement before discarding dirty lane changes", async () => {
+    const { archiveAndReclaim } = installAdeMock({
+      reclaimRisk: {
+        dirty: true,
+        blockedReasons: [{
+          code: "dirty",
+          disposition: "confirmation_required",
+          message: "This lane has uncommitted changes.",
+        }],
+      },
+    });
+    render(<StorageSection />);
+
+    const trigger = (await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!;
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: /archive & reclaim old feature/i });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "RECLAIM" } });
+
+    const confirm = within(dialog).getByRole("button", { name: /confirm discarded changes/i });
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /discard uncommitted changes/i }));
+    expect((within(dialog).getByRole("button", { name: /reclaim 1\.5 GB/i }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: /reclaim 1\.5 GB/i }));
+
+    await waitFor(() => expect(archiveAndReclaim).toHaveBeenCalledWith({
+      laneId: "lane-old",
+      confirmation: "RECLAIM",
+      forceDirty: true,
+    }));
+  });
+
+  it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
+    installAdeMock();
+    render(<StorageSection />);
+
+    const trigger = (await screen.findAllByRole("button", { name: /archive & reclaim/i }))[0]!;
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: /archive & reclaim old feature/i });
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close" }));
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /archive & reclaim/i })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("saves only local lane cleanup overrides and shows inherited values as guidance", async () => {
+    const { saveProjectConfig } = installAdeMock({
+      config: {
+        shared: { laneCleanup: { autoArchiveAfterHours: 24 } },
+        local: { laneCleanup: { maxActiveLanes: 3 } },
+        effective: {
+          laneCleanup: {
+            maxActiveLanes: 3,
+            autoArchiveAfterHours: 24,
+            cleanupIntervalHours: 6,
+            reclaimArchivedAfterHours: 72,
+          },
+        },
+      },
+    });
+    render(<StorageSection />);
+
+    const inherited = await screen.findByLabelText(/Archive after inactivity/i);
+    expect((inherited as HTMLInputElement).value).toBe("");
+    expect((inherited as HTMLInputElement).placeholder).toBe("Inherited: 24");
+    fireEvent.click(screen.getByRole("button", { name: /save storage rules/i }));
+
+    await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1));
+    const saved = saveProjectConfig.mock.calls[0]![0];
+    expect(saved.local.laneCleanup.maxActiveLanes).toBe(3);
+    expect(saved.local.laneCleanup.autoArchiveAfterHours).toBeUndefined();
+    expect(saved.local.laneCleanup.cleanupIntervalHours).toBeUndefined();
+    expect(saved.local.laneCleanup.reclaimArchivedAfterHours).toBeUndefined();
   });
 
   it("hides the compress action when compressNow is unavailable", async () => {

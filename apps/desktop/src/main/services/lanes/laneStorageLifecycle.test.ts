@@ -48,13 +48,25 @@ function seed(db: AdeDb, root: string, options: { status?: "active" | "archived"
   return { projectId, worktreesDir, worktreePath };
 }
 
-function installGitStub(args: { dirty?: boolean; onRemove?: () => Promise<void> | void; onAdd?: (target: string) => void } = {}) {
+function installGitStub(args: {
+  dirty?: boolean;
+  statusOutputs?: string[];
+  onRemove?: () => Promise<void> | void;
+  onAdd?: (target: string) => Promise<void> | void;
+} = {}) {
+  let statusCall = 0;
   vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
     if (command[0] === "rev-parse" && command.includes("--show-toplevel")) {
       if (!options?.cwd || !fs.existsSync(options.cwd)) return gitResult(1, "", "missing");
       return gitResult(0, `${options?.cwd ?? ""}\n`);
     }
-    if (command[0] === "status") return gitResult(0, args.dirty ? " M changed.txt\n" : "");
+    if (command[0] === "status") {
+      const configured = args.statusOutputs;
+      const stdout = configured?.[Math.min(statusCall, configured.length - 1)]
+        ?? (args.dirty ? " M changed.txt\n" : "");
+      statusCall += 1;
+      return gitResult(0, stdout);
+    }
     if (command[0] === "rev-list" && command[1] === "--count") return gitResult(0, "0\n");
     if (command[0] === "ls-remote") return gitResult(0, "abc\trefs/heads/feature/storage\n");
     if (command[0] === "merge-base") return gitResult(0);
@@ -82,7 +94,7 @@ function installGitStub(args: { dirty?: boolean; onRemove?: () => Promise<void> 
     if (command[0] === "worktree" && command[1] === "add") {
       const target = command[2] === "-b" ? command[4] : command[2];
       fs.mkdirSync(target, { recursive: true });
-      args.onAdd?.(target);
+      await args.onAdd?.(target);
     }
     return gitResult(0) as never;
   });
@@ -105,6 +117,7 @@ async function fixture(options: { status?: "active" | "archived"; worktreePath?:
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(runGit).mockReset();
   vi.mocked(runGitOrThrow).mockReset();
 });
@@ -131,6 +144,38 @@ describe("lane storage lifecycle", () => {
     db.close();
   });
 
+  it("rechecks dirtiness immediately before removal and requires the explicit dirty override", async () => {
+    const { db, service, worktreePath } = await fixture();
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "changed-late.txt"), "changed during teardown");
+    installGitStub({ statusOutputs: ["", " M changed-late.txt\n"] });
+
+    await expect(service.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+    })).rejects.toThrow(/gained uncommitted files during cleanup/i);
+
+    expect(fs.existsSync(worktreePath)).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "lane.storage.reclaim.failed",
+      expect.objectContaining({
+        laneId: "12345678-lane",
+        forceDirty: false,
+        errorType: "Error",
+      }),
+    );
+    expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(worktreePath);
+
+    const retry = await service.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+      forceDirty: true,
+    });
+    expect(retry.worktreeRemoved).toBe(true);
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    db.close();
+  });
+
   it("reclaims only managed files while preserving the lane, branch, and chat", async () => {
     const { db, service, worktreePath } = await fixture();
     fs.mkdirSync(worktreePath, { recursive: true });
@@ -153,6 +198,16 @@ describe("lane storage lifecycle", () => {
       branch_ref: "feature/storage",
     });
     expect(db.get("select session_id from claude_sessions where session_id = ?", ["chat-1"])).toMatchObject({ session_id: "chat-1" });
+    expect(logger.info).toHaveBeenCalledWith(
+      "lane.storage.reclaim.completed",
+      expect.objectContaining({
+        laneId: "12345678-lane",
+        reclaimedBytes: expect.any(Number),
+        forceDirty: false,
+        warningCount: 0,
+      }),
+    );
+    expect(JSON.stringify(vi.mocked(logger.info).mock.calls)).not.toContain(worktreePath);
     db.close();
   });
 
@@ -213,6 +268,62 @@ describe("lane storage lifecycle", () => {
     db.close();
   });
 
+  it("rolls back lane activation and removes the recreated worktree when local state cleanup fails", async () => {
+    const stalePath = path.join(os.tmpdir(), "old-machine", "transactional-restore");
+    const { db, service, projectId, worktreesDir } = await fixture({ status: "archived", worktreePath: stalePath });
+    const now = new Date().toISOString();
+    db.run(
+      `insert into local_lane_storage_state(
+         lane_id, project_id, worktree_path, reclaim_state, last_known_bytes, attempts, updated_at
+       ) values (?, ?, ?, 'reclaimed', 10, 0, ?)`,
+      ["12345678-lane", projectId, stalePath, now],
+    );
+    db.run(`
+      create trigger fail_lane_storage_state_delete
+      before delete on local_lane_storage_state
+      begin
+        select raise(abort, 'storage state cleanup failed');
+      end
+    `);
+    installGitStub();
+
+    await expect(service.unarchive({ laneId: "12345678-lane" }))
+      .rejects.toThrow(/storage state cleanup failed/i);
+
+    const expectedPath = path.join(worktreesDir, "storage-feature-12345678");
+    expect(fs.existsSync(expectedPath)).toBe(false);
+    expect(db.get("select status, worktree_path from lanes where id = ?", ["12345678-lane"])).toMatchObject({
+      status: "archived",
+      worktree_path: stalePath,
+    });
+    expect(db.get("select reclaim_state from local_lane_storage_state where lane_id = ?", ["12345678-lane"]))
+      .toMatchObject({ reclaim_state: "reclaimed" });
+    db.close();
+  });
+
+  it("uses a distinct lock token for each restore attempt", async () => {
+    const stalePath = path.join(os.tmpdir(), "old-machine", "concurrent-restore");
+    const { db, service } = await fixture({ status: "archived", worktreePath: stalePath });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let addStarted!: () => void;
+    const started = new Promise<void>((resolve) => { addStarted = resolve; });
+    installGitStub({
+      onAdd: async () => {
+        addStarted();
+        await gate;
+      },
+    });
+
+    const first = service.unarchive({ laneId: "12345678-lane" });
+    await started;
+    await expect(service.unarchive({ laneId: "12345678-lane" }))
+      .rejects.toThrow(/blocked by restore lane/i);
+    release();
+    await first;
+    db.close();
+  });
+
   it("records a failed reclaim for safe retry", async () => {
     const { db, service, worktreePath } = await fixture({ status: "archived" });
     fs.mkdirSync(worktreePath, { recursive: true });
@@ -242,6 +353,36 @@ describe("lane storage lifecycle", () => {
     expect(db.get("select reclaim_state, attempts, last_error from local_lane_storage_state where lane_id = ?", ["12345678-lane"]))
       .toMatchObject({ reclaim_state: "failed", attempts: 1, last_error: "disk is busy" });
     expect(db.get<{ status: string }>("select status from lanes where id = ?", ["12345678-lane"])?.status).toBe("archived");
+    db.close();
+  });
+
+  it("accepts a failed git removal when the worktree is already gone", async () => {
+    const { db, service, worktreePath } = await fixture({ status: "archived" });
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "file.bin"), "data");
+    installGitStub();
+    vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
+      if (command[0] === "worktree" && command[1] === "remove") {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+        return gitResult(1, "", "Git lost its registration after removing the folder");
+      }
+      if (command[0] === "worktree" && command[1] === "prune") return gitResult(0);
+      if (command[0] === "rev-parse" && command.includes("--show-toplevel")) return gitResult(0, `${options?.cwd}\n`);
+      if (command[0] === "status") return gitResult(0, "");
+      if (command[0] === "rev-list") return gitResult(0, "0\n");
+      if (command[0] === "ls-remote") return gitResult(0, "");
+      if (command[0] === "merge-base") return gitResult(0);
+      return gitResult(0);
+    });
+
+    const result = await service.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+    });
+
+    expect(result.worktreeRemoved).toBe(true);
+    expect(db.get("select reclaim_state from local_lane_storage_state where lane_id = ?", ["12345678-lane"]))
+      .toMatchObject({ reclaim_state: "reclaimed" });
     db.close();
   });
 
@@ -313,6 +454,24 @@ describe("lane storage lifecycle", () => {
       .rejects.toThrow(/blocked by archive & reclaim.*before changing or restoring this lane/i);
     release();
     await first;
+    db.close();
+  });
+
+  it("removes machine-local reclaim metadata when a lane is fully deleted", async () => {
+    const { db, service, projectId, worktreePath } = await fixture({ status: "archived" });
+    const now = new Date().toISOString();
+    db.run(
+      `insert into local_lane_storage_state(
+         lane_id, project_id, worktree_path, reclaim_state, last_known_bytes, attempts, updated_at
+       ) values (?, ?, ?, 'reclaimed', 10, 1, ?)`,
+      ["12345678-lane", projectId, worktreePath, now],
+    );
+    installGitStub();
+
+    await service.delete({ laneId: "12345678-lane", deleteBranch: false });
+
+    expect(db.get("select lane_id from local_lane_storage_state where lane_id = ?", ["12345678-lane"])).toBeNull();
+    expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
     db.close();
   });
 });

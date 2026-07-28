@@ -42,7 +42,11 @@ import {
 } from "../lanes/laneDesignTokens";
 import { SettingsSectionShell } from "./settingsSectionUi";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { StorageCleanupDialog, type SafeCleanupPlanConfig } from "./storage/StorageCleanupDialog";
+import {
+  StorageCleanupDialog,
+  StorageDialogFrame,
+  type SafeCleanupPlanConfig,
+} from "./storage/StorageCleanupDialog";
 import { PANEL_STYLE, STORAGE_BRAND } from "./storage/storageUiConstants";
 import { DiagnosticsStrip, TrendArrow } from "./storage/StorageDiagnostics";
 import { MaintenanceJournal } from "./storage/StorageMaintenanceJournal";
@@ -682,11 +686,13 @@ function DatabaseCard({
 
 function StoragePolicyPanel({
   value,
+  effectiveValue,
   busy,
   onChange,
   onSave,
 }: {
   value: LaneCleanupConfig;
+  effectiveValue: LaneCleanupConfig;
   busy: boolean;
   onChange: (value: LaneCleanupConfig) => void;
   onSave: () => void;
@@ -696,14 +702,19 @@ function StoragePolicyPanel({
     label: string,
     help: string,
     placeholder: string,
-  ) => (
+  ) => {
+    const inherited = effectiveValue[key];
+    const effectiveHelp = value[key] == null && inherited != null
+      ? `${help} Current inherited value: ${inherited}.`
+      : help;
+    return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, fontWeight: 650, color: COLORS.textPrimary }}>{label}</span>
       <input
         type="number"
         min={0}
         value={value[key] ?? ""}
-        placeholder={placeholder}
+        placeholder={inherited != null ? `Inherited: ${inherited}` : placeholder}
         onChange={(event) => onChange({
           ...value,
           [key]: event.target.value ? Math.max(0, Math.floor(Number(event.target.value))) : undefined,
@@ -720,9 +731,10 @@ function StoragePolicyPanel({
           outline: "none",
         }}
       />
-      <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{help}</span>
+      <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{effectiveHelp}</span>
     </label>
-  );
+    );
+  };
   return (
     <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
@@ -757,22 +769,36 @@ function ReclaimConfirmDialog({
   risk,
   busy,
   value,
+  discardDirtyConfirmed,
   onChange,
+  onDiscardDirtyChange,
   onClose,
   onConfirm,
 }: {
   risk: LaneReclaimRisk;
   busy: boolean;
   value: string;
+  discardDirtyConfirmed: boolean;
   onChange: (value: string) => void;
+  onDiscardDirtyChange: (checked: boolean) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const warnings = risk.blockedReasons;
   const blocked = warnings.some((reason) => reason.disposition === "blocked");
+  const dirtyNotConfirmed = risk.dirty && !discardDirtyConfirmed;
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 10020, display: "grid", placeItems: "center", padding: 18, background: "rgba(0,0,0,0.62)" }}>
-      <section style={{ ...PANEL_STYLE, width: "min(560px, 100%)", padding: 20, boxShadow: "0 28px 90px rgba(0,0,0,0.55)" }}>
+    <StorageDialogFrame
+      title={`Archive & reclaim ${risk.laneName}`}
+      canClose={!busy}
+      onClose={onClose}
+      panelStyleOverride={{
+        width: "min(560px, 100%)",
+        padding: 20,
+        boxShadow: "0 28px 90px rgba(0,0,0,0.55)",
+        overflow: "visible",
+      }}
+    >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
           <div>
             <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 15, color: COLORS.textPrimary }}>Archive & reclaim “{risk.laneName}”</h3>
@@ -803,6 +829,18 @@ function ReclaimConfirmDialog({
             ))}
           </div>
         ) : null}
+        {risk.dirty ? (
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginTop: 14, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
+            <input
+              type="checkbox"
+              checked={discardDirtyConfirmed}
+              disabled={busy}
+              onChange={(event) => onDiscardDirtyChange(event.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+          </label>
+        ) : null}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>
           <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textSecondary }}>
             Type <strong>RECLAIM</strong> to confirm
@@ -819,14 +857,19 @@ function ReclaimConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={busy || blocked || value !== "RECLAIM"}
-            style={{ ...primaryButton({ height: 32 }), opacity: busy || blocked || value !== "RECLAIM" ? 0.55 : 1 }}
+            disabled={busy || blocked || dirtyNotConfirmed || value !== "RECLAIM"}
+            style={{ ...primaryButton({ height: 32 }), opacity: busy || blocked || dirtyNotConfirmed || value !== "RECLAIM" ? 0.55 : 1 }}
           >
-            {busy ? "Reclaiming…" : blocked ? "Cannot reclaim this folder" : `Reclaim ${formatBytes(risk.reclaimableBytes)}`}
+            {busy
+              ? "Reclaiming…"
+              : blocked
+                ? "Cannot reclaim this folder"
+                : dirtyNotConfirmed
+                  ? "Confirm discarded changes"
+                  : `Reclaim ${formatBytes(risk.reclaimableBytes)}`}
           </button>
         </div>
-      </section>
-    </div>
+    </StorageDialogFrame>
   );
 }
 
@@ -938,9 +981,11 @@ export function StorageSection() {
   const [compressing, setCompressing] = React.useState(false);
   const [maintenanceBusy, setMaintenanceBusy] = React.useState(false);
   const [policy, setPolicy] = React.useState<LaneCleanupConfig>({});
+  const [effectivePolicy, setEffectivePolicy] = React.useState<LaneCleanupConfig>({});
   const [policyBusy, setPolicyBusy] = React.useState(false);
   const [reclaimRisk, setReclaimRisk] = React.useState<LaneReclaimRisk | null>(null);
   const [reclaimConfirm, setReclaimConfirm] = React.useState("");
+  const [discardDirtyConfirmed, setDiscardDirtyConfirmed] = React.useState(false);
   const [reclaimBusy, setReclaimBusy] = React.useState(false);
   const [toast, setToast] = React.useState<string | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -978,11 +1023,11 @@ export function StorageSection() {
       setLaneIdByKey(ids);
       setArchivedAtByKey(archivedAt);
       setPolicy({
-        ...(config.effective.laneCleanup ?? {}),
         ...(config.local.laneCleanup ?? {}),
         autoDeleteArchivedAfterHours: undefined,
         deleteRemoteBranchOnCleanup: undefined,
       });
+      setEffectivePolicy(config.effective.laneCleanup ?? {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1059,6 +1104,7 @@ export function StorageSection() {
     try {
       const risk = await window.ade.lanes.getReclaimRisk({ laneId });
       setReclaimConfirm("");
+      setDiscardDirtyConfirmed(false);
       setReclaimRisk(risk);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not review this lane");
@@ -1066,24 +1112,25 @@ export function StorageSection() {
   }, [showToast]);
 
   const confirmReclaim = React.useCallback(async () => {
-    if (!reclaimRisk || reclaimConfirm !== "RECLAIM") return;
+    if (!reclaimRisk || reclaimConfirm !== "RECLAIM" || (reclaimRisk.dirty && !discardDirtyConfirmed)) return;
     setReclaimBusy(true);
     try {
       const result = await window.ade.lanes.archiveAndReclaim({
         laneId: reclaimRisk.laneId,
         confirmation: "RECLAIM",
-        forceDirty: reclaimRisk.dirty,
+        ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
       });
       showToast(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
       setReclaimRisk(null);
       setReclaimConfirm("");
+      setDiscardDirtyConfirmed(false);
       void load({ force: true, silent: true });
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not reclaim this lane");
     } finally {
       setReclaimBusy(false);
     }
-  }, [load, reclaimConfirm, reclaimRisk, showToast]);
+  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, showToast]);
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
@@ -1174,6 +1221,7 @@ export function StorageSection() {
 
             <StoragePolicyPanel
               value={policy}
+              effectiveValue={effectivePolicy}
               busy={policyBusy}
               onChange={setPolicy}
               onSave={() => void savePolicy()}
@@ -1300,9 +1348,14 @@ export function StorageSection() {
             risk={reclaimRisk}
             busy={reclaimBusy}
             value={reclaimConfirm}
+            discardDirtyConfirmed={discardDirtyConfirmed}
             onChange={setReclaimConfirm}
+            onDiscardDirtyChange={setDiscardDirtyConfirmed}
             onClose={() => {
-              if (!reclaimBusy) setReclaimRisk(null);
+              if (!reclaimBusy) {
+                setReclaimRisk(null);
+                setDiscardDirtyConfirmed(false);
+              }
             }}
             onConfirm={() => void confirmReclaim()}
           />

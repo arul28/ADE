@@ -472,6 +472,39 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
   });
 
+  it("requires exact reclaim confirmation at the action boundary", async () => {
+    const archiveAndReclaim = vi.fn(async (args: unknown) => ({ args }));
+    const services = getAdeActionDomainServices({
+      laneService: { archiveAndReclaim },
+    } as never);
+    const laneActions = services.lane as {
+      archiveAndReclaim: (args?: {
+        laneId?: string;
+        confirmation?: string;
+        forceDirty?: boolean;
+      }) => Promise<unknown>;
+    };
+
+    await expect(laneActions.archiveAndReclaim({ laneId: "lane-1" })).rejects.toThrow(
+      /requires confirmation: "RECLAIM"/i,
+    );
+    await expect(laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "reclaim",
+    })).rejects.toThrow(/requires confirmation: "RECLAIM"/i);
+    expect(archiveAndReclaim).not.toHaveBeenCalled();
+
+    await laneActions.archiveAndReclaim({
+      laneId: "lane-1",
+      confirmation: "RECLAIM",
+      forceDirty: true,
+    });
+    expect(archiveAndReclaim).toHaveBeenCalledWith(
+      { laneId: "lane-1", confirmation: "RECLAIM", forceDirty: true },
+      { teardownEnv: undefined },
+    );
+  });
+
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);

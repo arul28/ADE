@@ -59,6 +59,98 @@ const panelStyle: React.CSSProperties = {
   overflow: "hidden",
 };
 
+const FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+export function StorageDialogFrame({
+  title,
+  canClose = true,
+  onClose,
+  panelStyleOverride,
+  children,
+}: {
+  title: string;
+  canClose?: boolean;
+  onClose: () => void;
+  panelStyleOverride?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  const dialogRef = React.useRef<HTMLElement>(null);
+  const returnFocusRef = React.useRef(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const closeRef = React.useRef(onClose);
+  const canCloseRef = React.useRef(canClose);
+  closeRef.current = onClose;
+  canCloseRef.current = canClose;
+
+  React.useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      (firstFocusable ?? dialogRef.current)?.focus();
+    });
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && canCloseRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      const focusIsOutside = !dialogRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || focusIsOutside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || focusIsOutside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handler, true);
+      returnFocusRef.current?.focus();
+    };
+  }, []);
+
+  return (
+    <div
+      style={overlayStyle}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && canClose) onClose();
+      }}
+    >
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        style={{ ...panelStyle, ...panelStyleOverride }}
+      >
+        {children}
+      </section>
+    </div>
+  );
+}
+
 function Row({
   label,
   path,
@@ -197,18 +289,6 @@ export function StorageCleanupDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && stage !== "removing") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [open, stage, onClose]);
-
   const confirm = React.useCallback(async () => {
     setStage("removing");
     setError(null);
@@ -254,13 +334,7 @@ export function StorageCleanupDialog({
   const reportOutcome = report ? maintenanceOutcome(report) : null;
 
   return (
-    <div
-      style={overlayStyle}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && stage !== "removing") onClose();
-      }}
-    >
-      <section role="dialog" aria-modal="true" aria-label={title} style={panelStyle}>
+    <StorageDialogFrame title={title} canClose={stage !== "removing"} onClose={onClose}>
         <header
           style={{
             padding: "16px 18px",
@@ -516,7 +590,6 @@ export function StorageCleanupDialog({
             </>
           )}
         </footer>
-      </section>
-    </div>
+    </StorageDialogFrame>
   );
 }

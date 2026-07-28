@@ -365,7 +365,20 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       const parsed = Date.parse(value);
       if (Number.isFinite(parsed)) values.push(parsed);
     }
-    return Math.max(...values.filter(Number.isFinite));
+    const validValues = values.filter(Number.isFinite);
+    return validValues.length > 0 ? Math.max(...validValues) : Date.now();
+  };
+
+  const hasActiveLaneWorktreeLock = (laneId: string): boolean => {
+    const now = Date.now();
+    const locks = options.db.all<{ expires_at: string }>(
+      "select expires_at from lane_worktree_locks where lane_id = ?",
+      [laneId],
+    );
+    return locks.some((lock) => {
+      const expiresAt = Date.parse(lock.expires_at);
+      return Number.isFinite(expiresAt) && expiresAt > now;
+    });
   };
 
   const runLifecycleScan = (): Promise<void> => {
@@ -389,6 +402,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       const candidates: Array<{ laneId: string; lastActivityMs: number; dueByAge: boolean }> = [];
       for (const lane of active) {
         if (lane.laneType !== "worktree" || lane.isEditProtected || lane.status.dirty) continue;
+        if (hasActiveLaneWorktreeLock(lane.id)) continue;
         const row = rows.find((entry) => entry.id === lane.id);
         if (!row) continue;
         const inPrGroup = options.db.get<{ group_id: string }>(
@@ -416,6 +430,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       for (const candidate of candidates) {
         if (!candidate.dueByAge && stillNeedsArchive <= 0) continue;
         try {
+          if (hasActiveLaneWorktreeLock(candidate.laneId)) continue;
           laneService.archive({ laneId: candidate.laneId });
           archivedAutomatically += 1;
           if (stillNeedsArchive > 0) stillNeedsArchive -= 1;
@@ -1344,7 +1359,15 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   };
 
   const runMaintenanceNow = async (): Promise<MaintenanceRunReport> => {
-    await runLifecycleScan();
+    try {
+      await runLifecycleScan();
+    } catch (error) {
+      options.logger.warn("storage.lifecycle_scan_failed", {
+        projectRoot,
+        trigger: "manual",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return runMaintenanceSweep("manual");
   };
 

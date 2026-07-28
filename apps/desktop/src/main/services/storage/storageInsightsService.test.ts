@@ -893,6 +893,172 @@ describe("storageMaintenanceJournal", () => {
     fixture.cleanup();
   });
 
+  it("does not auto-archive lanes with an active worktree lease, including a lease acquired during the scan", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const lockedPath = path.join(projectRoot, ".ade", "worktrees", "lane-locked");
+    const racedPath = path.join(projectRoot, ".ade", "worktrees", "lane-raced");
+    seedLane(db, { id: "lane-locked", name: "Locked lane", worktreePath: lockedPath });
+    seedLane(db, { id: "lane-raced", name: "Raced lane", worktreePath: racedPath });
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const insertLock = (laneId: string, worktreePath: string, token: string) => {
+      const now = new Date().toISOString();
+      db.run(
+        `insert into lane_worktree_locks(
+           worktree_key, worktree_path, lane_id, owner_kind, owner_pr_id,
+           owner_session_id, owner_proposal_id, owner_label, token,
+           created_at, heartbeat_at, expires_at
+         ) values(?, ?, ?, 'storage_lifecycle', null, null, null, ?, ?, ?, ?, ?)`,
+        [worktreePath, worktreePath, laneId, `Storage work for ${laneId}`, token, now, now, expiresAt],
+      );
+    };
+    insertLock("lane-locked", lockedPath, "lock-before-scan");
+    const archive = vi.fn();
+    const getReclaimRisk = vi.fn(async (laneId: string) => {
+      if (laneId === "lane-raced") insertLock(laneId, racedPath, "lock-during-scan");
+      return {
+        laneId,
+        dirty: false,
+        activeChatCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        blockedReasons: [],
+      };
+    });
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => [
+          {
+            id: "lane-locked",
+            laneType: "worktree" as const,
+            isEditProtected: false,
+            status: { dirty: false },
+          },
+          {
+            id: "lane-raced",
+            laneType: "worktree" as const,
+            isEditProtected: false,
+            status: { dirty: false },
+          },
+        ]),
+        getReclaimRisk,
+        archive,
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+              autoArchiveAfterHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    await service.runLifecycleScanNow();
+
+    expect(getReclaimRisk).toHaveBeenCalledTimes(1);
+    expect(getReclaimRisk).toHaveBeenCalledWith("lane-raced");
+    expect(archive).not.toHaveBeenCalled();
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("treats a lane with no valid activity timestamps as recently active", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const worktreePath = path.join(projectRoot, ".ade", "worktrees", "lane-invalid-activity");
+    seedLane(db, { id: "lane-invalid-activity", name: "Invalid activity", worktreePath });
+    db.run("update lanes set created_at = 'not-a-date' where id = ?", ["lane-invalid-activity"]);
+    const archive = vi.fn();
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => [{
+          id: "lane-invalid-activity",
+          laneType: "worktree" as const,
+          isEditProtected: false,
+          status: { dirty: false },
+        }]),
+        getReclaimRisk: vi.fn(async () => ({
+          dirty: false,
+          activeChatCount: 0,
+          activePtyCount: 0,
+          activeWatcherCount: 0,
+          blockedReasons: [],
+        })),
+        archive,
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+              autoArchiveAfterHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    await service.runLifecycleScanNow();
+
+    expect(archive).not.toHaveBeenCalled();
+    service.dispose();
+    fixture.cleanup();
+  });
+
+  it("runs manual maintenance when the lane lifecycle scan fails", async () => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      stagingTmpDir: path.join(adeHome, "no-real-staging"),
+      laneService: {
+        list: vi.fn(async () => {
+          throw new Error("lane scan failed");
+        }),
+        getReclaimRisk: vi.fn(),
+        archive: vi.fn(),
+      },
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            laneCleanup: {
+              cleanupIntervalHours: 1,
+            },
+          },
+        }),
+      },
+    });
+
+    const report = await service.runMaintenanceNow();
+
+    expect(report.trigger).toBe("manual");
+    expect(report.actions.length).toBeGreaterThan(0);
+    expect(logger.warn).toHaveBeenCalledWith("storage.lifecycle_scan_failed", expect.objectContaining({
+      projectRoot,
+      trigger: "manual",
+      error: "lane scan failed",
+    }));
+    service.dispose();
+    fixture.cleanup();
+  });
+
   it("enforces active-lane limits on safe lanes and only marks retained files for review", async () => {
     const fixture = await makeStorageFixture();
     const { projectRoot, adeHome, db } = fixture;

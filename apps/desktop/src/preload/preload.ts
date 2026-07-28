@@ -5057,7 +5057,7 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr(
         "lane",
         "getReclaimRisk",
-        { arg: args.laneId },
+        { args },
         () => ipcRenderer.invoke(IPC.lanesGetReclaimRisk, args),
       ),
     onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => {

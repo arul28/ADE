@@ -275,6 +275,35 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("emits the restored lane from a successful web unarchive", async () => {
+    fake.descriptors = descriptors(["lanes.unarchive"]);
+    const lane = {
+      id: "lane-restored",
+      name: "Restored lane",
+      branchRef: "feature/restored",
+      color: "#5eead4",
+    };
+    fake.commandResults.set("lanes.unarchive", { lane, worktreeRecreated: true });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const lifecycleEvents: unknown[] = [];
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+
+    await expect(adapter.ade.lanes.unarchive({ laneId: lane.id })).resolves.toEqual({
+      lane,
+      worktreeRecreated: true,
+    });
+    expect(lifecycleEvents).toEqual([{
+      type: "lane-unarchived",
+      laneId: lane.id,
+      laneName: lane.name,
+      color: lane.color,
+      lane,
+    }]);
+
+    adapter.dispose();
+  });
+
   it("bounds initial web chat hydration while preserving paged scroll-back", async () => {
     fake.descriptors = descriptors(["chat.getChatEventHistory"]);
     fake.commandResults.set("chat.getChatEventHistory", {

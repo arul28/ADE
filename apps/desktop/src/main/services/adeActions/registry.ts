@@ -2327,6 +2327,9 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     archiveAndReclaim: async (args?: ArchiveAndReclaimLaneArgs) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      if (args?.confirmation !== "RECLAIM") {
+        throw new Error('archiveAndReclaim requires confirmation: "RECLAIM".');
+      }
       const laneEnvironmentService = runtime.laneEnvironmentService;
       const envContext = laneEnvironmentService
         ? await resolveLaneOverlayContext(runtime, laneId).catch(() => null)
@@ -2337,7 +2340,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           }
         : undefined;
       const result = await runtime.laneService.archiveAndReclaim(
-        { ...(args ?? { confirmation: "RECLAIM" as const }), laneId },
+        {
+          laneId,
+          confirmation: "RECLAIM",
+          ...(args.forceDirty === true ? { forceDirty: true } : {}),
+        },
         { teardownEnv },
       );
       runtime.portAllocationService?.release(laneId);
