@@ -140,9 +140,13 @@ import {
   ChatCardRow,
   ChatCardSub,
   ChatCardTitle,
+  ChatProofFilmstrip,
   formatScheduledRunAt,
   type ChatCardTone,
 } from "./chatCardPrimitives";
+
+/** Stable empty array so a proof-free turn never re-renders the divider. */
+const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -4895,7 +4899,7 @@ function DoneTurnDivider({
   timestamp,
   durationMs,
   toolEntries,
-  proofCount = 0,
+  proofArtifacts,
   onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
@@ -4906,7 +4910,7 @@ function DoneTurnDivider({
   timestamp: string;
   durationMs: number | null;
   toolEntries: ChatWorkLogEntry[];
-  proofCount?: number;
+  proofArtifacts?: ComputerUseArtifactView[];
   onOpenProofDrawer?: () => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
@@ -4914,6 +4918,10 @@ function DoneTurnDivider({
   sessionId?: string | null;
 }) {
   const [activityOpen, setActivityOpen] = useState(false);
+  // Proof captured during this turn renders inline, at the moment it happened,
+  // and starts collapsed so a long capture run never buries the reply.
+  const [proofOpen, setProofOpen] = useState(false);
+  const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
@@ -4973,16 +4981,16 @@ function DoneTurnDivider({
             {content}
           </button>
         ) : content}
-        {proofCount > 0 ? (
+        {turnProof.length > 0 ? (
           <button
             type="button"
-            onClick={onOpenProofDrawer}
-            disabled={!onOpenProofDrawer}
-            title="Open the proof drawer"
-            className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors enabled:hover:border-white/[0.16] enabled:hover:text-fg/75 disabled:cursor-default"
+            aria-expanded={proofOpen}
+            onClick={() => setProofOpen((open) => !open)}
+            title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
+            className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
           >
             <Cube size={10} weight="bold" aria-hidden />
-            {proofCount} proof
+            {turnProof.length} proof
           </button>
         ) : null}
         <span className="h-px flex-1 bg-white/[0.06]" />
@@ -5008,6 +5016,15 @@ function DoneTurnDivider({
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {turnProof.length > 0 && proofOpen ? (
+        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
+          <ChatProofFilmstrip
+            artifacts={turnProof}
+            onOpenAll={onOpenProofDrawer}
+            onOpenArtifact={onOpenProofDrawer}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5191,7 +5208,7 @@ type EventRowProps = {
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   settledQueueRecoveryIds?: Set<string>;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
-  turnProofCount?: number;
+  turnProof?: ComputerUseArtifactView[];
   onOpenProofDrawer?: () => void;
 };
 
@@ -5239,7 +5256,7 @@ const EventRow = React.memo(function EventRow({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
-  turnProofCount = 0,
+  turnProof,
   onOpenProofDrawer,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
@@ -5336,7 +5353,7 @@ const EventRow = React.memo(function EventRow({
           timestamp={envelope.timestamp}
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
-          proofCount={turnProofCount}
+          proofArtifacts={turnProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
@@ -6136,21 +6153,23 @@ function AgentChatMessageListMain({
    * from the turn that produced the capture, not a second copy of the artifacts.
    * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
    */
-  const turnProofCountByRowKey = useMemo(() => {
-    const map = new Map<string, number>();
+  const turnProofByRowKey = useMemo(() => {
+    const map = new Map<string, ComputerUseArtifactView[]>();
     if (!proofArtifacts.length) return map;
-    const stamps = proofArtifacts
-      .map((artifact) => Date.parse(artifact.createdAt))
-      .filter((value) => Number.isFinite(value))
-      .sort((left, right) => left - right);
-    if (!stamps.length) return map;
+    const stamped = proofArtifacts
+      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    if (!stamped.length) return map;
     let windowStart = Number.NEGATIVE_INFINITY;
     for (const env of allGroupedRows) {
       if (env.event.type !== "done") continue;
       const endMs = Date.parse(env.timestamp);
       if (!Number.isFinite(endMs)) continue;
-      const count = stamps.filter((stamp) => stamp > windowStart && stamp <= endMs).length;
-      if (count > 0) map.set(env.key, count);
+      const captured = stamped
+        .filter((entry) => entry.at > windowStart && entry.at <= endMs)
+        .map((entry) => entry.artifact);
+      if (captured.length > 0) map.set(env.key, captured);
       windowStart = endMs;
     }
     return map;
@@ -6886,8 +6905,8 @@ function AgentChatMessageListMain({
     const turnToolEntries = envelope.event.type === "done"
       ? (transcriptToolActivity.byDoneRowKey.get(envelope.key) ?? [])
       : undefined;
-    const turnProofCount = envelope.event.type === "done"
-      ? (turnProofCountByRowKey.get(envelope.key) ?? 0)
+    const turnProof = envelope.event.type === "done"
+      ? turnProofByRowKey.get(envelope.key)
       : undefined;
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
@@ -6912,7 +6931,7 @@ function AgentChatMessageListMain({
           turnModel={turnModel}
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
-          turnProofCount={turnProofCount}
+          turnProof={turnProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
@@ -6964,7 +6983,7 @@ function AgentChatMessageListMain({
         turnModel={turnModel}
         turnEndDurationMs={turnEndDurationMs}
         turnToolEntries={turnToolEntries}
-        turnProofCount={turnProofCount}
+        turnProof={turnProof}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
@@ -7004,7 +7023,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofCountByRowKey, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
