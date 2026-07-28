@@ -5637,6 +5637,7 @@ function AgentChatMessageListMain({
   loadingOlderHistory = false,
   olderHistoryError = null,
   onLoadOlderHistory,
+  onRetryOlderHistory,
   onReturnToLatest,
   mosaic,
   scrollToRowKeyRequest,
@@ -5678,8 +5679,10 @@ function AgentChatMessageListMain({
   loadingOlderHistory?: boolean;
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
-  /** Called when the user scrolls near the top and older pages exist. */
+  /** Called when automatic scroll-back needs an older page. */
   onLoadOlderHistory?: () => void;
+  /** Called when the user explicitly retries a failed older-history page. */
+  onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
   onReturnToLatest?: () => void;
   /** Present only for Claude-family sessions; enables interactive mosaic cards. */
@@ -6931,6 +6934,7 @@ function AgentChatMessageListMain({
         loadingOlderHistory={loadingOlderHistory}
         olderHistoryError={olderHistoryError}
         onLoadOlderHistory={onLoadOlderHistory}
+        onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={listRootBoxPx.width}
         listHeightPx={listRootBoxPx.height}
         listTopViewportPx={listRootBoxPx.top}
@@ -6963,12 +6967,14 @@ function AgentChatMessageListMain({
               {olderHistoryError ? (
                 <button
                   type="button"
-                  onClick={() => onLoadOlderHistory?.()}
+                  onClick={onRetryOlderHistory}
+                  disabled={loadingOlderHistory}
                   className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
-                  aria-label="Retry loading earlier messages"
+                  aria-label={loadingOlderHistory ? "Loading earlier messages" : "Retry loading earlier messages"}
+                  aria-busy={loadingOlderHistory}
                   title={olderHistoryError}
                 >
-                  couldn’t load earlier messages · retry
+                  {loadingOlderHistory ? "loading earlier messages…" : "couldn’t load earlier messages · retry"}
                 </button>
               ) : null}
             </div>

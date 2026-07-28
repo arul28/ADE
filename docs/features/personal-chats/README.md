@@ -81,6 +81,16 @@ project chat after rechecking that the supplied session belongs to
 this personal scope. Attachment readback resolves real paths and refuses
 anything outside the hidden attachment store.
 
+Personal transcripts use the same bounded cursor pager as project chats:
+1,000 events / 256 KiB for the initial snapshot, 256 KiB older pages, and a
+60,000-event / 32 MiB selected-view cap. Paging survives empty physical
+transcript regions, retains a retryable cursor on transport or protocol
+failure, and rejects late responses after a chat switch or cursor change.
+Manual retry is one immediate request; automatic near-top loading owns the
+bounded retry ladder. Live events and older pages share the canonical
+event-identity key so provider sequence numbers that restart do not collapse
+distinct rows.
+
 Over sync the same actions are registered as `personalChats.*` with
 `scope: "runtime"`, so command envelopes carry no active `projectId` or project
 root. Only `personalChats.send` is offline-queueable. Creating a conversation

@@ -612,7 +612,13 @@ render unwindowed. Key rules:
   genuine failure that survived the two backoff retries
   (`OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2400]` in `AgentChatPane`).
   The slot height is constant either way, so toggling it never shifts
-  the transcript.
+  the transcript. Clicking **retry** performs one immediate request, keeps
+  the failure visible with a loading state, and never repeats the automatic
+  backoff ladder. A late result from a previous chat, runtime binding, or
+  cursor is discarded.
+- The timeline keeps programmatic scrolling and the left tick rail, but hides
+  the native browser scrollbar. The minimap remains the transcript-position
+  affordance without adding a second bright rail at the window edge.
 - The left tick rail (`ChatUserMinimap`) mounts as a direct child of the
   list root, because its `left-0` gutter maths assume the offset parent
   is the element measured as `listWidthPx`. When older transcript pages

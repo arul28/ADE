@@ -1472,6 +1472,15 @@ export class LocalRuntimeConnectionPool {
           },
           actionCallOptions,
         );
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          if (record.ok === false) {
+            const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+              ? record.error as Record<string, unknown>
+              : {};
+            throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed.");
+          }
+        }
       } catch (error) {
         callError = error instanceof Error ? error : new Error(String(error));
       } finally {
@@ -1517,12 +1526,6 @@ export class LocalRuntimeConnectionPool {
 
       if (value && typeof value === "object" && !Array.isArray(value)) {
         const record = value as Record<string, unknown>;
-        if (record.ok === false) {
-          const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-            ? record.error as Record<string, unknown>
-            : {};
-          throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed.");
-        }
         return {
           domain: typeof record.domain === "string" ? record.domain : request.domain,
           action: typeof record.action === "string" ? record.action : request.action,

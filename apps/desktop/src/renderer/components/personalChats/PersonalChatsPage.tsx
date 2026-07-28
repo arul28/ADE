@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type {
   AgentChatApprovalDecision,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatModelCatalog,
   AgentChatPermissionMode,
@@ -22,6 +23,20 @@ import {
 } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
+import {
+  CHAT_HISTORY_PAGE_MAX_BYTES,
+  chatEventDedupKey,
+  INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
+  MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+  MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
+  MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
+  MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
+  mergeOlderChatHistoryPageWithCap,
+  readOlderHistoryBatch,
+  resolveMergedSnapshotHistoryCursor,
+  resolveSnapshotHistoryCursor,
+  trimChatEventHistory,
+} from "../chat/chatHistoryWindow";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { PersonalTerminalPanel } from "./PersonalTerminalPanel";
@@ -111,83 +126,12 @@ function envelopeFromPayload(payload: Record<string, unknown>): AgentChatEventEn
   return null;
 }
 
-function eventKeyPart(value: unknown): string | number | boolean | null {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-    ? value
-    : null;
-}
-
-const eventKeyCache = new WeakMap<AgentChatEventEnvelope, string>();
-
-function eventKey(event: AgentChatEventEnvelope): string {
-  const cached = eventKeyCache.get(event);
-  if (cached) return cached;
-
-  if (typeof event.sequence === "number" && Number.isFinite(event.sequence)) {
-    const sequenceKey = JSON.stringify([event.sessionId, "sequence", event.sequence]);
-    eventKeyCache.set(event, sequenceKey);
-    return sequenceKey;
-  }
-
-  const body = event.event as unknown as Record<string, unknown>;
-  const content = [body.text, body.message, body.summary, body.detail].find((value) => typeof value === "string");
-  let contentFingerprint: string | null = null;
-  if (typeof content === "string") {
-    let hash = 2_166_136_261;
-    for (let index = 0; index < content.length; index += 1) {
-      hash = Math.imul(hash ^ content.charCodeAt(index), 16_777_619);
-    }
-    contentFingerprint = `${content.length}:${(hash >>> 0).toString(36)}`;
-  }
-
-  // Legacy envelopes may not carry a sequence. Include lifecycle and stable
-  // entity identifiers before the coarse timestamp/content fallback so rapid
-  // started/completed events remain distinct while exact replays still dedupe.
-  const fallbackKey = JSON.stringify([
-    event.sessionId,
-    eventKeyPart(body.type),
-    eventKeyPart(body.turnId),
-    eventKeyPart(body.turnStatus),
-    eventKeyPart(body.status),
-    eventKeyPart(body.state),
-    eventKeyPart(body.reviewStatus),
-    eventKeyPart(body.deliveryState),
-    eventKeyPart(body.itemId),
-    eventKeyPart(body.logicalItemId),
-    eventKeyPart(body.messageId),
-    eventKeyPart(body.taskId),
-    eventKeyPart(body.agentId),
-    eventKeyPart(body.runId),
-    eventKeyPart(body.compactionId),
-    eventKeyPart(body.steerId),
-    eventKeyPart(body.stepNumber),
-    eventKeyPart(body.id),
-    eventKeyPart(body.parentItemId),
-    eventKeyPart(body.targetItemId),
-    eventKeyPart(body.threadId),
-    eventKeyPart(body.sourceSessionId),
-    eventKeyPart(body.activity),
-    eventKeyPart(body.kind),
-    eventKeyPart(body.action),
-    eventKeyPart(body.trigger),
-    eventKeyPart(body.updateKind),
-    event.provenance?.messageId ?? null,
-    event.provenance?.providerMessageId ?? null,
-    event.provenance?.attemptId ?? null,
-    event.provenance?.stepKey ?? null,
-    event.timestamp,
-    contentFingerprint,
-  ]);
-  eventKeyCache.set(event, fallbackKey);
-  return fallbackKey;
-}
-
 function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
   if (!incoming.length) return current;
-  const seen = new Set(current.map(eventKey));
+  const seen = new Set(current.map(chatEventDedupKey));
   const next = [...current];
   for (const event of incoming) {
-    const key = eventKey(event);
+    const key = chatEventDedupKey(event);
     if (seen.has(key)) continue;
     seen.add(key);
     next.push(event);
@@ -212,6 +156,9 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
+  const [olderHistoryCursorBySession, setOlderHistoryCursorBySession] = useState<Record<string, number>>({});
+  const [olderHistoryLoadingBySession, setOlderHistoryLoadingBySession] = useState<Record<string, boolean>>({});
+  const [olderHistoryErrorBySession, setOlderHistoryErrorBySession] = useState<Record<string, string | null>>({});
   const [catalog, setCatalog] = useState<AgentChatModelCatalog | null>(null);
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
@@ -227,7 +174,17 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const cursorRef = useRef(0);
   const targetGenerationRef = useRef(0);
+  const selectedIdRef = useRef<string | null>(null);
+  const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  const olderHistoryCursorBySessionRef = useRef<Record<string, number>>({});
+  const historyHydrationTokenRef = useRef(0);
+  const olderHistoryRequestRef = useRef(new Map<string, number>());
+  const olderHistoryRequestSequenceRef = useRef(0);
+  const detachedHistorySessionsRef = useRef(new Set<string>());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  selectedIdRef.current = selectedId;
+  eventsBySessionRef.current = eventsBySession;
+  olderHistoryCursorBySessionRef.current = olderHistoryCursorBySession;
 
   const refreshSessions = useCallback(async (generation = targetGenerationRef.current) => {
     const rows = await callPersonal<AgentChatSessionSummary[]>("list", { includeArchived: false });
@@ -245,6 +202,14 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setSessions([]);
     setSelectedId(null);
     setEventsBySession({});
+    setOlderHistoryCursorBySession({});
+    setOlderHistoryLoadingBySession({});
+    setOlderHistoryErrorBySession({});
+    historyHydrationTokenRef.current += 1;
+    olderHistoryRequestRef.current.clear();
+    detachedHistorySessionsRef.current.clear();
+    eventsBySessionRef.current = {};
+    olderHistoryCursorBySessionRef.current = {};
     setToolPanel(null);
     setCatalog(null);
     setModelId(DEFAULT_MODEL_ID);
@@ -302,9 +267,22 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         if (envelopes.length) {
           setEventsBySession((current) => {
             const next = { ...current };
+            const incomingBySession = new Map<string, AgentChatEventEnvelope[]>();
             for (const event of envelopes) {
-              next[event.sessionId] = mergeEvents(next[event.sessionId] ?? [], [event]);
+              if (detachedHistorySessionsRef.current.has(event.sessionId)) continue;
+              const incoming = incomingBySession.get(event.sessionId);
+              if (incoming) incoming.push(event);
+              else incomingBySession.set(event.sessionId, [event]);
             }
+            for (const [sessionId, incoming] of incomingBySession) {
+              const selected = sessionId === selectedIdRef.current;
+              next[sessionId] = trimChatEventHistory(
+                mergeEvents(next[sessionId] ?? [], incoming),
+                selected ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+                selected ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
+              );
+            }
+            eventsBySessionRef.current = next;
             return next;
           });
           void refreshSessions(generation).catch(() => undefined);
@@ -322,25 +300,180 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     };
   }, [refreshSessions, targetKey]);
 
-  useEffect(() => {
-    if (!selectedId) return;
+  const hydratePersonalHistory = useCallback(async (sessionId: string) => {
     const generation = targetGenerationRef.current;
+    const hydrationToken = ++historyHydrationTokenRef.current;
+    try {
+      const snapshot = await callPersonal<AgentChatEventHistorySnapshot>("getEventHistory", {
+        sessionId,
+        maxEvents: INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
+        maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+      });
+      if (
+        generation !== targetGenerationRef.current
+        || hydrationToken !== historyHydrationTokenRef.current
+        || selectedIdRef.current !== sessionId
+      ) {
+        return;
+      }
+      if (snapshot?.unavailable === true) {
+        throw new Error("Chat runtime is temporarily unavailable.");
+      }
+      if (snapshot?.sessionId !== sessionId) {
+        throw new Error("Couldn’t load this chat’s transcript.");
+      }
+      const snapshotEvents = (snapshot.events ?? []).filter((event) => event.sessionId === sessionId);
+      const currentEvents = eventsBySessionRef.current;
+      const existingEvents = currentEvents[sessionId] ?? [];
+      const nextEvents = {
+        ...Object.fromEntries(
+          Object.entries(currentEvents).map(([currentSessionId, events]) => [
+            currentSessionId,
+            currentSessionId === sessionId
+              ? events
+              : trimChatEventHistory(
+                events,
+                MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+                MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
+              ),
+          ]),
+        ),
+        [sessionId]: trimChatEventHistory(
+          mergeEvents(snapshotEvents, existingEvents),
+          MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
+          MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
+        ),
+      };
+      eventsBySessionRef.current = nextEvents;
+      setEventsBySession(nextEvents);
+      const snapshotCursor = snapshot.sessionFound === false ? 0 : resolveSnapshotHistoryCursor(snapshot);
+      const nextCursor = resolveMergedSnapshotHistoryCursor({
+        snapshotCursor,
+        currentCursor: olderHistoryCursorBySessionRef.current[sessionId],
+        snapshotEvents,
+        existingEvents,
+        mergedEvents: nextEvents[sessionId] ?? [],
+        detached: detachedHistorySessionsRef.current.has(sessionId),
+      });
+      const nextCursors = { ...olderHistoryCursorBySessionRef.current, [sessionId]: nextCursor };
+      olderHistoryCursorBySessionRef.current = nextCursors;
+      setOlderHistoryCursorBySession(nextCursors);
+      setOlderHistoryErrorBySession((current) => (
+        current[sessionId] ? { ...current, [sessionId]: null } : current
+      ));
+      detachedHistorySessionsRef.current.delete(sessionId);
+    } catch (reason) {
+      if (
+        generation === targetGenerationRef.current
+        && hydrationToken === historyHydrationTokenRef.current
+        && selectedIdRef.current === sessionId
+      ) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) {
+      historyHydrationTokenRef.current += 1;
+      return;
+    }
     setMobileListOpen(false);
-    void callPersonal<AgentChatEventHistorySnapshot>("getEventHistory", {
-      sessionId: selectedId,
-      maxEvents: 1_500,
-      maxBytes: 4 * 1024 * 1024,
-    }).then((snapshot) => {
-      if (generation !== targetGenerationRef.current || snapshot.sessionId !== selectedId) return;
-      setEventsBySession((current) => ({
-        ...current,
-        [selectedId]: mergeEvents(snapshot.events ?? [], current[selectedId] ?? []),
-      }));
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [selectedId, targetKey]);
+    void hydratePersonalHistory(selectedId);
+  }, [hydratePersonalHistory, selectedId, targetKey]);
 
   const selectedSession = sessions.find((session) => session.sessionId === selectedId) ?? null;
   const selectedEvents = selectedId ? eventsBySession[selectedId] ?? EMPTY_EVENTS : EMPTY_EVENTS;
+  const selectedOlderHistoryCursor = selectedId ? olderHistoryCursorBySession[selectedId] ?? 0 : 0;
+  const loadOlderPersonalHistory = useCallback(async (interactive = false) => {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId) return;
+    const beforeOffset = olderHistoryCursorBySessionRef.current[sessionId] ?? 0;
+    if (beforeOffset <= 0 || olderHistoryRequestRef.current.has(sessionId)) return;
+
+    const generation = targetGenerationRef.current;
+    const requestId = ++olderHistoryRequestSequenceRef.current;
+    olderHistoryRequestRef.current.set(sessionId, requestId);
+    const isCurrentRequest = () => (
+      generation === targetGenerationRef.current
+      && selectedIdRef.current === sessionId
+      && olderHistoryRequestRef.current.get(sessionId) === requestId
+      && olderHistoryCursorBySessionRef.current[sessionId] === beforeOffset
+    );
+    setOlderHistoryLoadingBySession((current) => ({ ...current, [sessionId]: true }));
+    if (!interactive) {
+      setOlderHistoryErrorBySession((current) => (
+        current[sessionId] ? { ...current, [sessionId]: null } : current
+      ));
+    }
+
+    try {
+      const batch = await readOlderHistoryBatch({
+        sessionId,
+        beforeOffset,
+        isCurrent: isCurrentRequest,
+        readPage: (currentOffset) => callPersonal<AgentChatEventHistoryPage>("getEventHistoryPage", {
+          sessionId,
+          beforeOffset: currentOffset,
+          maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+        }),
+      });
+      if (!batch || !isCurrentRequest()) return;
+      const { events: olderEvents, nextCursor } = batch;
+      if (olderEvents.length) {
+        setEventsBySession((current) => {
+          const existing = current[sessionId] ?? [];
+          const { events, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
+            older: olderEvents,
+            existing,
+            maxEvents: MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
+            maxBytes: MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
+          });
+          if (hitResidentCap) detachedHistorySessionsRef.current.add(sessionId);
+          if (events === existing) return current;
+          const next = { ...current, [sessionId]: events };
+          eventsBySessionRef.current = next;
+          return next;
+        });
+      }
+      setOlderHistoryCursorBySession((current) => {
+        const next = { ...current, [sessionId]: nextCursor };
+        olderHistoryCursorBySessionRef.current = next;
+        return next;
+      });
+      setOlderHistoryErrorBySession((current) => (
+        current[sessionId] ? { ...current, [sessionId]: null } : current
+      ));
+    } catch (reason) {
+      if (isCurrentRequest()) {
+        setOlderHistoryErrorBySession((current) => ({
+          ...current,
+          [sessionId]: reason instanceof Error && reason.message.trim()
+            ? reason.message
+            : "Couldn’t load earlier messages.",
+        }));
+      }
+    } finally {
+      if (olderHistoryRequestRef.current.get(sessionId) === requestId) {
+        const requestBecameStale = !isCurrentRequest();
+        olderHistoryRequestRef.current.delete(sessionId);
+        if (requestBecameStale) {
+          setOlderHistoryErrorBySession((current) => (
+            current[sessionId] ? { ...current, [sessionId]: null } : current
+          ));
+        }
+        setOlderHistoryLoadingBySession((current) => ({ ...current, [sessionId]: false }));
+      }
+    }
+  }, []);
+  const retryOlderPersonalHistory = useCallback(() => {
+    void loadOlderPersonalHistory(true);
+  }, [loadOlderPersonalHistory]);
+  const returnPersonalHistoryToLatest = useCallback(() => {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId || !detachedHistorySessionsRef.current.has(sessionId)) return;
+    void hydratePersonalHistory(sessionId);
+  }, [hydratePersonalHistory]);
   // Stable row-facing handlers so a draft-only keystroke (which rerenders this
   // page) does not defeat the memoized AgentChatMessageList boundary.
   const handleListApproval = useCallback(
@@ -464,8 +597,30 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setEventsBySession((current) => {
       const next = { ...current };
       delete next[sessionId];
+      eventsBySessionRef.current = next;
       return next;
     });
+    setOlderHistoryCursorBySession((current) => {
+      if (!(sessionId in current)) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      olderHistoryCursorBySessionRef.current = next;
+      return next;
+    });
+    setOlderHistoryLoadingBySession((current) => {
+      if (!(sessionId in current)) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    setOlderHistoryErrorBySession((current) => {
+      if (!(sessionId in current)) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    olderHistoryRequestRef.current.delete(sessionId);
+    detachedHistorySessionsRef.current.delete(sessionId);
     if (selectedId === sessionId) setSelectedId(null);
     try {
       await refreshSessions();
@@ -651,14 +806,21 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                   initial fetch — the sidebar spinner already signals loading. */}
               {loading && !heroMode ? (
                 <div className="flex h-full items-center justify-center"><SpinnerGap size={22} className="animate-spin text-muted-fg/35" /></div>
-              ) : selectedEvents.length ? (
+              ) : selectedEvents.length || selectedOlderHistoryCursor > 0 ? (
                 <div className="h-full motion-safe:animate-[ade-chat-dock-in_0.28s_ease-out]">
                   <AgentChatMessageList
+                    key={selectedId}
                     events={selectedEvents}
                     showStreamingIndicator={turnActive}
                     laneId={null}
                     sessionId={selectedId}
                     assistantLabel={selectedSession ? sessionTitle(selectedSession) : "ADE"}
+                    hasOlderHistory={selectedOlderHistoryCursor > 0}
+                    loadingOlderHistory={selectedId ? olderHistoryLoadingBySession[selectedId] === true : false}
+                    olderHistoryError={selectedId ? olderHistoryErrorBySession[selectedId] ?? null : null}
+                    onLoadOlderHistory={() => void loadOlderPersonalHistory()}
+                    onRetryOlderHistory={retryOlderPersonalHistory}
+                    onReturnToLatest={returnPersonalHistoryToLatest}
                     onApproval={handleListApproval}
                     onInsertDraft={appendDraft}
                   />

@@ -30,6 +30,8 @@ type ChatUserMinimapProps = {
   olderHistoryError?: string | null;
   /** Pages the next older transcript window without loading the whole file. */
   onLoadOlderHistory?: () => void;
+  /** Immediately retries a failed older-history request. */
+  onRetryOlderHistory?: () => void;
   /** Measured width of the message-list root. */
   listWidthPx: number;
   /** Measured height of the message-list root. */
@@ -100,6 +102,7 @@ export function ChatUserMinimap({
   loadingOlderHistory = false,
   olderHistoryError = null,
   onLoadOlderHistory,
+  onRetryOlderHistory,
   listWidthPx,
   listHeightPx,
   listTopViewportPx,
@@ -206,7 +209,10 @@ export function ChatUserMinimap({
               "pointer-events-auto absolute left-3 top-1 z-10 flex h-5 w-6 items-start justify-start bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
               loadingOlderHistory ? "cursor-wait opacity-45" : "cursor-pointer opacity-70 hover:opacity-100",
             )}
-            onClick={onLoadOlderHistory}
+            onClick={() => {
+              if (olderHistoryError) onRetryOlderHistory?.();
+              else onLoadOlderHistory?.();
+            }}
           >
             <span aria-hidden="true" className="mt-1 block h-px w-4 bg-[var(--color-fg)]/45" />
             <span aria-hidden="true" className="absolute left-0 top-0 text-[9px] leading-none text-fg/50">↑</span>

@@ -143,6 +143,7 @@ function renderMessageList(
     loadingOlderHistory?: boolean;
     olderHistoryError?: string | null;
     onLoadOlderHistory?: () => void;
+    onRetryOlderHistory?: () => void;
     onReturnToLatest?: () => void;
     proofArtifacts?: ComputerUseArtifactView[];
     onOpenProofDrawer?: () => void;
@@ -167,6 +168,7 @@ function renderMessageList(
         loadingOlderHistory={options?.loadingOlderHistory}
         olderHistoryError={options?.olderHistoryError}
         onLoadOlderHistory={options?.onLoadOlderHistory}
+        onRetryOlderHistory={options?.onRetryOlderHistory}
         onReturnToLatest={options?.onReturnToLatest}
         proofArtifacts={options?.proofArtifacts}
         onOpenProofDrawer={options?.onOpenProofDrawer}
@@ -1632,6 +1634,7 @@ describe("AgentChatMessageList transcript rendering", () => {
 
   it("stops automatic retries after an older-history failure and exposes a retry button", async () => {
     const onLoadOlderHistory = vi.fn();
+    const onRetryOlderHistory = vi.fn();
     const originalIntersectionObserver = globalThis.IntersectionObserver;
     let intersectionCallback: IntersectionObserverCallback | null = null;
     globalThis.IntersectionObserver = class {
@@ -1651,6 +1654,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         hasOlderHistory: true,
         olderHistoryError: "Host disconnected",
         onLoadOlderHistory,
+        onRetryOlderHistory,
       });
 
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -1663,7 +1667,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(onLoadOlderHistory).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole("button", { name: "Retry loading earlier messages" }));
-      expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+      expect(onRetryOlderHistory).toHaveBeenCalledTimes(1);
+      expect(onLoadOlderHistory).not.toHaveBeenCalled();
     } finally {
       globalThis.IntersectionObserver = originalIntersectionObserver;
     }
@@ -1838,10 +1843,16 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     view.rerender(
       <MemoryRouter initialEntries={[{ pathname: "/" }]}>
-        <AgentChatMessageList events={[]} hasOlderHistory loadingOlderHistory />
+        <AgentChatMessageList
+          events={[]}
+          hasOlderHistory
+          loadingOlderHistory
+          olderHistoryError="Host disconnected"
+        />
       </MemoryRouter>,
     );
-    expect(slot().textContent).toBe("");
+    expect((screen.getByRole("button", { name: "Loading earlier messages" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(slot().textContent).toContain("loading earlier messages");
 
     view.rerender(
       <MemoryRouter initialEntries={[{ pathname: "/" }]}>

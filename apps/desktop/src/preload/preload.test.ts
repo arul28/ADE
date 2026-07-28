@@ -6699,6 +6699,11 @@ describe("per-chat runtime routing", () => {
         maxEvents: 5,
         maxBytes: 256 * 1024,
       }, machineA);
+      await bridge.agentChat.getEventHistoryPage({
+        sessionId: "chat-on-a",
+        beforeOffset: 4_096,
+        maxBytes: 128 * 1024,
+      }, machineA);
       const callback = vi.fn();
       const unsubscribe = bridge.agentChat.onEvent(callback, machineA);
       await vi.advanceTimersByTimeAsync(0);
@@ -6722,7 +6727,19 @@ describe("per-chat runtime routing", () => {
         request: {
           domain: "chat",
           action: "getChatEventHistory",
-          argsList: ["chat-on-a", { maxEvents: 5, maxBytes: 256 * 1024 }],
+          args: { sessionId: "chat-on-a", maxEvents: 5, maxBytes: 256 * 1024 },
+        },
+      });
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+        rootPath: "/repo-a",
+        request: {
+          domain: "chat",
+          action: "getChatEventHistoryPage",
+          args: {
+            sessionId: "chat-on-a",
+            beforeOffset: 4_096,
+            maxBytes: 128 * 1024,
+          },
         },
       });
       expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {
@@ -6860,7 +6877,7 @@ describe("per-chat runtime routing", () => {
       request: {
         domain: "chat",
         action: "getChatEventHistory",
-        argsList: ["chat-on-a", { maxEvents: 10 }],
+        args: { sessionId: "chat-on-a", maxEvents: 10 },
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
@@ -6886,7 +6903,7 @@ describe("per-chat runtime routing", () => {
       request: {
         domain: "chat",
         action: "getChatEventHistory",
-        argsList: ["chat-on-b", { maxEvents: 5 }],
+        args: { sessionId: "chat-on-b", maxEvents: 5 },
       },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {

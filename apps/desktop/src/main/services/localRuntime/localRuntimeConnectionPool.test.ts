@@ -1162,6 +1162,52 @@ describe("local runtime connection pool", () => {
     expect(call).toHaveBeenCalledTimes(2);
   });
 
+  it("logs daemon action envelopes that fail after a successful RPC response", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const rootPath = path.resolve("/repo");
+    const call = vi.fn(async (method: string) => {
+      if (method !== "ade/actions/call") throw new Error(`Unexpected method ${method}`);
+      return {
+        ok: false,
+        error: { message: "Expected 'beforeOffset' to be a finite number." },
+      };
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "getChatEventHistoryPage",
+      args: { sessionId: "chat-1", beforeOffset: 4_096 },
+    })).rejects.toThrow("Expected 'beforeOffset' to be a finite number.");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.action_slow",
+      expect.objectContaining({
+        domain: "chat",
+        action: "getChatEventHistoryPage",
+        error: "Expected 'beforeOffset' to be a finite number.",
+      }),
+    );
+  });
+
   it("single-flights initial project registration without dropping or reordering PTY writes", async () => {
     let resolveRegistration!: (value: unknown) => void;
     const registration = new Promise<unknown>((resolve) => {

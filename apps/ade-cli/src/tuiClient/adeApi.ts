@@ -551,10 +551,10 @@ export async function getChatHistory(
   maxEvents = 1_000,
   maxBytes = 256 * 1024,
 ): Promise<ChatHistorySnapshot> {
-  return await connection.actionList<ChatHistorySnapshot>(
+  return await connection.action<ChatHistorySnapshot>(
     "chat",
     "getChatEventHistory",
-    [sessionId, { maxEvents, maxBytes }],
+    { sessionId, maxEvents, maxBytes },
   );
 }
 
@@ -564,10 +564,10 @@ export async function getChatHistoryPage(
   beforeOffset: number,
   maxBytes?: number,
 ): Promise<AgentChatEventHistoryPage> {
-  const page = await connection.actionList<AgentChatEventHistoryPage | null | undefined>(
+  const page = await connection.action<AgentChatEventHistoryPage | null | undefined>(
     "chat",
     "getChatEventHistoryPage",
-    [sessionId, { beforeOffset, ...(maxBytes ? { maxBytes } : {}) }],
+    { sessionId, beforeOffset, ...(maxBytes ? { maxBytes } : {}) },
   );
   // Defensive normalization: an older daemon (or a routing miss) can yield
   // null/partial results — treat those as "nothing pageable" so the scroll-back

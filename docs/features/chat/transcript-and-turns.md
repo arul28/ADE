@@ -430,6 +430,14 @@ A chat pane hydrates from `ade.agentChat.getEventHistory`
 live in `apps/desktop/src/shared/types/chat.ts`. Three fields carry the whole
 contract, and each exists because the obvious substitute is wrong.
 
+Runtime callers send both actions as one object envelope
+(`{ sessionId, beforeOffset?, maxBytes? }`). The desktop preload and ADE Code
+TUI use that canonical shape; the runtime registry still accepts the legacy
+positional form while older packaged clients age out. This matters because a
+one-argument runtime wrapper silently discards a second positional options
+argument before validation, making every older-page request fail even though
+the initial snapshot succeeds.
+
 ### `hasOlderHistory` — is there anything to scroll back to?
 
 `agentChatService` derives it from the **tail read** (`transcriptTruncated ||
@@ -468,7 +476,19 @@ rule.
 
 `advanceOlderHistoryCursor` requires `hasMore` **and** a strictly decreasing
 `startOffset` before it advances, which mirrors the service guarantee and makes
-client paging loops provably terminating.
+client paging loops provably terminating. A page that claims `hasMore` without
+decreasing the cursor is a retryable protocol failure, not evidence that the
+head was reached.
+
+Desktop, personal chat, and ADE Code request 256 KiB pages. Desktop and
+personal-chat selected views keep at most 60,000 events / 32 MiB resident; a
+background personal-chat view keeps 1,000 events / 2 MiB. Page responses are
+committed only while the selected session, bound runtime, request generation,
+and requested cursor still match. Empty-but-progressing pages may continue for
+up to eight cursor hops, preventing sparse transcript regions from looking
+exhausted without allowing an unbounded paging loop. An overlapping snapshot
+may preserve an exhausted cursor only when its oldest retained event survived
+the merge; a replacement snapshot or cap eviction re-arms paging.
 
 ### `unavailable` — "could not reach the runtime", not "no such session"
 
