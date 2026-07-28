@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run d1:migrate:remote && wrangler deploy",
+    "deploy": "npm run validate:migrations && npm run d1:migrate:remote && wrangler deploy",
     "d1:migrate:local": "wrangler d1 migrations apply ade-push-relay --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-push-relay --remote",
-    "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "test": "npm run validate:migrations && vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "validate:migrations": "node scripts/validate-d1-migrations.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.0",
