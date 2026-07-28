@@ -569,7 +569,7 @@ struct WorkAdeCardModel: Identifiable, Equatable {
     let preservesEarlierDetail = existingHasDetail
       && (!incomingHasDetail || incoming.degradedReason != nil)
 
-    WorkAdeCardModel(
+    return WorkAdeCardModel(
       id: id,
       variant: incoming.variant.isEmpty ? variant : incoming.variant,
       isTerminal: incoming.isTerminal,

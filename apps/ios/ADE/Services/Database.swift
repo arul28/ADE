@@ -2960,9 +2960,11 @@ final class DatabaseService {
       columnName: "lane_id",
       definition: "text"
     )
-    try exec(
-      "create index if not exists idx_computer_use_artifacts_lane on computer_use_artifacts(project_id, lane_id)"
-    )
+    if hasTable(named: "computer_use_artifacts") {
+      try exec(
+        "create index if not exists idx_computer_use_artifacts_lane on computer_use_artifacts(project_id, lane_id)"
+      )
+    }
     try exec("""
       create table if not exists lane_list_snapshots (
         lane_id text primary key,
