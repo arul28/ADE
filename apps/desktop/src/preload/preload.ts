@@ -6409,11 +6409,11 @@ contextBridge.exposeInMainWorld("ade", {
       };
       if (pin) {
         return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
-          argsList: [args.sessionId, historyOptions],
+          args: { sessionId: args.sessionId, ...historyOptions },
         });
       }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
-        argsList: [args.sessionId, historyOptions],
+        args: { sessionId: args.sessionId, ...historyOptions },
       });
       if (runtime.handled) return runtime.result;
       // Read-only chat calls are intentionally left unhandled while a project
@@ -6447,13 +6447,18 @@ contextBridge.exposeInMainWorld("ade", {
       },
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatEventHistoryPage> => {
+      const historyPageArgs = {
+        sessionId: args.sessionId,
+        beforeOffset: args.beforeOffset,
+        ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
+      };
       if (pin) {
         return callPinnedRuntimeAction<AgentChatEventHistoryPage>(pin, "chat", "getChatEventHistoryPage", {
-          argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+          args: historyPageArgs,
         });
       }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
-        argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+        args: historyPageArgs,
       });
       if (runtime.handled) return runtime.result;
       // See getEventHistory: answering a REMOTE session from the local

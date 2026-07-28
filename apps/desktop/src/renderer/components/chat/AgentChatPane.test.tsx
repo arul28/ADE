@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatModelCatalog,
   AgentChatParallelLaunchState,
@@ -43,6 +44,7 @@ import {
   parallelLaneModelSuffix,
   prependOlderChatHistoryPage,
   resolveChatHistoryMissAction,
+  resolveMergedSnapshotHistoryCursor,
   resolveNextSelectedSessionId,
   resolveRenderedChatSessionId,
   resetChatBootModelRefreshMemoForTests,
@@ -8538,11 +8540,65 @@ describe("advanceOlderHistoryCursor", () => {
     expect(advanceOlderHistoryCursor(10_000, { startOffset: 4_000, hasMore: false })).toBe(0);
   });
 
-  it("terminates on malformed (non-decreasing or invalid) cursors", () => {
-    expect(advanceOlderHistoryCursor(10_000, { startOffset: 10_000, hasMore: true })).toBe(0);
-    expect(advanceOlderHistoryCursor(10_000, { startOffset: 12_000, hasMore: true })).toBe(0);
-    expect(advanceOlderHistoryCursor(10_000, { startOffset: -5, hasMore: true })).toBe(0);
-    expect(advanceOlderHistoryCursor(10_000, { startOffset: Number.NaN, hasMore: true })).toBe(0);
+  it("rejects malformed (non-decreasing or invalid) cursors without claiming the head was reached", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 10_000, hasMore: true })).toBeNull();
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 12_000, hasMore: true })).toBeNull();
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: -5, hasMore: true })).toBeNull();
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: Number.NaN, hasMore: true })).toBeNull();
+  });
+});
+
+describe("resolveMergedSnapshotHistoryCursor", () => {
+  const event = (sequence: number, text: string) => ({
+    sessionId: "session-1",
+    sequence,
+    timestamp: `2026-07-28T12:00:0${sequence}.000Z`,
+    event: { type: "assistant", text },
+  } as unknown as AgentChatEventEnvelope);
+
+  it("keeps a completed cursor at the head when a bounded refresh overlaps the resident transcript", () => {
+    const existing = [event(1, "oldest"), event(2, "middle"), event(3, "latest")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 0,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing,
+      detached: false,
+    })).toBe(0);
+  });
+
+  it("re-arms paging for a detached or replaced transcript", () => {
+    const existing = [event(1, "oldest"), event(2, "latest")];
+    const replacement = [event(9, "replacement")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 0,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing,
+      detached: true,
+    })).toBe(8_192);
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 0,
+      snapshotEvents: replacement,
+      existingEvents: existing,
+      mergedEvents: replacement,
+      detached: false,
+    })).toBe(8_192);
+  });
+
+  it("re-arms paging when refresh trimming evicted the previously loaded head", () => {
+    const existing = [event(1, "oldest"), event(2, "middle"), event(3, "latest")];
+    expect(resolveMergedSnapshotHistoryCursor({
+      snapshotCursor: 8_192,
+      currentCursor: 0,
+      snapshotEvents: existing.slice(1),
+      existingEvents: existing,
+      mergedEvents: existing.slice(1),
+      detached: false,
+    })).toBe(8_192);
   });
 });
 
@@ -8712,12 +8768,17 @@ describe("older transcript paging retries", () => {
   it("retries a failing page twice with backoff before latching a visible error", async () => {
     const session = buildSession("session-1", { title: "Long chat" });
     let pageAttempts = 0;
+    let resolveManualPage!: (page: AgentChatEventHistoryPage) => void;
+    const manualPage = new Promise<AgentChatEventHistoryPage>((resolve) => {
+      resolveManualPage = resolve;
+    });
     installAdeMocks({
       sessions: [session],
       eventHistory: historySnapshotWithOlderPages(session.sessionId),
       eventHistoryPage: async () => {
         pageAttempts += 1;
-        throw new Error("remote hop dropped");
+        if (pageAttempts <= 3) throw new Error("remote hop dropped");
+        return manualPage;
       },
     });
 
@@ -8738,6 +8799,25 @@ describe("older transcript paging retries", () => {
       await new Promise((resolve) => setTimeout(resolve, 1_200));
     });
     expect(pageAttempts).toBe(3);
+
+    fireEvent.click(screen.getByLabelText("Retry loading earlier messages"));
+    await waitFor(() => expect(pageAttempts).toBe(4));
+    expect((screen.getByLabelText("Loading earlier messages") as HTMLButtonElement).disabled).toBe(true);
+
+    resolveManualPage({
+      sessionId: session.sessionId,
+      events: [{
+        sessionId: session.sessionId,
+        timestamp: "2026-07-10T11:59:00.000Z",
+        sequence: 0,
+        event: { type: "user_message", text: "older message recovered" },
+      }],
+      startOffset: 2_048,
+      hasMore: true,
+      sessionFound: true,
+    });
+    expect(await screen.findByText("older message recovered")).toBeTruthy();
+    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
   }, 25_000);
 
   it("retries an unreachable page instead of treating it as a missing session", async () => {
@@ -8774,6 +8854,182 @@ describe("older transcript paging retries", () => {
     // And the cursor survives, so the reader still has a way back — a zeroed
     // cursor would have removed this control along with the sentinel.
     expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+  }, 25_000);
+
+  it("keeps Retry available when a page claims more history without advancing its cursor", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async (args) => {
+        pageAttempts += 1;
+        return {
+          sessionId: args.sessionId,
+          events: [],
+          startOffset: args.beforeOffset,
+          hasMore: true,
+          sessionFound: true,
+        };
+      },
+    });
+
+    renderPane(session);
+    expect(await screen.findByText("newest visible message")).toBeTruthy();
+    await requestOlderHistoryByScroll();
+
+    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
+    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+  }, 25_000);
+
+  it("drops a successful older page that arrives after the selected chat changes", async () => {
+    const sessionA = buildSession("session-1", { title: "Chat A" });
+    const sessionB = buildSession("session-2", { title: "Chat B" });
+    let resolveSessionAPage!: (page: AgentChatEventHistoryPage) => void;
+    const sessionAPage = new Promise<AgentChatEventHistoryPage>((resolve) => {
+      resolveSessionAPage = resolve;
+    });
+    let sessionAPageRequested = false;
+    let sessionAPageCalls = 0;
+    const laterSessionAPage = new Promise<AgentChatEventHistoryPage>(() => {});
+    installAdeMocks({
+      sessions: [sessionA, sessionB],
+      eventHistory: (args) => historySnapshotWithOlderPages(args.sessionId),
+      eventHistoryPage: async (args) => {
+        if (args.sessionId === sessionA.sessionId) {
+          sessionAPageCalls += 1;
+          sessionAPageRequested = true;
+          return sessionAPageCalls === 1 ? sessionAPage : laterSessionAPage;
+        }
+        return {
+          sessionId: args.sessionId,
+          events: [],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: true,
+        };
+      },
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionA.laneId}
+          lockSessionId={sessionA.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionA}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(sessionAPageRequested).toBe(true));
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionB.laneId}
+          lockSessionId={sessionB.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionB}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("newest visible message");
+    await act(async () => {
+      resolveSessionAPage({
+        sessionId: sessionA.sessionId,
+        events: [{
+          sessionId: sessionA.sessionId,
+          timestamp: "2026-07-10T11:59:00.000Z",
+          sequence: 0,
+          event: { type: "user_message", text: "stale older message" },
+        }],
+        startOffset: 0,
+        hasMore: false,
+        sessionFound: true,
+      });
+    });
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionA.laneId}
+          lockSessionId={sessionA.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionA}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("newest visible message");
+    expect(screen.queryByText("stale older message")).toBeNull();
+  });
+
+  it("does not latch an interactive retry error after the selected chat changes", async () => {
+    const sessionA = buildSession("session-1", { title: "Chat A" });
+    const sessionB = buildSession("session-2", { title: "Chat B" });
+    let pageAttempts = 0;
+    let rejectInteractivePage!: (error: Error) => void;
+    const interactivePage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
+      rejectInteractivePage = reject;
+    });
+    installAdeMocks({
+      sessions: [sessionA, sessionB],
+      eventHistory: (args) => historySnapshotWithOlderPages(args.sessionId),
+      eventHistoryPage: async () => {
+        pageAttempts += 1;
+        if (pageAttempts <= 3) throw new Error("remote hop dropped");
+        return interactivePage;
+      },
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionA.laneId}
+          lockSessionId={sessionA.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionA}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    const retry = await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 8_000 });
+    fireEvent.click(retry);
+    await waitFor(() => expect(pageAttempts).toBe(4));
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionB.laneId}
+          lockSessionId={sessionB.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionB}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      rejectInteractivePage(new Error("late remote failure"));
+    });
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={sessionA.laneId}
+          lockSessionId={sessionA.sessionId}
+          hideSessionTabs
+          initialSessionSummary={sessionA}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
   }, 25_000);
 
   it("cancels pending paging retries when the session switches", async () => {

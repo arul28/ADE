@@ -2,9 +2,14 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatSessionSummary } from "../../../shared/types";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
+  AgentChatEventHistorySnapshot,
+  AgentChatSessionSummary,
+} from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
 
@@ -38,8 +43,44 @@ vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
   ReasoningEffortPicker: () => <div data-testid="reasoning-picker" />,
 }));
 
+type MessageListHarnessProps = {
+  events: AgentChatEventEnvelope[];
+  sessionId?: string | null;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  olderHistoryError?: string | null;
+  onLoadOlderHistory?: () => void;
+  onRetryOlderHistory?: () => void;
+};
+
 vi.mock("../chat/AgentChatMessageList", () => ({
-  AgentChatMessageList: () => <div data-testid="message-list" />,
+  AgentChatMessageList: (props: MessageListHarnessProps) => {
+    const texts = props.events
+      .map((event) => {
+        const body = event.event as unknown as Record<string, unknown>;
+        return typeof body.text === "string" ? body.text : "";
+      })
+      .filter(Boolean)
+      .join("|");
+    return (
+      <div
+        data-testid="message-list"
+        data-session-id={props.sessionId ?? ""}
+        data-event-texts={texts}
+        data-has-older={props.hasOlderHistory ? "true" : "false"}
+        data-loading-older={props.loadingOlderHistory ? "true" : "false"}
+        data-older-error={props.olderHistoryError ?? ""}
+      >
+        <button
+          type="button"
+          data-testid="load-older"
+          onClick={() => (props.olderHistoryError ? props.onRetryOlderHistory?.() : props.onLoadOlderHistory?.())}
+        >
+          Load older
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("../chat/ChatBuiltInBrowserPanel", () => ({
@@ -85,12 +126,32 @@ function makeSession(overrides: Partial<AgentChatSessionSummary>): AgentChatSess
   } as unknown as AgentChatSessionSummary;
 }
 
+function makeHistoryEvent(args: {
+  sessionId?: string;
+  sequence: number;
+  text: string;
+  timestamp: string;
+}): AgentChatEventEnvelope {
+  return {
+    sessionId: args.sessionId ?? "s1",
+    sequence: args.sequence,
+    timestamp: args.timestamp,
+    event: { type: "assistant", text: args.text },
+  } as unknown as AgentChatEventEnvelope;
+}
+
 type CallArgs = { action: string; args?: Record<string, unknown> };
 
 const state = vi.hoisted(() => ({
   sessions: [] as AgentChatSessionSummary[],
   catalogAvailable: true,
   historyEvents: [] as Array<Record<string, unknown>>,
+  historySnapshotHandler: null as null | (
+    (sessionId: string) => AgentChatEventHistorySnapshot | Promise<AgentChatEventHistorySnapshot>
+  ),
+  historyPageHandler: null as null | (
+    (args: Record<string, unknown>) => AgentChatEventHistoryPage | Promise<AgentChatEventHistoryPage>
+  ),
 }));
 
 function installBridge() {
@@ -100,8 +161,32 @@ function installBridge() {
         return { result: state.sessions };
       case "modelCatalog":
         return { result: { groups: [], fetchedAt: "", available: state.catalogAvailable } };
-      case "getEventHistory":
-        return { result: { sessionId: args?.sessionId, events: state.historyEvents } };
+      case "getEventHistory": {
+        const sessionId = String(args?.sessionId ?? "");
+        return {
+          result: state.historySnapshotHandler
+            ? await state.historySnapshotHandler(sessionId)
+            : {
+              sessionId,
+              events: state.historyEvents,
+              sessionFound: true,
+              hasOlderHistory: false,
+              tailStartOffset: 0,
+            },
+        };
+      }
+      case "getEventHistoryPage":
+        return {
+          result: state.historyPageHandler
+            ? await state.historyPageHandler(args ?? {})
+            : {
+              sessionId: String(args?.sessionId ?? ""),
+              events: [],
+              sessionFound: true,
+              startOffset: 0,
+              hasMore: false,
+            },
+        };
       default:
         return { result: undefined };
     }
@@ -132,6 +217,8 @@ describe("PersonalChatsPage", () => {
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
+    state.historySnapshotHandler = null;
+    state.historyPageHandler = null;
     storeState.chatChromeTint = "colored";
     storeState.projectBinding = null;
     storeState.openRemoteProjectTabs = [];
@@ -175,6 +262,267 @@ describe("PersonalChatsPage", () => {
     expect(await screen.findByTestId("message-list")).toBeTruthy();
     const textarea = screen.getByLabelText("Message an ADE agent");
     expect(textarea.closest("[data-composer-variant]")?.getAttribute("data-composer-variant")).toBe("docked");
+  });
+
+  it("pages through empty cursor windows and prepends older transcript events", async () => {
+    const newer = makeHistoryEvent({
+      sequence: 2,
+      text: "newer",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    const older = makeHistoryEvent({
+      sequence: 1,
+      text: "older",
+      timestamp: "2026-07-28T11:00:00.000Z",
+    });
+    state.sessions = [makeSession({ title: "Paged chat" })];
+    state.historySnapshotHandler = async (sessionId) => ({
+      sessionId,
+      events: [newer],
+      sessionFound: true,
+      truncated: true,
+      hasOlderHistory: true,
+      tailStartOffset: 4_096,
+    });
+    state.historyPageHandler = async (args) => (
+      args.beforeOffset === 4_096
+        ? {
+          sessionId: "s1",
+          events: [],
+          sessionFound: true,
+          startOffset: 2_048,
+          hasMore: true,
+        }
+        : {
+          sessionId: "s1",
+          events: [older],
+          sessionFound: true,
+          startOffset: 0,
+          hasMore: false,
+        }
+    );
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Paged chat"));
+    const list = await screen.findByTestId("message-list");
+    await waitFor(() => expect(list.getAttribute("data-has-older")).toBe("true"));
+    fireEvent.click(screen.getByTestId("load-older"));
+
+    await waitFor(() => {
+      expect(list.getAttribute("data-event-texts")).toBe("older|newer");
+      expect(list.getAttribute("data-has-older")).toBe("false");
+    });
+    const call = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } })
+      .ade.personalChats.call;
+    const pageCalls = call.mock.calls.filter((callArgs) => (callArgs[0] as CallArgs).action === "getEventHistoryPage");
+    expect(pageCalls.map((callArgs) => callArgs[0] as CallArgs)).toEqual([
+      {
+        action: "getEventHistoryPage",
+        args: { sessionId: "s1", beforeOffset: 4_096, maxBytes: 262_144 },
+      },
+      {
+        action: "getEventHistoryPage",
+        args: { sessionId: "s1", beforeOffset: 2_048, maxBytes: 262_144 },
+      },
+    ]);
+  });
+
+  it("keeps the cursor and visible error while an interactive page retry is running", async () => {
+    const newer = makeHistoryEvent({
+      sequence: 2,
+      text: "newer",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    const older = makeHistoryEvent({
+      sequence: 1,
+      text: "older",
+      timestamp: "2026-07-28T11:00:00.000Z",
+    });
+    state.sessions = [makeSession({ title: "Retry chat" })];
+    state.historySnapshotHandler = async (sessionId) => ({
+      sessionId,
+      events: [newer],
+      sessionFound: true,
+      truncated: true,
+      hasOlderHistory: true,
+      tailStartOffset: 4_096,
+    });
+    let pageCallCount = 0;
+    let resolveRetry: (page: AgentChatEventHistoryPage) => void = () => {};
+    const pendingRetry = new Promise<AgentChatEventHistoryPage>((resolve) => {
+      resolveRetry = resolve;
+    });
+    state.historyPageHandler = async () => {
+      pageCallCount += 1;
+      if (pageCallCount === 1) {
+        return {
+          sessionId: "s1",
+          events: [],
+          sessionFound: false,
+          unavailable: true,
+          startOffset: 0,
+          hasMore: false,
+        };
+      }
+      return pendingRetry;
+    };
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Retry chat"));
+    const list = await screen.findByTestId("message-list");
+    await waitFor(() => expect(list.getAttribute("data-has-older")).toBe("true"));
+    fireEvent.click(screen.getByTestId("load-older"));
+    await waitFor(() => {
+      expect(list.getAttribute("data-older-error")).toContain("temporarily unavailable");
+      expect(list.getAttribute("data-loading-older")).toBe("false");
+      expect(list.getAttribute("data-has-older")).toBe("true");
+    });
+
+    fireEvent.click(screen.getByTestId("load-older"));
+    await waitFor(() => {
+      expect(list.getAttribute("data-loading-older")).toBe("true");
+      expect(list.getAttribute("data-older-error")).toContain("temporarily unavailable");
+    });
+    expect(pageCallCount).toBe(2);
+    await act(async () => {
+      resolveRetry({
+        sessionId: "s1",
+        events: [older],
+        sessionFound: true,
+        startOffset: 0,
+        hasMore: false,
+      });
+    });
+    await waitFor(() => {
+      expect(list.getAttribute("data-loading-older")).toBe("false");
+      expect(list.getAttribute("data-older-error")).toBe("");
+      expect(list.getAttribute("data-has-older")).toBe("false");
+      expect(list.getAttribute("data-event-texts")).toBe("older|newer");
+    });
+    const call = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } })
+      .ade.personalChats.call;
+    const pageCalls = call.mock.calls.filter((callArgs) => (callArgs[0] as CallArgs).action === "getEventHistoryPage");
+    expect(pageCalls.map((callArgs) => (callArgs[0] as CallArgs).args?.beforeOffset)).toEqual([4_096, 4_096]);
+  });
+
+  it("preserves distinct events whose provider sequence restarted across transcript hydration", async () => {
+    const newer = makeHistoryEvent({
+      sequence: 1,
+      text: "new run",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    const olderSameSequence = makeHistoryEvent({
+      sequence: 1,
+      text: "older run",
+      timestamp: "2026-07-28T11:00:00.000Z",
+    });
+    const otherChat = makeHistoryEvent({
+      sessionId: "s2",
+      sequence: 1,
+      text: "other chat",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    state.sessions = [
+      makeSession({ sessionId: "s1", title: "Restarted sequence" }),
+      makeSession({ sessionId: "s2", title: "Other chat" }),
+    ];
+    state.historySnapshotHandler = async (sessionId) => ({
+      sessionId,
+      events: [sessionId === "s1" ? newer : otherChat],
+      sessionFound: true,
+      truncated: sessionId === "s1",
+      hasOlderHistory: sessionId === "s1",
+      tailStartOffset: sessionId === "s1" ? 4_096 : 0,
+    });
+    state.historyPageHandler = async () => ({
+      sessionId: "s1",
+      events: [olderSameSequence],
+      sessionFound: true,
+      startOffset: 0,
+      hasMore: false,
+    });
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Restarted sequence"));
+    await screen.findByTestId("message-list");
+    fireEvent.click(screen.getByTestId("load-older"));
+    await waitFor(() => {
+      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("older run|new run");
+    });
+
+    fireEvent.click(screen.getByText("Other chat"));
+    await waitFor(() => {
+      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("other chat");
+    });
+    fireEvent.click(screen.getByText("Restarted sequence"));
+    await waitFor(() => {
+      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("older run|new run");
+    });
+  });
+
+  it("ignores a late older page after switching chats", async () => {
+    const newestA = makeHistoryEvent({
+      sequence: 2,
+      text: "newest A",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    const newestB = makeHistoryEvent({
+      sessionId: "s2",
+      sequence: 2,
+      text: "newest B",
+      timestamp: "2026-07-28T12:00:00.000Z",
+    });
+    const staleOlderA = makeHistoryEvent({
+      sequence: 1,
+      text: "stale older A",
+      timestamp: "2026-07-28T11:00:00.000Z",
+    });
+    state.sessions = [
+      makeSession({ sessionId: "s1", title: "Chat A" }),
+      makeSession({ sessionId: "s2", title: "Chat B" }),
+    ];
+    state.historySnapshotHandler = async (sessionId) => ({
+      sessionId,
+      events: [sessionId === "s1" ? newestA : newestB],
+      sessionFound: true,
+      truncated: true,
+      hasOlderHistory: true,
+      tailStartOffset: 4_096,
+    });
+    let resolvePage: (page: AgentChatEventHistoryPage) => void = () => {};
+    state.historyPageHandler = () => new Promise<AgentChatEventHistoryPage>((resolve) => {
+      resolvePage = resolve;
+    });
+    await renderPage();
+
+    fireEvent.click(await screen.findByText("Chat A"));
+    const list = await screen.findByTestId("message-list");
+    await waitFor(() => expect(list.getAttribute("data-event-texts")).toBe("newest A"));
+    fireEvent.click(screen.getByTestId("load-older"));
+    await waitFor(() => expect(list.getAttribute("data-loading-older")).toBe("true"));
+    fireEvent.click(screen.getByText("Chat B"));
+    await waitFor(() => {
+      expect(screen.getByTestId("message-list").getAttribute("data-session-id")).toBe("s2");
+      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest B");
+    });
+
+    await act(async () => {
+      resolvePage({
+        sessionId: "s1",
+        events: [staleOlderA],
+        sessionFound: true,
+        startOffset: 0,
+        hasMore: false,
+      });
+    });
+    expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest B");
+
+    fireEvent.click(screen.getByText("Chat A"));
+    await waitFor(() => {
+      expect(screen.getByTestId("message-list").getAttribute("data-session-id")).toBe("s1");
+      expect(screen.getByTestId("message-list").getAttribute("data-event-texts")).toBe("newest A");
+      expect(screen.getByTestId("message-list").getAttribute("data-has-older")).toBe("true");
+    });
   });
 
   it("filters the session list by the search query", async () => {

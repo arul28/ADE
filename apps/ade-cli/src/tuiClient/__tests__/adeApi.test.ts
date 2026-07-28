@@ -305,11 +305,11 @@ describe("runDefaultLaneSetup", () => {
 });
 
 describe("getChatHistoryPage", () => {
-  it("calls the positional chat history page action and passes maxBytes only when set", async () => {
-    const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
+  it("calls the object-form chat history page action and passes maxBytes only when set", async () => {
+    const calls: Array<{ domain: string; action: string; args: unknown }> = [];
     const connection = {
-      actionList: async (domain: string, action: string, argsList: unknown[]) => {
-        calls.push({ domain, action, argsList });
+      action: async (domain: string, action: string, args: unknown) => {
+        calls.push({ domain, action, args });
         return { sessionId: "s1", events: [envelope(1, { type: "text", text: "hi" })], startOffset: 128, hasMore: true, sessionFound: true };
       },
     } as unknown as AdeCodeConnection;
@@ -318,8 +318,8 @@ describe("getChatHistoryPage", () => {
     await getChatHistoryPage(connection, "s1", 4096, 65_536);
 
     expect(calls).toEqual([
-      { domain: "chat", action: "getChatEventHistoryPage", argsList: ["s1", { beforeOffset: 4096 }] },
-      { domain: "chat", action: "getChatEventHistoryPage", argsList: ["s1", { beforeOffset: 4096, maxBytes: 65_536 }] },
+      { domain: "chat", action: "getChatEventHistoryPage", args: { sessionId: "s1", beforeOffset: 4096 } },
+      { domain: "chat", action: "getChatEventHistoryPage", args: { sessionId: "s1", beforeOffset: 4096, maxBytes: 65_536 } },
     ]);
     expect(page.startOffset).toBe(128);
     expect(page.hasMore).toBe(true);
@@ -328,7 +328,7 @@ describe("getChatHistoryPage", () => {
 
   it("normalizes a null result into a terminal empty page flagged unavailable", async () => {
     const connection = {
-      actionList: async () => null,
+      action: async () => null,
     } as unknown as AdeCodeConnection;
 
     const page = await getChatHistoryPage(connection, "s1", 4096);
@@ -347,7 +347,7 @@ describe("getChatHistoryPage", () => {
 
   it("preserves the host's unavailable flag on a well-formed page", async () => {
     const connection = {
-      actionList: async () => ({ sessionId: "s1", events: [], startOffset: 0, hasMore: false, sessionFound: false, unavailable: true }),
+      action: async () => ({ sessionId: "s1", events: [], startOffset: 0, hasMore: false, sessionFound: false, unavailable: true }),
     } as unknown as AdeCodeConnection;
 
     const page = await getChatHistoryPage(connection, "s1", 4096);
@@ -357,7 +357,7 @@ describe("getChatHistoryPage", () => {
 
   it("normalizes malformed page fields so the scroll-back loop terminates", async () => {
     const connection = {
-      actionList: async () => ({ sessionId: "s1", events: null, startOffset: Number.NaN, hasMore: "yes", sessionFound: true }),
+      action: async () => ({ sessionId: "s1", events: null, startOffset: Number.NaN, hasMore: "yes", sessionFound: true }),
     } as unknown as AdeCodeConnection;
 
     const page = await getChatHistoryPage(connection, "s1", 4096);

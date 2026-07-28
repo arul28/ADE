@@ -107,4 +107,50 @@ describe("ChatUserMinimap", () => {
     expect(marker.getAttribute("title")).toBe("Earlier messages are available");
     expect(screen.getByTestId("chat-user-minimap")).toBeTruthy();
   });
+
+  it("forwards interactive retry intent while keeping the paging error visible during loading", () => {
+    const onLoadOlderHistory = vi.fn();
+    const onRetryOlderHistory = vi.fn();
+    const view = render(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        hasOlderHistory
+        olderHistoryError="History page timed out"
+        onLoadOlderHistory={onLoadOlderHistory}
+        onRetryOlderHistory={onRetryOlderHistory}
+        listWidthPx={960}
+        listHeightPx={600}
+        listTopViewportPx={0}
+        columnWidthPx={720}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading earlier message markers" }));
+
+    expect(onRetryOlderHistory).toHaveBeenCalledTimes(1);
+    expect(onLoadOlderHistory).not.toHaveBeenCalled();
+
+    view.rerender(
+      <ChatUserMinimap
+        entries={ENTRIES}
+        activeIndex={0}
+        onJumpToRow={vi.fn()}
+        hasOlderHistory
+        loadingOlderHistory
+        olderHistoryError="History page timed out"
+        onLoadOlderHistory={onLoadOlderHistory}
+        onRetryOlderHistory={onRetryOlderHistory}
+        listWidthPx={960}
+        listHeightPx={600}
+        listTopViewportPx={0}
+        columnWidthPx={720}
+      />,
+    );
+
+    const marker = screen.getByRole("button", { name: "Retry loading earlier message markers" });
+    expect((marker as HTMLButtonElement).disabled).toBe(true);
+    expect(marker.getAttribute("title")).toBe("History page timed out");
+  });
 });

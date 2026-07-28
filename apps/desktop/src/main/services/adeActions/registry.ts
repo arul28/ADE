@@ -1666,8 +1666,9 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     };
   }
   if (typeof base.getChatEventHistory === "function") {
-    service.getChatEventHistory = (args?: unknown) => {
-      const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistory");
+    service.getChatEventHistory = (args?: unknown, positionalOptions?: unknown) => {
+      const actionArgs = positionalOptions === undefined ? args : [args, positionalOptions];
+      const { sessionId, options } = readChatHistoryActionArgs(actionArgs, "chat.getChatEventHistory");
       const maxEvents = readOptionalIntegerActionField(options.maxEvents, "maxEvents");
       const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
       return agentChatService.getChatEventHistory(sessionId, {
@@ -1677,8 +1678,9 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     };
   }
   if (typeof base.getChatEventHistoryPage === "function") {
-    service.getChatEventHistoryPage = (args?: unknown) => {
-      const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistoryPage");
+    service.getChatEventHistoryPage = (args?: unknown, positionalOptions?: unknown) => {
+      const actionArgs = positionalOptions === undefined ? args : [args, positionalOptions];
+      const { sessionId, options } = readChatHistoryActionArgs(actionArgs, "chat.getChatEventHistoryPage");
       const beforeOffset = readOptionalIntegerActionField(options.beforeOffset, "beforeOffset");
       if (beforeOffset === undefined) {
         throw new Error("Expected 'beforeOffset' to be a finite number.");

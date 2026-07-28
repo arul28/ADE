@@ -492,8 +492,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       getAvailableModels?: (args?: unknown) => Promise<unknown>;
       getSessionSummary?: (args?: unknown) => Promise<unknown>;
       readTranscript?: (args?: unknown) => Promise<unknown>;
-      getChatEventHistory?: (args?: unknown) => Promise<unknown>;
-      getChatEventHistoryPage?: (args?: unknown) => Promise<unknown>;
+      getChatEventHistory?: (args?: unknown, options?: unknown) => Promise<unknown>;
+      getChatEventHistoryPage?: (args?: unknown, options?: unknown) => Promise<unknown>;
       sendMessage?: (args?: unknown) => Promise<unknown>;
       messageSession?: (args?: unknown) => Promise<unknown>;
     };
@@ -554,6 +554,12 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
     expect(getChatEventHistory).toHaveBeenCalledWith("chat-2", { maxEvents: 32 });
 
+    await expect(Promise.resolve(chat.getChatEventHistory?.(" chat-3 ", { maxEvents: 16 }))).resolves.toEqual({
+      sessionId: "chat-3",
+      options: { maxEvents: 16 },
+    });
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-3", { maxEvents: 16 });
+
     await expect(Promise.resolve(chat.getChatEventHistoryPage?.({
       sessionId: " chat-1 ",
       beforeOffset: "4096",
@@ -563,6 +569,18 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       options: { beforeOffset: 4096, maxBytes: 8192 },
     });
     expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-1", { beforeOffset: 4096, maxBytes: 8192 });
+
+    await expect(Promise.resolve(chat.getChatEventHistoryPage?.(
+      " chat-2 ",
+      { beforeOffset: 2_048, maxBytes: 4_096 },
+    ))).resolves.toEqual({
+      sessionId: "chat-2",
+      options: { beforeOffset: 2_048, maxBytes: 4_096 },
+    });
+    expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-2", {
+      beforeOffset: 2_048,
+      maxBytes: 4_096,
+    });
 
     await expect(chat.sendMessage?.({
       sessionId: " chat-1 ",
