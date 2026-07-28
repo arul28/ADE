@@ -329,6 +329,40 @@ describe("computerUseArtifactBrokerService", () => {
     expect(repeat.failed).toEqual([]);
   });
 
+  it("keeps shared stored bytes until the final artifact record is deleted", () => {
+    const canonicalProjectRoot = fs.realpathSync(projectRoot);
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot: canonicalProjectRoot,
+      logger: createLogger(),
+    });
+    const first = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Shared notes", text: "hello" }],
+    }).artifacts[0]!;
+    const filePath = path.join(canonicalProjectRoot, first.uri);
+    const second = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Shared notes again", path: filePath }],
+    }).artifacts[0]!;
+
+    expect(second.uri).toBe(first.uri);
+    expect(broker.deleteArtifacts({ artifactId: first.id }).deleted[0]).toMatchObject({
+      artifactId: first.id,
+      fileRemoved: false,
+      freedBytes: 0,
+    });
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(broker.listArtifacts({ artifactId: second.id })[0]?.availability).toBe("available");
+
+    expect(broker.deleteArtifacts({ artifactId: second.id }).deleted[0]).toMatchObject({
+      artifactId: second.id,
+      fileRemoved: true,
+    });
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
   it("removes rows for records whose file was already deleted", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -409,6 +443,83 @@ describe("computerUseArtifactBrokerService", () => {
     const pruned = broker.pruneBrokenArtifacts();
     expect(pruned.deleted.map((entry) => entry.artifactId)).toEqual(["dead-2"]);
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+  });
+
+  it("filters for broken artifacts before applying the result limit", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const artifactDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    fs.mkdirSync(artifactDir, { recursive: true });
+    fs.writeFileSync(path.join(artifactDir, "healthy.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', null, ?)`,
+      [
+        "new-healthy",
+        "project-1",
+        "New healthy proof",
+        ".ade/artifacts/computer-use/healthy.png",
+        "2026-03-13T14:00:00.000Z",
+      ],
+    );
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', null, ?)`,
+      ["old-broken", "project-1", "Old broken proof", "nowhere/old-broken.png", "2026-03-12T14:00:00.000Z"],
+    );
+
+    expect(broker.listBrokenArtifacts({ limit: 1 }).map((entry) => entry.artifactId)).toEqual(["old-broken"]);
+  });
+
+  it("prunes broken artifacts beyond the old 2,000-record scan cap", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const artifactDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    fs.mkdirSync(artifactDir, { recursive: true });
+    fs.writeFileSync(path.join(artifactDir, "healthy.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const healthyUri = ".ade/artifacts/computer-use/healthy.png";
+    db.run(
+      `with recursive healthy(index_value) as (
+         select 0
+         union all
+         select index_value + 1 from healthy where index_value < 1999
+       )
+       insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       )
+       select
+         'healthy-' || index_value, ?, 'screenshot', 'manual', 'ade-cli', null, null,
+         'Healthy ' || index_value, null, ?, 'file', null, '{}', null, ?
+       from healthy`,
+      ["project-1", healthyUri, "2026-03-13T14:00:00.000Z"],
+    );
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', null, ?)`,
+      ["old-broken", "project-1", "Old broken proof", "nowhere/old-broken.png", "2026-03-12T14:00:00.000Z"],
+    );
+
+    expect(broker.pruneBrokenArtifacts().deleted.map((entry) => entry.artifactId)).toEqual(["old-broken"]);
+    expect(broker.listArtifacts({ artifactId: "healthy-0" })[0]?.availability).toBe("available");
   });
 
   it("refuses to promote files from the project secrets directory", () => {

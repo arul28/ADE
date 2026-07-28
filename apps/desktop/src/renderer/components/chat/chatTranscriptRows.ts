@@ -1083,8 +1083,14 @@ function mergeAdeCardEvent(
     return merged;
   }
 
-  // Healthy emit: drop the stale marker the previous degraded emit left behind.
-  if (incomingHasDetail) merged.stale = incoming.stale ?? false;
+  // Healthy emit: drop every degradation-only field the previous failed fetch
+  // left behind. Full healthy card payloads omit the retry action and reason,
+  // so the initial spread cannot distinguish recovery from a partial patch.
+  if (incomingHasDetail) {
+    merged.stale = incoming.stale ?? false;
+    merged.degradedReason = incoming.degradedReason ?? undefined;
+    merged.actions = incoming.actions ?? [];
+  }
   return merged;
 }
 

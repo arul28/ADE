@@ -560,12 +560,15 @@ struct WorkAdeCardModel: Identifiable, Equatable {
   /// optionals only overwrite when the newer payload actually carries them, so
   /// a terse progress ping cannot erase rows an earlier emit established.
   func merging(_ incoming: WorkAdeCardModel) -> WorkAdeCardModel {
+    let incomingProgressTotal = incoming.progress.map {
+      $0.passed + $0.failed + $0.running + $0.queued
+    } ?? 0
     let existingHasDetail = !metrics.isEmpty
       || !rows.isEmpty
       || progress.map { $0.passed + $0.failed + $0.running + $0.queued > 0 } == true
     let incomingHasDetail = !incoming.metrics.isEmpty
       || !incoming.rows.isEmpty
-      || incoming.progress.map { $0.passed + $0.failed + $0.running + $0.queued > 0 } == true
+      || incomingProgressTotal > 0
     let preservesEarlierDetail = existingHasDetail
       && (!incomingHasDetail || incoming.degradedReason != nil)
 
@@ -577,7 +580,7 @@ struct WorkAdeCardModel: Identifiable, Equatable {
       subtitle: incoming.subtitle ?? subtitle,
       metrics: preservesEarlierDetail && incoming.metrics.isEmpty ? metrics : incoming.metrics,
       rows: preservesEarlierDetail && incoming.rows.isEmpty ? rows : incoming.rows,
-      progress: preservesEarlierDetail && incoming.progress == nil ? progress : incoming.progress,
+      progress: preservesEarlierDetail && incomingProgressTotal == 0 ? progress : incoming.progress,
       navTarget: incoming.navTarget ?? navTarget,
       actions: incoming.actions.isEmpty ? actions : incoming.actions,
       durationMs: incoming.durationMs ?? durationMs,

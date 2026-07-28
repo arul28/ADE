@@ -802,7 +802,21 @@ export function createComputerUseArtifactBrokerService(args: {
         const filePath = resolveArtifactFilePath(record);
         let fileRemoved = false;
         let freedBytes = 0;
-        if (filePath) {
+        const sharedReference = record.storageKind === "file"
+          ? db.get<{ id: string }>(
+              `
+                select id
+                from computer_use_artifacts
+                where project_id = ?
+                  and storage_kind = 'file'
+                  and uri = ?
+                  and id <> ?
+                limit 1
+              `,
+              [projectId, record.uri, artifactId],
+            )
+          : null;
+        if (filePath && !sharedReference) {
           try {
             const stat = fs.statSync(filePath);
             if (stat.isFile()) {
@@ -851,35 +865,46 @@ export function createComputerUseArtifactBrokerService(args: {
    * Every record whose bytes cannot be served, with enough detail for the UI
    * to say what happened and offer recovery when the original file survives.
    */
+  const collectBrokenArtifacts = (limit: number | null): ComputerUseArtifactBrokenRecord[] => {
+    const pageSize = 500;
+    const broken: ComputerUseArtifactBrokenRecord[] = [];
+    let offset = 0;
+
+    for (;;) {
+      const records = readArtifactRows(
+        `
+          select ${ARTIFACT_SELECT_COLUMNS}
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+          order by created_at desc, id desc
+          limit ? offset ?
+        `,
+        [projectId, pageSize, offset],
+      );
+      for (const record of records) {
+        const availability = resolveAvailability(record);
+        if (availability === "available") continue;
+        broken.push({
+          artifactId: record.id,
+          title: record.title,
+          kind: record.kind,
+          uri: record.uri,
+          createdAt: record.createdAt,
+          reason: availability === "unimported" ? "outside_artifact_store" : "missing_file",
+          laneId: record.laneId ?? null,
+          recoverablePath: findRecoverableSourcePath(record),
+        });
+        if (limit != null && broken.length >= limit) return broken;
+      }
+      if (records.length < pageSize) return broken;
+      offset += records.length;
+    }
+  };
+
   const listBrokenArtifacts = (args: { limit?: number } = {}): ComputerUseArtifactBrokenRecord[] => {
     const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 1000)));
-    const records = readArtifactRows(
-      `
-        select ${ARTIFACT_SELECT_COLUMNS}
-        from computer_use_artifacts
-        where project_id = ?
-          and storage_kind = 'file'
-        order by created_at desc
-        limit ?
-      `,
-      [projectId, limit],
-    );
-    const broken: ComputerUseArtifactBrokenRecord[] = [];
-    for (const record of records) {
-      const availability = resolveAvailability(record);
-      if (availability === "available") continue;
-      broken.push({
-        artifactId: record.id,
-        title: record.title,
-        kind: record.kind,
-        uri: record.uri,
-        createdAt: record.createdAt,
-        reason: availability === "unimported" ? "outside_artifact_store" : "missing_file",
-        laneId: record.laneId ?? null,
-        recoverablePath: findRecoverableSourcePath(record),
-      });
-    }
-    return broken;
+    return collectBrokenArtifacts(limit);
   };
 
   return {
@@ -1003,7 +1028,7 @@ export function createComputerUseArtifactBrokerService(args: {
 
     /** Drop every unrenderable record. Files were never there to remove. */
     pruneBrokenArtifacts(): ComputerUseArtifactDeleteResult {
-      const broken = listBrokenArtifacts({ limit: 2000 });
+      const broken = collectBrokenArtifacts(null);
       if (!broken.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
       return deleteArtifacts({ artifactIds: broken.map((entry) => entry.artifactId) });
     },

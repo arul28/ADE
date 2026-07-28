@@ -7482,6 +7482,47 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(recovered.rowsTruncated, 0)
   }
 
+  func testAdeCardPreservesKnownProgressAcrossDegradedZeroUpdate() throws {
+    let detailedPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks failed",
+        "rows": [{"icon": "fail", "text": "test-desktop"}],
+        "progress": {"passed": 28, "failed": 2, "running": 0, "queued": 0}
+      }
+      """.utf8)
+    )
+    let degradedPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks detail unavailable",
+        "rows": [],
+        "progress": {"passed": 0, "failed": 0, "running": 0, "queued": 0},
+        "degradedReason": "GitHub rate limited the detail request"
+      }
+      """.utf8)
+    )
+
+    let detailed = makeWorkAdeCardModel(from: detailedPayload)
+    let degraded = detailed.merging(makeWorkAdeCardModel(from: degradedPayload))
+
+    XCTAssertEqual(degraded.progress?.passed, 28)
+    XCTAssertEqual(degraded.progress?.failed, 2)
+    XCTAssertEqual(degraded.rows.map(\.text), ["test-desktop"])
+    XCTAssertEqual(degraded.degradedReason, "GitHub rate limited the detail request")
+    XCTAssertEqual(degraded.isStale, true)
+  }
+
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeDatabase(baseURL: baseURL)

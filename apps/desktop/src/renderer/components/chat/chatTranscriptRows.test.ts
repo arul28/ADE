@@ -2976,6 +2976,7 @@ describe("ade_card transcript rows", () => {
         progress: { passed: 0, failed: 0, running: 0, queued: 0 },
         metrics: [],
         degradedReason: "HTTP 403: rate limited",
+        actions: [{ id: "retry", label: "Retry", kind: "primary" }],
       })),
     ]);
 
@@ -2987,19 +2988,26 @@ describe("ade_card transcript rows", () => {
     expect(merged.metrics).toEqual([{ label: "failed", value: "2" }]);
     expect(merged.stale).toBe(true);
     expect(merged.degradedReason).toBe("HTTP 403: rate limited");
+    expect(merged.actions).toEqual([{ id: "retry", label: "Retry", kind: "primary" }]);
   });
 
-  it("clears the stale marker as soon as a healthy emit brings detail back", () => {
+  it("clears stale degradation state and retry actions as soon as healthy detail returns", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-07-27T10:00:00.000Z", card({ rows: [{ icon: "fail", text: "lint" }] })),
-      env("2026-07-27T10:00:01.000Z", card({ rows: [], degradedReason: "HTTP 403" })),
-      env("2026-07-27T10:00:02.000Z", card({ rows: [{ icon: "pass", text: "lint" }], degradedReason: null })),
+      env("2026-07-27T10:00:01.000Z", card({
+        rows: [],
+        degradedReason: "HTTP 403",
+        actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+      })),
+      env("2026-07-27T10:00:02.000Z", card({ rows: [{ icon: "pass", text: "lint" }] })),
     ]);
 
     const merged = rows[0]!.event;
     if (merged.type !== "ade_card") throw new Error("Expected ade_card");
     expect(merged.stale).toBe(false);
     expect(merged.rows).toEqual([{ icon: "pass", text: "lint" }]);
+    expect(merged.degradedReason).toBeUndefined();
+    expect(merged.actions).toEqual([]);
   });
 
   it("keeps distinct cardIds as distinct rows", () => {
