@@ -87,22 +87,6 @@ create unique index if not exists idx_attention_devices_unique_apns_token
   on attention_devices(apns_token)
   where apns_token is not null;
 
-create trigger if not exists attention_devices_enforce_user_limit
-before insert on attention_devices
-when not exists (
-  select 1
-  from attention_devices
-  where user_id = new.user_id and device_id = new.device_id
-)
-and (
-  select count(*)
-  from attention_devices
-  where user_id = new.user_id
-) >= 32
-begin
-  select raise(abort, 'attention account device limit reached');
-END;
-
 -- Durable ownership survives attention_devices deletion so delayed requests
 -- from a previous account cannot reclaim or remove a switched installation.
 create table if not exists attention_device_ownership (
@@ -117,30 +101,6 @@ create table if not exists attention_device_ownership (
 create unique index if not exists idx_attention_device_ownership_apns_token
   on attention_device_ownership(apns_token)
   where apns_token is not null;
-
-create trigger if not exists attention_device_ownership_reject_stale
-before insert on attention_device_ownership
-when exists (
-  select 1
-  from attention_device_ownership as current
-  where (
-    current.device_id = new.device_id
-    or (
-      new.apns_token is not null
-      and current.apns_token = new.apns_token
-    )
-  )
-  and (
-    current.ownership_epoch > new.ownership_epoch
-    or (
-      current.ownership_epoch = new.ownership_epoch
-      and current.user_id <> new.user_id
-    )
-  )
-)
-begin
-  select raise(abort, 'stale attention device ownership');
-END;
 
 create table if not exists attention_activity_tokens (
   user_id text not null,
