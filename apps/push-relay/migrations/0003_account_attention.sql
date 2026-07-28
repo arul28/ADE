@@ -101,7 +101,7 @@ and (
 ) >= 32
 begin
   select raise(abort, 'attention account device limit reached');
-end;
+END;
 
 -- Durable ownership survives attention_devices deletion so delayed requests
 -- from a previous account cannot reclaim or remove a switched installation.
@@ -140,7 +140,7 @@ when exists (
 )
 begin
   select raise(abort, 'stale attention device ownership');
-end;
+END;
 
 create table if not exists attention_activity_tokens (
   user_id text not null,
