@@ -1584,6 +1584,13 @@ describe("registerIpc sync bridge", () => {
       preferences: { account: { hideDetails: false } },
     });
     expect(openAttentionItem).toHaveBeenCalledWith(attentionItem);
+
+    openAttentionItem.mockRejectedValueOnce(
+      new Error("No ADE window is available for this project."),
+    );
+    await expect(
+      ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem),
+    ).rejects.toThrow("No ADE window is available for this project.");
   });
 
   it("rejects a stale renderer Attention preference owner before calling the runtime", async () => {

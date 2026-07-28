@@ -1453,7 +1453,7 @@ describe("createPushRelayClient", () => {
     expect(signature).toBe("sha256=5c5c3a3081a0c6bec96c4191a88ab17b59382b902c6071672ea6d8daa30764f3"); // gitleaks:allow
   });
 
-  it("publishes Attention with both machine HMAC and account bearer authorization", async () => {
+  it("claims a fresh machine before publishing Attention with both authorizations", async () => {
     const client = createPushRelayClient({
       store: makeStore(),
       logger,
@@ -1466,7 +1466,14 @@ describe("createPushRelayClient", () => {
       items: [],
     });
 
-    const [url, init] = fetchMock.mock.calls[0];
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [claimUrl, claimInit] = fetchMock.mock.calls[0];
+    expect(claimUrl).toBe(`https://relay.test/machines/${MACHINE_KEY}/claim`);
+    expect(claimInit.headers.authorization).toBeUndefined();
+    expect(claimInit.headers["x-ade-push-signature"]).toBeUndefined();
+    expect(JSON.parse(claimInit.body)).toEqual({ secret: MACHINE_SECRET });
+
+    const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe(`https://relay.test/machines/${MACHINE_KEY}/attention`);
     expect(init.headers.authorization).toBe("Bearer account-access-token");
     expect(init.headers["x-ade-push-signature"]).toBe(

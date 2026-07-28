@@ -94,23 +94,66 @@ struct AccountDeviceOwnershipState: Codable, Equatable {
 struct AccountDeviceOwnershipStore {
   private let defaults: UserDefaults
   private let key: String
+  private let durableDeviceId: () -> String?
+  private let loadDurableEpoch: (String) -> Int?
+  private let saveDurableEpoch: (Int, String) -> Void
+
+  init() {
+    let keychain = KeychainService()
+    self.init(
+      defaults: ADESharedContainer.defaults,
+      key: ADESharedContainer.accountDeviceOwnershipStateKey,
+      durableDeviceId: { keychain.loadDeviceId() },
+      loadDurableEpoch: { keychain.loadAccountDeviceOwnershipEpoch(deviceId: $0) },
+      saveDurableEpoch: {
+        keychain.saveAccountDeviceOwnershipEpoch($0, deviceId: $1)
+      }
+    )
+  }
+
+  init(defaults: UserDefaults, key: String) {
+    self.init(
+      defaults: defaults,
+      key: key,
+      durableDeviceId: { nil },
+      loadDurableEpoch: { _ in nil },
+      saveDurableEpoch: { _, _ in }
+    )
+  }
 
   init(
-    defaults: UserDefaults = ADESharedContainer.defaults,
-    key: String = ADESharedContainer.accountDeviceOwnershipStateKey
+    defaults: UserDefaults,
+    key: String,
+    durableDeviceId: @escaping () -> String?,
+    loadDurableEpoch: @escaping (String) -> Int?,
+    saveDurableEpoch: @escaping (Int, String) -> Void
   ) {
     self.defaults = defaults
     self.key = key
+    self.durableDeviceId = durableDeviceId
+    self.loadDurableEpoch = loadDurableEpoch
+    self.saveDurableEpoch = saveDurableEpoch
   }
 
   var state: AccountDeviceOwnershipState {
-    guard let data = defaults.data(forKey: key),
-          let decoded = try? JSONDecoder().decode(AccountDeviceOwnershipState.self, from: data),
-          decoded.ownershipEpoch > 0,
-          decoded.ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch else {
-      return AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+    let sharedState: AccountDeviceOwnershipState
+    if let data = defaults.data(forKey: key),
+       let decoded = try? JSONDecoder().decode(AccountDeviceOwnershipState.self, from: data),
+       Self.isValid(epoch: decoded.ownershipEpoch) {
+      sharedState = decoded
+    } else {
+      sharedState = AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
     }
-    return decoded
+    guard let deviceId = normalizedDurableDeviceId,
+          let durableEpoch = loadDurableEpoch(deviceId),
+          Self.isValid(epoch: durableEpoch),
+          durableEpoch > sharedState.ownershipEpoch else {
+      return sharedState
+    }
+    // App Group defaults are removed on reinstall while the Keychain device
+    // identity survives. Recover the epoch high-water mark, but never infer an
+    // owner from stale defaults; the next signed-in transition advances it.
+    return AccountDeviceOwnershipState(ownershipEpoch: durableEpoch, ownerId: nil)
   }
 
   /// Commits the account boundary before any network request is allowed to use
@@ -142,6 +185,19 @@ struct AccountDeviceOwnershipStore {
     guard let data = try? JSONEncoder().encode(state) else { return }
     defaults.set(data, forKey: key)
     defaults.synchronize()
+    if let deviceId = normalizedDurableDeviceId {
+      saveDurableEpoch(state.ownershipEpoch, deviceId)
+    }
+  }
+
+  private var normalizedDurableDeviceId: String? {
+    let normalized = durableDeviceId()?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized?.isEmpty == false ? normalized : nil
+  }
+
+  private static func isValid(epoch: Int) -> Bool {
+    epoch > 0 && epoch <= AccountDeviceOwnershipState.maximumSafeEpoch
   }
 }
 

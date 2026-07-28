@@ -6727,7 +6727,10 @@ app.whenReady().then(async () => {
     const projectRoot = item.project.rootPath?.trim() ?? "";
     if (projectRoot && fs.existsSync(projectRoot)) {
       const delivered = await deliverAppNavigationToProject(projectRoot, request);
-      const win = delivered.ok ? BrowserWindow.fromId(delivered.windowId) : null;
+      if (!delivered.ok) {
+        throw new Error(delivered.message);
+      }
+      const win = BrowserWindow.fromId(delivered.windowId);
       if (options.acknowledge) {
         await sendAttentionNotchAcknowledge(
           { itemId: item.id, mode: "seen" },

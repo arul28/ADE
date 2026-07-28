@@ -187,22 +187,26 @@ export function createPushRelayClient(args: {
     return `/machines/${machineKey}${suffix}`;
   };
 
+  const claimMachine = async (): Promise<void> => {
+    if (args.store.isClaimed()) return;
+    const { machineKey, machineSecret } = args.store.getOrCreateIdentity();
+    const response = await request("POST", `/machines/${machineKey}/claim`, {
+      body: { secret: machineSecret },
+    });
+    // 200 (already claimed with same secret) and 201 (fresh) both mean claimed.
+    if (response.ok) {
+      args.store.markClaimed();
+      return;
+    }
+    requireOk("claim", response);
+  };
+
   return {
     baseUrl,
 
     /** Idempotent claim; the relay treats a re-claim with the same secret as a no-op. */
     async claim(): Promise<void> {
-      if (args.store.isClaimed()) return;
-      const { machineKey, machineSecret } = args.store.getOrCreateIdentity();
-      const response = await request("POST", `/machines/${machineKey}/claim`, {
-        body: { secret: machineSecret },
-      });
-      // 200 (already claimed with same secret) and 201 (fresh) both mean claimed.
-      if (response.ok) {
-        args.store.markClaimed();
-        return;
-      }
-      requireOk("claim", response);
+      await claimMachine();
     },
 
     async registerDevice(registration: PushDeviceRegistration): Promise<void> {
@@ -247,6 +251,7 @@ export function createPushRelayClient(args: {
 
     async publishAttention(payload: AttentionRelayPublishPayload): Promise<Record<string, unknown> | null> {
       if (!args.getAccountAccessToken) return null;
+      await claimMachine();
       const response = await request("POST", machinePath("/attention"), {
         body: payload,
         signed: true,

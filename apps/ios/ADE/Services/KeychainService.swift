@@ -5,6 +5,7 @@ final class KeychainService {
   private let service = "com.ade.ios.sync"
   private let tokenAccount = "connection-token"
   private let deviceIdAccount = "device-id"
+  private let accountDeviceOwnershipEpochPrefix = "attention-ownership-epoch:"
 
   private func tokenAccount(for hostKey: String?) -> String {
     guard let hostKey, !hostKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -102,10 +103,32 @@ final class KeychainService {
     loadString(account: deviceIdAccount)
   }
 
+  func saveAccountDeviceOwnershipEpoch(_ epoch: Int, deviceId: String) {
+    guard epoch > 0,
+          let account = accountDeviceOwnershipEpochAccount(deviceId: deviceId) else {
+      return
+    }
+    saveString(String(epoch), account: account)
+  }
+
+  func loadAccountDeviceOwnershipEpoch(deviceId: String) -> Int? {
+    guard let account = accountDeviceOwnershipEpochAccount(deviceId: deviceId),
+          let raw = loadString(account: account) else {
+      return nil
+    }
+    return Int(raw)
+  }
+
+  private func accountDeviceOwnershipEpochAccount(deviceId: String) -> String? {
+    let normalized = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return nil }
+    return "\(accountDeviceOwnershipEpochPrefix)\(normalized)"
+  }
+
   /// Removes every saved machine pairing secret while preserving this
-  /// installation's device identity. Used by the versioned trust reset: ADE
-  /// must not accidentally revive a pre-reset machine through a keyed or
-  /// legacy token alias.
+  /// installation's device identity and ownership epoch. Used by the versioned
+  /// trust reset: ADE must not accidentally revive a pre-reset machine through
+  /// a keyed or legacy token alias.
   @discardableResult
   func clearAllConnectionTokens() -> Bool {
     let query: [String: Any] = [

@@ -620,6 +620,42 @@ final class PairingAndDpopTests: XCTestCase {
     )
   }
 
+  func testAccountDeviceOwnershipEpochRecoversAfterAppGroupReset() throws {
+    let suiteName = "PairingAndDpopTests.ownership-reinstall.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let key = "ownership"
+    let deviceId = "durable-device"
+    var durableEpochs: [String: Int] = [:]
+    let makeStore = {
+      AccountDeviceOwnershipStore(
+        defaults: defaults,
+        key: key,
+        durableDeviceId: { deviceId },
+        loadDurableEpoch: { durableEpochs[$0] },
+        saveDurableEpoch: { durableEpochs[$1] = $0 }
+      )
+    }
+
+    let original = makeStore()
+    XCTAssertEqual(original.transition(to: "user-a").ownershipEpoch, 2)
+    XCTAssertEqual(original.transition(to: nil).ownershipEpoch, 3)
+    XCTAssertEqual(durableEpochs[deviceId], 3)
+
+    defaults.removeObject(forKey: key)
+    let reinstalled = makeStore()
+    XCTAssertEqual(
+      reinstalled.state,
+      AccountDeviceOwnershipState(ownershipEpoch: 3, ownerId: nil),
+      "A reset App Group must recover the high-water mark without restoring a stale owner"
+    )
+    XCTAssertEqual(
+      reinstalled.transition(to: "user-a"),
+      AccountDeviceOwnershipState(ownershipEpoch: 4, ownerId: "user-a"),
+      "The surviving device identity must advance past Relay's prior ownership epoch"
+    )
+  }
+
   @MainActor
   func testAccountRegistrationSerializesDelayedAThenRunsLatestB() async {
     let queue = LatestAccountRegistrationQueue<String>()
