@@ -11,6 +11,9 @@
  * the renderer already has (`LaneSummary.branchRef` + `LaneStatus.ahead/behind`
  * from `lane_state_snapshots` / `LaneListSnapshot`) and it answers a single
  * question — is this push about to strand commits on another machine?
+ *
+ * Deliberately built on `ahead`, not on head commits: no lane record in ADE
+ * carries a head sha, so a rule that required one could never fire.
  */
 
 export type MachineBranchState = {
@@ -21,7 +24,12 @@ export type MachineBranchState = {
    */
   machineName: string;
   branchRef: string;
-  /** `null` when the machine's head commit is not known. Never grounds a warning. */
+  /**
+   * `null` when the machine's head commit is not known — which is the normal
+   * case today, because no lane record in ADE carries a head sha. A known sha
+   * only ever *silences* the guard (two machines sitting on the same commit
+   * cannot strand each other); it is never required to raise one.
+   */
   headSha: string | null;
   /** Commits ahead of the branch's upstream. */
   ahead: number;
@@ -41,7 +49,6 @@ export type DivergenceWarning = {
  */
 export type LaneBranchStateLike = {
   branchRef: string;
-  headSha?: string | null;
   status?: { ahead?: number | null; behind?: number | null } | null;
 };
 
@@ -64,8 +71,14 @@ function safeCount(value: number | null | undefined): number {
 
 /**
  * Builds a `MachineBranchState` from lane-shaped data the renderer already has.
- * `headSha` is optional because `LaneSummary` does not carry one today — an
- * unknown head simply falls back to the ahead/behind comparison.
+ *
+ * `headSha` is a separate, optional argument rather than a field read off the
+ * lane, because no lane record carries one: `LaneSummary`, `LaneListSnapshot`,
+ * and `lane_state_snapshots` all stop at `branchRef` + `dirty/ahead/behind`.
+ * Reading a `lane.headSha` that does not exist is exactly what made this guard
+ * unable to fire — every candidate came out with a null head and was skipped.
+ * The guard therefore grounds itself in `ahead`, which every one of those
+ * records really does have.
  */
 export function toMachineBranchState(args: {
   machineId: string;
@@ -77,7 +90,7 @@ export function toMachineBranchState(args: {
     machineId: args.machineId,
     machineName: args.machineName,
     branchRef: args.lane.branchRef,
-    headSha: args.headSha ?? args.lane.headSha ?? null,
+    headSha: args.headSha ?? null,
     ahead: safeCount(args.lane.status?.ahead),
     behind: safeCount(args.lane.status?.behind),
   };
@@ -86,14 +99,26 @@ export function toMachineBranchState(args: {
 /**
  * Returns a warning only when pushing can strand commits on another machine.
  *
- * Warns when another machine holds the same branch at a different commit and is
- * ahead of what is about to be pushed. Stays silent when:
+ * The evidence is `ahead` — commits that machine holds which are *not* on the
+ * branch's upstream. If another machine holds the same branch with `ahead > 0`,
+ * those commits are by definition not in what you are about to push (you cannot
+ * have someone else's unpushed commits), so moving the upstream tip makes their
+ * copy diverge. That is the whole rule, and it is grounded in a field every
+ * lane record actually has.
+ *
+ * Head shas are used only to *silence*: two machines proven to sit on the same
+ * commit cannot strand each other. An unknown head is the normal case and never
+ * suppresses a warning — this guards a destructive push, so the false-negative
+ * direction is the expensive one.
+ *
+ * Stays silent when:
  * - no other machine holds the branch (the common path — short-circuits first),
- * - the other machine sits at the same commit,
- * - the other machine is strictly behind (the push fast-forwards it),
- * - the other machine's head commit is unknown. An unknown state is not
- *   evidence of divergence, and a false alarm here trains users to click
- *   through the one dialog that matters.
+ * - the current branch ref is empty (nothing to compare),
+ * - the entry is this machine itself (ids are compared, never names),
+ * - the other machine is on a different branch,
+ * - the other machine is proven to sit at the same commit,
+ * - the other machine has no unpushed commits (`ahead === 0`) — the push
+ *   fast-forwards it, whether it is level or strictly behind.
  */
 export function detectPushDivergence(args: {
   current: MachineBranchState;
@@ -105,7 +130,6 @@ export function detectPushDivergence(args: {
 
   const currentBranch = normalizeBranchRef(current.branchRef);
   if (!currentBranch) return null;
-  const currentAhead = safeCount(current.ahead);
   const currentHeadSha = current.headSha?.trim() || null;
 
   let worst: MachineBranchState | null = null;
@@ -117,16 +141,12 @@ export function detectPushDivergence(args: {
     if (normalizeBranchRef(other.branchRef) !== currentBranch) continue;
 
     const otherHeadSha = other.headSha?.trim() || null;
-    // Unknown head: no evidence, no interruption.
-    if (!otherHeadSha) continue;
-    // Same commit: nothing to strand.
-    if (currentHeadSha && otherHeadSha === currentHeadSha) continue;
+    // Same commit, proven: nothing to strand.
+    if (currentHeadSha && otherHeadSha && otherHeadSha === currentHeadSha) continue;
 
+    // No unpushed commits there: the push fast-forwards that machine.
     const otherAhead = safeCount(other.ahead);
-    const shaDiffers = currentHeadSha != null && otherHeadSha !== currentHeadSha;
-    const aheadOfCurrent = otherAhead > currentAhead;
-    // Ahead of us, or holding unpushed commits at a different sha.
-    if (!aheadOfCurrent && !(shaDiffers && otherAhead > 0)) continue;
+    if (otherAhead === 0) continue;
 
     if (!worst || otherAhead > worstAhead) {
       worst = other;

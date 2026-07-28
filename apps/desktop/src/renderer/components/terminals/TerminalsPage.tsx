@@ -8,7 +8,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, OpenProjectBinding, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -129,6 +129,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
@@ -239,6 +242,66 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (opened?.wokeAt) clearSessionWokeMarker(id);
     },
     [selectableSessions, selectionAnchorId, work],
+  );
+
+  const handleSelectForeignRuntimeSession = useCallback(
+    (
+      session: TerminalSessionSummary,
+      binding: OpenProjectBinding,
+      event: React.MouseEvent,
+      visibleSessionIds: string[],
+    ) => {
+      const switchProject = binding.kind === "remote"
+        ? switchRemoteProject(binding.targetId, binding.projectId)
+        : switchProjectToPath(binding.rootPath);
+      void switchProject
+        .then(() => {
+          const useRange = event.shiftKey === true;
+          const useToggle = event.metaKey === true || event.ctrlKey === true;
+          let rangeApplied = false;
+          if (useRange) {
+            const anchorId = selectionAnchorId ?? session.id;
+            const anchorIndex = visibleSessionIds.indexOf(anchorId);
+            const nextIndex = visibleSessionIds.indexOf(session.id);
+            if (anchorIndex >= 0 && nextIndex >= 0) {
+              const [start, end] = anchorIndex <= nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+              setSelectedSessionIds(new Set(visibleSessionIds.slice(start, end + 1)));
+              setSelectionAnchorId(anchorId);
+              rangeApplied = true;
+            }
+          }
+          if (!rangeApplied && useToggle) {
+            setSelectedSessionIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(session.id)) next.delete(session.id);
+              else next.add(session.id);
+              return next;
+            });
+            setSelectionAnchorId(session.id);
+          } else if (!rangeApplied) {
+            setSelectedSessionIds(new Set());
+            setSelectionAnchorId(session.id);
+          }
+
+          const destinationProjectKey = binding.kind === "remote" ? binding.key : binding.rootPath;
+          setWorkViewState(destinationProjectKey, (prev) => ({
+            ...prev,
+            openItemIds: prev.openItemIds.includes(session.id)
+              ? prev.openItemIds
+              : [...prev.openItemIds, session.id],
+            selectedItemId: session.id,
+            activeItemId: session.id,
+          }));
+          if (session.wokeAt) clearSessionWokeMarker(session.id);
+        })
+        .catch((reason: unknown) => {
+          // A shell/CLI has no per-session runtime pin. If its owning project
+          // cannot be selected, leaving it closed is safer than opening its id
+          // against whichever runtime the tab currently owns.
+          console.error("work.foreign_session_switch_failed", reason);
+        });
+    },
+    [selectionAnchorId, setWorkViewState, switchProjectToPath, switchRemoteProject],
   );
 
   const handleInfoClick = useCallback(
@@ -936,7 +999,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <WorkViewArea
         pageActive={active}
         lanes={sortedLanes}
-        sessions={work.sessions}
+        sessions={work.visibleSessions}
         visibleSessions={work.visibleSessions}
         activeItemId={work.activeItemId}
         draftKind={work.draftKind}
@@ -1121,6 +1184,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
             onSelectSession={handleSelectSession}
+            onSelectForeignRuntimeSession={handleSelectForeignRuntimeSession}
             onClearSelection={() => {
               setSelectedSessionIds(new Set());
               setSelectionAnchorId(null);
@@ -1137,6 +1201,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
             handoffJobs={handoffLaunchJobs}
+            crossMachineSyncActive={active}
           />
           </div>
         ),

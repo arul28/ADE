@@ -4,6 +4,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateLaneDialog } from "./CreateLaneDialog";
+import { THIS_MACHINE_ID, type LaneMachineOption } from "./laneMachines";
 
 vi.mock("@tanstack/react-virtual", () => {
   return {
@@ -242,5 +243,93 @@ describe("CreateLaneDialog", () => {
     );
 
     expect(laneNameInput().value).toBe("ADE-321 Follow up");
+  });
+});
+
+function makeMachineProps(overrides: Partial<DialogProps> = {}): DialogProps {
+  return makeProps(overrides);
+}
+
+function machine(overrides: Partial<LaneMachineOption> & { id: string; name: string }): LaneMachineOption {
+  return {
+    targetId: overrides.id === THIS_MACHINE_ID ? null : overrides.id,
+    hostname: null,
+    version: null,
+    freeBytes: null,
+    repoMatch: "matched",
+    project: null,
+    isBound: false,
+    ...overrides,
+  };
+}
+
+const thisMac = machine({ id: THIS_MACHINE_ID, name: "This Mac", isBound: true });
+const studio = machine({ id: "studio", name: "MacBook Pro (97)" });
+
+describe("CreateLaneDialog machine selection", () => {
+  it("renders exactly as before when only one machine is connected", () => {
+    render(
+      <CreateLaneDialog
+        {...makeMachineProps({ machines: [thisMac], selectedMachineId: THIS_MACHINE_ID, onSelectMachine: vi.fn() })}
+      />,
+    );
+
+    expect(screen.queryByText("Create on")).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "Machine for this lane" })).toBeNull();
+    // The git base-source control is untouched.
+    expect(screen.getByText("Use fetched upstream")).toBeTruthy();
+  });
+
+  it("shows the machine selector once a second machine is connected", () => {
+    const onSelectMachine = vi.fn();
+    render(
+      <CreateLaneDialog
+        {...makeMachineProps({
+          machines: [thisMac, studio],
+          selectedMachineId: THIS_MACHINE_ID,
+          onSelectMachine,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Create on")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /MacBook Pro \(97\)/ }));
+    expect(onSelectMachine).toHaveBeenCalledWith("studio");
+  });
+
+  it("keeps the machine vocabulary separate from the git base-source cards", () => {
+    render(
+      <CreateLaneDialog
+        {...makeMachineProps({
+          machines: [thisMac, studio],
+          selectedMachineId: THIS_MACHINE_ID,
+          onSelectMachine: vi.fn(),
+        })}
+      />,
+    );
+
+    // "Remote"/"Local" still mean the base-branch source, and the machine
+    // selector borrows neither word.
+    expect(screen.getByText("Use fetched upstream")).toBeTruthy();
+    expect(screen.getByText("Use your local branch tip")).toBeTruthy();
+    const machineGroup = screen.getByRole("radiogroup", { name: "Machine for this lane" });
+    expect(machineGroup.textContent).not.toMatch(/remote|local/i);
+  });
+
+  it("locks machine choice while a lane is being created", () => {
+    render(
+      <CreateLaneDialog
+        {...makeMachineProps({
+          busy: true,
+          machines: [thisMac, studio],
+          selectedMachineId: THIS_MACHINE_ID,
+          onSelectMachine: vi.fn(),
+        })}
+      />,
+    );
+
+    for (const radio of screen.getAllByRole("radio")) {
+      expect((radio as HTMLButtonElement).disabled).toBe(true);
+    }
   });
 });

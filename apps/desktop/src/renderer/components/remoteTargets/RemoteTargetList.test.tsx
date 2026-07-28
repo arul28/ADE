@@ -28,7 +28,6 @@ const remoteRuntimeMock = {
   openProject: vi.fn(),
   callAction: vi.fn(),
   streamEvents: vi.fn(),
-  checkLocalWork: vi.fn(),
   disconnect: vi.fn(),
   setAutoConnect: vi.fn(),
   onConnectionSnapshotChanged: vi.fn(),

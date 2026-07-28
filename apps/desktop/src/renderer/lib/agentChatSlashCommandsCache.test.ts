@@ -92,6 +92,36 @@ describe("agentChatSlashCommandsCache", () => {
     expect(slashCommands).toHaveBeenCalledTimes(4);
   });
 
+  it("keeps matching session keys separate across bindings and invalidates them together", async () => {
+    const machineB = {
+      kind: "remote" as const,
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "machine-b",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Machine B",
+    };
+    const slashCommands = vi.mocked(window.ade.agentChat.slashCommands);
+    slashCommands
+      .mockResolvedValueOnce([command("/local")])
+      .mockResolvedValueOnce([command("/remote")])
+      .mockResolvedValueOnce([command("/local-new")])
+      .mockResolvedValueOnce([command("/remote-new")]);
+    const args = { sessionId: "session-1", projectRoot: "/repo" };
+
+    await expect(getAgentChatSlashCommandsCached(args)).resolves.toEqual([command("/local")]);
+    await expect(getAgentChatSlashCommandsCached(args, { pin: machineB })).resolves.toEqual([command("/remote")]);
+    expect(slashCommands).toHaveBeenNthCalledWith(1, args);
+    expect(slashCommands).toHaveBeenNthCalledWith(2, args, machineB);
+
+    invalidateAgentChatSlashCommandsCache(args);
+
+    await expect(getAgentChatSlashCommandsCached(args)).resolves.toEqual([command("/local-new")]);
+    await expect(getAgentChatSlashCommandsCached(args, { pin: machineB })).resolves.toEqual([command("/remote-new")]);
+    expect(slashCommands).toHaveBeenCalledTimes(4);
+  });
+
   it("does not repopulate an invalidated key from a stale in-flight request", async () => {
     let resolveStale: (commands: AgentChatSlashCommand[]) => void = () => {};
     const stale = new Promise<AgentChatSlashCommand[]>((resolve) => {

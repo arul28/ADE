@@ -7,6 +7,13 @@ export type RemoteLaunchBudget = {
   signal?: AbortSignal;
 };
 
+export class RemoteLaunchTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RemoteLaunchTimeoutError";
+  }
+}
+
 function cancellationError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -37,7 +44,10 @@ export function withTimeout<T>(
       return;
     }
     signal?.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(() => finish(() => reject(new Error(message))), timeoutMs);
+    timer = setTimeout(
+      () => finish(() => reject(new RemoteLaunchTimeoutError(message))),
+      timeoutMs,
+    );
     timer.unref?.();
     promise.then(
       (value) => finish(() => resolve(value)),

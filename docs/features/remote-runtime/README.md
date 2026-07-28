@@ -129,7 +129,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
   rows, route and latency status, SSH host-key trust, structured connection
-  errors, project picker, the dirty-local-work warning, and the This-Mac
+  errors, project picker, and the This-Mac
   route-publish health indicator. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
@@ -144,6 +144,83 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   parent's origin, so merging them would produce a tab that cannot represent
   both). `apps/desktop/src/shared/projectIdentity.ts` owns the binding-key
   format the join and every per-project cache are keyed by.
+  `TopBar.tsx` renders the group as one tab plus a machine menu; the machine
+  name only earns inline space when it is ambiguous (more than one machine in
+  the group, or a checkout that is not on This Mac), and the menu also offers
+  **Connect another machine…**.
+- `apps/desktop/src/shared/machineIdentity.ts` — the single definition of "the
+  machine ADE is running on": `THIS_MACHINE_ID` (`"this-mac"`),
+  `THIS_MACHINE_NAME` (`"This Mac"`), `isThisMachineId`, and
+  `machineDisplayName`. Every producer and consumer of a machine id imports
+  from here — `laneMachines.ts`, `projectTabGrouping.ts`, `crossMachineLanes.ts`,
+  `LaneGitActionsPane.tsx`, the composer, and the Chats page — because the
+  push-divergence guard decides "is this another machine?" by comparing ids, so
+  two spellings of this machine make it warn that This Mac diverged from itself.
+  Machines are named **absolutely** ("This Mac", "MacBook Pro (97)"); "remote"
+  is never a machine name, since the machine a tab is bound to can change and
+  the create-lane dialog already uses "remote" for the git base-branch source.
+- `apps/desktop/src/main/services/projects/recentProjectSummary.ts` — reads
+  `origin`'s URL straight out of the repo's git config (no `git` subprocess per
+  recent) and attaches it to each recent summary, which is the join key the tab
+  grouping above uses. `parseGitOriginUrlFromConfig` / `cleanGitConfigValue`
+  undecorate the value the way git does (quoted strings with `\` escapes,
+  unquoted `;`/`#` comment tails), `resolveGitConfigDirectory` walks a linked
+  worktree's `<main>/.git/worktrees/<name>` metadata dir back to the main repo's
+  config structurally rather than by substring, and the parsed URL is cached per
+  project root keyed on the config file's mtime because recents are
+  re-summarized on every focus.
+- `apps/desktop/src/renderer/state/crossMachineLanes.ts` and the
+  `crossMachineLanesByMachineId` / `crossMachineLaneScopeKey` slice of
+  `appStore.ts` — the **cross-machine Work union**. Lanes carry the machine
+  (`lanes.worktree_path` is an absolute path on exactly one machine) and chats
+  inherit theirs through `laneId`, so the union is keyed by machine and holds
+  lanes; there is deliberately no per-chat machine field. Refreshes are driven
+  by the connection-snapshot subscription and existing lane-lifecycle /
+  session-changed events (coalesced, no polling); foreign reads are bounded,
+  timed out, capped at four machines in parallel, and never gate the local list.
+  A machine that drops is **dimmed, never dropped** — its lanes and sessions are
+  retained so a wifi blip cannot reflow half the sidebar away. The union is
+  scoped per repository, so switching project tabs invalidates it wholesale.
+  `selectOtherMachineBranchStates` is the derived-state seam the push guard
+  reads at click time.
+- `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — **per-chat runtime
+  routing**. `buildLaneBindingIndex` folds each open binding's lane list into a
+  lane→binding index (active binding first wins), and `resolveChatRuntimePin`
+  returns the `OpenProjectBinding` a chat's calls must target, or `null` when
+  the chat already lives on the active binding. `isLivePinnedBinding` asks
+  whether a pin is still *open* rather than whether it is *active*, because a
+  pin differing from the active binding is now the normal state of any chat
+  whose lane lives on another open machine. Clicking such a chat streams it from
+  its own machine without rebinding the tab, which would otherwise drag Lanes /
+  PRs / Files / Git / Run along with it.
+- `apps/desktop/src/renderer/components/lanes/laneMachines.ts`,
+  `LaneMachineSelector.tsx`, and `PushDivergenceDialog.tsx` —
+  machine selection during lane creation and the push-time divergence warning.
+  `deriveLaneMachineOptions` matches each machine's checkout of the repo by
+  normalized git origin (`matchedBy: "origin"`, proof) or, failing that, by
+  folder name (`matchedBy: "name"`, a guess that must not on its own rebind the
+  app). `CreateLaneDialogHost` captures the binding the dialog opened on and
+  restores it if the dialog is closed without creating a lane, so browsing
+  machines cannot silently leave the window pointed somewhere else.
+- `apps/desktop/src/shared/laneDivergence.ts` — the push-time guard.
+  `toMachineBranchState` builds its inputs from lane records the renderer
+  already has (`LaneSummary.branchRef` + `LaneStatus.ahead/behind` from
+  `LaneListSnapshot` / `lane_state_snapshots`). The rule is grounded in `ahead`,
+  not head commits: no lane record in ADE carries a head sha, so a rule that
+  required one could never fire. Another machine holding the same branch with
+  `ahead > 0` holds commits that are by definition not in the push, so moving
+  the upstream tip would strand them. Head shas only ever *silence* the guard
+  (two machines proven to sit on the same commit); an unknown head never
+  suppresses a warning, because this guards a destructive push. It stays silent
+  when no other machine holds the branch, the entry is this machine (ids
+  compared, never names), the other machine is on a different branch, or the
+  other machine has nothing unpushed.
+- `apps/desktop/src/renderer/components/chat/thisMachineProjectRoot.ts` —
+  resolves the machine picker's "This Mac" option back to *this repository's*
+  local checkout by repo identity (reusing `deriveLaneMachineOptions`' rule)
+  rather than to the first local tab in insertion order, and refuses to switch
+  when there is no local counterpart. Used by the chat composer's machine picker
+  and the Chats tab.
 - `apps/desktop/src/renderer/state/appStore.ts`,
   `apps/desktop/src/renderer/components/app/App.tsx`,
   `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
@@ -169,7 +246,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     When the disconnected tab was the last one, `closeProject({
     preserveRemoteViewState: true })` applies the same rule instead of wiping.
 - `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
-  local or remote JSON-RPC actions based on the active project binding. Remote
+  local or remote JSON-RPC actions based on the active project binding — or, for
+  a chat that lives on another open machine, based on an explicit
+  `OpenProjectBinding` pin passed as a trailing argument
+  (`callPinnedOrBoundRuntimeActionOr`). Chat and session APIs
+  (`agentChat.send` / `steer` / `interrupt` / `approve` / `getSummary` /
+  `recoverTurn` / …, `sessions.get`, `sessions.readTranscriptTail`) accept that
+  optional pin; when it is absent the call is byte-for-byte the bound path it was
+  before per-chat routing, with no extra await. Remote
   project usage/budget reads route through the remote runtime; local project
   usage/budget reads stay on desktop usage IPC. File actions are strict once a
   local or remote runtime is bound. During a
@@ -262,7 +346,37 @@ users pair or adopt machines again. It does not sign the user out, change the
 machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
 launches do not perform the reset.
 
-Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch at a different commit (`apps/desktop/src/shared/laneDivergence.ts`). `remoteRuntimeCheckLocalWork` remains available for callers that want the comparison.
+Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch with unpushed commits (`apps/desktop/src/shared/laneDivergence.ts`).
+
+## One repository, many machines
+
+A repository is one tab. Local and remote checkouts of the same repo — joined on
+their normalized git origin — collapse into a single tab whose **machine** is a
+dimension inside it, switched from a dropdown on the tab. There is no separate
+"remote" tab, and "remote" is not a machine name: machines are named absolutely
+("This Mac", "MacBook Pro (97)").
+
+The tab's machine is the global execution context — Lanes, PRs, Files, Git, and
+Run all follow it. Two things are deliberately wider than that:
+
+- **The Work sidebar is a union.** It shows chats in flight on *every* connected
+  machine for this repository, regardless of which machine the tab is bound to.
+  Lanes not on This Mac carry a small monochrome machine marker that promotes to
+  the machine's name when a glyph alone would be ambiguous (the machine is
+  offline, two or more foreign machines are on screen, or the same branch exists
+  elsewhere). Foreign lanes appear only when they have chats — the union is about
+  work in flight, not an inventory. A machine that goes offline keeps its rows,
+  dimmed and inert.
+- **A chat runs on its own lane's machine.** Opening a chat from the union
+  streams it from the machine that owns its lane, with its calls pinned to that
+  machine's runtime; the tab stays bound where it was. Clicking a foreign
+  *lane* (rather than a chat) is the explicit move: it switches the tab's
+  machine, the same thing opening a remote project does.
+
+Machine selection also appears at lane creation: the create-lane dialog picks
+which machine the new worktree is created on, matching each machine's checkout of
+the repo by git origin. Browsing machines in that dialog and closing it without
+creating a lane restores the binding the dialog opened on.
 
 Local project opens use typed recovery rather than raw error text. If the
 machine brain could not open project data, it records a bounded failure report;

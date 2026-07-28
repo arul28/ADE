@@ -30,6 +30,7 @@ function resetFakeAppStoreState() {
     workViewByProject: {},
     setWorkViewState: setWorkViewStateSpy,
     sessionsCacheByProject: {},
+    crossMachineLanesByMachineId: {},
   };
   routerLocation.pathname = "/work";
   routerLocation.search = "";
@@ -135,6 +136,7 @@ vi.mock("../../state/appStore", () => {
     selectActiveProjectStateKey,
     useAppStore,
     useAppStoreApi,
+    useRootAppStore: useAppStore,
   };
 });
 
@@ -677,6 +679,150 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.activeItemId).toBe("existing-session");
     expect(workState.selectedItemId).toBe("existing-session");
     expect(focusSessionSpy).not.toHaveBeenCalledWith("background-pty-session");
+  });
+
+  it("applies optimistic UI for a session pinned to another open machine", async () => {
+    // Regression: `canMutatePinnedProjectUi` used to require the pin to equal
+    // the ACTIVE binding, which meant "stale detached launch". Under per-chat
+    // runtime routing a pin that differs from the active binding is the normal
+    // state for every chat whose lane lives on another machine — dropping those
+    // updates would silently blank exactly the sessions that feature adds. The
+    // question is now whether the pinned binding is still open.
+    const otherMachine = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-b",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    } as const;
+    const closedMachine = { ...otherMachine, key: "remote:target-z:project-z" } as const;
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: { kind: "local", key: "/fake/project", rootPath: "/fake/project", displayName: "Fake" },
+      openRemoteProjectTabs: [otherMachine],
+      openProjectTabRoots: ["/fake/project"],
+    };
+
+    (window as any).ade.pty.create
+      .mockResolvedValueOnce({ sessionId: "foreign-open", ptyId: "pty-foreign", pid: 41 })
+      .mockResolvedValueOnce({ sessionId: "foreign-closed", ptyId: "pty-closed", pid: 42 })
+      .mockResolvedValueOnce({ sessionId: "local-background", ptyId: "pty-local", pid: 43 });
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1", profile: "codex", title: "On the other machine", pin: otherMachine as any,
+      });
+    });
+
+    // The pinned binding is open but not active — its UI update must land.
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "foreign-open", ptyId: "pty-foreign" }),
+    ]));
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1", profile: "codex", title: "On a closed machine", pin: closedMachine as any,
+      });
+    });
+
+    // A pin for a project that is no longer open is still discarded.
+    expect(result.current.sessions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "foreign-closed" }),
+    ]));
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Open background local tab",
+        pin: {
+          kind: "local",
+          key: "local:/fake/project",
+          rootPath: "/fake/project",
+          displayName: "Fake",
+        },
+      });
+    });
+    expect(result.current.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "local-background", ptyId: "pty-local" }),
+    ]));
+  });
+
+  it("opens a foreign union chat in the Work view without adding it to the local session list", async () => {
+    const foreign = makeSession("foreign-chat", "foreign-lane");
+    const workState = {
+      openItemIds: ["foreign-chat"],
+      activeItemId: "foreign-chat",
+      selectedItemId: "foreign-chat",
+      gridSets: [],
+      activeGridSetId: null,
+      draftKind: "chat" as const,
+      orchestratorEnabled: false,
+      draftLaneId: null,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedSectionIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+      workSidebarOpen: false,
+      workSidebarTab: "git" as const,
+      workSidebarWidthPct: 36,
+      laneSessionOrder: {},
+      pinnedSessionIds: [],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: {
+        "/fake/project": workState,
+      },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-b",
+          projectId: "project-b",
+          binding: {
+            kind: "remote",
+            key: "remote:target-b:project-b",
+            targetId: "target-b",
+            runtimeName: "MacBook Pro (97)",
+            projectId: "project-b",
+            rootPath: "/repo-b",
+            displayName: "Repo B",
+          },
+          online: true,
+          lanes: [],
+          sessions: [foreign],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+
+    expect(result.current.sessions).not.toContainEqual(foreign);
+    expect(result.current.visibleSessions).toContainEqual(foreign);
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("foreign-lane");
+    const appliedStates = setWorkViewStateSpy.mock.calls.map(([, next]) => (
+      typeof next === "function" ? next(workState) : { ...workState, ...next }
+    ));
+    expect(appliedStates).not.toContainEqual(expect.objectContaining({
+      openItemIds: [],
+      activeItemId: null,
+      selectedItemId: null,
+    }));
   });
 
   it("launchPtySession carries its project pin into stopRuntime", async () => {

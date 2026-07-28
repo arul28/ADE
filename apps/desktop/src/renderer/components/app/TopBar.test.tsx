@@ -137,7 +137,7 @@ function makeRemoteConnectionSnapshot(
         state,
         arch: "darwin-arm64",
         version: "1.0.0-beta.1",
-        projects: [],
+        projects: (overrides.projects as unknown[]) ?? [],
         lastError: overrides.lastError ?? null,
         lastAttemptedAt: overrides.lastAttemptedAt ?? null,
         connectedAt: state === "connected" ? 1_700_000_000 : null,
@@ -612,6 +612,94 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
+  it("merges a local and a remote checkout of one repo into a single tab", async () => {
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "MacBook Pro (97)",
+      projectId: "project-1",
+      rootPath: "/srv/ade/ADE",
+      displayName: "ADE",
+    };
+    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
+      {
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+        exists: true,
+        lastOpenedAt: "2026-04-22T00:00:00.000Z",
+        kind: "local",
+        laneCount: 3,
+        gitOriginUrl: "git@github.com:arul28/ADE.git",
+      },
+    ]);
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
+      makeRemoteConnectionSnapshot("studio", "MacBook Pro (97)", {
+        projects: [
+          {
+            projectId: "project-1",
+            rootPath: "/srv/ade/ADE",
+            displayName: "ADE",
+            addedAt: 0,
+            lastOpenedAt: 0,
+            // The SSH and HTTPS forms of one origin must still join.
+            gitOriginUrl: "https://github.com/arul28/ADE",
+          },
+        ],
+      }),
+    );
+    useAppStore.setState({
+      project: { rootPath: binding.rootPath, displayName: "ADE", baseRef: "main" },
+      projectBinding: binding,
+      openRemoteProjectTabs: [binding],
+      openProjectTabRoots: ["/Users/arul/ADE"],
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(<TopBar />);
+
+    // One repo, one tab: the bound machine's. The local checkout is still open,
+    // it just no longer gets a tab of its own.
+    expect(
+      await screen.findByTitle("MacBook Pro (97): /srv/ade/ADE (Connected)"),
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
+    });
+    expect(screen.getByText("MacBook Pro (97)")).toBeTruthy();
+
+    // …and the machine it displaced must stay reachable, or the tab bar has
+    // stranded a checkout the user cannot get back to.
+    fireEvent.click(screen.getByLabelText("Machines for ADE"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /This Mac/ }));
+
+    expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith(
+      "/Users/arul/ADE",
+    );
+  });
+
+  it("offers to add a machine from a repo tab that only has one", async () => {
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+    // A single-machine group spends no tab width naming the machine.
+    expect(tab.textContent).not.toContain("This Mac");
+
+    const caret = screen.getByLabelText("Machines for ADE");
+    fireEvent.mouseDown(caret);
+    fireEvent.click(caret);
+    expect(screen.getByRole("menuitemradio", { name: /This Mac/ })).toBeTruthy();
+    const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
+    expect(connectItem).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(connectItem);
+
+    fireEvent.mouseDown(caret);
+    fireEvent.click(caret);
+    expect(screen.queryByRole("menuitemradio", { name: /This Mac/ })).toBeNull();
+  });
+
   it("renders a remote project tab with the connections control without immediate polling", async () => {
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
       .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
@@ -634,7 +722,8 @@ describe("TopBar", () => {
 
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)")).toBeTruthy();
     expect(screen.getByText("Remote App")).toBeTruthy();
-    expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
+    // Machines are named absolutely: the label is the machine, never "remote".
+    expect(screen.getByLabelText("Machine: Mac Studio")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Connections, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });

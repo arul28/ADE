@@ -6326,3 +6326,449 @@ describe("preload remote project binding", () => {
     await pendingOpen;
   });
 });
+
+describe("per-chat runtime routing", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  const machineA = {
+    kind: "local" as const,
+    key: "local:/repo-a",
+    rootPath: "/repo-a",
+    displayName: "Machine A",
+  };
+  const machineB = {
+    kind: "remote" as const,
+    key: "remote:target-b:project-b",
+    targetId: "target-b",
+    runtimeName: "machine-b",
+    projectId: "project-b",
+    rootPath: "/repo-b",
+    displayName: "Machine B",
+  };
+
+  async function mountBridge(activeBinding: typeof machineA | typeof machineB = machineA) {
+    const invoke = vi.fn(async (channel: string, arg?: unknown): Promise<unknown> => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: activeBinding.rootPath, displayName: activeBinding.displayName },
+          binding: activeBinding,
+        };
+      }
+      if (channel === IPC.localRuntimeCallAction) return { result: undefined };
+      if (channel === IPC.remoteRuntimeCallAction) return { result: undefined };
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    return {
+      bridge: (globalThis as any).__adeBridge,
+      invoke,
+      on,
+      removeListener,
+    };
+  }
+
+  it("routes a pinned chat to the pin's machine and leaves the window binding alone", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    // A chat whose lane lives on machine B, opened from a window bound to A.
+    const foreignArgs = { sessionId: "chat-on-b", text: "hello" };
+    await bridge.agentChat.send(foreignArgs, machineB);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-b",
+      projectId: "project-b",
+      request: { domain: "chat", action: "sendMessage", args: foreignArgs },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.objectContaining({
+        request: expect.objectContaining({ action: "sendMessage" }),
+      }),
+    );
+
+    // The tab is still bound to A: the very next unpinned call goes to A.
+    const localArgs = { sessionId: "chat-on-a", text: "still here" };
+    await bridge.agentChat.send(localArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: { domain: "chat", action: "sendMessage", args: localArgs },
+    });
+  });
+
+  it("routes pinned lane and session lists to This Mac without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.lanes.list({ includeStatus: true }, machineA);
+    await bridge.sessions.list({ limit: 60 }, machineA);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "lane",
+        action: "list",
+        args: { includeStatus: true },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "session",
+        action: "list",
+        args: { limit: 60 },
+      },
+    });
+  });
+
+  it("streams a pinned This Mac chat while the window is remote-bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineB);
+      let streamAttempt = 0;
+      const envelope = {
+        sessionId: "chat-on-a",
+        timestamp: "2026-07-27T18:02:00.000Z",
+        event: { type: "text", text: "from This Mac" },
+      };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeCallAction) {
+          return { result: { sessionId: "chat-on-a", events: [envelope], sessionFound: true } };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          streamAttempt += 1;
+          return {
+            events: streamAttempt === 2
+              ? [{
+                  id: 1,
+                  timestamp: envelope.timestamp,
+                  category: "runtime",
+                  payload: envelope,
+                }]
+              : [],
+            nextCursor: streamAttempt >= 2 ? 1 : 0,
+            hasMore: false,
+            eventEpoch: "local-epoch-a",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.agentChat.getEventHistory({ sessionId: "chat-on-a", maxEvents: 5 }, machineA);
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "local-epoch-a",
+        event: {
+          id: 1,
+          timestamp: envelope.timestamp,
+          category: "runtime",
+          payload: envelope,
+        },
+      });
+
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+        rootPath: "/repo-a",
+        request: {
+          domain: "chat",
+          action: "getChatEventHistory",
+          argsList: ["chat-on-a", { maxEvents: 5 }],
+        },
+      });
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {
+        rootPath: "/repo-a",
+        request: { cursor: 0, limit: 200 },
+      });
+      expect(callback).toHaveBeenCalledWith(envelope);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      unsubscribe();
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "local-epoch-a",
+        event: {
+          id: 2,
+          timestamp: envelope.timestamp,
+          category: "runtime",
+          payload: envelope,
+        },
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off repeated pinned chat poll failures and resets after success", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { bridge, invoke } = await mountBridge(machineB);
+      let streamAttempt = 0;
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.localRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamAttempt += 1;
+        if (streamAttempt <= 6 || streamAttempt === 8) {
+          throw new Error(`offline ${streamAttempt}`);
+        }
+        return {
+          events: [],
+          nextCursor: 0,
+          hasMore: false,
+          eventEpoch: "local-epoch-a",
+        };
+      });
+
+      const unsubscribe = bridge.agentChat.onEvent(vi.fn(), machineA);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamAttempt).toBe(1);
+
+      for (const [delay, expectedAttempts] of [
+        [2_000, 2],
+        [4_000, 3],
+        [8_000, 4],
+        [16_000, 5],
+        [30_000, 6],
+        [30_000, 7],
+      ] as const) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(streamAttempt).toBe(expectedAttempts - 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(streamAttempt).toBe(expectedAttempts);
+      }
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(streamAttempt).toBe(8);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(streamAttempt).toBe(8);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(streamAttempt).toBe(9);
+
+      unsubscribe();
+      await vi.runOnlyPendingTimersAsync();
+      expect(streamAttempt).toBe(9);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("routes the complete selected-chat control class through an explicit pin", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.agentChat.getSubagentTranscript({ sessionId: "chat-on-b", agentId: "agent-1" }, machineB);
+    await bridge.agentChat.slashCommands({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.handoff({
+      sourceSessionId: "chat-on-b",
+      targetModelId: "openai/gpt-5.4-mini",
+    }, machineB);
+    await bridge.agentChat.createScheduledWork({
+      sessionId: "chat-on-b",
+      prompt: "continue",
+      delaySeconds: 60,
+    }, machineB);
+    await bridge.agentChat.listScheduledWork({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.cancelScheduledWork({
+      sessionId: "chat-on-b",
+      scheduleId: "schedule-1",
+    }, machineB);
+    await bridge.agentChat.setScheduledWorkPaused({ sessionId: "chat-on-b", paused: true }, machineB);
+    await bridge.agentChat.codex.getGoal({ sessionId: "chat-on-b" }, machineB);
+    await bridge.agentChat.codex.setGoal({ sessionId: "chat-on-b", objective: "ship" }, machineB);
+    await bridge.agentChat.codex.setGoalStatus({ sessionId: "chat-on-b", status: "paused" }, machineB);
+    await bridge.agentChat.codex.clearGoal({ sessionId: "chat-on-b" }, machineB);
+
+    const pinnedActions = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, arg]) => (arg as { request: { action: string } }).request.action);
+    expect(pinnedActions).toEqual([
+      "getSubagentTranscript",
+      "getSlashCommands",
+      "handoffSession",
+      "createScheduledWork",
+      "listScheduledWork",
+      "cancelScheduledWork",
+      "setScheduledWorkPaused",
+      "getCodexGoal",
+      "setCodexGoal",
+      "setCodexGoalStatus",
+      "clearCodexGoal",
+    ]);
+  });
+
+  it("takes the unpinned bound path unchanged for a chat on the active binding", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.agentChat.getEventHistory({ sessionId: "chat-on-a", maxEvents: 10 });
+    await bridge.agentChat.interrupt({ sessionId: "chat-on-a" });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "chat",
+        action: "getChatEventHistory",
+        argsList: ["chat-on-a", { maxEvents: 10 }],
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: { domain: "chat", action: "interrupt", args: { sessionId: "chat-on-a" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("pins the chat's transcript and pty reads to the same machine", async () => {
+    const { bridge, invoke } = await mountBridge();
+
+    await bridge.agentChat.getEventHistory({ sessionId: "chat-on-b", maxEvents: 5 }, machineB);
+    await bridge.sessions.readTranscriptTail({ sessionId: "chat-on-b", maxBytes: 10 }, machineB);
+    await bridge.pty.write({ ptyId: "pty-b", data: "ls\n" }, machineB);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-b",
+      projectId: "project-b",
+      request: {
+        domain: "chat",
+        action: "getChatEventHistory",
+        argsList: ["chat-on-b", { maxEvents: 5 }],
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-b",
+      projectId: "project-b",
+      request: {
+        domain: "session",
+        action: "readTranscriptTail",
+        args: { sessionId: "chat-on-b", maxBytes: 10 },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-b",
+      projectId: "project-b",
+      request: { domain: "pty", action: "write", args: { ptyId: "pty-b", data: "ls\n" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("resets a pinned chat event cursor when the remote runtime epoch changes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge();
+      const oldEnvelope = {
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:00:00.000Z",
+        event: { type: "text", text: "before restart" },
+      };
+      const newEnvelope = {
+        sessionId: "chat-on-b",
+        timestamp: "2026-07-27T18:01:00.000Z",
+        event: { type: "text", text: "after restart" },
+      };
+      const streamRequests: unknown[] = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel !== IPC.remoteRuntimeStreamEvents) {
+          throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+        }
+        streamRequests.push(arg);
+        if (streamRequests.length === 1) {
+          return {
+            events: [{
+              id: 12,
+              timestamp: oldEnvelope.timestamp,
+              category: "chat",
+              payload: oldEnvelope,
+            }],
+            nextCursor: 12,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        if (streamRequests.length === 2) {
+          return {
+            events: [],
+            nextCursor: 12,
+            hasMore: false,
+            eventEpoch: "epoch-b",
+          };
+        }
+        return {
+          events: [{
+            id: 1,
+            timestamp: newEnvelope.timestamp,
+            category: "chat",
+            payload: newEnvelope,
+          }],
+          nextCursor: 1,
+          hasMore: false,
+          eventEpoch: "epoch-b",
+        };
+      });
+
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(callback, machineB);
+      await vi.advanceTimersByTimeAsync(750);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(streamRequests).toEqual([
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 0, limit: 200 },
+        },
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 12, limit: 200 },
+        },
+        {
+          id: "target-b",
+          projectId: "project-b",
+          request: { cursor: 0, limit: 200 },
+        },
+      ]);
+      expect(callback).toHaveBeenCalledWith(oldEnvelope);
+      expect(callback).toHaveBeenCalledWith(newEnvelope);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

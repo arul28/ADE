@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { isLivePinnedBinding } from "../../lib/chatMachineRouting";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -11,6 +12,7 @@ import {
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
+  useRootAppStore,
   type WorkDraftKind,
   type WorkGridSet,
   type WorkProjectViewState,
@@ -449,6 +451,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -460,9 +463,26 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
-  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
-    !pin || appStore.getState().projectBinding?.key === pin.key
-  ), [appStore]);
+  // A pin that differs from the active binding used to mean "stale detached
+  // launch", so its updates were dropped. Under per-chat runtime routing that
+  // is the normal, correct state for every chat whose lane lives on another
+  // machine — the whole point is that those chats stream without rebinding the
+  // tab. The question is no longer "is this the active binding?" but "is this
+  // binding still open?", so updates for a foreign chat are applied and only a
+  // pin for a closed project is discarded.
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => {
+    const state = appStore.getState();
+    const open: OpenProjectBinding[] = [];
+    if (state.projectBinding) open.push(state.projectBinding);
+    for (const binding of state.openRemoteProjectTabs ?? []) open.push(binding);
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      if (machine.binding) open.push(machine.binding);
+    }
+    for (const rootPath of state.openProjectTabRoots ?? []) {
+      open.push({ kind: "local", key: `local:${rootPath}`, rootPath, displayName: rootPath } as OpenProjectBinding);
+    }
+    return isLivePinnedBinding(pin, open);
+  }, [appStore, crossMachineLanesByMachineId]);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -518,11 +538,20 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
   const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
-  const sessionsById = useMemo(() => {
+  const localSessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+  const sessionsById = useMemo(() => {
+    const map = new Map(localSessionsById);
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      for (const session of machine.sessions) {
+        if (!map.has(session.id)) map.set(session.id, session);
+      }
+    }
+    return map;
+  }, [crossMachineLanesByMachineId, localSessionsById]);
   const missingSessionLaneIdsSignature = useMemo(() => {
     if (sessions.length === 0) return "";
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
@@ -538,11 +567,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
       if (!sessionId) return;
-      const session = sessionsById.get(sessionId);
+      const session = localSessionsById.get(sessionId);
       if (!session) return;
       selectLane(session.laneId);
     },
-    [selectLane, sessionsById],
+    [localSessionsById, selectLane],
   );
 
   const openSessions = useMemo(() => {
@@ -1457,7 +1486,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // reflect the previous project — pruning then drops the destination tabs.
     if (pendingProjectSwitchRef.current != null) return;
     if (!hasAuthoritativeSessionsRef.current) return;
-    const validIds = new Set(sessions.map((session) => session.id));
+    // Open Work tabs are the cross-machine union, not just the active
+    // project's refresh result. A foreign chat can stay open while the local
+    // session list refreshes, so prune against the same combined index used to
+    // render tabs instead of silently dropping every foreign tab.
+    const validIds = new Set(sessionsById.keys());
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
@@ -1490,7 +1523,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [projectStateKey, sessions, setProjectViewState]);
+  }, [projectStateKey, sessionsById, setProjectViewState]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

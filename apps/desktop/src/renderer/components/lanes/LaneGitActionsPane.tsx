@@ -6,6 +6,9 @@ import {
   selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
+import { selectOtherMachineBranchStates } from "../../state/crossMachineLanes";
+
+const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
@@ -225,61 +228,23 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // Cross-machine branch state (push divergence guard)
 // ---------------------------------------------------------------------------
 //
-// Other surfaces that already hold union lane state (the chat git toolbar
-// today, the cross-machine lane list once it lands) publish per-lane branch
-// state here; the push actions below read it. This is a plain registry over
-// data the renderer already has — no polling, no subscription, no git call. It
-// stays empty until a caller publishes, which keeps the single-machine path at
-// zero cost.
+// There is exactly one seam: the `otherMachineBranchStates` prop below. A
+// module-global publish/subscribe registry used to sit here as a second path,
+// relayed through the chat git toolbar, with no producer at either end — two
+// delivery mechanisms for zero data. It is gone. When the renderer grows a
+// cross-machine lane list, it fills the prop.
 
 // Identity for the machine the renderer is running on, so the guard never
 // warns about this machine. Values match `laneMachines.ts` (THIS_MACHINE_ID /
 // THIS_MACHINE_NAME) so a caller sourcing `others` from that module lines up
 // without a translation step. Machines are named absolutely — never "remote".
-const THIS_MACHINE_GUARD_ID = "this-mac";
-const THIS_MACHINE_GUARD_NAME = "This Mac";
-
-const otherMachineBranchStatesByLane = new Map<string, readonly MachineBranchState[]>();
-const otherMachineBranchStateListeners = new Set<() => void>();
-
-function readOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
-  if (!laneId || otherMachineBranchStatesByLane.size === 0) return EMPTY_MACHINE_BRANCH_STATES;
-  return otherMachineBranchStatesByLane.get(laneId) ?? EMPTY_MACHINE_BRANCH_STATES;
-}
-
-/**
- * Publishes (or clears, with `null`/empty) the other machines known to hold
- * this lane's branch. Safe to call from any surface; the push guard picks it up
- * on the next push without re-rendering anything else.
- */
-export function publishLaneOtherMachineBranchStates(
-  laneId: string | null,
-  states: readonly MachineBranchState[] | null | undefined,
-): void {
-  if (!laneId) return;
-  const previous = otherMachineBranchStatesByLane.get(laneId);
-  if (!states || states.length === 0) {
-    if (!previous) return;
-    otherMachineBranchStatesByLane.delete(laneId);
-  } else {
-    if (previous === states) return;
-    otherMachineBranchStatesByLane.set(laneId, states);
-  }
-  for (const listener of otherMachineBranchStateListeners) listener();
-}
-
-function useOtherMachineBranchStates(laneId: string | null): readonly MachineBranchState[] {
-  return React.useSyncExternalStore(
-    (listener) => {
-      otherMachineBranchStateListeners.add(listener);
-      return () => {
-        otherMachineBranchStateListeners.delete(listener);
-      };
-    },
-    () => readOtherMachineBranchStates(laneId),
-    () => EMPTY_MACHINE_BRANCH_STATES,
-  );
-}
+// Imported, not re-typed. The previous hardcoded literals were kept in sync
+// with laneMachines.ts by a comment; the guard compares machine ids, so a drift
+// here makes it warn that This Mac diverged from itself.
+import {
+  THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
+  THIS_MACHINE_NAME as THIS_MACHINE_GUARD_NAME,
+} from "../../../shared/machineIdentity";
 
 export {
   beginLaneGitActionRuntime,
@@ -291,7 +256,6 @@ export {
 export function __resetLaneGitActionRuntimeForTests(): void {
   laneGitActionRuntimeByScope.clear();
   laneGitActionsStateByScope.clear();
-  otherMachineBranchStatesByLane.clear();
   emitLaneGitActionRuntimeChange();
 }
 
@@ -657,8 +621,8 @@ export function LaneGitActionsPane({
   selectedCommit = null,
   selectedCommitSha,
   otherMachineBranchStates = EMPTY_MACHINE_BRANCH_STATES,
-  currentMachineName = THIS_MACHINE_GUARD_NAME,
-  currentMachineId = THIS_MACHINE_GUARD_ID,
+  currentMachineName,
+  currentMachineId,
   currentMachineHeadSha = null
 }: {
   laneId: string | null;
@@ -680,10 +644,15 @@ export function LaneGitActionsPane({
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
   /**
-   * Other machines known to hold this lane's branch, from union lane state the
-   * renderer already has (`LaneListSnapshot` / `lane_state_snapshots`). Empty
-   * until a caller supplies it — the push guard is inert (and free) until then.
-   * Callers may also publish via `publishLaneOtherMachineBranchStates`.
+   * Other machines known to hold this lane's branch, built with
+   * `toMachineBranchState` from lane records the renderer already has
+   * (`LaneListSnapshot` / `lane_state_snapshots`). The single seam into the
+   * push guard — there is no registry, no publisher, no second path.
+   *
+   * Optional override. When unset the guard reads the cross-machine lane union
+   * (`selectOtherMachineBranchStates`) at click time, so it costs nothing until
+   * you press push and never re-renders this pane. The guard also
+   * short-circuits on an empty list, keeping the single-machine path free.
    */
   otherMachineBranchStates?: readonly MachineBranchState[];
   /** Absolute name for this machine in guard copy. Never "remote". */
@@ -694,6 +663,10 @@ export function LaneGitActionsPane({
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
+  // divergence guard below; the slice is reference-stable while unchanged.
+  const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -736,7 +709,6 @@ export function LaneGitActionsPane({
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
   const [pendingPush, setPendingPush] = useState<PendingGuardedPush | null>(null);
-  const publishedOtherMachineBranchStates = useOtherMachineBranchStates(laneId);
   const laneGitActionScopeKey = laneGitActionsStateKey(projectStateKey, laneId);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneGitActionScopeKey);
   const busyAction = laneGitActionRuntime.busyAction;
@@ -1385,15 +1357,27 @@ export function LaneGitActionsPane({
   // it is the one moment that interrupts. Resolved at click time (not in a
   // memo) so a single-machine project pays nothing.
   const resolvePushDivergence = useCallback((): NonNullable<DivergenceWarning> | null => {
+    if (!lane) return null;
+    const activeMachineId = currentMachineId
+      ?? (projectBinding?.kind === "remote" ? projectBinding.targetId : THIS_MACHINE_GUARD_ID);
+    const activeMachineName = currentMachineName
+      ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : THIS_MACHINE_GUARD_NAME);
+    // The union slice keeps a stable reference while unchanged, so subscribing
+    // costs one identity check per store tick and re-renders nothing. The
+    // selector itself is memoized and only runs here, at click time. An
+    // explicit prop still wins so callers can supply their own set.
     const others = otherMachineBranchStates.length > 0
       ? otherMachineBranchStates
-      : publishedOtherMachineBranchStates;
+      : selectOtherMachineBranchStates({
+          lanes,
+          crossMachineLanesByMachineId,
+          projectBinding,
+        }, lane.id);
     if (others.length === 0) return null;
-    if (!lane) return null;
     return detectPushDivergence({
       current: {
-        machineId: currentMachineId,
-        machineName: currentMachineName,
+        machineId: activeMachineId,
+        machineName: activeMachineName,
         branchRef: lane.branchRef,
         headSha: currentMachineHeadSha,
         ahead: syncStatus?.ahead ?? lane.status.ahead,
@@ -1405,9 +1389,11 @@ export function LaneGitActionsPane({
     currentMachineHeadSha,
     currentMachineId,
     currentMachineName,
+    crossMachineLanesByMachineId,
     lane,
+    lanes,
     otherMachineBranchStates,
-    publishedOtherMachineBranchStates,
+    projectBinding,
     syncStatus,
   ]);
 

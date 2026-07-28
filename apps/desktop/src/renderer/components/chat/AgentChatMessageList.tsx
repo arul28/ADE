@@ -42,6 +42,8 @@ import type {
   AgentChatSpawnCompletion,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverContinuityArgs,
+  AgentChatContinuityRecoveryResult,
   ChatSurfaceChipTone,
   FilesWorkspace,
   ChatSurfaceProfile,
@@ -3233,6 +3235,7 @@ function renderEvent(
   options?: {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     onChooseProviderFailureModel?: () => void;
     onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
@@ -4091,6 +4094,7 @@ function renderEvent(
           detail={event.detail}
           sessionId={options?.sessionId ?? null}
           turnActive={Boolean(options?.sessionTurnActive)}
+          onRecoverContinuity={options?.onRecoverContinuity}
         />
       );
     }
@@ -5057,6 +5061,7 @@ type EventRowProps = {
   turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
@@ -5102,6 +5107,7 @@ const EventRow = React.memo(function EventRow({
   turnToolEntries = [],
   onApproval,
   onCodexRecovery,
+  onRecoverContinuity,
   onRetryProviderFailure,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
@@ -5192,12 +5198,13 @@ const EventRow = React.memo(function EventRow({
           ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-              onCodexRecovery,
-              onRetryProviderFailure,
-              onChooseProviderFailureModel,
-              onRunUnprocessedMessage,
-              onEditUnprocessedMessage,
-              onDismissUnprocessedMessage,
+            onCodexRecovery,
+            onRecoverContinuity,
+            onRetryProviderFailure,
+            onChooseProviderFailureModel,
+            onRunUnprocessedMessage,
+            onEditUnprocessedMessage,
+            onDismissUnprocessedMessage,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -5602,6 +5609,7 @@ function AgentChatMessageListMain({
     className,
   onApproval,
   onCodexRecovery,
+  onRecoverContinuity,
   onRetryProviderFailure,
   onChooseProviderFailureModel,
   onRunUnprocessedMessage,
@@ -5636,6 +5644,7 @@ function AgentChatMessageListMain({
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
@@ -6759,6 +6768,7 @@ function AgentChatMessageListMain({
           turnToolEntries={turnToolEntries}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
+          onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
           onChooseProviderFailureModel={onChooseProviderFailureModel}
           onRunUnprocessedMessage={onRunUnprocessedMessage}
@@ -6788,6 +6798,10 @@ function AgentChatMessageListMain({
           anchored={anchored}
           onScrollToRowKey={scrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
+          staleInterruptReceipts={staleInterruptReceipts}
+          onCancelQueuedMessage={onCancelQueuedMessage}
+          onRestoreCancelledQueue={onRestoreCancelledQueue}
+          settledQueueRecoveryIds={settledQueueRecoveryIds}
         />
       );
     }
@@ -6804,6 +6818,7 @@ function AgentChatMessageListMain({
         turnToolEntries={turnToolEntries}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
+        onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
         onChooseProviderFailureModel={onChooseProviderFailureModel}
         onRunUnprocessedMessage={onRunUnprocessedMessage}
@@ -6839,7 +6854,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

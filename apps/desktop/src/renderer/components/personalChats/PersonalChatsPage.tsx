@@ -30,6 +30,7 @@ import { ProjectlessHero } from "./ProjectlessHero";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
 import { sessionPreview, sessionTitle } from "./sessionHelpers";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
+import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -53,8 +54,10 @@ type PersonalChatsBridge = {
 
 const EMPTY_EVENTS: AgentChatEventEnvelope[] = [];
 const DEFAULT_MODEL_ID = "";
-const LOCAL_MACHINE_ID = "local";
-const LOCAL_MACHINE_NAME = "This Mac";
+import {
+  THIS_MACHINE_ID as LOCAL_MACHINE_ID,
+  THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
+} from "../../../shared/machineIdentity";
 
 export type PersonalChatsMachineOption = { id: string; name: string };
 
@@ -516,16 +519,15 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       if (nextMachineId === machineId) return;
       setError(null);
       if (nextMachineId === LOCAL_MACHINE_ID) {
-        const rootPath = projectBinding?.kind === "local"
-          ? projectBinding.rootPath
-          : (openProjectTabRoots[0] ?? localProjectRootPath);
-        if (!rootPath) {
-          setError("Open a project on this Mac first, then switch back here.");
-          return;
-        }
-        void switchProjectToPath(rootPath).catch((reason) => {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        });
+        // The machine is a dimension of THIS repo's tab, so "This Mac" must
+        // resolve to this repo's local checkout — never to whichever local tab
+        // happens to be first.
+        void switchToThisMachineProject({
+          projectBinding,
+          openProjectTabRoots,
+          localProjectRootPath,
+          switchProjectToPath,
+        }).then(setError);
         return;
       }
       const tab = openRemoteProjectTabs.find((entry) => entry.targetId === nextMachineId);

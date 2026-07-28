@@ -916,10 +916,6 @@ declare global {
           projectId: string,
           request?: RemoteRuntimeStreamEventsRequest,
         ) => Promise<RemoteRuntimeStreamEventsResult>;
-        checkLocalWork: (
-          id: string,
-          project: RemoteRuntimeProjectRecord,
-        ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
         disconnect: (
           id: string,
           options?: { manual?: boolean },
@@ -1285,7 +1281,10 @@ declare global {
         ) => () => void;
       };
       lanes: {
-        list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
+        list: (
+          args?: ListLanesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
@@ -1420,8 +1419,14 @@ declare global {
         ) => () => void;
       };
       sessions: {
-        list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
-        get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
+        list: (
+          args?: ListSessionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalSessionSummary[]>;
+        get: (
+          sessionId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalSessionDetail | null>;
         delete: (args: DeleteSessionArgs) => Promise<void>;
         updateMeta: (
           args: UpdateSessionMetaArgs,
@@ -1452,13 +1457,16 @@ declare global {
         setSettleOverride: (
           sessionId: string,
           override: SessionSettleOverride | null,
-         ) => Promise<boolean>;
-         clearWokeMarker: (sessionId: string) => Promise<boolean>;
-         getLifecycleSettings: () => Promise<SessionLifecycleSettings>;
-         updateLifecycleSettings: (
-           settings: SessionLifecycleSettings,
-         ) => Promise<SessionLifecycleSettings>;
-         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
+        ) => Promise<boolean>;
+        clearWokeMarker: (sessionId: string) => Promise<boolean>;
+        getLifecycleSettings: () => Promise<SessionLifecycleSettings>;
+        updateLifecycleSettings: (
+          settings: SessionLifecycleSettings,
+        ) => Promise<SessionLifecycleSettings>;
+        readTranscriptTail: (
+          args: ReadTranscriptTailArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
@@ -1468,6 +1476,7 @@ declare global {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
         getSummary: (
           args: AgentChatGetSummaryArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
         launch: (args: AgentChatLaunchArgs) => Promise<AgentChatSession>;
@@ -1486,6 +1495,7 @@ declare global {
         };
         handoff: (
           args: AgentChatHandoffArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatHandoffResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
@@ -1497,60 +1507,100 @@ declare global {
           args: AgentChatMarkCrossMachineHandoffArgs,
         ) => Promise<void>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        steer: (args: AgentChatSteerArgs) => Promise<AgentChatSteerResult>;
-        cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
+        steer: (
+          args: AgentChatSteerArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatSteerResult>;
+        cancelSteer: (
+          args: AgentChatCancelSteerArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
         dispatchSteer: (
           args: AgentChatDispatchSteerArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatDispatchSteerResult>;
         cancelDispatchedSteer: (
           args: AgentChatCancelDispatchedSteerArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
-        interrupt: (args: AgentChatInterruptArgs) => Promise<AgentChatInterruptResult>;
+        interrupt: (
+          args: AgentChatInterruptArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatInterruptResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatRestoreCancelledQueueResult>;
         recoverTurn: (
           args: AgentChatRecoverTurnArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatRecoverTurnResult>;
         recoverCodexTurn: (
           args: AgentChatRecoverCodexTurnArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatRecoverCodexTurnResult>;
         resolveUnprocessedMessage: (
           args: AgentChatResolveUnprocessedMessageArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatResolveUnprocessedMessageResult>;
         recoverContinuity: (
           args: AgentChatRecoverContinuityArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContinuityRecoveryResult>;
-        approve: (args: AgentChatApproveArgs) => Promise<void>;
-        respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
+        approve: (
+          args: AgentChatApproveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        respondToInput: (
+          args: AgentChatRespondToInputArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
-        archive: (args: AgentChatArchiveArgs) => Promise<void>;
-        unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
+        archive: (
+          args: AgentChatArchiveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        unarchive: (
+          args: AgentChatArchiveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSession>;
         createScheduledWork: (
           args: AgentChatCreateScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCreateScheduledWorkResult>;
         listScheduledWork: (
           args?: AgentChatListScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatScheduledWorkItem[]>;
         cancelScheduledWork: (
           args: AgentChatCancelScheduledWorkArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCancelScheduledWorkResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSetScheduledWorkPausedResult>;
-        warmupModel: (args: {
-          sessionId: string;
-          modelId: string;
-        }) => Promise<void>;
-        onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
+        warmupModel: (
+          args: {
+            sessionId: string;
+            modelId: string;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        onEvent: (
+          cb: (ev: AgentChatEventEnvelope) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         slashCommands: (
           args: AgentChatSlashCommandsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSlashCommand[]>;
         listClaudePlugins: (
           args?: AgentChatClaudePluginsArgs,
@@ -1575,58 +1625,80 @@ declare global {
         ) => Promise<AgentChatClaudeSessionMessage[]>;
         getMainTranscript: (
           args: AgentChatMainTranscriptArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getSubagentTranscript: (
           args: AgentChatSubagentTranscriptArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getContextUsage: (
           args: AgentChatContextUsageArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContextUsage | null>;
         rewindFiles: (
           args: AgentChatRewindFilesArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatRewindFilesResult>;
         fileSearch: (
           args: AgentChatFileSearchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatFileSearchResult[]>;
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatTurnFileDiff | null>;
         listSubagents: (
           args: AgentChatSubagentListArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSubagentSnapshot[]>;
         killDroidWorker: (
           args: AgentChatKillDroidWorkerArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         getSessionCapabilities: (
           args: AgentChatSessionCapabilitiesArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSessionCapabilities>;
-        saveTempAttachment: (args: {
-          data: string;
-          filename: string;
-        }) => Promise<{ path: string }>;
+        saveTempAttachment: (
+          args: {
+            data: string;
+            filename: string;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ path: string }>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
-        getEventHistory: (args: {
-          sessionId: string;
-          maxEvents?: number;
-        }) => Promise<AgentChatEventHistorySnapshot>;
-        getEventHistoryPage: (args: {
-          sessionId: string;
-          beforeOffset: number;
-          maxBytes?: number;
-        }) => Promise<AgentChatEventHistoryPage>;
+        getEventHistory: (
+          args: {
+            sessionId: string;
+            maxEvents?: number;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatEventHistorySnapshot>;
+        getEventHistoryPage: (
+          args: {
+            sessionId: string;
+            beforeOffset: number;
+            maxBytes?: number;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatEventHistoryPage>;
         codex: {
           getGoal: (
             args: AgentChatCodexGetGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           setGoal: (
             args: AgentChatCodexSetGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           setGoalStatus: (
             args: AgentChatCodexSetGoalStatusArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
           clearGoal: (
             args: AgentChatCodexClearGoalArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
         };
       };
@@ -1849,12 +1921,18 @@ declare global {
           args: PtySendToSessionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<PtySendToSessionResult>;
-        write: (args: { ptyId: string; data: string }) => Promise<void>;
-        resize: (args: {
-          ptyId: string;
-          cols: number;
-          rows: number;
-        }) => Promise<void>;
+        write: (
+          args: { ptyId: string; data: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        resize: (
+          args: {
+            ptyId: string;
+            cols: number;
+            rows: number;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
         setDataSubscriptions: (args: { ptyIds: string[] }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;

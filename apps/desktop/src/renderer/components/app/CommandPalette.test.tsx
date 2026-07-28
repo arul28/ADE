@@ -465,37 +465,6 @@ describe("CommandPalette", () => {
         subdirectoryCount: null,
       })),
       addProject: vi.fn(async () => remoteProject),
-      checkLocalWork: vi.fn(async () => ({
-        remoteProjectId: remoteProject.projectId,
-        remoteDisplayName: remoteProject.displayName,
-        remoteGitOriginUrl: remoteProject.gitOriginUrl,
-        hasDirtyWork: true,
-        matches: [
-          {
-            rootPath: "/Users/admin/Projects/ADE",
-            displayName: "ADE",
-            gitOriginUrl: "git@github.com:example/ade.git",
-            dirtyCount: 3,
-            workSummary: {
-              rootPath: "/Users/admin/Projects/ADE",
-              laneCount: 1,
-              checkedLaneCount: 1,
-              dirtyLaneCount: 1,
-              dirtyFileCount: 3,
-              primaryDirtyCount: 3,
-              lanes: [
-                {
-                  rootPath: "/Users/admin/Projects/ADE",
-                  name: "main",
-                  branchName: "main",
-                  dirtyCount: 3,
-                  isPrimary: true,
-                },
-              ],
-            },
-          },
-        ],
-      })),
     };
     globalThis.window.ade = {
       ...globalThis.window.ade,
@@ -536,6 +505,5 @@ describe("CommandPalette", () => {
         name: "You already work on this repo locally",
       }),
     ).toBeNull();
-    expect(remoteRuntime.checkLocalWork).not.toHaveBeenCalled();
   });
 });

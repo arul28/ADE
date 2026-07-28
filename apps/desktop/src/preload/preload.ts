@@ -1545,6 +1545,22 @@ async function callPinnedRuntimeAction<T>(
   return response.result as T;
 }
 
+// Per-chat runtime routing: a chat inherits its machine from its lane, so a
+// chat whose lane lives on another open machine carries an explicit pin and
+// must reach THAT runtime without rebinding this window's project tab. When no
+// pin is supplied the call behaves exactly as before — same bound path, same
+// IPC fallback, no extra await.
+function callPinnedOrBoundRuntimeActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
+  return callProjectRuntimeActionOr<T>(domain, action, request, local);
+}
+
 function callPrReadRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -1648,6 +1664,10 @@ async function callProjectRuntimeSyncOr<T>(
 
 const remoteAgentChatEventCallbacks = new Set<
   (payload: AgentChatEventEnvelope) => void
+>();
+const pinnedLocalAgentChatEventCallbacks = new Map<
+  string,
+  Set<(event: RemoteRuntimeBufferedEvent) => void>
 >();
 const remoteSessionChangedCallbacks = new Set<
   (payload: TerminalSessionChangedEvent) => void
@@ -1819,6 +1839,8 @@ const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
 const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
 const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
+const PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS = 2_000;
+const PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS = 30_000;
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
@@ -2096,8 +2118,21 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
 function handleRemoteRuntimeEventNotification(value: unknown): void {
   const payload = toRemoteRuntimeEventNotificationPayload(value);
+  if (!payload) return;
+  const pinnedLocalCallbacks = pinnedLocalAgentChatEventCallbacks.get(
+    payload.bindingKey,
+  );
+  if (pinnedLocalCallbacks?.size) {
+    for (const dispatch of [...pinnedLocalCallbacks]) {
+      try {
+        dispatch(payload.event);
+      } catch (error) {
+        console.error("preload pinned local agent chat listener failed", error);
+      }
+    }
+  }
   const binding = currentProjectBinding;
-  if (!payload || !binding || payload.bindingKey !== binding.key) return;
+  if (!binding || payload.bindingKey !== binding.key) return;
   resetRemoteRuntimeEmptyPolls();
   const notificationEpoch =
     typeof payload.eventEpoch === "string" && payload.eventEpoch.trim()
@@ -2902,8 +2937,108 @@ function subscribeRemoteAppControlEvents(
 
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
   const removeLocal = agentChatEventFanout(cb);
+  if (pin && pin.key !== currentProjectBinding?.key) {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cursor = 0;
+    let eventEpoch: string | null = null;
+    let consecutiveFailures = 0;
+    const seenLocalEventIds = new Set<number>();
+    const dispatchPinnedLocalEvent = (event: RemoteRuntimeBufferedEvent): void => {
+      if (seenLocalEventIds.has(event.id)) return;
+      seenLocalEventIds.add(event.id);
+      while (seenLocalEventIds.size > 1_000) {
+        const oldest = seenLocalEventIds.values().next().value;
+        if (typeof oldest !== "number") break;
+        seenLocalEventIds.delete(oldest);
+      }
+      const envelope = toAgentChatEventEnvelope(event.payload);
+      if (!envelope) return;
+      agentChatSummaryCache.clear();
+      cb(envelope);
+    };
+    const pinnedLocalCallbacks =
+      pin.kind === "local"
+        ? pinnedLocalAgentChatEventCallbacks.get(pin.key) ??
+          new Set<(event: RemoteRuntimeBufferedEvent) => void>()
+        : null;
+    if (pinnedLocalCallbacks) {
+      pinnedLocalCallbacks.add(dispatchPinnedLocalEvent);
+      pinnedLocalAgentChatEventCallbacks.set(pin.key, pinnedLocalCallbacks);
+    }
+    const poll = async (): Promise<void> => {
+      let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+      try {
+        const request = { cursor, limit: 200 };
+        const batch = await ipcRenderer.invoke(
+          pin.kind === "remote"
+            ? IPC.remoteRuntimeStreamEvents
+            : IPC.localRuntimeStreamEvents,
+          pin.kind === "remote"
+            ? { id: pin.targetId, projectId: pin.projectId, request }
+            : { rootPath: pin.rootPath, request },
+        ) as RemoteRuntimeStreamEventsResult;
+        if (cancelled) return;
+        consecutiveFailures = 0;
+        let resetForEpochChange = false;
+        const batchEpoch =
+          typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
+            ? batch.eventEpoch.trim()
+            : null;
+        if (batchEpoch) {
+          const epochChanged = eventEpoch
+            ? batchEpoch !== eventEpoch
+            : cursor > 0;
+          eventEpoch = batchEpoch;
+          if (epochChanged) {
+            cursor = 0;
+            delay = 0;
+            resetForEpochChange = true;
+          }
+        }
+        if (!resetForEpochChange) {
+          cursor = Number.isFinite(batch.nextCursor) ? Math.max(0, Math.floor(batch.nextCursor)) : cursor;
+          for (const event of batch.events ?? []) {
+            if (pin.kind === "local") {
+              dispatchPinnedLocalEvent(event);
+            } else {
+              const envelope = toAgentChatEventEnvelope(event.payload);
+              if (envelope) cb(envelope);
+            }
+          }
+          delay = batch.hasMore
+            ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
+            : batch.events?.length
+              ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
+              : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+        }
+      } catch (error) {
+        if (!cancelled) console.warn("ADE pinned chat event polling failed", error);
+        consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
+        delay = Math.min(
+          PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS *
+            2 ** (consecutiveFailures - 1),
+          PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS,
+        );
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), delay);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (pinnedLocalCallbacks) {
+        pinnedLocalCallbacks.delete(dispatchPinnedLocalEvent);
+        if (pinnedLocalCallbacks.size === 0) {
+          pinnedLocalAgentChatEventCallbacks.delete(pin.key);
+        }
+      }
+      removeLocal();
+    };
+  }
   const removeRemote = subscribeRemoteAgentChatEvents(cb);
   return () => {
     removeRemote();
@@ -3801,11 +3936,6 @@ contextBridge.exposeInMainWorld("ade", {
         projectId,
         request,
       }),
-    checkLocalWork: async (
-      id: string,
-      project: RemoteRuntimeProjectRecord,
-    ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
     disconnect: async (
       id: string,
       options: { manual?: boolean } = {},
@@ -4624,7 +4754,13 @@ contextBridge.exposeInMainWorld("ade", {
     onUpdate: subscribeUsageUpdateEvents,
   },
   lanes: {
-    list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+    list: async (
+      args: ListLanesArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<LaneSummary[]>(pin, "lane", "list", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<LaneSummary[]>(
         "lane",
         "list",
@@ -5286,7 +5422,11 @@ contextBridge.exposeInMainWorld("ade", {
   sessions: {
     list: async (
       args: ListSessionsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<TerminalSessionSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<TerminalSessionSummary[]>(pin, "session", "list", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         TerminalSessionSummary[]
       >("session", "list", { args });
@@ -5294,7 +5434,15 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.sessionsList, args);
     },
-    get: async (sessionId: string): Promise<TerminalSessionDetail | null> => {
+    get: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalSessionDetail | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<TerminalSessionDetail | null>(pin, "session", "get", {
+          arg: sessionId,
+        });
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<TerminalSessionDetail | null>(
           "session",
@@ -5469,7 +5617,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<string> => {
+      if (pin) {
+        return callPinnedRuntimeAction<string>(pin, "session", "readTranscriptTail", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<string>(
         "session",
         "readTranscriptTail",
@@ -5508,10 +5660,19 @@ contextBridge.exposeInMainWorld("ade", {
     },
     getSummary: async (
       args: AgentChatGetSummaryArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSessionSummary | null> => {
       const sessionId =
         typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return ipcRenderer.invoke(IPC.agentChatGetSummary, args);
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatSessionSummary | null>(
+          pin,
+          "chat",
+          "getSessionSummary",
+          { arg: sessionId },
+        );
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<AgentChatSessionSummary | null>(
           "chat",
@@ -5600,8 +5761,9 @@ contextBridge.exposeInMainWorld("ade", {
     },
     handoff: async (
       args: AgentChatHandoffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatHandoffResult> =>
-      callProjectRuntimeActionOr("chat", "handoffSession", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
       ),
     prepareCrossMachineHandoff: async (
@@ -5636,17 +5798,23 @@ contextBridge.exposeInMainWorld("ade", {
       }
       agentChatSummaryCache.clear();
     },
-    steer: async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+    steer: async (
+      args: AgentChatSteerArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatSteerResult>("chat", "steer", { args }, () =>
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatSteerResult>(pin, "chat", "steer", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSteer, args),
       );
       agentChatSummaryCache.clear();
       return result;
     },
-    cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> => {
+    cancelSteer: async (
+      args: AgentChatCancelSteerArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
-      await callProjectRuntimeActionOr("chat", "cancelSteer", { args }, () =>
+      await callPinnedOrBoundRuntimeActionOr(pin, "chat", "cancelSteer", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
       );
       agentChatSummaryCache.clear();
@@ -5660,9 +5828,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     dispatchSteer: async (
       args: AgentChatDispatchSteerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatDispatchSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatDispatchSteerResult>(
+        pin,
         "chat",
         "dispatchSteer",
         { args },
@@ -5673,9 +5843,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     cancelDispatchedSteer: async (
       args: AgentChatCancelDispatchedSteerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCancelDispatchedSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "cancelDispatchedSteer",
         { args },
@@ -5684,9 +5856,13 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    interrupt: async (args: AgentChatInterruptArgs): Promise<AgentChatInterruptResult> => {
+    interrupt: async (
+      args: AgentChatInterruptArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatInterruptResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatInterruptResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatInterruptResult>(
+        pin,
         "chat",
         "interrupt",
         { args },
@@ -5697,9 +5873,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     restoreCancelledQueue: async (
       args: AgentChatRestoreCancelledQueueArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRestoreCancelledQueueResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRestoreCancelledQueueResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRestoreCancelledQueueResult>(
+        pin,
         "chat",
         "restoreCancelledQueue",
         { args },
@@ -5710,9 +5888,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverTurn: async (
       args: AgentChatRecoverTurnArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRecoverTurnResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRecoverTurnResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRecoverTurnResult>(
+        pin,
         "chat",
         "recoverTurn",
         { args },
@@ -5723,9 +5903,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverCodexTurn: async (
       args: AgentChatRecoverCodexTurnArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRecoverCodexTurnResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatRecoverCodexTurnResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRecoverCodexTurnResult>(
+        pin,
         "chat",
         "recoverCodexTurn",
         { args },
@@ -5736,9 +5918,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     resolveUnprocessedMessage: async (
       args: AgentChatResolveUnprocessedMessageArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatResolveUnprocessedMessageResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatResolveUnprocessedMessageResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatResolveUnprocessedMessageResult>(
+        pin,
         "chat",
         "resolveUnprocessedMessage",
         { args },
@@ -5749,9 +5933,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     recoverContinuity: async (
       args: AgentChatRecoverContinuityArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatContinuityRecoveryResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatContinuityRecoveryResult>(
+        pin,
         "chat",
         "recoverContinuity",
         { args },
@@ -5760,8 +5946,16 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    approve: async (args: AgentChatApproveArgs): Promise<void> => {
+    approve: async (
+      args: AgentChatApproveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "approveToolUse", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "approveToolUse",
@@ -5773,8 +5967,14 @@ contextBridge.exposeInMainWorld("ade", {
     },
     respondToInput: async (
       args: AgentChatRespondToInputArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "respondToInput", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "respondToInput",
@@ -5804,8 +6004,16 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModelCatalog, args ?? {});
     },
-    archive: async (args: AgentChatArchiveArgs): Promise<void> => {
+    archive: async (
+      args: AgentChatArchiveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "archiveSession", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "archiveSession",
@@ -5815,8 +6023,16 @@ contextBridge.exposeInMainWorld("ade", {
         await ipcRenderer.invoke(IPC.agentChatArchive, args);
       agentChatSummaryCache.clear();
     },
-    unarchive: async (args: AgentChatArchiveArgs): Promise<void> => {
+    unarchive: async (
+      args: AgentChatArchiveArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "unarchiveSession", { args });
+        agentChatSummaryCache.clear();
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "chat",
         "unarchiveSession",
@@ -5842,8 +6058,19 @@ contextBridge.exposeInMainWorld("ade", {
     },
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
+      if (pin) {
+        const pinned = await callPinnedRuntimeAction<AgentChatSession>(
+          pin,
+          "chat",
+          "updateSession",
+          { args },
+        );
+        agentChatSummaryCache.clear();
+        return pinned;
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
         "chat",
         "updateSession",
@@ -5857,9 +6084,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCreateScheduledWorkResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "createScheduledWork",
         { args },
@@ -5870,8 +6099,10 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listScheduledWork: async (
       args: AgentChatListScheduledWorkArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatScheduledWorkItem[]> =>
-      callProjectRuntimeActionOr(
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "listScheduledWork",
         { args },
@@ -5879,9 +6110,11 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     cancelScheduledWork: async (
       args: AgentChatCancelScheduledWorkArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatCancelScheduledWorkResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "cancelScheduledWork",
         { args },
@@ -5892,9 +6125,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     setScheduledWorkPaused: async (
       args: AgentChatSetScheduledWorkPausedArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSetScheduledWorkPausedResult> => {
       agentChatSummaryCache.clear();
-      const result = await callProjectRuntimeActionOr(
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "setScheduledWorkPaused",
         { args },
@@ -5903,17 +6138,30 @@ contextBridge.exposeInMainWorld("ade", {
       agentChatSummaryCache.clear();
       return result;
     },
-    warmupModel: async (args: {
-      sessionId: string;
-      modelId: string;
-    }): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "warmupModel", { args }, () =>
+    warmupModel: async (
+      args: {
+        sessionId: string;
+        modelId: string;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "warmupModel", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
       ),
     onEvent: subscribeAgentChatEvents,
     slashCommands: async (
       args: AgentChatSlashCommandsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSlashCommand[]> => {
+      if (pin) {
+        const pinned = await callPinnedRuntimeAction<AgentChatSlashCommand[]>(
+          pin,
+          "chat",
+          "getSlashCommands",
+          { args },
+        );
+        return Array.isArray(pinned) ? pinned : [];
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatSlashCommand[]
       >("chat", "getSlashCommands", { args });
@@ -5970,66 +6218,79 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getMainTranscript: async (
       args: AgentChatMainTranscriptArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
-      callProjectRuntimeActionOr("chat", "getMainTranscript", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getMainTranscript", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetMainTranscript, args),
       ),
     getSubagentTranscript: async (
       args: AgentChatSubagentTranscriptArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
-      callProjectRuntimeActionOr("chat", "getSubagentTranscript", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getSubagentTranscript", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetSubagentTranscript, args),
       ),
     getContextUsage: async (
       args: AgentChatContextUsageArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatContextUsage | null> =>
-      callProjectRuntimeActionOr("chat", "getContextUsage", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getContextUsage", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
       ),
     rewindFiles: async (
       args: AgentChatRewindFilesArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRewindFilesResult> =>
-      callProjectRuntimeActionOr("chat", "rewindFiles", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "rewindFiles", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatRewindFiles, args),
       ),
     fileSearch: async (
       args: AgentChatFileSearchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatFileSearchResult[]> =>
-      callProjectRuntimeActionOr("chat", "fileSearch", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "fileSearch", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatFileSearch, args),
       ),
     getTurnFileDiff: async (
       args: AgentChatGetTurnFileDiffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatTurnFileDiff | null> =>
-      callProjectRuntimeActionOr("chat", "getTurnFileDiff", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getTurnFileDiff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetTurnFileDiff, args),
       ),
     listSubagents: async (
       args: AgentChatSubagentListArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSubagentSnapshot[]> =>
-      callProjectRuntimeActionOr("chat", "listSubagents", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
       ),
     killDroidWorker: async (
       args: AgentChatKillDroidWorkerArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "killDroidWorker", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "killDroidWorker", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatKillDroidWorker, args),
       ),
     getSessionCapabilities: async (
       args: AgentChatSessionCapabilitiesArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatSessionCapabilities> =>
-      callProjectRuntimeActionOr(
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "chat",
         "getSessionCapabilities",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
       ),
-    saveTempAttachment: async (args: {
-      data: string;
-      filename: string;
-    }): Promise<{ path: string }> =>
-      callProjectRuntimeActionOr("chat", "saveTempAttachment", { args }, () =>
+    saveTempAttachment: async (
+      args: {
+        data: string;
+        filename: string;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ path: string }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
@@ -6040,10 +6301,18 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
-    getEventHistory: async (args: {
-      sessionId: string;
-      maxEvents?: number;
-    }): Promise<AgentChatEventHistorySnapshot> => {
+    getEventHistory: async (
+      args: {
+        sessionId: string;
+        maxEvents?: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatEventHistorySnapshot> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
+          argsList: [args.sessionId, { maxEvents: args.maxEvents }],
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
         argsList: [args.sessionId, { maxEvents: args.maxEvents }],
       });
@@ -6071,11 +6340,19 @@ contextBridge.exposeInMainWorld("ade", {
       }
       return ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
     },
-    getEventHistoryPage: async (args: {
-      sessionId: string;
-      beforeOffset: number;
-      maxBytes?: number;
-    }): Promise<AgentChatEventHistoryPage> => {
+    getEventHistoryPage: async (
+      args: {
+        sessionId: string;
+        beforeOffset: number;
+        maxBytes?: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatEventHistoryPage> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatEventHistoryPage>(pin, "chat", "getChatEventHistoryPage", {
+          argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
         argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
       });
@@ -6101,15 +6378,17 @@ contextBridge.exposeInMainWorld("ade", {
     codex: {
       getGoal: (
         args: AgentChatCodexGetGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> =>
-        callProjectRuntimeActionOr("chat", "getCodexGoal", { args }, () =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "getCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexGetGoal, args),
         ),
       setGoal: async (
         args: AgentChatCodexSetGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoal", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "setCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexSetGoal, args),
         );
         agentChatSummaryCache.clear();
@@ -6117,9 +6396,10 @@ contextBridge.exposeInMainWorld("ade", {
       },
       setGoalStatus: async (
         args: AgentChatCodexSetGoalStatusArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "setCodexGoalStatus", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "setCodexGoalStatus", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexSetGoalStatus, args),
         );
         agentChatSummaryCache.clear();
@@ -6127,9 +6407,10 @@ contextBridge.exposeInMainWorld("ade", {
       },
       clearGoal: async (
         args: AgentChatCodexClearGoalArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<CodexThreadGoal | null> => {
         agentChatSummaryCache.clear();
-        const goal = await callProjectRuntimeActionOr("chat", "clearCodexGoal", { args }, () =>
+        const goal = await callPinnedOrBoundRuntimeActionOr(pin, "chat", "clearCodexGoal", { args }, () =>
           ipcRenderer.invoke(IPC.agentChatCodexClearGoal, args),
         );
         agentChatSummaryCache.clear();
@@ -6872,7 +7153,14 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.ptySendToSession, args);
     },
-    write: async (arg: { ptyId: string; data: string }): Promise<void> => {
+    write: async (
+      arg: { ptyId: string; data: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "pty", "write", { args: arg });
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "pty",
         "write",
@@ -6880,11 +7168,18 @@ contextBridge.exposeInMainWorld("ade", {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, arg);
     },
-    resize: async (arg: {
-      ptyId: string;
-      cols: number;
-      rows: number;
-    }): Promise<void> => {
+    resize: async (
+      arg: {
+        ptyId: string;
+        cols: number;
+        rows: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "pty", "resize", { args: arg });
+        return;
+      }
       const runtime = await callProjectRuntimeActionIfBound<void>(
         "pty",
         "resize",

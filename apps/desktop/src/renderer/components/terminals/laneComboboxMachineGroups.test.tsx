@@ -13,7 +13,7 @@ import {
   autoCreateLaneOptionId,
   isAutoCreateLaneOptionId,
   machineIdFromAutoCreateLaneOptionId,
-} from "../terminals/LaneCombobox";
+} from "./LaneCombobox";
 
 afterEach(cleanup);
 

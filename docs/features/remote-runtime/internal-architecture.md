@@ -128,9 +128,17 @@ flow again. A paired
 identity fails closed and requires re-pairing rather than rewriting the saved
 identity.
 
-## Local-vs-remote work warning
+## Cross-machine divergence
 
-`remoteRuntimeCheckLocalWork` compares a remote project's git origin with local projects. It checks both recent desktop projects and projects known to the local runtime's project registry, then runs `git status --porcelain` on matches. It no longer gates the open: the confirmation it used to drive only warned that a separate remote tab was being created, which one-tab-per-repository made meaningless. The same origin comparison now feeds tab grouping (`projectTabGrouping.ts`), and the risk it was really guarding against — two machines pushing the same branch from different commits — is caught at push time by `laneDivergence.ts`.
+Opening a project on another machine is not gated by a confirmation. The git-origin comparison that used to power one now feeds tab grouping (`projectTabGrouping.ts`), and the risk it was really guarding against — two machines pushing the same branch from different commits — is caught at push time by `shared/laneDivergence.ts`.
+
+`detectPushDivergence` runs at click time on the push button, from lane state the renderer already holds (`LaneSummary.branchRef` + `LaneStatus.ahead/behind`, unioned across machines by `renderer/state/crossMachineLanes.ts`). No lane record in ADE carries a head sha, so the rule is grounded in `ahead` instead: another machine holding the same branch with unpushed commits would have them stranded when the upstream tip moves. Head shas are used only to silence the guard when two machines are proven to sit on the same commit — an unknown head never suppresses a warning, because the false-negative direction on a destructive push is the expensive one. Machine identity is compared by id (`shared/machineIdentity.ts`), never by name, so the guard cannot mistake This Mac for another machine.
+
+## Per-chat runtime routing
+
+A lane owns its machine; a chat inherits its machine from its lane through `laneId`. Because the Work sidebar is a union across every open machine, the user can click a chat whose lane lives on a machine this window's project tab is not bound to. `renderer/lib/chatMachineRouting.ts` derives the `OpenProjectBinding` that chat's calls must target and returns `null` when the chat already lives on the active binding.
+
+Preload consumes that as an optional trailing pin on chat/session APIs (`callPinnedOrBoundRuntimeActionOr`): with a pin the call goes to the pinned runtime through `callPinnedRuntimeAction`; without one it takes the unchanged bound path and its IPC fallback. The tab's binding is never rewritten by opening a chat — rebinding would move Lanes, PRs, Files, Git, and Run with it. Switching the tab's machine stays an explicit action (the tab's machine menu, or clicking a foreign *lane*).
 
 ## Sync command scoping
 
