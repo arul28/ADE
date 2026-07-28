@@ -13,7 +13,7 @@ See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof cap
 
 ## Runtime ownership
 
-The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, review, route, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
+The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, delete, broken-record audit/prune/recovery, review compatibility updates, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
 
 - **Local runtime:** artifacts on the user's machine, under the local project root.
 - **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface; raw artifact bytes are not synced back to the desktop machine.
@@ -30,12 +30,8 @@ the remote host.
 ### Services (apps/desktop/src/main/services/computerUse/)
 
 - `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingest`), listing (`listArtifacts`), deletion (`deleteArtifacts`, `deleteArtifactsForLane`, `pruneBrokenArtifacts`, `purgeArtifactRecordsUnder`), recovery (`recoverArtifact`), broken-record reporting (`listBrokenArtifacts`), compatibility review-state management (`updateArtifactReview`), backend status (`getBackendStatus`), and bounded preview reads (`readArtifactPreview`, 10 MiB maximum). Image previews cover BMP/GIF/JPEG/PNG/SVG/WebP; video previews cover M4V/MOV/MP4/OGV/WebM. Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
-- `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (recent artifacts + activity) and `ComputerUseSettingsSnapshot` (backend readiness, capabilities). Pure assembly layer over the broker.
+- `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (owner-scoped artifacts, latest active backend, summary, and artifact-derived activity) over the broker. It does not synthesize timestamped readiness activity.
 - `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
-
-### Proof adapters
-
-- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — parses agent-browser payload shapes (screenshots, videos, traces, verification, console logs) into `ComputerUseArtifactInput[]`.
 
 ### Direct Codex Computer Use
 
@@ -64,15 +60,18 @@ Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUs
 
 Each channel routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
 
-The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's transcript/drawer collections go through the same broker instance.
+The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`, `delete_computer_use_artifacts`, `list_broken_computer_use_artifacts`, `prune_broken_computer_use_artifacts`, `recover_computer_use_artifact`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's transcript/drawer collections go through the same broker instance.
 
 ### Renderer
 
 - `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — shared
-  proof card, transcript-tail collection, in-app lightbox, and full drawer for
-  the active chat session. Local files use ADE's range-capable artifact protocol;
-  remote files use `ade.proof.readArtifactPreview`. Neither path falls back to
-  Finder.
+  proof card, in-app lightbox, full drawer, availability/error states, and
+  irreversible delete action for the active chat session. Local files use ADE's
+  range-capable artifact protocol; remote files use
+  `ade.proof.readArtifactPreview`. Neither path falls back to Finder.
+- `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`,
+  `chatCardPrimitives.tsx` — bucket artifacts by capture time into the completed
+  turn that produced them and render the collapsed inline filmstrip.
 - `apps/desktop/src/renderer/lib/computerUse.ts`, `renderer/lib/proof.ts` — renderer helpers that call `window.ade.proof.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.
@@ -81,7 +80,7 @@ The `ade-cli` headless surface registers the same broker and exposes the equival
 
 `ComputerUseArtifactRecord` in `computer_use_artifacts`:
 
-- `id`, `artifact_kind`, `backend_style`, `backend_name`, `source_tool_name`, `original_type`, `title`, `description`, `uri`, `storage_kind`, `mime_type`, `metadata_json`, `created_at`.
+- `id`, `artifact_kind`, `backend_style`, `backend_name`, `source_tool_name`, `original_type`, `title`, `description`, `uri`, `storage_kind`, `mime_type`, `metadata_json`, optional `lane_id`, `created_at`.
 
 `ComputerUseArtifactLink` in `computer_use_artifact_links`:
 
@@ -105,25 +104,43 @@ Canonical `ComputerUseArtifactKind` values:
 
 ## Ingestion pipeline
 
-`computerUseArtifactBrokerService.ingestArtifacts({ inputs, owners, backend, sourceToolName? })`:
+`computerUseArtifactBrokerService.ingest({ inputs, owners, backend, callerRoot? })`:
 
 1. Dedupe owners by `kind:id:relation`.
-2. For each input, resolve storage: path (validated against the allowed-roots list), remote URI (http(s)), inline text, inline JSON.
+2. Resolve every input before writing any row. Relative paths try the caller's
+   lane-worktree root before the project root; a missing or invalid member
+   rejects the whole batch.
 3. Materialize inline content via `createComputerUseArtifactPath` + `writeTextAtomic`.
-4. For on-disk sources, copy into the project artifacts dir via `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename to resist symlink tricks).
-5. Insert the canonical record + all owner links.
-6. Emit a `ComputerUseEventPayload` on `ade.proof.event`.
+4. For on-disk sources, realpath-check the allow/deny roots, enforce the
+   evidence-extension allow-list, and copy into the project artifacts dir via
+   `secureCopyFromDescriptor` (`O_NOFOLLOW` + atomic rename).
+5. Resolve optional `lane_id` from a lane owner or owning chat.
+6. Insert the canonical record + all owner links.
+7. Emit `artifact-ingested` / `artifact-linked` payloads on `ade.proof.event`.
 
 Allowed import roots (the trust boundary for external file paths):
 
 ```
 layout.artifactsDir      // .ade/artifacts
+layout.cacheDir          // .ade/cache
 layout.tmpDir            // .ade/tmp
+layout.worktreesDir      // managed lane worktrees
+projectRoot              // captures written beside project source
 os.tmpdir()              // OS temp
 ~/.agent-browser         // agent-browser's output dir
 ```
 
-Other paths are rejected.
+Runtime-owned callers can add explicit trusted roots; `.ade/secrets` is always
+denied. Project-local `.env`, database, key, and certificate files remain
+rejected by the extension gate even though `projectRoot` is allowed.
+
+`ComputerUseArtifactView.availability` is `available`, `missing_file`, or
+`unimported` (optional for older hosts). Broken records can be listed, pruned,
+or recovered through the typed CLI/action surface. Deletion removes records and
+only files that resolve inside the artifact jail. Destructive lane deletion
+removes lane-attributed proof unless another lane's chat owns it; archive does
+not. Settings proof cleanup and project-local-data reset remove matching rows
+with the bytes.
 
 ## What the rebuild removed
 

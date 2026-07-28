@@ -8,7 +8,6 @@ The later sections describe the historical Ghost OS / agent-browser / local-fall
 
 - `apps/desktop/src/main/services/computerUse/controlPlane.ts` — pre-rebuild `buildComputerUseOwnerSnapshot` + capability/Ghost-OS helpers. The current build keeps the snapshot assembly path; the policy/Ghost-OS readiness helpers are vestigial.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `createComputerUseArtifactPath`, `toProjectArtifactUri`. Capability detection (`screencapture`, `open`, `swift`, `osascript`) reflects the runtime host's environment.
-- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests on the runtime host.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus` (emits `ComputerUseBackendStatus`), `secureCopyFromDescriptor` (symlink-safe path-based ingest), backend enumeration.
 - `apps/desktop/src/main/utils/codexComputerUse.ts` — current direct Codex client resolver and signature/opt-in boundary.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — injects the MCP config into app-server threads and maps Computer Use MCP calls/elicitations into chat events.
@@ -90,38 +89,26 @@ The remaining sections document the retired readiness/policy model.
 
 ## agent-browser
 
-**Transport:** CLI-native. Not an ADE CLI. Runs externally, produces a manifest or output files, ADE ingests after the fact.
+**Transport:** external CLI. It runs outside ADE and produces output files;
+ADE ingests only the explicit paths the caller supplies through
+`ade proof attach` or `ingest_computer_use_artifacts.inputs`.
 
-**Installation flow:**
-
-1. Install the `agent-browser` CLI locally.
-2. Confirm in Settings > Computer Use that the CLI is detected (`commandExists("agent-browser")`).
-3. Run agent-browser externally.
-4. Ingest its manifests or output files into ADE via the broker.
-
-**Payload parser** (`agentBrowserArtifactAdapter.ts`):
-
-`parseAgentBrowserArtifactPayload(payload)` accepts either an array of entries or an object with recognized fields:
-
-- `artifacts: []` — explicit array of entries (`{ kind, title, description, path, uri, text, json, mimeType, rawType, metadata }`).
-- Direct mappings:
-  - `screenshotPath` / `imagePath` -> `screenshot`.
-  - `videoPath` -> `video_recording`.
-  - `tracePath` -> `browser_trace`.
-  - `consoleLogsPath` / `consoleLogPath` -> `console_logs`.
-  - `verificationPath` -> `browser_verification`.
-- Direct text mappings:
-  - `consoleLogs` / `consoleLog` -> `console_logs` (inline text).
-  - `verificationText` -> `browser_verification` (inline text).
-
-`loadAgentBrowserArtifactPayloadFromFile(filePath)` is the convenience wrapper — reads JSON and parses.
+The retired manifest adapter and its backend-specific field aliases were
+deleted. ADE no longer interprets an arbitrary agent-browser JSON payload or
+accepts `manifestPath`; the caller names each proof input using the canonical
+`ComputerUseArtifactInput` shape.
 
 **Kind inference fallback:**
 
 - `normalizeInputKind` reads the explicit `kind`, then `rawType`, then `title`.
 - If nothing matches, `input.text` present implies `console_logs`; otherwise defaults to `browser_verification`.
 
-**Allowed-source enforcement:** When ingesting agent-browser artifacts by path, the path must resolve within one of the allowed roots (`.ade/artifacts`, `.ade/tmp`, `os.tmpdir()`, `~/.agent-browser`). Paths outside these roots are rejected.
+**Allowed-source enforcement:** When ingesting agent-browser artifacts by path,
+the path must resolve within a broker-approved root (including
+`~/.agent-browser`, project/lane/cache/temp roots, or a narrowly injected
+browser-observation root), must not resolve under `.ade/secrets`, and must have
+an allow-listed evidence extension. The broker securely copies it into the
+artifact store before persisting the row.
 
 ## ADE local (fallback-only)
 

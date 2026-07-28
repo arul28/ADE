@@ -107,11 +107,15 @@ the directory first:
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.
-7. Remove lane pack artifacts and delete the lane's database rows in
-   one transaction. Stale state in `key_value`, `operations`,
-   `sessions`, etc. that references the lane is either cascaded
-   (via FK ON DELETE) or retained for audit as documented on each
-   table.
+7. Collect lane-owned proof paths while chat/lane ownership rows still exist,
+   resolving each through the realpath-confined `.ade/artifacts` jail. Remove
+   the stored files, remove lane pack artifacts, and delete the lane's database
+   rows in one transaction. An artifact belongs to the lane through
+   `computer_use_artifacts.lane_id` or a legacy explicit lane link; an artifact
+   also owned by a chat in another lane is preserved. Archive does none of this.
+   Stale state in `key_value`, `operations`, `sessions`, etc. that references
+   the lane is either cascaded (via FK ON DELETE) or retained for audit as
+   documented on each table.
 
 Independent lane deletes can run through the pre-removal teardown at
 the same time. The shared guard is scoped to the actual

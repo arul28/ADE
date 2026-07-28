@@ -5928,7 +5928,7 @@ describe("ADE CLI", () => {
     // having to guess which tree a bare "shots/proof.png" belongs to.
     const plan = buildCliPlan(["proof", "attach", "shots/proof.png"]);
     expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
+    if (plan.kind !== "execute") throw new Error("Expected proof attach to produce an execute plan");
 
     const args = plan.steps[0]?.params?.arguments as Record<string, unknown>;
     expect(args.callerRoot).toBe(process.cwd());
@@ -5940,7 +5940,7 @@ describe("ADE CLI", () => {
   it("maps proof rm and prune --broken to the delete actions", () => {
     const rm = buildCliPlan(["proof", "rm", "artifact-1", "artifact-2"]);
     expect(rm.kind).toBe("execute");
-    if (rm.kind !== "execute") return;
+    if (rm.kind !== "execute") throw new Error("Expected proof rm to produce an execute plan");
     expect(rm.steps[0]?.params).toMatchObject({
       name: "delete_computer_use_artifacts",
       arguments: { artifactIds: ["artifact-1", "artifact-2"] },
@@ -5948,7 +5948,7 @@ describe("ADE CLI", () => {
 
     const prune = buildCliPlan(["proof", "prune", "--broken"]);
     expect(prune.kind).toBe("execute");
-    if (prune.kind !== "execute") return;
+    if (prune.kind !== "execute") throw new Error("Expected proof prune --broken to produce an execute plan");
     expect(prune.steps[0]?.params).toMatchObject({
       name: "prune_broken_computer_use_artifacts",
     });
@@ -5956,9 +5956,27 @@ describe("ADE CLI", () => {
     // Bare `prune` only reports; removal has to be asked for explicitly.
     const dryRun = buildCliPlan(["proof", "prune"]);
     expect(dryRun.kind).toBe("execute");
-    if (dryRun.kind !== "execute") return;
+    if (dryRun.kind !== "execute") throw new Error("Expected bare proof prune to produce an execute plan");
     expect(dryRun.steps[0]?.params).toMatchObject({
       name: "list_broken_computer_use_artifacts",
+    });
+  });
+
+  it("maps proof broken and recover to artifact repair actions", () => {
+    const broken = buildCliPlan(["proof", "broken", "--arg", "limit=25"]);
+    expect(broken.kind).toBe("execute");
+    if (broken.kind !== "execute") throw new Error("Expected proof broken to produce an execute plan");
+    expect(broken.steps[0]?.params).toEqual({
+      name: "list_broken_computer_use_artifacts",
+      arguments: { limit: 25 },
+    });
+
+    const recover = buildCliPlan(["proof", "recover", "artifact-1"]);
+    expect(recover.kind).toBe("execute");
+    if (recover.kind !== "execute") throw new Error("Expected proof recover to produce an execute plan");
+    expect(recover.steps[0]?.params).toEqual({
+      name: "recover_computer_use_artifact",
+      arguments: { artifactId: "artifact-1" },
     });
   });
 

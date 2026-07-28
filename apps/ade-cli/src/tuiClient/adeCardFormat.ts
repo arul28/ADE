@@ -60,6 +60,19 @@ function adeCardProgressBar(card: AdeCardPayload): string | null {
   return bar.slice(0, width);
 }
 
+function formatCardDuration(durationMs: number | null | undefined): string | null {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return null;
+  if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const seconds = Math.round(durationMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m${remainingSeconds ? ` ${remainingSeconds}s` : ""}`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ""}`;
+}
+
 /**
  * Box-drawn `ade_card`, the TUI's ambient equivalent of the desktop card:
  * a row in the transcript, not a new pane.
@@ -74,7 +87,8 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
   const failing = (card.progress?.failed ?? 0) > 0
     || (card.rows ?? []).some((row) => normalizeAdeCardTone(row.tone) === "warning")
     || (card.metrics ?? []).some((metric) => normalizeAdeCardTone(metric.tone) === "warning");
-  const glyph = card.state === "live" ? "◐" : failing ? "✕" : "✓";
+  const degradedReason = card.degradedReason?.trim() || null;
+  const glyph = card.state === "live" ? "◐" : failing ? "✕" : degradedReason ? "!" : "✓";
   const heading = singleLine(
     [card.title, card.subtitle?.trim() || null].filter(Boolean).join(" · "),
     ADE_CARD_INNER_WIDTH - 6,
@@ -90,12 +104,27 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
   const metrics = (card.metrics ?? []).map((metric) => `${metric.value} ${metric.label}`.trim());
   if (metrics.length) lines.push(adeCardBoxRow(metrics.join("  ")));
 
+  const duration = formatCardDuration(card.durationMs);
+  const statusMeta = [
+    card.stale ? "stale" : null,
+    duration ? `ran ${duration}` : null,
+  ].filter((value): value is string => Boolean(value));
+  if (degradedReason) {
+    lines.push(adeCardBoxRow("! detail unavailable", statusMeta.join(" · ")));
+    lines.push(adeCardBoxRow(singleLine(degradedReason, ADE_CARD_INNER_WIDTH - 2)));
+  } else if (statusMeta.length) {
+    lines.push(adeCardBoxRow(statusMeta.join(" · ")));
+  }
+
   const rows = (card.rows ?? []).slice(0, 5);
   if (rows.length) {
     lines.push(adeCardBoxRow(""));
     for (const row of rows) {
       const rowGlyph = row.icon ? ADE_CARD_ROW_GLYPHS[row.icon] ?? "·" : "·";
       lines.push(adeCardBoxRow(`${rowGlyph} ${row.text}`, row.detail?.trim() ?? ""));
+    }
+    if ((card.rowsTruncated ?? 0) > 0) {
+      lines.push(adeCardBoxRow(`+${card.rowsTruncated} more`));
     }
   }
 

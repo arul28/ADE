@@ -1935,9 +1935,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
     $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof rm artifact-id                      Delete stored proof and its record
+    $ ade proof broken --text                       List proof whose stored file is unavailable
+    $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
+    $ ade proof prune                               Preview broken proof records (does not delete)
+    $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
 `,
   "ios-sim": `${ADE_BANNER}
   iOS Simulator

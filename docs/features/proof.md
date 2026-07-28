@@ -8,6 +8,20 @@ The old system sat upstream of the agent and tried to normalize every backend. I
 
 The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
 
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` | Canonical ingest, list, delete, broken-record audit/prune/recovery, lane/project cleanup, review compatibility fields, and bounded preview reads. |
+| `apps/desktop/src/main/services/computerUse/controlPlane.ts` | Owner-scoped snapshots used by the proof drawer. |
+| `apps/desktop/src/main/services/computerUse/localComputerUse.ts` | Local capture capabilities plus artifact path/URI helpers. |
+| `apps/desktop/src/main/services/state/kvDb.ts` | `computer_use_artifacts` / `computer_use_artifact_links` schema, including the optional lane ownership column used by lane cleanup. |
+| `apps/desktop/src/shared/types/computerUseArtifacts.ts` | Cross-process artifact, availability, deletion, recovery, event, and owner contracts. |
+| `apps/desktop/src/main/services/adeActions/registry.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts` | Runtime action, IPC, and renderer bridge for the proof surface. |
+| `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
+| `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
+| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
+
 ## Runtime ownership
 
 Proof storage and the broker are owned by the ADE runtime (`ade serve`) that owns the project. Artifacts on disk live under the runtime machine's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote machine. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
@@ -55,7 +69,7 @@ The CLI infers the proof kind from the file extension:
 | `.png`, `.jpg`/`.jpeg`, `.webp`, `.gif`, `.heic`/`.heif`, `.tif`/`.tiff` | `screenshot` |
 | `.mov`, `.mp4`, `.m4v`, `.webm` | `video_recording` |
 | `.zip`, `.har` | `browser_trace` |
-| anything else | `browser_verification` |
+| any other allow-listed extension | `browser_verification` |
 
 Example:
 
@@ -64,6 +78,12 @@ ade proof attach /tmp/playwright-run/checkout-success.png --caption "checkout fl
 ```
 
 The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
+
+On-disk imports are intentionally allow-listed to renderable evidence types
+(images, video, browser traces, and text/log files). Files such as `.env`,
+databases, private keys, and certificates are rejected even when they are under
+the project root. The broker resolves symlinks for both its allow- and deny-root
+checks and opens the source with `O_NOFOLLOW` before copying.
 
 ### `ade proof list`
 
@@ -81,6 +101,16 @@ No args: lists the inferred session. Primarily for agents to see what they have 
 - `ade proof record --seconds <n>` records a short video proof where supported.
 - `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
 - `ade proof ingest --input-json ...` ingests externally produced artifacts directly through the proof broker.
+- `ade proof rm <artifact-id> [<artifact-id>…]` irreversibly deletes the selected
+  records and any stored files inside the artifact jail. Missing ids are
+  reported but do not make deletion non-idempotent.
+- `ade proof broken` lists records whose file is missing or whose historic URI
+  never pointed into the artifact store.
+- `ade proof prune` is the non-destructive broken-record listing; add
+  `--broken` to delete every broken record.
+- `ade proof recover <artifact-id>` re-imports a broken record when its original
+  file still exists in an allowed project, lane-worktree, cache, temp, or
+  browser-output root.
 
 ---
 
@@ -118,9 +148,27 @@ Images live on disk under the project's `.ade/` scaffold on the runtime host:
 
 (Path will move to `.ade/artifacts/proof/` in a future phase.)
 
-Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the new system are a small subset of what the table carries today: `id`, `kind` (`screenshot` for captures; attached files are normalized to screenshot, video recording, browser trace, or browser verification by extension), `uri`, `mime_type`, `caption`, `created_at`, plus the owner link row.
+Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the proof surface include `id`, `kind`, `uri`, `mime_type`, `title`/`description`, `lane_id`, and `created_at`, plus the owner link rows. `lane_id` is resolved from an explicit lane owner or from the owning chat session; it is optional on the wire for compatibility with older runtimes.
 
-There is no retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out automatically. For remote-runtime projects, the disk being filled is the remote host's, not the desktop machine's.
+There is no age-based retention policy. Captures persist until the user deletes
+them, deletes their lane, clears project-local artifacts, or removes the proof
+storage category in Settings. All of those paths delete matching database rows
+with the bytes so the drawer never retains knowingly dead tiles. Archiving a
+lane is non-destructive. For remote-runtime projects, the disk being filled is
+the remote host's, not the desktop machine's.
+
+Ingest resolves every item in a batch before inserting any row. A missing file,
+denied source, disallowed extension, or path outside the allowed roots fails the
+whole batch instead of leaving a half-committed retry. Relative paths resolve
+from the caller's lane worktree (`callerRoot`) before the project root.
+
+Each view includes an optional availability classification:
+
+- `available` — URL-backed or stored bytes are readable.
+- `missing_file` — a canonical artifact URI exists but the file is gone.
+- `unimported` — a historic record points outside the artifact store.
+
+Older hosts may omit the field; clients optimistically attempt the preview.
 
 ADE browser-agent observations are intentionally not proof. `ade browser observe` and post-action browser observations write scratch PNG/JSON files under `.ade/cache/browser-observations/` for project collections and the current ADE channel's machine-local `browser-observations/personal/` root for personal collections. They include a bounded DOM element list plus console/network diagnostics by default for agent targeting, can add a numbered visual UI map with `--map`, and prune to the latest 3 observations per tab by default. DOM elements carry short-lived handles such as `obs-...:e:3` so agents can click/fill/press/wait without another hit-test, including same-origin iframe/open-shadow-root targets when the observation captured that context. `ade browser session start --tab <id>` only creates a reusable tab-targeting handle for repeated agent actions; session observations and traces are still scratch state until promoted. `ade browser trace --tab <id>` or `ade browser trace --browser-session <id>` exposes the bounded per-tab action log for debugging but remains scratch state. Promote only reviewer-facing checkpoints into proof through `ade browser proof --tab <id> --caption "..."`, `ade browser proof --browser-session <id> --caption "..."`, the shorthand `ade browser session proof <session-id> --caption "..."`, or the lower-level `ade proof attach` / `ingest` commands. The proof broker explicitly allows the project cache and personal browser scratch roots so browser scratch PNGs can be promoted without accepting arbitrary user-data files.
 
@@ -130,13 +178,16 @@ ADE browser-agent observations are intentionally not proof. `ade browser observe
 
 Proof surfaces across chat and linked workflow contexts:
 
-- **Chat transcript** — the latest six proof items render at the thread tail
-  with image thumbnails or inline video. Images open in an in-app lightbox.
-  Earlier items link to the drawer rather than making the thread unbounded.
+- **Chat transcript** — proof is bucketed by capture time into the turn that
+  produced it. The turn rule shows a compact `N proof` control; expanding it
+  reveals a horizontally scrollable filmstrip directly below that turn. It
+  starts collapsed, remains in chronology when newer messages arrive, and is
+  never pinned to the thread tail.
 - **Proof drawer** — the current chat's complete collected set, with the same
-  previews and captions. It is a collection view, not an approval workflow:
-  there are no accept/reject/publish controls and local files are never handed
-  to Finder just to see them.
+  previews and captions plus irreversible artifact deletion. It is a
+  collection view, not an approval workflow: there are no
+  accept/reject/publish controls and local files are never handed to Finder
+  just to see them.
 - **iOS chat** — proof stays in the message timeline and the existing artifact
   sheet, with preview/share actions but no review-state chrome.
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
@@ -144,7 +195,9 @@ Proof surfaces across chat and linked workflow contexts:
 Both clients resolve media through the owning runtime instead of opening the
 runtime host's filesystem path. Desktop uses ADE's range-capable artifact
 protocol for local media and `ade.proof.readArtifactPreview` for remote media;
-the RPC response is capped at 10 MiB. iOS requests artifact content over its
+the RPC response is capped at 10 MiB. The inline filmstrip can resolve local
+project-relative artifacts synchronously; remote filmstrip tiles fall back to a
+kind label and open the drawer, which performs the bounded runtime read. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is
 unreachable or a desktop remote preview exceeds its bound, the artifact remains
 listed with an unavailable-preview state.
@@ -207,6 +260,5 @@ The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBroke
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
 - `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.
-- `apps/desktop/src/main/services/proof/agentBrowserArtifactAdapter.ts` parses agent-browser output into `ComputerUseArtifactInput[]`.
 
 Provider execution can be provisioned by ADE (for example the signed direct Codex Computer Use MCP client), but proof remains explicit. Every piece downstream of `ade proof` is a thin line to disk, a broker insert, and the drawer. No passive observer promotes provider tool calls automatically — the proof observer was deleted with this rebuild, along with `ComputerUsePolicy` and the Settings > Computer Use panel.

@@ -303,6 +303,9 @@ apps/ios/
 │   │   │                            #   file-change transcript cards, inline
 │   │   │                            #   subagent spawn/result/background-chip
 │   │   │                            #   timeline rows, plus the unified Chat
+│   │   │                            #   rich `ade_card` rows (duration,
+│   │   │                            #   degraded/stale state, truncated counts,
+│   │   │                            #   and failure-only mobile CI detail),
 │   │   │                            #   Info sheet — ordered Subagents /
 │   │   │                            #   Background / Schedule sections mirroring
 │   │   │                            #   desktop — the subagent strip/badge, and
@@ -335,10 +338,11 @@ apps/ios/
 │   │   │                            #   selections, over App Group UserDefaults;
 │   │   │                            #   debounced autosave + workPersistedDraft
 │   │   │                            #   view modifier),
-│   │   │                            # WorkArtifactTerminalViews (in-thread
-│   │   │                            #   artifact card with a friendly
-│   │   │                            #   "Preview isn't available" fallback when
-│   │   │                            #   the blob can't render on-device),
+│   │   │                            # WorkArtifactTerminalViews (minimal
+│   │   │                            #   collapsed in-thread proof row with a
+│   │   │                            #   44pt target, compact thumbnail/status,
+│   │   │                            #   expandable preview, and a friendly
+│   │   │                            #   unavailable fallback),
 │   │   │                            # TerminalSessionScreen + SwiftTermSessionView
 │   │   │                            #   (full-screen SwiftTerm terminal,
 │   │   │                            #   offset resume/history paging +

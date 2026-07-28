@@ -805,6 +805,7 @@ create table if not exists computer_use_artifacts (
       storage_kind text not null,
       mime_type text,
       metadata_json text not null default '{}',
+      lane_id text,
       created_at text not null,
       foreign key(project_id) references projects(id)
     );
@@ -812,6 +813,10 @@ create table if not exists computer_use_artifacts (
 create index if not exists idx_computer_use_artifacts_project_created on computer_use_artifacts(project_id, created_at);
 
 create index if not exists idx_computer_use_artifacts_project_kind on computer_use_artifacts(project_id, artifact_kind);
+
+alter table computer_use_artifacts add column lane_id text;
+
+create index if not exists idx_computer_use_artifacts_lane on computer_use_artifacts(project_id, lane_id);
 
 create table if not exists computer_use_artifact_links (
       id text primary key,

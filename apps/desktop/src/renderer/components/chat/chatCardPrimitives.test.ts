@@ -15,9 +15,6 @@ describe("humanizeAgentIdentity", () => {
       ref: "#927",
       raw: "/ROOT/SHIP_POLL_927",
     });
-  });
-
-  it("keeps the raw value for the tooltip so nothing is lost", () => {
     expect(humanizeAgentIdentity("/root/review_fixer")?.raw).toBe("/root/review_fixer");
     expect(humanizeAgentIdentity("/root/review_fixer")?.label).toBe("Review fixer");
     expect(humanizeAgentIdentity("/root/review_fixer")?.ref).toBeNull();

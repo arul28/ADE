@@ -1994,6 +1994,10 @@ func workAdeCardContentMergeKey(_ card: WorkAdeCardModel) -> String {
     card.isTerminal ? "terminal" : "live",
     card.title,
     card.subtitle ?? "",
+    card.durationMs.map(String.init) ?? "",
+    card.degradedReason ?? "",
+    card.isStale == true ? "stale" : "",
+    card.rowsTruncated.map(String.init) ?? "",
     card.fallbackText,
   ]
   parts.append(card.metrics.map { "\($0.label)\t\($0.value)\t\($0.tone.rawValue)" }.joined(separator: "\n"))

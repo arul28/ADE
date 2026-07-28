@@ -1431,4 +1431,69 @@ describe("ade_card (TUI)", () => {
     const textIndex = lines.findIndex((line) => line.body.includes("meanwhile"));
     expect(cardIndex).toBeLessThan(textIndex);
   });
+
+  it("preserves trusted detail and labels it stale when a degraded refresh lands", () => {
+    const initial = card({
+      rows: [{ icon: "pass", text: "lint", detail: "passed" }],
+      rowsTruncated: 2,
+      metrics: [{ label: "jobs", value: "3" }],
+      progress: { passed: 3, failed: 0, running: 0, queued: 0 },
+    });
+    const degraded = card({
+      rows: [],
+      progress: { passed: 0, failed: 0, running: 0, queued: 0 },
+      degradedReason: "HTTP 403: rate limited",
+    });
+
+    const degradedBody = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, initial),
+        env("2026-07-27T12:01:00.000Z", 2, degraded),
+      ],
+    }).at(-1)!.body;
+    expect(degradedBody).toContain("lint");
+    expect(degradedBody).toContain("3 jobs");
+    expect(degradedBody).toContain("+2 more");
+    expect(degradedBody).toContain("detail unavailable");
+    expect(degradedBody).toContain("stale");
+    expect(degradedBody).toContain("HTTP 403: rate limited");
+
+    const recoveredBody = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, initial),
+        env("2026-07-27T12:01:00.000Z", 2, degraded),
+        env("2026-07-27T12:02:00.000Z", 3, card({
+          rows: [{ icon: "pass", text: "tests", detail: "passed" }],
+          progress: { passed: 1, failed: 0, running: 0, queued: 0 },
+          degradedReason: null,
+        })),
+      ],
+    }).at(-1)!.body;
+    expect(recoveredBody).toContain("tests");
+    expect(recoveredBody).not.toContain("lint");
+    expect(recoveredBody).not.toContain("stale");
+    expect(recoveredBody).not.toContain("detail unavailable");
+  });
+
+  it("renders a card's measured duration with an hour unit", () => {
+    const body = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          durationMs: 3_723_000,
+          rows: [{ icon: "file", text: "report.md" }],
+          rowsTruncated: 4,
+        })),
+      ],
+    }).at(-1)!.body;
+
+    expect(body).toContain("ran 1h 2m");
+    expect(body).toContain("report.md");
+    expect(body).toContain("+4 more");
+  });
 });

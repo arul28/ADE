@@ -289,6 +289,10 @@ func workAdeCardModel(
     progress: workAdeCardProgress(from: eventDict["progress"]),
     navTarget: workAdeCardNavTarget(from: eventDict["navTarget"]),
     actions: workAdeCardActions(from: eventDict["actions"]),
+    durationMs: optionalWorkInt(eventDict["durationMs"]),
+    degradedReason: optionalString(eventDict["degradedReason"]),
+    isStale: eventDict["stale"] as? Bool,
+    rowsTruncated: optionalWorkInt(eventDict["rowsTruncated"]).map { max(0, $0) },
     fallbackText: fallbackText,
     turnId: turnId,
     timestamp: timestamp

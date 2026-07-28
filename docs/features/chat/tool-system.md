@@ -108,7 +108,7 @@ chat gets these four tools in its palette.
 ### Proof capture
 
 `captureScreenshot` files the resulting image through
-`computerUseArtifactBrokerService.ingestArtifacts()`. It is not gated by
+`computerUseArtifactBrokerService.ingest()`. It is not gated by
 a policy — the proof-observer model (and `ComputerUsePolicy`) was
 removed. The tool still reports `blocked_by_capability` when it runs on
 a platform without a supported capture backend (Linux/Windows); the
