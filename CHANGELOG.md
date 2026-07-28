@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.40] - 2026-07-27
+
+### Projects, machines, and lanes
+
+- Grouped same-repository checkouts into one project tab with a connected-machine switcher.
+- Unified Work chats across connected machines and routed each chat, transcript, terminal, attachment, and action to its pinned machine without rebinding the window.
+- Added machine-aware lane creation with repository availability and disk headroom, plus a guard for pushes that would hide a newer same-branch commit on another machine.
+- Centralized repository and machine identity so remote caches, recent projects, tabs, lanes, and chats resolve the same project consistently.
+
+### Pull requests
+
+- Redesigned the PR overview into persistent, resizable rails with a pinned merge block and more space for comments and checks.
+- Added Graph, List, and Failures views derived from the exact workflow YAML, including matrix collapsing, live step state, stale-head detection, failing-step excerpts, and guarded reruns.
+- Added durable PR event cards for CI, reviews, conflicts, merge readiness, and merges across desktop, iOS, and `ade code`.
+- Fixed GitHub rate-limit classification and stopped live PR polling from rearming its own high-frequency refresh window.
+
+### Chats, files, and agents
+
+- Made chat file paths reveal the correct file in the workbench and added a constrained HTML preview with source access.
+- Upgraded the Claude Agent SDK harness with authoritative context metering, queue-aware stop, and an eight-second Undo action across clients.
+- Added configurable and PR-aware session settlement behavior without marking unfinished sessions complete.
+
+### Updates, sync, and mobile
+
+- Prevented native updates from force-quitting before staging completed and added richer install, retry, and status reporting.
+- Improved sync ownership validation, stale connection reclamation, diagnostics, and pairing identity continuity.
+- Reduced iOS chat reopening latency and duplicate snapshot work with retained subscriptions, bounded retries, and lighter transcript rendering.
+
 ## [1.2.39] - 2026-07-27
 
 ### Work session lifecycle
@@ -1071,7 +1099,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.39...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.40...HEAD
+[1.2.40]: https://github.com/arul28/ADE/compare/v1.2.39...v1.2.40
 [1.2.39]: https://github.com/arul28/ADE/compare/v1.2.38...v1.2.39
 [1.2.38]: https://github.com/arul28/ADE/compare/v1.2.37...v1.2.38
 [1.2.37]: https://github.com/arul28/ADE/compare/v1.2.36...v1.2.37

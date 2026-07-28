@@ -1,0 +1,38 @@
+---
+title: "v1.2.40"
+description: "Release notes for ADE v1.2.40 - July 27, 2026"
+---
+
+v1.2.40 unifies projects and work across connected machines, redesigns pull request checks around the workflow that actually ran, and adds durable in-chat cards for important PR events. It also makes file paths actionable, adds a safe HTML preview, improves Claude queue controls and context metering, and tightens update, GitHub, session, sync, and iOS chat reliability.
+
+---
+
+## One project can span connected machines
+
+- **Project tabs group by repository.** Checkouts of the same repository appear under one tab with a machine switcher instead of fragmenting the workspace.
+- **The Work sidebar is cross-machine.** Chats from connected machines appear together with clear machine identity and offline state.
+- **Each chat keeps its own route.** Opening a chat on another machine routes that conversation, its transcript, attachments, terminals, and actions without rebinding the whole window.
+- **Lane creation is machine-aware.** ADE shows connected machines, repository availability, and free disk headroom, then creates and filters lanes on the selected host.
+- **Divergent pushes are guarded.** ADE warns when another machine holds a newer commit on the same branch before a push can hide work.
+
+## Pull requests show the workflow, not a wall of checks
+
+- **Overview rails are resizable and persistent.** Comments recover more space, checks fill the right rail, and the merge block remains visible.
+- **Checks have Graph, List, and Failures views.** ADE reconstructs the workflow DAG from the exact GitHub Actions YAML that ran, collapses matrices, tracks live steps, and detects stale heads.
+- **Failures are actionable.** Failing-step excerpts are scoped to the relevant job, with guarded reruns for jobs and checks.
+- **PR events survive the moment.** CI, review, conflict, merge-ready, and merged episodes are stored as durable `ade_card` transcript entries across desktop, iOS, and `ade code`.
+
+## Files and conversations are easier to use
+
+- **File references open the right place.** Clickable paths in chat reveal files in the workbench with stable pending-navigation behavior.
+- **HTML has a safe preview.** ADE renders supported HTML in a constrained viewer while keeping source access available.
+- **Claude queues can be recovered.** Queue-aware stop controls pair with an eight-second Undo action across desktop, iOS, the CLI, and `ade code`.
+- **Context metering is authoritative.** Claude context usage now reflects runtime compaction and recalculation instead of presenting stale totals.
+
+## Releases, sessions, and mobile are more reliable
+
+- **Updates no longer quit too early.** Native staging finishes before ADE exits, retry state is explicit, and `ade update status` reports useful progress and failure detail.
+- **GitHub limits are reported truthfully.** Quota exhaustion, invalid credentials, network failures, and permission problems no longer collapse into the same missing-scope message, while PR refreshes stop extending hot polling indefinitely.
+- **Settling follows real outcomes.** Session lifecycle controls gain configurable behavior and PR-aware automatic settlement without marking unfinished work complete.
+- **iOS chats reopen faster.** Bounded snapshots, retained subscriptions, lost-ack retries, and lighter SwiftUI rendering reduce duplicate work and blank reopening states.
+
