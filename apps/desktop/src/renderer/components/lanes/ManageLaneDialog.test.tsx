@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneDeleteRisk, LaneSummary } from "../../../shared/types";
+import type { LaneDeleteRisk, LaneReclaimRisk, LaneSummary } from "../../../shared/types";
 import {
   ManageLaneDialog,
   EMPTY_LANE_DELETE_SELECTION,
@@ -22,6 +22,18 @@ const deleteRisk: LaneDeleteRisk = {
   activePtyCount: 0,
   activeWatcherCount: 0,
   envInitialized: true,
+};
+const reclaimRisk: LaneReclaimRisk = {
+  ...deleteRisk,
+  laneName: "Manage tabs",
+  worktreePath: "/tmp/ade/manage-tabs",
+  worktreeBytes: 2 * 1024 ** 3,
+  generatedBytes: 100 * 1024 ** 2,
+  reclaimableBytes: 2 * 1024 ** 3 + 100 * 1024 ** 2,
+  worktreeAvailable: true,
+  blockedReasons: [],
+  lastFailure: null,
+  retryCount: 0,
 };
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -92,6 +104,14 @@ describe("ManageLaneDialog tabs", () => {
     (globalThis.window as any).ade = {
       lanes: {
         getDeleteRisk: vi.fn().mockResolvedValue(deleteRisk),
+        getReclaimRisk: vi.fn().mockResolvedValue(reclaimRisk),
+        archiveAndReclaim: vi.fn().mockResolvedValue({
+          laneId: "lane-1",
+          reclaimedBytes: reclaimRisk.reclaimableBytes,
+          worktreeRemoved: true,
+          generatedDataRemoved: true,
+          warnings: [],
+        }),
         onDeleteEvent: vi.fn(() => vi.fn()),
         updateAppearance: vi.fn().mockResolvedValue(undefined),
         reparent: vi.fn().mockResolvedValue(undefined),
@@ -151,6 +171,19 @@ describe("ManageLaneDialog tabs", () => {
     await waitFor(() => {
       expect(screen.getByText("1 chat session")).toBeTruthy();
     });
+  });
+
+  it("explains Archive & Reclaim and requires the typed confirmation", async () => {
+    render(<ManageLaneDialog {...makeProps()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Archive" }));
+
+    expect(await screen.findByText(/files stay on disk/i)).toBeTruthy();
+    expect(screen.getByText(/restoring the lane recreates its worktree/i)).toBeTruthy();
+    const reclaimButton = screen.getByRole("button", { name: /reclaim 2\.1 GB/i });
+    expect((reclaimButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "RECLAIM" } });
+    expect((reclaimButton as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("disables the delete button when nothing is selected", async () => {

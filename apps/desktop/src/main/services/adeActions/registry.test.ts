@@ -457,6 +457,21 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
   });
 
+  it("documents lane reclaim contracts for safe CLI action discovery", () => {
+    expect(getAdeActionInputContract("lane", "getReclaimRisk")).toMatchObject({
+      description: expect.stringContaining("estimated bytes"),
+      input: expect.stringContaining("laneId"),
+    });
+    expect(getAdeActionInputContract("lane", "archiveAndReclaim")).toMatchObject({
+      description: expect.stringContaining("lane, branch, chat, and metadata remain"),
+      input: expect.stringContaining('"RECLAIM"'),
+      example: expect.stringContaining("--confirm RECLAIM"),
+    });
+    expect(getAdeActionInputContract("lane", "unarchive")).toMatchObject({
+      description: expect.stringContaining("recreate"),
+    });
+  });
+
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);

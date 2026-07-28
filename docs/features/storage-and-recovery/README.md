@@ -4,7 +4,7 @@
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. |
+| `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors, creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
 | `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. |
 | `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
@@ -22,7 +22,8 @@
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
-| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. Also runs the **storage doctor**: `runMaintenanceNow()` plus the post-boot (10 min) + daily (24 h) timers that compress history, auto-reap safe staging / obsolete backups / iOS DerivedData, and invoke the kvDb DB-maintenance hooks, writing each run to the maintenance journal and emitting one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` (db breakdown, journal, policy chips, safe-reclaimable total). |
+| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
+| `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
 | `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, review artifacts, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
 | `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. |
@@ -31,13 +32,13 @@
 | `apps/desktop/src/renderer/components/app/ProjectRecoveryScreen.tsx` | Full-project recovery surface for typed open failures, diagnosis, repair progress, next action, and technical details. `ProjectTabHost` in `App.tsx` renders it full-viewport whenever `projectTransitionError` carries a `code` and `rootPath`. |
 | `apps/desktop/src/renderer/components/app/ProjectTransitionErrorAlert.tsx` | Fallback dismissible banner for project open/switch failures that lack a code/rootPath (un-coded string errors); it renders nothing once a coded error hands the surface to `ProjectRecoveryScreen`. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
-| `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard: a "Clean up safely" primary action (runs the doctor, falls back to cleanup-by-target on older daemons), the Health & diagnostics strip, category totals with policy chips, a project-database breakdown card with per-row prune/compact actions, the recent-cleanups journal, cleanup preview/confirmation, and manual history compression. |
+| `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Storage dashboard: plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageMaintenanceJournal.tsx` | Collapsible "Recent cleanups" panel rendering the last runs from the maintenance journal, one humanized line per action. |
 | `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. |
 | `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. The overhaul adds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `daemonMemoryBytes`, `healthChip`, `formatSlowActions`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
-| `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. The overhaul adds the ledger/maintenance surface: `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras` (the optional `extras` on a snapshot), and `RuntimeHealthSnapshot`. |
+| `apps/desktop/src/shared/types/storage.ts` | Shared storage contracts: disk-pressure types, `StorageCategoryId`, `StorageSafety`, `StorageItem`/`StorageCategorySnapshot`/`StorageSnapshot`, and the `StorageCleanupTarget`/`StorageCleanupPreview`/`StorageCleanupResult` DTOs. `StorageItem` carries ownership, age, blocked reasons, reclaim estimate/state, and lane ownership for the review screen; `StorageLifecycleSnapshot` carries the effective four-rule policy plus last/next scan and review counts. The ledger/maintenance surface includes `StorageLedgerEntry`/`StoragePolicyClass`, `MaintenanceAction`/`MaintenanceRunReport`/`MaintenanceTrigger`, `DbBreakdownEntry`, `StorageSnapshotExtras`, and `RuntimeHealthSnapshot`. |
 | `apps/desktop/src/shared/types/recovery.ts` | Typed recovery contracts: the `AdeRecoveryErrorCode` union + `toAdeRecoveryErrorCode`, `AdeLastFailureReport`, `ProjectRecoveryDiagnosis`, the ordered `RepairStepId` list + `ProjectRepairReport`, and `mapKvDbOpenErrorCode`. |
 | `apps/desktop/src/shared/codedError.ts` | `codedError(message, code)`, `encodeCodedErrorMessage`, and the `parseCodedErrorMessage`/`stripElectronErrorWrapper`/`extractCodeFromMessage` decoders that let the renderer recover a `code` through the Electron IPC error-wrapping. Re-exported to the renderer via `apps/desktop/src/renderer/lib/codedError.ts`. |
 
@@ -182,8 +183,8 @@ compressed transcript before reopening it for append.
 | Category | Contents | Default safety |
 |---|---|---|
 | Chats and history | Chat/terminal JSONL, logs, terminal snapshots | `compressible` |
-| Lanes and worktrees | Active, archived, and orphaned managed worktrees | Active `protected`; archived/orphaned `review_first` |
-| Build and release | ADE temp staging and iOS DerivedData | Old/rebuildable `safe_to_remove`; current staging `review_first` |
+| Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`; archived lanes use Archive & Reclaim; orphans `review_first` |
+| Build and release | ADE temp staging, build output, and iOS DerivedData | `review_first` |
 | Caches | Rebuildable cache and update staging | `safe_to_remove`; chat session records `protected` |
 | Proof and attachments | Artifacts, recordings, attachments | `review_first` |
 | Recovery backups | Database migration/recovery backups | `review_first`, or `safe_to_remove` only when old, healthy, and unrelated to a fresh database-open failure |
@@ -194,7 +195,30 @@ Safety values are contracts: `safe_to_remove` is reconstructible,
 requires explicit user confirmation, and `protected` is never a cleanup
 target. Cleanup is preview-confirmed and revalidates path, inode/metadata,
 size, lane ownership, age, and safety before deletion. The scanner and cleanup
-validator use `lstat` and reject links or link ancestors.
+validator use `lstat` and reject links or link ancestors. Archived lane
+worktrees cannot enter the generic cleanup pipeline: they must use the
+lane-aware Archive & Reclaim path so ADE can preserve metadata and recreate the
+worktree during restore. That lane-aware path additionally requires the exact
+saved path and expected branch to be registered as this project's Git
+worktree, rechecks symlink and directory identity immediately before removal,
+and holds the same database-backed worktree lease used by PR workflows.
+
+### Lane lifecycle rules
+
+Settings > Storage owns the four project cleanup rules:
+
+- maximum active lanes;
+- archive inactive lanes after a configured age;
+- run the safety scan at a configured interval;
+- flag archived worktrees for reclaim review after a configured age.
+
+The backend, not the renderer, enforces these settings. The daemon checks once
+per minute whether the configured interval has elapsed; `0` disables scheduled
+scans. A scheduled scan can archive only a clean, merged/pushed, unattached
+managed lane with no running chat, PTY, watcher, protected edit operation, or
+linked pull-request group. Blocked lanes remain active. The retention rule
+never deletes files: it marks the archived lane `ready_for_review` so a person
+can inspect the estimate and explicitly confirm Archive & Reclaim.
 
 ### History compression
 
@@ -220,17 +244,14 @@ button). Only the real daemon instance — the one constructed with both
 fallback instance never schedules maintenance and only acts if
 `runMaintenanceNow` is called directly.
 
-Each run is a fixed sequence of independently try/caught steps (one failing step
-never aborts the run), reusing the same validate/preview/cleanup pipeline the
-manual flow uses so nothing outside the safe set is ever removed:
+Each run is a fixed sequence of independently try/caught steps, so one failing
+step never aborts the run. Filesystem removal stays outside the automatic
+sweep: generic files remain preview-confirmed, and archived lane worktrees must
+go through the lane-aware typed-confirmation path.
 
-1. Compress inactive chat/terminal history (`fs.transcripts`).
-2. Reap stale `safe_to_remove` `ade-*` staging in the system temp root
-   (`fs.tmp_staging`) and direct children of the project-relative `.ade/tmp`
-   release-staging dir (`fs.tmp`).
-3. Reap obsolete recovery backups (`fs.recovery_backups`), always sparing the
-   single newest good copy, and the iOS simulator DerivedData cache
-   (`fs.ios_derived_data`).
+1. Run the lane lifecycle safety scan.
+2. Compress inactive chat/terminal history (`fs.transcripts`).
+3. Record filesystem review candidates without deleting them.
 4. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
    `review_run_artifacts`, and `pull_request_snapshots`; compact cr-sqlite
    sync bookkeeping; and vacuum when the freelist is fragmented.

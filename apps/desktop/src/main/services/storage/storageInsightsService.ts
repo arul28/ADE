@@ -23,6 +23,7 @@ import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
 } from "../../../shared/types/productAnalytics";
+import type { LaneCleanupConfig } from "../../../shared/types/config";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -63,11 +64,35 @@ export type StorageDoctorAnalyticsCapture = (
   input: ProductAnalyticsCapture,
 ) => ProductAnalyticsCaptureResult | void;
 
+type LaneLifecycleBackend = {
+  list: (options: { includeArchived: boolean; includeStatus: boolean }) => Promise<Array<{
+    id: string;
+    laneType: "primary" | "worktree" | "attached";
+    isEditProtected: boolean;
+    status: { dirty: boolean };
+  }>>;
+  getReclaimRisk: (laneId: string) => Promise<{
+    dirty: boolean;
+    activeChatCount: number;
+    activePtyCount: number;
+    activeWatcherCount: number;
+    blockedReasons: Array<{ code: string }>;
+  }>;
+  archive: (args: { laneId: string }) => void;
+};
+
+type LaneCleanupConfigReader = {
+  get: () => { effective: { laneCleanup?: LaneCleanupConfig } };
+};
+
 type LaneRow = {
   id: string;
   name: string;
   worktree_path: string;
   archived_at: string | null;
+  created_at: string;
+  lane_type: string;
+  is_edit_protected: number;
 };
 
 type WalkState = {
@@ -113,6 +138,8 @@ export type StorageInsightsServiceOptions = {
    * `os.tmpdir()`; overridable so tests never touch the real system temp dir.
    */
   stagingTmpDir?: string;
+  laneService?: LaneLifecycleBackend | null;
+  projectConfigService?: LaneCleanupConfigReader | null;
 };
 
 export function isObsoleteRecoveryBackup(
@@ -301,8 +328,151 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const journalPath = path.join(layout.cacheDir, MAINTENANCE_JOURNAL_FILENAME);
   let sweepFlight: Promise<CompressionSweepSummary> | null = null;
   let maintenanceFlight: Promise<MaintenanceRunReport> | null = null;
+  let lifecycleFlight: Promise<void> | null = null;
+  let cleanupQueue: Promise<void> = Promise.resolve();
   let firstSweepTimer: ReturnType<typeof setTimeout> | null = null;
   let dailySweepTimer: ReturnType<typeof setInterval> | null = null;
+  let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
+
+  const lifecyclePolicy = () => {
+    const cleanup = options.projectConfigService?.get().effective.laneCleanup ?? {};
+    return {
+      maxActiveLanes: Math.max(0, Math.floor(cleanup.maxActiveLanes ?? 0)),
+      cleanupIntervalHours: Math.max(0, Math.floor(cleanup.cleanupIntervalHours ?? 0)),
+      autoArchiveAfterHours: Math.max(0, Math.floor(cleanup.autoArchiveAfterHours ?? 0)),
+      reclaimArchivedAfterHours: Math.max(0, Math.floor(
+        cleanup.reclaimArchivedAfterHours ?? cleanup.autoDeleteArchivedAfterHours ?? 0,
+      )),
+    };
+  };
+
+  const latestLaneActivityMs = (laneId: string, createdAt: string): number => {
+    const values = [Date.parse(createdAt)];
+    const chat = options.db.get<{ value: string | null }>(
+      "select max(updated_at) as value from claude_sessions where lane_id = ?",
+      [laneId],
+    )?.value;
+    const terminal = options.db.get<{ value: string | null }>(
+      "select max(coalesce(last_output_at, ended_at, started_at)) as value from terminal_sessions where lane_id = ?",
+      [laneId],
+    )?.value;
+    const operation = options.db.get<{ value: string | null }>(
+      "select max(coalesce(ended_at, started_at)) as value from operations where project_id = ? and lane_id = ?",
+      [options.projectId ?? "", laneId],
+    )?.value;
+    for (const value of [chat, terminal, operation]) {
+      if (!value) continue;
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) values.push(parsed);
+    }
+    return Math.max(...values.filter(Number.isFinite));
+  };
+
+  const runLifecycleScan = (): Promise<void> => {
+    if (lifecycleFlight) return lifecycleFlight;
+    lifecycleFlight = (async () => {
+      const laneService = options.laneService;
+      const projectId = options.projectId?.trim();
+      if (!laneService || !options.projectConfigService || !projectId) return;
+      const policy = lifecyclePolicy();
+      if (policy.cleanupIntervalHours <= 0) return;
+      const previous = options.db.get<{ last_scan_at: string | null }>(
+        "select last_scan_at from local_storage_lifecycle_runs where project_id = ?",
+        [projectId],
+      );
+      const lastScanMs = previous?.last_scan_at ? Date.parse(previous.last_scan_at) : 0;
+      const intervalMs = policy.cleanupIntervalHours * 60 * 60_000;
+      if (Number.isFinite(lastScanMs) && lastScanMs > 0 && Date.now() - lastScanMs < intervalMs) return;
+
+      const rows = listLaneRows();
+      const active = await laneService.list({ includeArchived: false, includeStatus: true });
+      const candidates: Array<{ laneId: string; lastActivityMs: number; dueByAge: boolean }> = [];
+      for (const lane of active) {
+        if (lane.laneType !== "worktree" || lane.isEditProtected || lane.status.dirty) continue;
+        const row = rows.find((entry) => entry.id === lane.id);
+        if (!row) continue;
+        const inPrGroup = options.db.get<{ group_id: string }>(
+          `select m.group_id from pr_group_members m
+             join pr_groups g on g.id = m.group_id
+            where m.lane_id = ? and g.project_id = ?
+            limit 1`,
+          [lane.id, projectId],
+        );
+        if (inPrGroup) continue;
+        const risk = await laneService.getReclaimRisk(lane.id);
+        if (risk.dirty || risk.activeChatCount > 0 || risk.activePtyCount > 0 || risk.activeWatcherCount > 0) continue;
+        if (risk.blockedReasons.some((reason) => reason.code === "unmerged_work")) continue;
+        const lastActivityMs = latestLaneActivityMs(lane.id, row.created_at);
+        const dueByAge = policy.autoArchiveAfterHours > 0
+          && Date.now() - lastActivityMs >= policy.autoArchiveAfterHours * 60 * 60_000;
+        candidates.push({ laneId: lane.id, lastActivityMs, dueByAge });
+      }
+      candidates.sort((left, right) => left.lastActivityMs - right.lastActivityMs);
+      const nonPrimaryActive = active.filter((lane) => lane.laneType !== "primary");
+      let stillNeedsArchive = policy.maxActiveLanes > 0
+        ? Math.max(0, nonPrimaryActive.length - policy.maxActiveLanes)
+        : 0;
+      let archivedAutomatically = 0;
+      for (const candidate of candidates) {
+        if (!candidate.dueByAge && stillNeedsArchive <= 0) continue;
+        try {
+          laneService.archive({ laneId: candidate.laneId });
+          archivedAutomatically += 1;
+          if (stillNeedsArchive > 0) stillNeedsArchive -= 1;
+        } catch (error) {
+          options.logger.warn("storage.lifecycle_auto_archive_skipped", {
+            laneId: candidate.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (policy.reclaimArchivedAfterHours > 0) {
+        const archived = listLaneRows().filter((row) => row.archived_at);
+        for (const row of archived) {
+          const archivedMs = Date.parse(row.archived_at ?? "");
+          if (!Number.isFinite(archivedMs)) continue;
+          if (Date.now() - archivedMs < policy.reclaimArchivedAfterHours * 60 * 60_000) continue;
+          if (!isDirectChild(layout.worktreesDir, row.worktree_path)) continue;
+          const stat = await lstatOrNull(row.worktree_path);
+          if (!stat || stat.isSymbolicLink()) continue;
+          const now = new Date().toISOString();
+          options.db.run(
+            `insert into local_lane_storage_state(
+               lane_id, project_id, worktree_path, reclaim_state, last_known_bytes,
+               attempts, last_error, reclaimed_at, updated_at
+             ) values(?, ?, ?, 'ready_for_review', 0, 0, null, null, ?)
+             on conflict(lane_id) do update set
+               reclaim_state = case
+                 when local_lane_storage_state.reclaim_state = 'reclaimed' then 'reclaimed'
+                 else 'ready_for_review'
+               end,
+               worktree_path = excluded.worktree_path,
+               updated_at = excluded.updated_at`,
+            [row.id, projectId, row.worktree_path, now],
+          );
+        }
+      }
+
+      const now = new Date().toISOString();
+      const nextScanAt = new Date(Date.now() + intervalMs).toISOString();
+      options.db.run(
+        `insert into local_storage_lifecycle_runs(
+           project_id, last_scan_at, next_scan_at, archived_automatically, updated_at
+         ) values(?, ?, ?, ?, ?)
+         on conflict(project_id) do update set
+           last_scan_at = excluded.last_scan_at,
+           next_scan_at = excluded.next_scan_at,
+           archived_automatically = local_storage_lifecycle_runs.archived_automatically + excluded.archived_automatically,
+           updated_at = excluded.updated_at`,
+        [projectId, now, nextScanAt, archivedAutomatically, now],
+      );
+      cachedSnapshot = null;
+    })().finally(() => {
+      lifecycleFlight = null;
+    });
+    return lifecycleFlight;
+  };
 
   const overlapsIosDerivedData = (targetPath: string): boolean =>
     isSameOrWithin(targetPath, iosDerivedDataDir) || isSameOrWithin(iosDerivedDataDir, targetPath);
@@ -350,7 +520,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   };
 
   const listLaneRows = (): LaneRow[] => options.db.all<LaneRow>(
-    "select id, name, worktree_path, archived_at from lanes",
+    "select id, name, worktree_path, archived_at, created_at, lane_type, is_edit_protected from lanes",
   );
 
   const laneForPath = (targetPath: string, laneId?: string, rows: LaneRow[] = listLaneRows()): LaneRow | null => {
@@ -452,6 +622,15 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const lanes = listLaneRows();
+    const laneStorageStates = new Map(options.db.all<{
+      lane_id: string;
+      reclaim_state: StorageItem["reclaimState"];
+      last_known_bytes: number;
+      last_error: string | null;
+    }>(
+      "select lane_id, reclaim_state, last_known_bytes, last_error from local_lane_storage_state where project_id = ?",
+      [options.projectId ?? ""],
+    ).map((entry) => [entry.lane_id, entry] as const));
     const worktreeNames = await readdirOrEmpty(layout.worktreesDir);
     for (const name of worktreeNames) {
       const worktreePath = path.join(layout.worktreesDir, name);
@@ -473,7 +652,40 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
             ? { detail: "Left over from a deleted lane" }
             : {}),
       });
-      add("lanes_worktrees", entry?.item);
+      if (entry) {
+        const storageState = row ? laneStorageStates.get(row.id) : null;
+        entry.item.ownership = "ADE-managed";
+        entry.item.reclaimableBytes = laneStatus === "active" ? 0 : entry.item.bytes;
+        entry.item.ageHours = entry.item.lastModifiedAt
+          ? Math.max(0, (Date.now() - Date.parse(entry.item.lastModifiedAt)) / (60 * 60_000))
+          : null;
+        if (row) entry.item.laneId = row.id;
+        if (storageState?.reclaim_state) entry.item.reclaimState = storageState.reclaim_state;
+        if (storageState?.last_error) entry.item.blockedReasons = [`Last cleanup failed: ${storageState.last_error}`];
+        add("lanes_worktrees", entry.item);
+      }
+    }
+    for (const row of lanes.filter((lane) => lane.archived_at && !fs.existsSync(lane.worktree_path))) {
+      const storageState = laneStorageStates.get(row.id);
+      add("lanes_worktrees", {
+        id: `lanes_worktrees:reclaimed:${row.id}`,
+        label: row.name,
+        path: row.worktree_path,
+        bytes: 0,
+        fileCount: 0,
+        lastModifiedAt: row.archived_at,
+        safety: "protected",
+        detail: "Lane kept. Its local folder has been reclaimed and will be recreated when restored.",
+        laneStatus: "archived",
+        ownership: "ADE-managed",
+        blockedReasons: storageState?.last_error ? [`Last cleanup failed: ${storageState.last_error}`] : [],
+        reclaimableBytes: storageState?.reclaim_state === "failed"
+          ? Math.max(0, storageState.last_known_bytes)
+          : 0,
+        ageHours: Math.max(0, (Date.now() - Date.parse(row.archived_at!)) / (60 * 60_000)),
+        laneId: row.id,
+        reclaimState: storageState?.reclaim_state ?? "reclaimed",
+      });
     }
 
     const tempNames = await readdirOrEmpty(stagingTmpRoot);
@@ -618,6 +830,22 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       buildCategory("recovery_backups", categoryItems.get("recovery_backups") ?? [], "review_first", state),
       buildCategory("database", categoryItems.get("database") ?? [], "protected", state),
     ];
+    for (const category of categories) {
+      for (const item of category.items) {
+        item.ownership ??= item.path.startsWith(stagingTmpRoot)
+          ? "System temporary"
+          : item.path.startsWith(layout.adeDir)
+            ? "ADE-managed"
+            : "Project-owned";
+        item.reclaimableBytes ??= item.safety === "protected" ? 0 : item.bytes;
+        item.ageHours ??= item.lastModifiedAt
+          ? Math.max(0, (Date.now() - Date.parse(item.lastModifiedAt)) / (60 * 60_000))
+          : null;
+        if (!item.blockedReasons && item.safety !== "safe_to_remove" && item.detail) {
+          item.blockedReasons = [item.detail];
+        }
+      }
+    }
     const journal = readMaintenanceJournal(journalPath);
     const dbBreakdown = computeDbBreakdown(deriveSyncBookkeepingAction(journal));
     // Estimate only work the same backend validator will authorize. Raw
@@ -666,6 +894,30 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       scanDurationMs: Date.now() - startedAt,
       truncated: state.truncated,
       extras,
+      lifecycle: (() => {
+        const policy = lifecyclePolicy();
+        const run = options.projectId
+          ? options.db.get<{
+              last_scan_at: string | null;
+              next_scan_at: string | null;
+              archived_automatically: number;
+            }>(
+              "select last_scan_at, next_scan_at, archived_automatically from local_storage_lifecycle_runs where project_id = ?",
+              [options.projectId],
+            )
+          : null;
+        const reviewReadyCount = [...laneStorageStates.values()]
+          .filter((entry) => entry.reclaim_state === "ready_for_review" || entry.reclaim_state === "failed")
+          .length;
+        return {
+          lastScanAt: run?.last_scan_at ?? null,
+          nextScanAt: run?.next_scan_at ?? null,
+          scanInProgress: lifecycleFlight != null,
+          policy,
+          archivedAutomatically: run?.archived_automatically ?? 0,
+          reviewReadyCount,
+        };
+      })(),
     };
     if (state.truncated) {
       options.logger.warn("storage.scan_truncated", { projectRoot, entries: state.entries, entryLimit: state.entryLimit, budgetMs: state.budgetMs });
@@ -697,6 +949,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }
       if (target.kind === "archived_lane_worktree" && (!lane || !lane.archived_at)) {
         return { valid: null, reason: lane ? "Active lane files are protected." : "This lane is not archived." };
+      }
+      if (target.kind === "archived_lane_worktree") {
+        return {
+          valid: null,
+          reason: "Use Archive & Reclaim so ADE can check running, dirty, and unmerged work before removing this lane folder.",
+        };
       }
       label = lane?.name ?? path.basename(targetPath);
     } else if (target.kind === "stale_tmp_staging") {
@@ -794,7 +1052,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
   };
 
-  const cleanup = async (
+  const performCleanup = async (
     targets: StorageCleanupTarget[],
     opts: { preview: StorageCleanupPreview },
   ): Promise<StorageCleanupResult> => {
@@ -869,24 +1127,21 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return result;
   };
 
+  const cleanup = (
+    targets: StorageCleanupTarget[],
+    opts: { preview: StorageCleanupPreview },
+  ): Promise<StorageCleanupResult> => {
+    const run = cleanupQueue.then(() => performCleanup(targets, opts));
+    cleanupQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
   const compressNow = async (): Promise<StorageCompressionResult> => {
     const result = await runCompressionSweep();
     return { filesCompressed: result.filesCompressed, savedBytes: result.savedBytes };
-  };
-
-  // Reap a set of candidate targets through the same validate/preview/cleanup
-  // pipeline the manual flow uses. Only targets the validator lets into the
-  // preview are removed, so protected/review_first/fresh items are never touched.
-  const reapTargets = async (
-    targets: StorageCleanupTarget[],
-  ): Promise<{ itemsAffected: number; bytesReclaimed: number }> => {
-    if (targets.length === 0) return { itemsAffected: 0, bytesReclaimed: 0 };
-    const preview = await cleanupPreview(targets);
-    if (preview.items.length === 0) return { itemsAffected: 0, bytesReclaimed: 0 };
-    const previewed = new Set(preview.items.map((item) => path.resolve(item.path)));
-    const removable = targets.filter((target) => previewed.has(path.resolve(target.path)));
-    const result = await cleanup(removable, { preview });
-    return { itemsAffected: result.removed.length, bytesReclaimed: result.freedBytes };
   };
 
   const collectSystemStaging = async (): Promise<StorageCleanupTarget[]> => {
@@ -992,11 +1247,18 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         return { itemsAffected: summary.filesCompressed, bytesReclaimed: summary.savedBytes };
       });
 
-      // b/c. Auto-reap safe_to_remove staging, obsolete backups, and iOS build data.
-      await runStep(actions, "fs.tmp_staging", "delete", async () => reapTargets(await collectSystemStaging()));
-      await runStep(actions, "fs.tmp", "delete", async () => reapTargets(await collectProjectStaging()));
-      await runStep(actions, "fs.recovery_backups", "delete", async () => reapTargets(await collectObsoleteBackups()));
-      await runStep(actions, "fs.ios_derived_data", "delete", async () => reapTargets(await collectIosDerivedData()));
+      // Filesystem cleanup is review-only. The doctor may identify candidates,
+      // but it never removes a directory without a fresh user preview and
+      // confirmation in Settings > Storage.
+      const recordReviewCandidates = async (targets: StorageCleanupTarget[]) => ({
+        itemsAffected: targets.length,
+        bytesReclaimed: 0,
+        skippedReason: targets.length > 0 ? "review_required" : "nothing_due",
+      });
+      await runStep(actions, "fs.tmp_staging", "delete", async () => recordReviewCandidates(await collectSystemStaging()));
+      await runStep(actions, "fs.tmp", "delete", async () => recordReviewCandidates(await collectProjectStaging()));
+      await runStep(actions, "fs.recovery_backups", "delete", async () => recordReviewCandidates(await collectObsoleteBackups()));
+      await runStep(actions, "fs.ios_derived_data", "delete", async () => recordReviewCandidates(await collectIosDerivedData()));
 
       // d. DB retention hooks. `maintenance` is attached by WS-A's kvDb; until it
       // lands the hooks are undefined and each records an "unsupported" skip.
@@ -1081,12 +1343,32 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return maintenanceFlight;
   };
 
-  const runMaintenanceNow = (): Promise<MaintenanceRunReport> => runMaintenanceSweep("manual");
+  const runMaintenanceNow = async (): Promise<MaintenanceRunReport> => {
+    await runLifecycleScan();
+    return runMaintenanceSweep("manual");
+  };
 
   // The daemon-backed fallback instance (isPathActive without diskPressure) must
   // never schedule automatic maintenance; only the real daemon instance, which
   // supplies both signals, arms the doctor's post-boot + daily timers.
   if (options.isPathActive && options.diskPressure) {
+    if (options.laneService && options.projectConfigService && options.projectId) {
+      void runLifecycleScan().catch((error) => {
+        options.logger.warn("storage.lifecycle_scan_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      lifecycleTimer = setInterval(() => {
+        void runLifecycleScan().catch((error) => {
+          options.logger.warn("storage.lifecycle_scan_failed", {
+            projectRoot,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 60_000);
+      lifecycleTimer.unref?.();
+    }
     firstSweepTimer = setTimeout(() => {
       firstSweepTimer = null;
       void runMaintenanceSweep("post_boot").catch((error) => {
@@ -1113,9 +1395,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const dispose = (): void => {
     if (firstSweepTimer) clearTimeout(firstSweepTimer);
     if (dailySweepTimer) clearInterval(dailySweepTimer);
+    if (lifecycleTimer) clearInterval(lifecycleTimer);
     firstSweepTimer = null;
     dailySweepTimer = null;
+    lifecycleTimer = null;
   };
 
-  return { getSnapshot, cleanupPreview, cleanup, compressNow, runMaintenanceNow, dispose };
+  return {
+    getSnapshot,
+    cleanupPreview,
+    cleanup,
+    compressNow,
+    runMaintenanceNow,
+    runLifecycleScanNow: runLifecycleScan,
+    dispose,
+  };
 }

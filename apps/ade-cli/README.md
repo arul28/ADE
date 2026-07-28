@@ -354,6 +354,9 @@ ade lane drift resolve --lane lane-id --switch-back        # put the worktree ba
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
+ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
+ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files
+ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed
 ade lanes delete lane-id --force --delete-branch
 ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <model>
 ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'

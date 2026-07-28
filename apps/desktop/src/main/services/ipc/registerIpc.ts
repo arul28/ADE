@@ -123,6 +123,8 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  ArchiveAndReclaimLaneArgs,
+  ArchiveAndReclaimLaneResult,
   AutomationIngressEventRecord,
   AutomationIngressStatus,
   AutomationScheduledCleanup,
@@ -177,6 +179,8 @@ import type {
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  LaneReclaimRisk,
+  RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
@@ -5817,6 +5821,43 @@ export function registerIpc({
     }
   });
 
+  ipcMain.handle(
+    IPC.lanesArchiveAndReclaim,
+    async (_event, arg: ArchiveAndReclaimLaneArgs): Promise<ArchiveAndReclaimLaneResult> => {
+      const ctx = ensureLaneContext();
+      const envContext = ctx.laneEnvironmentService
+        ? await resolveLaneOverlayContext(ctx, arg.laneId).catch(() => null)
+        : null;
+      const teardownEnv = ctx.laneEnvironmentService && envContext?.envInitConfig
+        ? async () => {
+            await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+          }
+        : undefined;
+      const result = await ctx.laneService.archiveAndReclaim(arg, { teardownEnv });
+      ctx.portAllocationService?.release(arg.laneId);
+      return result;
+    },
+  );
+
+  ipcMain.handle(IPC.lanesUnarchive, async (_event, arg: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
+    const ctx = ensureLaneContext();
+    const result = await ctx.laneService.unarchive(arg);
+    if (!result.worktreeRecreated || !ctx.laneEnvironmentService) return result;
+    try {
+      const envContext = await resolveLaneOverlayContext(ctx, arg.laneId);
+      if (envContext.envInitConfig) {
+        await ctx.laneEnvironmentService.initLaneEnvironment(
+          envContext.lane,
+          envContext.envInitConfig,
+          envContext.overrides,
+        );
+      }
+      return result;
+    } catch (error) {
+      return { ...result, setupWarning: getErrorMessage(error) };
+    }
+  });
+
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     const envContext = ctx.laneEnvironmentService
@@ -5850,6 +5891,13 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.getDeleteRisk(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesGetReclaimRisk, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<LaneReclaimRisk> => {
+    return ensureLaneContext().laneService.getReclaimRisk(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {

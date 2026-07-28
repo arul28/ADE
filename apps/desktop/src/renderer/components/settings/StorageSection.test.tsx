@@ -48,8 +48,8 @@ function makeSnapshot(): StorageSnapshot {
         safety: "review_first",
         items: [
           { id: "l-active", label: "main-lane", path: ACTIVE_PATH, bytes: 2 * 1024 ** 3, fileCount: 150, lastModifiedAt: null, safety: "protected", laneStatus: "active" },
-          { id: "l-archived", label: "Old feature", path: ARCHIVED_PATH, bytes: 1.5 * 1024 ** 3, fileCount: 100, lastModifiedAt: null, safety: "review_first", laneStatus: "archived", detail: "Archived lane — its files are kept until you remove them" },
-          { id: "l-orphaned", label: "ghost-lane", path: ORPHANED_PATH, bytes: 512 * 1024 ** 2, fileCount: 50, lastModifiedAt: null, safety: "review_first", laneStatus: "orphaned", detail: "Left over from a deleted lane" },
+          { id: "l-archived", label: "Old feature", path: ARCHIVED_PATH, bytes: 1.5 * 1024 ** 3, fileCount: 100, lastModifiedAt: null, safety: "review_first", laneStatus: "archived", laneId: "lane-old", ownership: "ADE-managed", ageHours: 45 * 24, reclaimableBytes: 1.5 * 1024 ** 3, detail: "Archived lane — its files are kept until you remove them" },
+          { id: "l-orphaned", label: "ghost-lane", path: ORPHANED_PATH, bytes: 512 * 1024 ** 2, fileCount: 50, lastModifiedAt: null, safety: "review_first", laneStatus: "orphaned", ownership: "ADE-managed", ageHours: 20 * 24, reclaimableBytes: 512 * 1024 ** 2, detail: "Left over from a deleted lane" },
         ],
       },
       {
@@ -245,6 +245,46 @@ function installAdeMock(options: {
         { id: "lane-old", name: "Old feature", worktreePath: ARCHIVED_PATH, archivedAt: "2026-07-02T00:00:00.000Z", status: { dirty: false } },
         { id: "lane-main", name: "main-lane", worktreePath: ACTIVE_PATH, archivedAt: null, status: { dirty: false } },
       ]),
+      getReclaimRisk: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        laneName: "Old feature",
+        branchRef: "feature/old",
+        worktreePath: ARCHIVED_PATH,
+        dirty: false,
+        hasUnpushedCommits: false,
+        unpushedCommitCount: 0,
+        remoteBranchExists: true,
+        activeChatCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        envInitialized: false,
+        worktreeBytes: 1.5 * 1024 ** 3,
+        generatedBytes: 0,
+        reclaimableBytes: 1.5 * 1024 ** 3,
+        worktreeAvailable: true,
+        blockedReasons: [],
+        lastFailure: null,
+        retryCount: 0,
+      })),
+      archiveAndReclaim: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        reclaimedBytes: 1.5 * 1024 ** 3,
+        worktreeRemoved: true,
+        generatedDataRemoved: true,
+        warnings: [],
+      })),
+      unarchive: vi.fn(async () => ({
+        lane: { id: "lane-old", name: "Old feature" },
+        worktreeRecreated: true,
+      })),
+    },
+    projectConfig: {
+      get: vi.fn(async () => ({
+        shared: {},
+        local: {},
+        effective: { laneCleanup: {} },
+      })),
+      save: vi.fn(async () => undefined),
     },
     ...(includeApp ? { app: { getResourceUsage, getRuntimeHealth } } : {}),
   };
@@ -285,17 +325,20 @@ describe("StorageSection", () => {
     render(<StorageSection />);
 
     // Archived lane (label prominent) and its size.
-    expect(await screen.findByText("Old feature")).toBeTruthy();
-    expect(screen.getByText("1.5 GB")).toBeTruthy();
+    expect((await screen.findAllByText("Old feature")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1.5 GB").length).toBeGreaterThan(0);
     // Orphaned lane.
-    expect(screen.getByText("ghost-lane")).toBeTruthy();
+    expect(screen.getAllByText("ghost-lane").length).toBeGreaterThan(0);
     expect(screen.getByText(/Left over from a deleted lane/)).toBeTruthy();
+    expect(screen.getByText("45 days")).toBeTruthy();
+    expect(screen.getByText("20 days")).toBeTruthy();
     // Active lane is shown but protected.
-    expect(screen.getByText("main-lane")).toBeTruthy();
+    expect(screen.getAllByText("main-lane").length).toBeGreaterThan(0);
 
-    // One remove control per actionable lane (archived + orphaned), never the active one.
+    // Archived lanes use the guarded reclaim flow; only the orphan uses generic file cleanup.
     const removeButtons = screen.getAllByRole("button", { name: /remove files/i });
-    expect(removeButtons).toHaveLength(2);
+    expect(removeButtons).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /archive & reclaim/i }).length).toBeGreaterThan(0);
 
     // Protected data has no destructive affordance.
     expect(screen.getByText("Chat session records")).toBeTruthy();
@@ -309,12 +352,12 @@ describe("StorageSection", () => {
     const removeButtons = await screen.findAllByRole("button", { name: /remove files/i });
     fireEvent.click(removeButtons[0]);
 
-    // Dialog previews the archived lane target.
+    // Generic cleanup is reserved for the orphaned worktree.
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(cleanupPreview).toHaveBeenCalledTimes(1));
     const previewTargets = cleanupPreview.mock.calls[0][0];
     expect(previewTargets).toEqual([
-      { kind: "archived_lane_worktree", laneId: "lane-old", path: ARCHIVED_PATH },
+      { kind: "orphaned_worktree", path: ORPHANED_PATH },
     ]);
 
     const confirm = await within(dialog).findByRole("button", { name: /remove 1 item/i });

@@ -42,6 +42,12 @@ export type StorageItem = {
   safety: StorageSafety;
   detail?: string;
   laneStatus?: "active" | "archived" | "orphaned";
+  ownership?: "ADE-managed" | "Project-owned" | "System temporary";
+  blockedReasons?: string[];
+  reclaimableBytes?: number;
+  ageHours?: number | null;
+  laneId?: string;
+  reclaimState?: "kept" | "ready_for_review" | "reclaimed" | "failed";
 };
 
 export type StorageCategorySnapshot = {
@@ -70,6 +76,21 @@ export type StorageSnapshot = {
   // Optional so pre-overhaul snapshots (and the daemon-backed fallback
   // instance) remain valid; renderer must treat absence as "not available".
   extras?: StorageSnapshotExtras;
+  lifecycle?: StorageLifecycleSnapshot;
+};
+
+export type StorageLifecycleSnapshot = {
+  lastScanAt: string | null;
+  nextScanAt: string | null;
+  scanInProgress: boolean;
+  policy: {
+    maxActiveLanes: number;
+    cleanupIntervalHours: number;
+    autoArchiveAfterHours: number;
+    reclaimArchivedAfterHours: number;
+  };
+  archivedAutomatically: number;
+  reviewReadyCount: number;
 };
 
 export type StorageCleanupTarget =

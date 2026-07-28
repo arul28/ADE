@@ -40,6 +40,7 @@ import type {
   LaneOverlayOverrides,
   LaneOverlayPolicy,
   LaneMountPointConfig,
+  LaneCleanupConfig,
   LaneTemplate,
   LaneType,
   ProjectConfigCandidate,
@@ -1194,6 +1195,27 @@ function coerceLaneTemplate(value: unknown): ConfigLaneTemplate | null {
   };
 }
 
+function coerceLaneCleanupConfig(value: unknown): LaneCleanupConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const readNonNegativeInteger = (candidate: unknown): number | undefined => {
+    const numeric = asNumber(candidate);
+    if (numeric == null || !Number.isFinite(numeric)) return undefined;
+    return Math.max(0, Math.floor(numeric));
+  };
+  const maxActiveLanes = readNonNegativeInteger(value.maxActiveLanes);
+  const cleanupIntervalHours = readNonNegativeInteger(value.cleanupIntervalHours);
+  const autoArchiveAfterHours = readNonNegativeInteger(value.autoArchiveAfterHours);
+  const reclaimArchivedAfterHours =
+    readNonNegativeInteger(value.reclaimArchivedAfterHours)
+    ?? readNonNegativeInteger(value.autoDeleteArchivedAfterHours);
+  const out: LaneCleanupConfig = {};
+  if (maxActiveLanes != null) out.maxActiveLanes = maxActiveLanes;
+  if (cleanupIntervalHours != null) out.cleanupIntervalHours = cleanupIntervalHours;
+  if (autoArchiveAfterHours != null) out.autoArchiveAfterHours = autoArchiveAfterHours;
+  if (reclaimArchivedAfterHours != null) out.reclaimArchivedAfterHours = reclaimArchivedAfterHours;
+  return Object.keys(out).length ? out : undefined;
+}
+
 const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "planning",
   "implementation",
@@ -2017,6 +2039,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ? value.laneTemplates.map(coerceLaneTemplate).filter((x): x is ConfigLaneTemplate => x != null)
     : undefined;
   const defaultLaneTemplate = typeof value.defaultLaneTemplate === "string" ? value.defaultLaneTemplate.trim() || undefined : undefined;
+  const laneCleanup = coerceLaneCleanupConfig(value.laneCleanup);
 
   const github = coerceGithubConfig(value.github);
 
@@ -2051,6 +2074,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(laneEnvInit ? { laneEnvInit } : {}),
     ...(laneTemplates?.length ? { laneTemplates } : {}),
     ...(defaultLaneTemplate ? { defaultLaneTemplate } : {}),
+    ...(laneCleanup ? { laneCleanup } : {}),
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
     ...(git ? { git } : {}),
@@ -2102,6 +2126,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.laneEnvInit ? { laneEnvInit: config.laneEnvInit } : {}),
     ...(config.laneTemplates?.length ? { laneTemplates: config.laneTemplates } : {}),
     ...(config.defaultLaneTemplate ? { defaultLaneTemplate: config.defaultLaneTemplate } : {}),
+    ...(config.laneCleanup ? { laneCleanup: config.laneCleanup } : {}),
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
     ...(config.git ? { git: config.git } : {}),
@@ -2130,6 +2155,7 @@ function hasSharedConfigContent(config: ProjectConfigFile): boolean {
     || config.laneEnvInit
     || (config.laneTemplates?.length ?? 0) > 0
     || config.defaultLaneTemplate
+    || config.laneCleanup
     || (config.providers && Object.keys(config.providers).length > 0)
     || config.linearSync
     || config.ui
@@ -2393,6 +2419,12 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(local.git ?? {})
       }
     : undefined;
+  const mergedLaneCleanup = shared.laneCleanup || local.laneCleanup
+    ? {
+        ...(shared.laneCleanup ?? {}),
+        ...(local.laneCleanup ?? {}),
+      }
+    : undefined;
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);
@@ -2440,6 +2472,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         }
       : {}),
     ...(defaultLaneTemplate ? { defaultLaneTemplate } : {}),
+    ...(mergedLaneCleanup ? { laneCleanup: mergedLaneCleanup } : {}),
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
@@ -2556,6 +2589,18 @@ function validateEffectiveConfig(
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be > 0" });
     } else if (prPoll < 5 || prPoll > 300) {
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be between 5 and 300" });
+    }
+  }
+
+  if (effective.laneCleanup) {
+    for (const [key, value] of Object.entries(effective.laneCleanup)) {
+      if (value == null || typeof value === "boolean") continue;
+      if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+        issues.push({
+          path: `effective.laneCleanup.${key}`,
+          message: `${key} must be a non-negative whole number`,
+        });
+      }
     }
   }
 

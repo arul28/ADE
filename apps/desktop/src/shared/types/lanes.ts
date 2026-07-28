@@ -381,6 +381,54 @@ export type ArchiveLaneArgs = {
   laneId: string;
 };
 
+export type LaneReclaimBlockReason =
+  | "primary_lane"
+  | "attached_lane"
+  | "worktree_outside_managed_root"
+  | "worktree_not_registered"
+  | "symlink_path"
+  | "active_work"
+  | "dirty_worktree"
+  | "unmerged_work";
+
+export type LaneReclaimRisk = LaneDeleteRisk & {
+  laneName: string;
+  worktreePath: string;
+  worktreeBytes: number;
+  generatedBytes: number;
+  reclaimableBytes: number;
+  worktreeAvailable: boolean;
+  blockedReasons: Array<{
+    code: LaneReclaimBlockReason;
+    message: string;
+    disposition: "blocked" | "confirmation_required";
+  }>;
+  lastFailure: string | null;
+  retryCount: number;
+};
+
+export type ArchiveAndReclaimLaneArgs = {
+  laneId: string;
+  /** Required for every reclaim so a stale or accidental action cannot remove files. */
+  confirmation: "RECLAIM";
+  /** Allows confirmed removal of uncommitted files. Never used by scheduled cleanup. */
+  forceDirty?: boolean;
+};
+
+export type ArchiveAndReclaimLaneResult = {
+  laneId: string;
+  reclaimedBytes: number;
+  worktreeRemoved: boolean;
+  generatedDataRemoved: boolean;
+  warnings: string[];
+};
+
+export type RestoreLaneResult = {
+  lane: LaneSummary;
+  worktreeRecreated: boolean;
+  setupWarning?: string | null;
+};
+
 export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;
@@ -451,6 +499,8 @@ export type LaneLifecycleEvent = {
     | "lane-renamed"
     | "lane-archived"
     | "lane-unarchived"
+    | "lane-reclaimed"
+    | "lane-restored"
     | "lane-deleted";
   laneId: string;
   laneName: string;

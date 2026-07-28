@@ -101,6 +101,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/reparent", description: "Move the active lane under another lane", placement: "right", argumentHint: "<parent-lane-id|parent-name> [stack-base-ref]", category: "Lanes" },
   { name: "/lane rename", description: "Rename the active lane", placement: "right", argumentHint: "[name]", category: "Lanes" },
   { name: "/lane archive", description: "Archive the active lane", placement: "right", category: "Lanes" },
+  { name: "/lane reclaim-preview", description: "Preview space ADE can reclaim from a lane", placement: "right", argumentHint: "[lane-id|name]", category: "Lanes" },
+  { name: "/lane archive-and-reclaim", description: "Archive a lane and remove its ADE-managed local files", placement: "right", argumentHint: "[lane-id|name] [RECLAIM] [force-dirty]", category: "Lanes" },
   { name: "/lane unarchive", description: "Unarchive a lane by id or name", placement: "right", argumentHint: "<lane-id|name>", category: "Lanes" },
   { name: "/lane archived", description: "List archived lanes", placement: "right", category: "Lanes" },
   { name: "/lane delete", description: "Delete the active lane after confirmation", placement: "right", category: "Lanes" },

@@ -3759,6 +3759,8 @@ app.whenReady().then(async () => {
         || ptyService.isTranscriptPathActive(filePath)
         || iosSimulatorService.isBuildPathActive(filePath),
       projectId,
+      laneService,
+      projectConfigService,
       captureAnalytics: (input) => {
         productAnalyticsService.capture(input);
       },

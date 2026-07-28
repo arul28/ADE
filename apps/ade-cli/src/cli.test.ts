@@ -983,6 +983,62 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds lane reclaim preview and confirmed reclaim commands", () => {
+    const preview = expectExecutePlan(
+      buildCliPlan(["lanes", "reclaim-preview", "lane-123"]),
+    );
+    expect(preview.label).toBe("lane reclaim preview");
+    expect(preview.steps).toEqual([
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          arguments: {
+            domain: "lane",
+            action: "getReclaimRisk",
+            args: { laneId: "lane-123" },
+          },
+        },
+        unwrapToolResult: true,
+      },
+    ]);
+
+    const reclaim = expectExecutePlan(
+      buildCliPlan([
+        "lanes",
+        "archive-and-reclaim",
+        "lane-123",
+        "--confirm",
+        "RECLAIM",
+        "--force-dirty",
+      ]),
+    );
+    expect(reclaim.label).toBe("lane archive and reclaim");
+    expect(reclaim.steps).toEqual([
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          arguments: {
+            domain: "lane",
+            action: "archiveAndReclaim",
+            args: {
+              laneId: "lane-123",
+              confirmation: "RECLAIM",
+              forceDirty: true,
+            },
+          },
+        },
+        unwrapToolResult: true,
+      },
+    ]);
+    expect(() =>
+      buildCliPlan(["lanes", "archive-and-reclaim", "lane-123"]),
+    ).toThrow(/--confirm RECLAIM/);
+  });
+
   it("builds sync status and pairing PIN commands", () => {
     const status = buildCliPlan([
       "sync",

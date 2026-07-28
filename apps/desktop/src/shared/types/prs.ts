@@ -1655,7 +1655,8 @@ export type PipelineMergeMethod = MergeMethod | "repo_default";
 export type LaneWorktreeLockOwnerKind =
   | "conflict_resolution"
   | "integration_resolution"
-  | "git_mutation";
+  | "git_mutation"
+  | "storage_lifecycle";
 
 export type LaneWorktreeLockInfo = {
   worktreeKey: string;

@@ -1485,7 +1485,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Child lanes carry the parent's unmerged work
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
-    $ ade lanes unarchive <lane>                    Restore an archived lane
+    $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
+    $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
+                                                    Archive the lane, then remove its ADE-managed local files
+    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
@@ -4173,6 +4176,56 @@ function buildLanePlan(args: string[]): CliPlan {
           "lane",
           sub,
           collectGenericObjectArgs(args, { laneId }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "reclaim-preview" ||
+    sub === "reclaim-risk" ||
+    sub === "preview-reclaim"
+  ) {
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane reclaim preview",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "getReclaimRisk",
+          collectGenericObjectArgs(args, { laneId }),
+        ),
+      ],
+    };
+  }
+  if (sub === "archive-and-reclaim" || sub === "reclaim") {
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    if (confirmation !== "RECLAIM") {
+      throw new CliUsageError(
+        'archive-and-reclaim requires --confirm RECLAIM. Run "ade lanes reclaim-preview <lane>" first.',
+      );
+    }
+    return {
+      kind: "execute",
+      label: "lane archive and reclaim",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "archiveAndReclaim",
+          collectGenericObjectArgs(args, {
+            laneId,
+            confirmation: "RECLAIM",
+            forceDirty: readFlag(args, ["--force-dirty"]),
+          }),
         ),
       ],
     };

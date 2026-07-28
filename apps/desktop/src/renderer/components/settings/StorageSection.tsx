@@ -9,6 +9,8 @@ import {
   FolderDashed,
   HardDrives,
   ShieldCheck,
+  WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 import {
   isUrgentDiskPressure,
@@ -23,7 +25,11 @@ import {
   type StorageSnapshot,
   type StorageSnapshotExtras,
 } from "../../../shared/types/storage";
-import type { AppResourceUsageSnapshot } from "../../../shared/types";
+import type {
+  AppResourceUsageSnapshot,
+  LaneCleanupConfig,
+  LaneReclaimRisk,
+} from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
 import {
@@ -83,6 +89,23 @@ function getRuntimeHealthFn(): GetRuntimeHealth | undefined {
 }
 
 type CleanupRequest = { title: string; intro: string; targets: StorageCleanupTarget[] };
+
+function formatAgeHours(ageHours: number | null | undefined): string {
+  if (ageHours == null) return "Unknown";
+  if (ageHours < 1) return "Less than 1 hour";
+  if (ageHours < 48) {
+    const hours = Math.floor(ageHours);
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+  const days = Math.floor(ageHours / 24);
+  if (days < 60) return `${days} days`;
+  if (days < 730) {
+    const months = Math.floor(days / 30);
+    return `${months} ${months === 1 ? "month" : "months"}`;
+  }
+  const years = Math.floor(days / 365);
+  return `${years} ${years === 1 ? "year" : "years"}`;
+}
 
 // ---------------------------------------------------------------------------
 // Building blocks
@@ -270,6 +293,13 @@ function Hero({
           <div style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textMuted }}>
             Scanned {relativeWhen(snapshot.generatedAt)}
           </div>
+          {snapshot.lifecycle ? (
+            <div style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim, textAlign: "right", lineHeight: 1.45 }}>
+              Safety scan: {snapshot.lifecycle.lastScanAt ? relativeWhen(snapshot.lifecycle.lastScanAt) : "not run yet"}
+              <br />
+              Next: {snapshot.lifecycle.nextScanAt ? relativeWhen(snapshot.lifecycle.nextScanAt) : "disabled"}
+            </div>
+          ) : null}
         </div>
       </div>
       <BreakdownBar categories={snapshot.categories} />
@@ -424,18 +454,30 @@ function LanesCard({
   laneIdByKey,
   archivedAtByKey,
   onRequestCleanup,
+  onReclaim,
+  onRestore,
 }: {
   category: StorageCategorySnapshot;
   policyChip?: string;
   laneIdByKey: Map<string, string>;
   archivedAtByKey: Map<string, string | null>;
   onRequestCleanup: (request: CleanupRequest) => void;
+  onReclaim: (laneId: string) => void;
+  onRestore: (laneId: string) => void;
 }) {
   const { active, archived, orphaned } = groupLaneItems(category.items);
   const hasActionable = archived.length > 0 || orphaned.length > 0;
   const [expanded, setExpanded] = React.useState(hasActionable);
 
   const removeRow = (item: StorageItem): React.ReactNode => {
+    if (item.laneStatus === "archived") {
+      const laneId = item.laneId ?? laneIdByKey.get(baseName(item.path));
+      if (!laneId) return null;
+      if (item.bytes === 0) {
+        return <ActionButton label="Restore lane" icon={<ArrowClockwise size={13} />} onClick={() => onRestore(laneId)} />;
+      }
+      return <ActionButton label="Archive & reclaim…" icon={<Archive size={13} />} onClick={() => onReclaim(laneId)} />;
+    }
     const target = buildCleanupTarget("lanes_worktrees", item, laneIdByKey);
     if (!target) return null;
     return (
@@ -444,11 +486,8 @@ function LanesCard({
         icon={<FolderDashed size={13} />}
         onClick={() =>
           onRequestCleanup({
-            title: item.laneStatus === "archived" ? "Remove archived lane files" : "Remove leftover lane files",
-            intro:
-              item.laneStatus === "archived"
-                ? "These files belong to a lane you archived. Removing them frees space and does not delete the lane's branch or history."
-                : "These files were left behind by a lane that no longer exists. They are safe to remove.",
+            title: "Remove leftover lane files",
+            intro: "These files were left behind by a lane that no longer exists. ADE will verify the managed path again before removal.",
             targets: [target],
           })
         }
@@ -641,6 +680,244 @@ function DatabaseCard({
   );
 }
 
+function StoragePolicyPanel({
+  value,
+  busy,
+  onChange,
+  onSave,
+}: {
+  value: LaneCleanupConfig;
+  busy: boolean;
+  onChange: (value: LaneCleanupConfig) => void;
+  onSave: () => void;
+}) {
+  const field = (
+    key: keyof Pick<LaneCleanupConfig, "maxActiveLanes" | "autoArchiveAfterHours" | "cleanupIntervalHours" | "reclaimArchivedAfterHours">,
+    label: string,
+    help: string,
+    placeholder: string,
+  ) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, fontWeight: 650, color: COLORS.textPrimary }}>{label}</span>
+      <input
+        type="number"
+        min={0}
+        value={value[key] ?? ""}
+        placeholder={placeholder}
+        onChange={(event) => onChange({
+          ...value,
+          [key]: event.target.value ? Math.max(0, Math.floor(Number(event.target.value))) : undefined,
+        })}
+        style={{
+          height: 34,
+          borderRadius: 8,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          background: COLORS.recessedBg,
+          color: COLORS.textPrimary,
+          padding: "0 10px",
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          outline: "none",
+        }}
+      />
+      <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{help}</span>
+    </label>
+  );
+  return (
+    <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div>
+        <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>Lane storage rules</h3>
+        <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+          ADE can archive lanes when they are safely idle. It never removes lane folders in the background.
+        </p>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
+        {field("maxActiveLanes", "Maximum active lanes", "0 means no limit. Only clean, merged, idle lanes can be archived.", "No limit")}
+        {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it. 0 means never.", "Never")}
+        {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates this review list.", "Disabled")}
+        {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for your review. ADE still waits for confirmation.", "Never")}
+      </div>
+      <details style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+        <summary style={{ cursor: "pointer", color: COLORS.textSecondary }}>What counts as safe?</summary>
+        <div style={{ marginTop: 8, lineHeight: 1.55 }}>
+          The lane must be ADE-managed, clean, merged, not protected, not part of a PR group, and have no running chat, terminal, or watcher.
+          Attached folders and the primary lane are always left alone.
+        </div>
+      </details>
+      <div>
+        <button type="button" onClick={onSave} disabled={busy} style={{ ...primaryButton({ height: 32 }), opacity: busy ? 0.65 : 1 }}>
+          {busy ? "Saving…" : "Save storage rules"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ReclaimConfirmDialog({
+  risk,
+  busy,
+  value,
+  onChange,
+  onClose,
+  onConfirm,
+}: {
+  risk: LaneReclaimRisk;
+  busy: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const warnings = risk.blockedReasons;
+  const blocked = warnings.some((reason) => reason.disposition === "blocked");
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 10020, display: "grid", placeItems: "center", padding: 18, background: "rgba(0,0,0,0.62)" }}>
+      <section style={{ ...PANEL_STYLE, width: "min(560px, 100%)", padding: 20, boxShadow: "0 28px 90px rgba(0,0,0,0.55)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 15, color: COLORS.textPrimary }}>Archive & reclaim “{risk.laneName}”</h3>
+            <p style={{ margin: "7px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.55, color: COLORS.textMuted }}>
+              Keeps the lane, branch, chats, and metadata. Removes its local worktree and generated lane data.
+              Restoring the lane recreates the worktree.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} disabled={busy} aria-label="Close" style={{ ...outlineButton({ height: 30 }), width: 30, padding: 0 }}>
+            <X size={14} />
+          </button>
+        </div>
+        <div style={{ marginTop: 14, padding: 12, borderRadius: 9, border: `1px solid ${COLORS.borderMuted}`, background: COLORS.recessedBg }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>
+            Estimated space: <strong>{formatBytes(risk.reclaimableBytes)}</strong>
+          </div>
+          <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textMuted }}>
+            Worktree {formatBytes(risk.worktreeBytes)} · generated data {formatBytes(risk.generatedBytes)}
+          </div>
+        </div>
+        {warnings.length > 0 ? (
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+            {warnings.map((warning) => (
+              <div key={warning.code} style={{ display: "flex", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${COLORS.warning}35`, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
+                <WarningCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                {warning.message}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>
+          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textSecondary }}>
+            Type <strong>RECLAIM</strong> to confirm
+          </span>
+          <input
+            autoFocus
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            style={{ height: 36, borderRadius: 8, border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.recessedBg, color: COLORS.textPrimary, padding: "0 10px", fontFamily: SANS_FONT }}
+          />
+        </label>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button type="button" onClick={onClose} disabled={busy} style={outlineButton({ height: 32 })}>Cancel</button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy || blocked || value !== "RECLAIM"}
+            style={{ ...primaryButton({ height: 32 }), opacity: busy || blocked || value !== "RECLAIM" ? 0.55 : 1 }}
+          >
+            {busy ? "Reclaiming…" : blocked ? "Cannot reclaim this folder" : `Reclaim ${formatBytes(risk.reclaimableBytes)}`}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function StorageReviewPanel({
+  snapshot,
+  laneIdByKey,
+  onCleanup,
+  onReclaim,
+  onRestore,
+}: {
+  snapshot: StorageSnapshot;
+  laneIdByKey: Map<string, string>;
+  onCleanup: (request: CleanupRequest) => void;
+  onReclaim: (laneId: string) => void;
+  onRestore: (laneId: string) => void;
+}) {
+  const rows = snapshot.categories.flatMap((category) =>
+    category.items
+      .filter((item) =>
+        (category.id === "lanes_worktrees" && item.laneStatus !== "active")
+        || category.id === "build_release",
+      )
+      .map((item) => ({ categoryId: category.id, item })),
+  );
+  return (
+    <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>Review files before cleanup</h3>
+        <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+          Sizes are estimates. ADE checks every path again after you confirm and reports anything it could not remove.
+        </p>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>Nothing needs review right now.</div>
+      ) : (
+        <div style={{ overflowX: "auto", border: `1px solid ${COLORS.borderMuted}`, borderRadius: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760, fontFamily: SANS_FONT }}>
+            <thead>
+              <tr style={{ background: COLORS.recessedBg, color: COLORS.textMuted, fontSize: 10.5, textAlign: "left" }}>
+                {["Item", "Type", "Owner", "Age", "Can reclaim", "Why blocked", ""].map((label) => (
+                  <th key={label} style={{ padding: "9px 10px", fontWeight: 650 }}>{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ categoryId, item }) => {
+                const laneId = item.laneId ?? laneIdByKey.get(baseName(item.path));
+                const target = buildCleanupTarget(categoryId, item, laneIdByKey);
+                const reclaimFailed = item.reclaimState === "failed";
+                const reclaimed = item.laneStatus === "archived" && item.bytes === 0 && !reclaimFailed;
+                return (
+                  <tr key={`${categoryId}:${item.id}`} style={{ borderTop: `1px solid ${COLORS.borderMuted}`, color: COLORS.textSecondary, fontSize: 11 }}>
+                    <td style={{ padding: "10px", color: COLORS.textPrimary, fontWeight: 600 }}>
+                      {item.label}
+                      <div title={item.path} style={{ marginTop: 2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textDim, fontSize: 9.5 }}>{item.path}</div>
+                    </td>
+                    <td style={{ padding: "10px" }}>{item.laneStatus === "archived" ? "Archived lane" : item.laneStatus === "orphaned" ? "Leftover worktree" : "Build output"}</td>
+                    <td style={{ padding: "10px" }}>{item.ownership ?? "ADE-managed"}</td>
+                    <td style={{ padding: "10px" }}>{formatAgeHours(item.ageHours)}</td>
+                    <td style={{ padding: "10px", fontVariantNumeric: "tabular-nums" }}>{formatBytes(item.reclaimableBytes ?? item.bytes)}</td>
+                    <td style={{ padding: "10px", maxWidth: 250 }}>{item.blockedReasons?.join(" ") || "Ready for review"}</td>
+                    <td style={{ padding: "10px", textAlign: "right" }}>
+                      {reclaimed && laneId ? (
+                        <ActionButton label="Restore lane" icon={<ArrowClockwise size={13} />} onClick={() => onRestore(laneId)} />
+                      ) : item.laneStatus === "archived" && laneId ? (
+                        <ActionButton label="Archive & reclaim…" icon={<Archive size={13} />} onClick={() => onReclaim(laneId)} />
+                      ) : target ? (
+                        <ActionButton
+                          label={`Review ${formatBytes(item.reclaimableBytes ?? item.bytes)}…`}
+                          icon={<Broom size={13} />}
+                          onClick={() => onCleanup({
+                            title: item.laneStatus === "orphaned" ? "Remove leftover worktree" : "Remove generated files",
+                            intro: item.laneStatus === "orphaned"
+                              ? "This ADE-managed worktree is not owned by a lane. ADE will verify it again before removal."
+                              : "This is generated or temporary data. ADE will verify that it is not active before removal.",
+                            targets: [target],
+                          })}
+                        />
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Section
 // ---------------------------------------------------------------------------
@@ -660,6 +937,11 @@ export function StorageSection() {
   const [safeOpen, setSafeOpen] = React.useState(false);
   const [compressing, setCompressing] = React.useState(false);
   const [maintenanceBusy, setMaintenanceBusy] = React.useState(false);
+  const [policy, setPolicy] = React.useState<LaneCleanupConfig>({});
+  const [policyBusy, setPolicyBusy] = React.useState(false);
+  const [reclaimRisk, setReclaimRisk] = React.useState<LaneReclaimRisk | null>(null);
+  const [reclaimConfirm, setReclaimConfirm] = React.useState("");
+  const [reclaimBusy, setReclaimBusy] = React.useState(false);
   const [toast, setToast] = React.useState<string | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -678,10 +960,11 @@ export function StorageSection() {
     else setLoading(true);
     setError(null);
     try {
-      const [snap, pressure, lanes] = await Promise.all([
+      const [snap, pressure, lanes, config] = await Promise.all([
         window.ade.storage.getSnapshot({ forceRefresh: opts.force }),
         window.ade.storage.getPressure().catch(() => null),
         window.ade.lanes?.list?.({ includeArchived: true }).catch(() => []) ?? Promise.resolve([]),
+        window.ade.projectConfig.get(),
       ]);
       const ids = new Map<string, string>();
       const archivedAt = new Map<string, string | null>();
@@ -694,6 +977,12 @@ export function StorageSection() {
       setPressureState(pressure?.state);
       setLaneIdByKey(ids);
       setArchivedAtByKey(archivedAt);
+      setPolicy({
+        ...(config.effective.laneCleanup ?? {}),
+        ...(config.local.laneCleanup ?? {}),
+        autoDeleteArchivedAfterHours: undefined,
+        deleteRemoteBranchOnCleanup: undefined,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -748,6 +1037,65 @@ export function StorageSection() {
       setMaintenanceBusy(false);
     }
   }, [runMaintenanceNow, maintenanceBusy, showToast, load, loadDiagnostics]);
+
+  const savePolicy = React.useCallback(async () => {
+    setPolicyBusy(true);
+    try {
+      const current = await window.ade.projectConfig.get();
+      await window.ade.projectConfig.save({
+        shared: current.shared,
+        local: { ...current.local, laneCleanup: policy },
+      });
+      showToast("Storage rules saved.");
+      void load({ force: true, silent: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not save storage rules");
+    } finally {
+      setPolicyBusy(false);
+    }
+  }, [load, policy, showToast]);
+
+  const openReclaim = React.useCallback(async (laneId: string) => {
+    try {
+      const risk = await window.ade.lanes.getReclaimRisk({ laneId });
+      setReclaimConfirm("");
+      setReclaimRisk(risk);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not review this lane");
+    }
+  }, [showToast]);
+
+  const confirmReclaim = React.useCallback(async () => {
+    if (!reclaimRisk || reclaimConfirm !== "RECLAIM") return;
+    setReclaimBusy(true);
+    try {
+      const result = await window.ade.lanes.archiveAndReclaim({
+        laneId: reclaimRisk.laneId,
+        confirmation: "RECLAIM",
+        forceDirty: reclaimRisk.dirty,
+      });
+      showToast(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
+      setReclaimRisk(null);
+      setReclaimConfirm("");
+      void load({ force: true, silent: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not reclaim this lane");
+    } finally {
+      setReclaimBusy(false);
+    }
+  }, [load, reclaimConfirm, reclaimRisk, showToast]);
+
+  const restoreLane = React.useCallback(async (laneId: string) => {
+    try {
+      const result = await window.ade.lanes.unarchive({ laneId });
+      showToast(result.setupWarning
+        ? `Lane restored. Setup needs attention: ${result.setupWarning}`
+        : result.worktreeRecreated ? "Lane restored and its worktree was recreated." : "Lane restored.");
+      void load({ force: true, silent: true });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not restore this lane");
+    }
+  }, [load, showToast]);
 
   const onCleaned = React.useCallback((_result: StorageCleanupResult) => {
     void load({ force: true, silent: true });
@@ -824,6 +1172,21 @@ export function StorageSection() {
               onCleanSafely={safeConfig ? () => setSafeOpen(true) : null}
             />
 
+            <StoragePolicyPanel
+              value={policy}
+              busy={policyBusy}
+              onChange={setPolicy}
+              onSave={() => void savePolicy()}
+            />
+
+            <StorageReviewPanel
+              snapshot={snapshot}
+              laneIdByKey={laneIdByKey}
+              onCleanup={setCleanup}
+              onReclaim={(laneId) => void openReclaim(laneId)}
+              onRestore={(laneId) => void restoreLane(laneId)}
+            />
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
               {CATEGORY_ORDER.map((categoryId) => {
                 const category = byId.get(categoryId);
@@ -838,6 +1201,8 @@ export function StorageSection() {
                       laneIdByKey={laneIdByKey}
                       archivedAtByKey={archivedAtByKey}
                       onRequestCleanup={setCleanup}
+                      onReclaim={(laneId) => void openReclaim(laneId)}
+                      onRestore={(laneId) => void restoreLane(laneId)}
                     />
                   );
                 }
@@ -881,7 +1246,7 @@ export function StorageSection() {
             <MaintenanceJournal extras={extras} />
 
             <div style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.55, color: COLORS.textMuted }}>
-              ADE never automatically deletes your chats, project files, or active lanes. Old backups are removed automatically once a newer one is verified.
+              ADE never removes lane folders, build output, or leftovers in the background. It can archive a safe idle lane, but files stay until you review and confirm cleanup.
             </div>
           </>
         ) : null}
@@ -927,6 +1292,19 @@ export function StorageSection() {
             plan={safeConfig.plan}
             onClose={() => setSafeOpen(false)}
             onCleaned={onCleaned}
+          />
+        ) : null}
+
+        {reclaimRisk ? (
+          <ReclaimConfirmDialog
+            risk={reclaimRisk}
+            busy={reclaimBusy}
+            value={reclaimConfirm}
+            onChange={setReclaimConfirm}
+            onClose={() => {
+              if (!reclaimBusy) setReclaimRisk(null);
+            }}
+            onConfirm={() => void confirmReclaim()}
           />
         ) : null}
       </div>

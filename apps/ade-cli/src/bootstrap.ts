@@ -1570,6 +1570,8 @@ export async function createAdeRuntime(args: {
       || ptyService.isTranscriptPathActive(filePath)
       || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
     projectId,
+    laneService,
+    projectConfigService,
     // One bounded `ade_feature_used` per completed maintenance run at the daemon
     // boundary (deduped to 20 h by the service).
     captureAnalytics: (input) => {

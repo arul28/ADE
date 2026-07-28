@@ -20,8 +20,11 @@ import {
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import type {
   AdoptAttachedLaneArgs,
+  ArchiveAndReclaimLaneArgs,
+  ArchiveAndReclaimLaneResult,
   AttachLaneArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
@@ -31,6 +34,7 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  LaneReclaimRisk,
   LaneDeleteStep,
   LaneDeleteStepName,
   LaneIcon,
@@ -51,6 +55,7 @@ import type {
   ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
+  RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
   RebaseAbortArgs,
@@ -210,6 +215,47 @@ async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<
 
   await makeTreeWritableForRemoval(targetPath);
   await fs.promises.rm(targetPath, { recursive: true, force: true });
+}
+
+async function managedTreeBytes(targetPath: string): Promise<number> {
+  let total = 0;
+  const pending = [targetPath];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.lstat(current);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    if (!stat.isDirectory()) {
+      total += Math.max(0, stat.size);
+      continue;
+    }
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(current);
+    } catch {
+      continue;
+    }
+    for (const name of names) pending.push(path.join(current, name));
+  }
+  return total;
+}
+
+async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
+  const root = normAbs(rootPath);
+  const target = normAbs(targetPath);
+  if (path.dirname(target) !== root) return true;
+  for (const candidate of [root, target]) {
+    try {
+      if ((await fs.promises.lstat(candidate)).isSymbolicLink()) return true;
+    } catch {
+      // A missing target is safe to recreate only when its managed root is real.
+    }
+  }
+  return false;
 }
 
 function cloneLaneStatus(status: LaneStatus): LaneStatus {
@@ -1833,6 +1879,21 @@ export function createLaneService({
     return parseGitWorktreePorcelain(worktreeStdout(result));
   };
 
+  const registeredWorktreeForLane = async (
+    worktreePath: string,
+    branchRef: string,
+  ): Promise<GitWorktreeInfo | null> => {
+    const target = normAbs(worktreePath);
+    const expectedBranch = normalizeBranchKey(branchRef);
+    if (!expectedBranch) return null;
+    const worktrees = await listGitWorktrees();
+    return worktrees.find((worktree) =>
+      !worktree.isBare
+      && worktree.path === target
+      && normalizeBranchKey(worktree.branch) === expectedBranch
+    ) ?? null;
+  };
+
   const residualWorktreeCleanup = createWorktreeResidualCleanup({
     db,
     projectId,
@@ -2794,6 +2855,9 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  const laneReclaimInFlight = new Set<string>();
+  const laneStorageWorktreeLocks = createLaneWorktreeLockService({ db, logger });
+  const laneStorageLockOwnerId = randomUUID();
   let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
   const gitWorktreeMutationOwner = new AsyncLocalStorage<boolean>();
 
@@ -5088,6 +5152,290 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
+    async getReclaimRisk(laneId: string): Promise<LaneReclaimRisk> {
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      const deleteRisk = await laneServiceApi.getDeleteRisk(laneId);
+      const normalizedRoot = normAbs(worktreesDir);
+      const normalizedWorktree = normAbs(row.worktree_path);
+      const managedPath = row.lane_type === "worktree" && path.dirname(normalizedWorktree) === normalizedRoot;
+      const worktreeExists = managedPath && fs.existsSync(normalizedWorktree);
+      const symlinkPath = managedPath
+        ? await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)
+        : false;
+      let registeredWorktree: GitWorktreeInfo | null = null;
+      if (worktreeExists && !symlinkPath) {
+        try {
+          registeredWorktree = await registeredWorktreeForLane(normalizedWorktree, row.branch_ref);
+        } catch {
+          // Ownership must be proven before reclaim; a failed registry read is
+          // treated as blocked instead of trusting the saved database path.
+        }
+      }
+      const worktreeAvailable = Boolean(registeredWorktree);
+      const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
+      const [worktreeBytes, generatedBytes] = await Promise.all([
+        worktreeAvailable && !symlinkPath ? managedTreeBytes(normalizedWorktree) : Promise.resolve(0),
+        managedTreeBytes(lanePackDir),
+      ]);
+      const branchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
+      let unmerged = false;
+      if (branchName) {
+        const merged = await runGit(
+          ["merge-base", "--is-ancestor", branchName, row.base_ref],
+          { cwd: projectRoot, timeoutMs: 8_000 },
+        );
+        unmerged = merged.exitCode !== 0;
+      }
+      const blockedReasons: LaneReclaimRisk["blockedReasons"] = [];
+      if (row.lane_type === "primary") {
+        blockedReasons.push({
+          code: "primary_lane",
+          message: "The primary lane is always kept on disk.",
+          disposition: "blocked",
+        });
+      }
+      if (row.lane_type === "attached") {
+        blockedReasons.push({
+          code: "attached_lane",
+          message: "This folder is attached from outside ADE, so ADE will not remove it.",
+          disposition: "blocked",
+        });
+      }
+      if (row.lane_type === "worktree" && !managedPath) {
+        blockedReasons.push({
+          code: "worktree_outside_managed_root",
+          message: "The saved folder is outside ADE's managed worktree folder.",
+          disposition: "blocked",
+        });
+      }
+      if (symlinkPath) {
+        blockedReasons.push({
+          code: "symlink_path",
+          message: "The folder or its managed root is a link.",
+          disposition: "blocked",
+        });
+      }
+      if (worktreeExists && !symlinkPath && !registeredWorktree) {
+        blockedReasons.push({
+          code: "worktree_not_registered",
+          message: "This folder is not the lane worktree registered to this project and will not be removed.",
+          disposition: "blocked",
+        });
+      }
+      if (deleteRisk.activeChatCount + deleteRisk.activePtyCount + deleteRisk.activeWatcherCount > 0) {
+        blockedReasons.push({
+          code: "active_work",
+          message: "Running chats, terminals, or file watchers will be stopped after you confirm.",
+          disposition: "confirmation_required",
+        });
+      }
+      if (deleteRisk.dirty) {
+        blockedReasons.push({
+          code: "dirty_worktree",
+          message: "This lane has uncommitted files. Reclaiming can permanently remove those file changes.",
+          disposition: "confirmation_required",
+        });
+      }
+      if (unmerged || deleteRisk.hasUnpushedCommits) {
+        blockedReasons.push({
+          code: "unmerged_work",
+          message: "The branch has work that is not merged or pushed. The branch is kept, but review it before reclaiming.",
+          disposition: "confirmation_required",
+        });
+      }
+      const state = db.get<{ attempts: number; last_error: string | null }>(
+        "select attempts, last_error from local_lane_storage_state where project_id = ? and lane_id = ?",
+        [projectId, laneId],
+      );
+      return {
+        ...deleteRisk,
+        laneName: row.name,
+        worktreePath: row.worktree_path,
+        worktreeBytes,
+        generatedBytes,
+        reclaimableBytes: worktreeBytes + generatedBytes,
+        worktreeAvailable,
+        blockedReasons,
+        lastFailure: state?.last_error ?? null,
+        retryCount: state?.attempts ?? 0,
+      };
+    },
+
+    async archiveAndReclaim(
+      args: ArchiveAndReclaimLaneArgs,
+      runtimeOpts?: { teardownEnv?: () => Promise<void> },
+    ): Promise<ArchiveAndReclaimLaneResult> {
+      if (args.confirmation !== "RECLAIM") {
+        throw new Error('Type "RECLAIM" to confirm removing this lane folder.');
+      }
+      const row = getLaneRow(args.laneId);
+      if (!row) throw new Error(`Lane not found: ${args.laneId}`);
+      if (laneReclaimInFlight.has(args.laneId)) {
+        throw new Error("Archive & Reclaim is already running for this lane.");
+      }
+      if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
+        throw new Error("This lane is already being deleted.");
+      }
+      if (row.lane_type === "primary") throw new Error("The primary lane cannot be reclaimed.");
+      if (row.lane_type === "attached") {
+        throw new Error("Attached folders are not ADE-managed and cannot be reclaimed.");
+      }
+      const normalizedRoot = normAbs(worktreesDir);
+      const normalizedWorktree = normAbs(row.worktree_path);
+      if (path.dirname(normalizedWorktree) !== normalizedRoot) {
+        throw new Error("The lane folder is outside ADE's managed worktree folder.");
+      }
+      if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
+        throw new Error("ADE will not reclaim a folder through a symbolic link.");
+      }
+
+      const risk = await laneServiceApi.getReclaimRisk(args.laneId);
+      const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
+      if (hardBlock) throw new Error(hardBlock.message);
+      if (risk.dirty && args.forceDirty !== true) {
+        throw new Error("This lane has uncommitted files. Confirm that those changes may be lost.");
+      }
+      if (laneReclaimInFlight.has(args.laneId)) {
+        throw new Error("Archive & Reclaim is already running for this lane.");
+      }
+      if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
+        throw new Error("This lane is already being deleted.");
+      }
+      const storageLock = laneStorageWorktreeLocks.acquire({
+        laneId: args.laneId,
+        worktreePath: normalizedWorktree,
+        ownerKind: "storage_lifecycle",
+        ownerLabel: `Archive & Reclaim: ${row.name}`,
+        ownerSessionId: laneStorageLockOwnerId,
+        leaseMs: 15 * 60_000,
+      });
+      laneReclaimInFlight.add(args.laneId);
+      const warnings: string[] = [];
+      const now = new Date().toISOString();
+      try {
+        laneServiceApi.archive({ laneId: args.laneId });
+        db.run(
+          `insert into local_lane_storage_state(
+             lane_id, project_id, worktree_path, reclaim_state, last_known_bytes,
+             attempts, last_error, reclaimed_at, updated_at
+           ) values(?, ?, ?, 'kept', ?, 0, null, null, ?)
+           on conflict(lane_id) do update set
+             worktree_path = excluded.worktree_path,
+             last_known_bytes = excluded.last_known_bytes,
+             last_error = null,
+             updated_at = excluded.updated_at`,
+          [args.laneId, projectId, row.worktree_path, risk.reclaimableBytes, now],
+        );
+        teardownDeps?.autoRebaseService?.cancelForLane(args.laneId);
+        await teardownDeps?.rebaseSuggestionService?.dismiss({ laneId: args.laneId });
+        await teardownDeps?.agentChatService?.disposeForLane(args.laneId);
+        teardownDeps?.ptyService?.disposeForLane(args.laneId);
+        teardownDeps?.fileWatcherService?.stopAllForWorkspace(args.laneId);
+        if (runtimeOpts?.teardownEnv) {
+          try {
+            await runtimeOpts.teardownEnv();
+          } catch (error) {
+            warnings.push(`Environment cleanup did not finish: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+
+        let worktreeRemoved = !fs.existsSync(normalizedWorktree);
+        if (!worktreeRemoved) {
+          const initialStat = await fs.promises.lstat(normalizedWorktree);
+          if (!initialStat.isDirectory() || initialStat.isSymbolicLink()) {
+            throw new Error("The lane worktree is no longer a safe managed folder.");
+          }
+          await runGitWorktreeMutation(async () => {
+            if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
+              throw new Error("ADE will not reclaim a folder through a symbolic link.");
+            }
+            if (!await registeredWorktreeForLane(normalizedWorktree, row.branch_ref)) {
+              throw new Error("This folder is no longer the lane worktree registered to this project.");
+            }
+            const beforeRemove = await fs.promises.lstat(normalizedWorktree);
+            if (
+              !beforeRemove.isDirectory()
+              || beforeRemove.isSymbolicLink()
+              || beforeRemove.dev !== initialStat.dev
+              || beforeRemove.ino !== initialStat.ino
+            ) {
+              throw new Error("The lane worktree changed while ADE was preparing cleanup.");
+            }
+            const remove = await runGit(
+              ["worktree", "remove", "--force", normalizedWorktree],
+              { cwd: projectRoot, timeoutMs: 120_000 },
+            );
+            if (remove.exitCode !== 0 || fs.existsSync(normalizedWorktree)) {
+              const residualStat = await fs.promises.lstat(normalizedWorktree);
+              if (
+                !residualStat.isDirectory()
+                || residualStat.isSymbolicLink()
+                || residualStat.dev !== initialStat.dev
+                || residualStat.ino !== initialStat.ino
+              ) {
+                throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+              }
+              await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
+            }
+            const prune = await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+            if (prune.exitCode !== 0) {
+              warnings.push((prune.stderr || prune.stdout || "Git worktree cleanup did not finish.").trim());
+            }
+          });
+          worktreeRemoved = !fs.existsSync(normalizedWorktree);
+        }
+        if (!worktreeRemoved) throw new Error("The managed worktree folder could not be removed.");
+
+        const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", args.laneId);
+        try {
+          await fs.promises.rm(lanePackDir, { recursive: true, force: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const remainingBytes = await managedTreeBytes(lanePackDir);
+          db.run(
+            `update local_lane_storage_state
+                set last_known_bytes = ?, updated_at = ?
+              where project_id = ? and lane_id = ?`,
+            [remainingBytes, new Date().toISOString(), projectId, args.laneId],
+          );
+          throw new Error(`Generated lane data could not be removed: ${message}`);
+        }
+        db.run(
+          `update local_lane_storage_state
+              set reclaim_state = 'reclaimed', reclaimed_at = ?, last_error = null, updated_at = ?
+            where project_id = ? and lane_id = ?`,
+          [now, now, projectId, args.laneId],
+        );
+        invalidateLaneListCache();
+        broadcastLifecycleEvent({
+          type: "lane-reclaimed",
+          laneId: args.laneId,
+          laneName: row.name,
+          color: row.color,
+        });
+        return {
+          laneId: args.laneId,
+          reclaimedBytes: risk.reclaimableBytes,
+          worktreeRemoved,
+          generatedDataRemoved: true,
+          warnings,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        db.run(
+          `update local_lane_storage_state
+              set reclaim_state = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?
+            where project_id = ? and lane_id = ?`,
+          [message, new Date().toISOString(), projectId, args.laneId],
+        );
+        throw error;
+      } finally {
+        laneReclaimInFlight.delete(args.laneId);
+        laneStorageWorktreeLocks.release({ token: storageLock.token });
+      }
+    },
+
     archive({ laneId }: { laneId: string }): void {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
@@ -5119,18 +5467,109 @@ export function createLaneService({
       });
     },
 
-    unarchive({ laneId }: { laneId: string }): void {
+    async unarchive({ laneId }: { laneId: string }): Promise<RestoreLaneResult> {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
-      if (row.status !== "archived") return;
-      db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
-      invalidateLaneListCache();
-      broadcastLifecycleEvent({
-        type: "lane-unarchived",
+      if (laneReclaimInFlight.has(laneId)) {
+        throw new Error("Wait for Archive & Reclaim to finish before restoring this lane.");
+      }
+      if (row.status !== "archived") {
+        const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
+        if (!lane) throw new Error(`Lane not found: ${laneId}`);
+        return { lane, worktreeRecreated: false };
+      }
+      if (row.lane_type !== "worktree") {
+        db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
+        db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+        invalidateLaneListCache();
+        const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
+        if (!lane) throw new Error(`Lane not found: ${laneId}`);
+        broadcastLifecycleEvent({
+          type: "lane-unarchived",
+          laneId,
+          laneName: row.name,
+          color: row.color,
+        });
+        return { lane, worktreeRecreated: false };
+      }
+
+      const normalizedRoot = normAbs(worktreesDir);
+      const savedPath = normAbs(row.worktree_path);
+      const canonicalPath = path.join(normalizedRoot, `${slugify(row.name)}-${laneId.slice(0, 8)}`);
+      const savedPathIsManaged = path.dirname(savedPath) === normalizedRoot;
+      const targetPath = savedPathIsManaged ? savedPath : canonicalPath;
+      const storageLock = laneStorageWorktreeLocks.acquire({
         laneId,
-        laneName: row.name,
-        color: row.color,
+        worktreePath: targetPath,
+        ownerKind: "storage_lifecycle",
+        ownerLabel: `Restore lane: ${row.name}`,
+        ownerSessionId: laneStorageLockOwnerId,
+        leaseMs: 15 * 60_000,
       });
+      try {
+        if (savedPathIsManaged && fs.existsSync(savedPath)) {
+          const registered = await registeredWorktreeForLane(savedPath, row.branch_ref).catch(() => null);
+          if (!registered) {
+            throw new Error("The saved lane folder is occupied by a different or unregistered Git worktree.");
+          }
+          db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
+          db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+          invalidateLaneListCache();
+          const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
+          if (!lane) throw new Error(`Lane not found: ${laneId}`);
+          broadcastLifecycleEvent({
+            type: "lane-unarchived",
+            laneId,
+            laneName: row.name,
+            color: row.color,
+          });
+          return { lane, worktreeRecreated: false };
+        }
+        if (await hasSymlinkInManagedPath(normalizedRoot, targetPath)) {
+          throw new Error("ADE will not restore a lane through a symbolic link.");
+        }
+        if (fs.existsSync(targetPath)) {
+          throw new Error("The restore folder already exists but is not this lane's Git worktree.");
+        }
+
+        const branchName = branchNameForDelete(row.branch_ref, "origin");
+        await runGitWorktreeMutation(async () => {
+          const localBranch = await runGit(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+            { cwd: projectRoot, timeoutMs: 8_000 },
+          );
+          const addArgs = localBranch.exitCode === 0
+            ? ["worktree", "add", targetPath, branchName]
+            : ["worktree", "add", "-b", branchName, targetPath, `origin/${branchName}`];
+          await runGitOrThrow(addArgs, { cwd: projectRoot, timeoutMs: 120_000 });
+        });
+        try {
+          db.run(
+            "update lanes set worktree_path = ?, status = 'active', archived_at = null where id = ? and project_id = ?",
+            [targetPath, laneId, projectId],
+          );
+          db.run("delete from local_lane_storage_state where project_id = ? and lane_id = ?", [projectId, laneId]);
+        } catch (error) {
+          await runGitWorktreeMutation(async () => {
+            await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 120_000 });
+            await fs.promises.rm(targetPath, { recursive: true, force: true });
+            await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+          });
+          throw error;
+        }
+        invalidateLaneListCache();
+        const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
+        if (!lane) throw new Error(`Lane not found: ${laneId}`);
+        broadcastLifecycleEvent({
+          type: "lane-restored",
+          laneId,
+          laneName: row.name,
+          color: row.color,
+        });
+        return { lane, worktreeRecreated: true };
+      } finally {
+        laneStorageWorktreeLocks.release({ token: storageLock.token });
+      }
     },
 
     listDeleteProgress(): LaneDeleteProgress[] {
@@ -5158,6 +5597,9 @@ export function createLaneService({
       } = args;
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (laneReclaimInFlight.has(laneId)) {
+        throw new Error("Archive & Reclaim is already running for this lane.");
+      }
       if (deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
         throw new Error(`Lane delete is already running: ${laneId}`);
       }

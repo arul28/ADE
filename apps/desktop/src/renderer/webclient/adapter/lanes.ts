@@ -1,7 +1,9 @@
 import type {
+  ArchiveAndReclaimLaneResult,
   LaneLifecycleEvent,
   LaneListSnapshot,
   ResolveLaneBranchDriftResult,
+  RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
@@ -90,6 +92,20 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         laneName: stringField(record, "laneName") || stringField(record, "name") || "Lane",
       });
     },
+    archiveAndReclaim: (args: unknown) =>
+      commands.call<ArchiveAndReclaimLaneResult>("lanes.archiveAndReclaim", asRecord(args), {
+        fallback: () => {
+          throw new Error("Archive & Reclaim is unavailable on the connected ADE host.");
+        },
+        idempotent: false,
+      }),
+    unarchive: (args: unknown) =>
+      commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), {
+        fallback: () => {
+          throw new Error("Restoring a reclaimed lane is unavailable on the connected ADE host.");
+        },
+        idempotent: false,
+      }),
     delete: async (args: unknown) => {
       await call("lanes.delete", args, undefined, false);
       const record = asRecord(args);
@@ -113,6 +129,28 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         activePtyCount: 0,
         activeWatcherCount: 0,
         envInitialized: false,
+      }),
+    getReclaimRisk: (args: unknown) =>
+      call("lanes.getReclaimRisk", args, {
+        laneId: stringField(asRecord(args), "laneId"),
+        laneName: "Lane",
+        branchRef: null,
+        worktreePath: "",
+        dirty: false,
+        hasUnpushedCommits: false,
+        unpushedCommitCount: 0,
+        remoteBranchExists: false,
+        activeChatCount: 0,
+        activePtyCount: 0,
+        activeWatcherCount: 0,
+        envInitialized: false,
+        worktreeBytes: 0,
+        generatedBytes: 0,
+        reclaimableBytes: 0,
+        worktreeAvailable: false,
+        blockedReasons: [],
+        lastFailure: null,
+        retryCount: 0,
       }),
     getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
     getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),

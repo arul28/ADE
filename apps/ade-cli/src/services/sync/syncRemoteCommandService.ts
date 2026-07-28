@@ -3441,6 +3441,35 @@ async function deleteLaneWithRuntimeCleanup(
   return { ok: true };
 }
 
+async function unarchiveLaneWithRuntimeSetup(
+  args: SyncRemoteCommandServiceArgs,
+  payload: Record<string, unknown>,
+): Promise<{ ok: true }> {
+  const archiveArgs = parseArchiveLaneArgs(payload, "lanes.unarchive");
+  const result = await args.laneService.unarchive(archiveArgs);
+  if (!result.worktreeRecreated || !args.laneEnvironmentService) {
+    return { ok: true };
+  }
+  try {
+    const context = await resolveLaneOverlayContext(args, archiveArgs.laneId);
+    if (context.envInitConfig) {
+      await args.laneEnvironmentService.initLaneEnvironment(
+        context.lane,
+        context.envInitConfig,
+        context.overrides,
+      );
+    }
+  } catch (error) {
+    // Keep the established mobile command response stable. The worktree was
+    // restored successfully; environment setup can be retried separately.
+    args.logger.warn("sync_remote.lane_env_setup.post_unarchive_failed", {
+      laneId: archiveArgs.laneId,
+      err: String(error),
+    });
+  }
+  return { ok: true };
+}
+
 async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   service: ReturnType<typeof createAgentChatService>,
   payload: T,
@@ -3801,10 +3830,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
     return { ok: true };
   });
-  register("lanes.unarchive", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await args.laneService.unarchive(parseArchiveLaneArgs(payload, "lanes.unarchive"));
-    return { ok: true };
-  });
+  register("lanes.unarchive", { viewerAllowed: true, queueable: true }, async (payload) =>
+    unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
   register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
