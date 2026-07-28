@@ -1205,6 +1205,7 @@ declare global {
             request: import("../shared/types").AttentionNotchAcknowledgeRequest,
           ) => void,
         ) => () => void;
+        onRefreshRequested?: (cb: () => void) => () => void;
       };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;

@@ -189,6 +189,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     },
 
     upsertDevice(registration: PushDeviceRegistration): StoredPushDevice {
+      if (registration.pushToStartToken && registration.clearPushToStartToken) {
+        throw new Error("Cannot set and clear pushToStartToken together.");
+      }
       const file = load();
       const existing = file.devices[registration.deviceId];
       const stored: StoredPushDevice = {
@@ -196,7 +199,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         // Preserve a previously reported token when the phone only re-registers
         // the other one (matches the relay's coalesce-on-conflict semantics).
         apnsToken: registration.apnsToken ?? existing?.apnsToken ?? null,
-        pushToStartToken: registration.pushToStartToken ?? existing?.pushToStartToken ?? null,
+        pushToStartToken: registration.clearPushToStartToken
+          ? null
+          : registration.pushToStartToken ?? existing?.pushToStartToken ?? null,
         bundleId: registration.bundleId,
         apsEnvironment: registration.apsEnvironment,
         platform: registration.platform ?? existing?.platform ?? null,

@@ -1263,12 +1263,20 @@ function parsePushRegisterDeviceArgs(value: Record<string, unknown>): PushDevice
   if (apsEnvironmentRaw !== "sandbox" && apsEnvironmentRaw !== "production") {
     throw new Error("push.registerDevice requires apsEnvironment (sandbox|production).");
   }
+  const pushToStartToken = asTrimmedString(value.pushToStartToken);
+  const clearPushToStartToken = value.clearPushToStartToken === true;
+  if (pushToStartToken && clearPushToStartToken) {
+    throw new Error(
+      "push.registerDevice cannot set and clear pushToStartToken together.",
+    );
+  }
   return {
     deviceId: requireString(value.deviceId, "push.registerDevice requires deviceId."),
     bundleId: requireString(value.bundleId, "push.registerDevice requires bundleId."),
     apsEnvironment: apsEnvironmentRaw,
     apnsToken: asTrimmedString(value.apnsToken),
-    pushToStartToken: asTrimmedString(value.pushToStartToken),
+    pushToStartToken,
+    clearPushToStartToken,
     platform: asTrimmedString(value.platform),
     deviceName: asTrimmedString(value.deviceName),
     prefs: isRecord(value.prefs) ? parsePushPrefs(value.prefs) : null,

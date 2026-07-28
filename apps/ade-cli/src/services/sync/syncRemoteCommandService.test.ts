@@ -43,6 +43,7 @@ function createService(options?: {
   getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
+  pushPublisherService?: Record<string, unknown>;
   personalChatScope?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
@@ -99,6 +100,7 @@ function createService(options?: {
     ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
+    ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     logger,
   } as any);
@@ -122,6 +124,33 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("forwards explicit push-to-start clears and rejects set-plus-clear conflicts", async () => {
+    const handleDeviceRegistered = vi.fn().mockResolvedValue({ ok: true });
+    const { service } = createService({
+      pushPublisherService: { handleDeviceRegistered },
+    });
+
+    await service.execute(makePayload("push.registerDevice", {
+      deviceId: "phone-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      clearPushToStartToken: true,
+    }));
+    expect(handleDeviceRegistered).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: "phone-1",
+      pushToStartToken: null,
+      clearPushToStartToken: true,
+    }));
+
+    await expect(service.execute(makePayload("push.registerDevice", {
+      deviceId: "phone-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      pushToStartToken: "ab",
+      clearPushToStartToken: true,
+    }))).rejects.toThrow("cannot set and clear pushToStartToken together.");
+  });
+
   it("preserves the exact remote-command set that observes execution aborts", () => {
     const { service } = createService();
 

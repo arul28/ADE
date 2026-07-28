@@ -205,4 +205,94 @@ describe("AttentionNotchHelper", () => {
 
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it("requests account refreshes only while the native notch is enabled", () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      spawnMock.mockReturnValue(child);
+      const onRefreshRequested = vi.fn();
+      const helper = new AttentionNotchHelper({
+        executablePath: "/tmp/notch",
+        logger,
+        onOutput: vi.fn(),
+        onRefreshRequested,
+        refreshIntervalMs: 1_000,
+        platform: "darwin",
+      });
+
+      helper.updateSettings({
+        enabled: true,
+        preferredDisplayId: null,
+        hideDetails: true,
+        celebrationsEnabled: false,
+        soundsEnabled: false,
+      });
+      child.emit("spawn");
+      vi.advanceTimersByTime(2_100);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+
+      helper.updateSettings({
+        enabled: false,
+        preferredDisplayId: null,
+        hideDetails: true,
+        celebrationsEnabled: false,
+        soundsEnabled: false,
+      });
+      vi.advanceTimersByTime(2_000);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+      helper.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts after a spawn error without leaving a refresh timer running", () => {
+    vi.useFakeTimers();
+    try {
+      const failedChild = fakeChild();
+      const restartedChild = fakeChild();
+      spawnMock
+        .mockReturnValueOnce(failedChild)
+        .mockReturnValueOnce(restartedChild);
+      const onRefreshRequested = vi.fn();
+      const helper = new AttentionNotchHelper({
+        executablePath: "/tmp/notch",
+        logger,
+        onOutput: vi.fn(),
+        onRefreshRequested,
+        refreshIntervalMs: 1_000,
+        restartDelayMs: 100,
+        platform: "darwin",
+      });
+
+      helper.updateSettings({
+        enabled: true,
+        preferredDisplayId: null,
+        hideDetails: true,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+      });
+      helper.updateSettings({
+        enabled: true,
+        preferredDisplayId: null,
+        hideDetails: false,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+      });
+      failedChild.emit("error", new Error("spawn ENOEXEC"));
+      failedChild.emit("close", -2, null);
+      vi.advanceTimersByTime(1_000);
+
+      expect(onRefreshRequested).not.toHaveBeenCalled();
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+
+      restartedChild.emit("spawn");
+      vi.advanceTimersByTime(1_000);
+      expect(onRefreshRequested).toHaveBeenCalledOnce();
+      helper.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

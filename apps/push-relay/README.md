@@ -33,7 +33,7 @@ its own (single D1 database, no Durable Objects, no queues).
 |---|---|---|
 | GET | `/health` | Liveness + whether the APNs key is configured |
 | POST | `/machines/:key/claim` | Claim a machine key with a relay secret |
-| PUT | `/machines/:key/devices/:deviceId` | Upsert a device registration (`apnsToken`, `pushToStartToken`, `bundleId`, `apsEnvironment`, `platform`, `deviceName`) |
+| PUT | `/machines/:key/devices/:deviceId` | Upsert a device registration (`apnsToken`, `pushToStartToken`, `bundleId`, `apsEnvironment`, `platform`, `deviceName`). Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. |
 | DELETE | `/machines/:key/devices/:deviceId` | Remove a device (unpair) |
 | GET | `/machines/:key/devices` | List registrations (diagnostics) |
 | POST | `/machines/:key/live-activity-tokens` | Upsert/remove a per-activity update token (`deviceId`, `activityId`, `token`; empty token removes) |
@@ -43,7 +43,8 @@ its own (single D1 database, no Durable Objects, no queues).
 | POST | `/attention/account/ack` | Mark items seen or dismissed across devices |
 | POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
 | GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
-| PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. DELETE retains that ownership epoch so delayed requests cannot reclaim the install. |
+| PATCH | `/attention/account/preferences/devices/:deviceId` | Atomically merge one device's preference override without overwriting concurrent account or other-device changes |
+| PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
 
 ### Account Attention semantics
@@ -58,6 +59,15 @@ its own (single D1 database, no Durable Objects, no queues).
   transitions may notify according to account/device preferences.
 - A foreground Mac suppresses the immediate phone alert. If the item remains
   unseen after the escalation window, a later machine heartbeat can send it.
+- An unchanged full-snapshot heartbeat also retries an account Live Activity
+  start that never committed after a transient APNs failure. Once a start
+  succeeds, durable state plus the content fingerprint suppress duplicates.
+- Device-registration preferences are compatibility fallbacks. Account
+  preferences override them; only an explicit account
+  `devices[deviceId]` override may supersede the account defaults for one
+  device. Phone settings use the scoped device PATCH, while account/project
+  writes omit and preserve `devices`, so concurrent clients cannot erase one
+  another's policy.
 - The relay owns one account-wide Live Activity per iPhone. It focuses the
   highest-priority work across machines and avoids competing per-machine
   activities when the account publisher is healthy.
@@ -72,8 +82,9 @@ its own (single D1 database, no Durable Objects, no queues).
   `start` targets the device's push-to-start token; `update`/`end` target the
   per-activity tokens phones reported. `end` deletes the stored activity token.
 - **Suppression**: any item may carry a `dedupeKey`; a publish whose content
-  hash matches the previous publish for that key is skipped (suppression rows
-  are pruned after 48 h).
+  hash matches the previous publish for that key is skipped. Alert suppression
+  is machine-scoped; Live Activity suppression is device-scoped so one phone's
+  success cannot hide another phone's retry (rows are pruned after 48 h).
 - Dead tokens (APNs 410 / `BadDeviceToken` / `Unregistered` /
   `DeviceTokenNotForTopic` / `ExpiredToken`) are cleared automatically.
 - Registrations idle for `REGISTRATION_RETENTION_DAYS` (default 120) are pruned.

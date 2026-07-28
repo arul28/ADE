@@ -144,12 +144,20 @@ The publisher:
   state, and PR notification transitions;
 - republishes a full bounded machine snapshot on changes and a 30-second
   heartbeat so presence and long-running state recover after disconnects;
+- uses unchanged heartbeats to retry a failed or missed account Live Activity
+  start; successful starts remain deduplicated by durable state and content
+  fingerprint;
 - includes every active project known to that brain, not just the foreground
   desktop project;
 - keeps recent terminal outcomes long enough for acknowledgment;
 - emits exact PR tabs and exact session pending-item/event anchors;
 - skips duplicate legacy notifications and Live Activities after a successful
   account publish.
+
+The paired-machine compatibility publisher tracks Live Activity delivery per
+phone. A failed start, update, or end retries only that phone while healthy
+phones continue receiving new content, and relay suppression is keyed per
+device so a sibling phone's success cannot falsely satisfy the retry.
 
 ## Delivery policy and preferences
 
@@ -174,6 +182,17 @@ Preferences support account defaults plus device and project overrides:
 - hidden preview details;
 - quiet hours;
 - muted sessions.
+
+Device-registration preferences are a compatibility fallback. Account
+preferences override those registration defaults, and only an explicit
+`devices[deviceId]` entry in the account preference document overrides the
+account defaults for one device. The iOS Push delivery controls write that
+explicit per-device account override through an atomic scoped mutation,
+including the phone's muted-session selection. Account/project writes preserve
+device overrides, so the visible switch state and relay policy cannot drift
+apart or overwrite a simultaneous edit from another client. A failed phone
+preference mutation retries with capped exponential backoff until it succeeds,
+the account changes, or a newer local preference replaces it.
 
 When desktop-first delivery is enabled and a foreground Mac recently reported
 presence, the relay waits for the configured bounded delay before notifying the
@@ -212,6 +231,13 @@ with rollback when the account write fails.
 ADE launches one native SwiftUI/AppKit helper from the desktop lifecycle. The
 Electron renderer supplies the already-synced Attention snapshot and settings;
 the helper does not create a second account poller.
+
+While ADE is hidden or minimized, the running helper asks the existing
+renderer/runtime Attention path to refresh on a narrow cadence. Visible windows
+keep their normal renderer-owned poll, so the helper does not duplicate
+foreground work or talk to the relay independently. If a connected host is too
+old to expose `attention.call`, ADE surfaces update-and-restart guidance instead
+of presenting an empty notch as if no work existed.
 
 The helper uses a borderless non-activating `NSPanel` above the status bar,
 joins Spaces/full-screen, and keeps the outer window fixed while the inner
@@ -254,6 +280,9 @@ actions that are safe without assuming the currently paired host owns them.
 Account-only signed-in users can register APNs and Live Activity tokens without
 pairing a machine. Sign-out best-effort deletes the account device registration
 and ends account-wide local Live Activities.
+ActivityKit authorization is independent of alert permission. Disabling Live
+Activities sends an explicit push-to-start-token clear to every active account
+and paired-machine route; omitted tokens preserve the existing registration.
 
 ## Live Activity and widgets
 

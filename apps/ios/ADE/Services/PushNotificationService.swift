@@ -1,7 +1,72 @@
+import ActivityKit
 import Foundation
 import UIKit
 import UserNotifications
 import WidgetKit
+
+func pushRegistrationRequiredAfterLiveActivityTokenChange(
+    hasApnsToken: Bool,
+    hasSignedInAccount: Bool,
+    hasPairedHost: Bool
+) -> Bool {
+    hasApnsToken || hasSignedInAccount || hasPairedHost
+}
+
+struct PushToStartTokenRegistrationMutation: Equatable {
+    let token: String?
+    let clear: Bool
+}
+
+func pushToStartTokenRegistrationMutation(
+    token: String?,
+    clearPending: Bool
+) -> PushToStartTokenRegistrationMutation {
+    if let token {
+        return PushToStartTokenRegistrationMutation(token: token, clear: false)
+    }
+    return PushToStartTokenRegistrationMutation(token: nil, clear: clearPending)
+}
+
+@MainActor
+final class PushPreferenceSyncRetrier {
+    typealias Sleeper = @MainActor (UInt64) async -> Void
+
+    private let sleep: Sleeper
+    private var task: Task<Void, Never>?
+
+    init(
+        sleep: @escaping Sleeper = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+    ) {
+        self.sleep = sleep
+    }
+
+    @discardableResult
+    func start(
+        sync: @escaping @MainActor () async -> Bool
+    ) -> Task<Void, Never> {
+        cancel()
+        let task = Task { @MainActor [sleep] in
+            var retry = 0
+            while !Task.isCancelled {
+                if await sync() {
+                    return
+                }
+                let delaySeconds = min(60, 5 * (1 << min(retry, 3)))
+                retry += 1
+                await sleep(UInt64(delaySeconds) * 1_000_000_000)
+            }
+        }
+        self.task = task
+        return task
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+    }
+}
 
 /// Owns iOS remote-push registration and the local diagnostics the "Push
 /// delivery" settings panel renders. A single instance (`shared`) is driven by
@@ -19,6 +84,7 @@ final class PushNotificationService: ObservableObject {
 
     @Published private(set) var registrationState: PushRegistrationState
     @Published private(set) var permissionStatus: UNAuthorizationStatus = .notDetermined
+    @Published private(set) var liveActivitiesAuthorized: Bool
     @Published private(set) var prefs: PushPrefs
     @Published private(set) var diagnostics: PushDiagnostics
     @Published private(set) var relayStatus: PushRelayStatus?
@@ -33,10 +99,16 @@ final class PushNotificationService: ObservableObject {
     /// Latest ActivityKit push-to-start token (hex), reported by
     /// `LiveActivityService`. Included in `push.registerDevice`.
     private var liveActivityPushToStartTokenHex: String?
+    /// Explicit clear is distinct from an omitted token, which preserves the
+    /// relay's current value. It remains pending until every active route has
+    /// acknowledged the clear.
+    private var liveActivityTokenClearPending = false
+    private var didRequestAuthorizationOffTokenClear = false
     private var registerInFlight = false
     /// Set when a token/pref change arrives while a registration is in flight, so
     /// the in-flight run re-registers once more with the latest token state.
     private var registerPending = false
+    private let prefsSyncRetrier = PushPreferenceSyncRetrier()
 
     private let defaults = ADESharedContainer.defaults
     private let prefsKey = ADESharedContainer.pushPreferencesKey
@@ -53,6 +125,7 @@ final class PushNotificationService: ObservableObject {
         }
         self.prefs = loadedPrefs
         self.diagnostics = loadedDiagnostics
+        self.liveActivitiesAuthorized = ActivityAuthorizationInfo().areActivitiesEnabled
         self.registrationState = PushRegistrationState(rawValue: loadedDiagnostics.registrationStateRaw) ?? .notDetermined
         if migratedTransientFailure {
             persistDiagnostics()
@@ -67,6 +140,9 @@ final class PushNotificationService: ObservableObject {
     func refreshNotificationSettings() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         permissionStatus = settings.authorizationStatus
+        updateLiveActivitiesAuthorization(
+            ActivityAuthorizationInfo().areActivitiesEnabled
+        )
     }
 
     /// Request notification authorization (full prompt, not provisional) and
@@ -78,6 +154,9 @@ final class PushNotificationService: ObservableObject {
             setRegistrationState(.unsupported)
             relayRefreshError = nil
             return
+        }
+        if liveActivityTokenClearPending {
+            await registerDevice()
         }
 
         let center = UNUserNotificationCenter.current()
@@ -121,8 +200,13 @@ final class PushNotificationService: ObservableObject {
         // is resolved so Relay can atomically transfer this installation away
         // from the prior account. This does not prompt and nil tokens do not
         // create a deliverable APNs target.
-        if AccountService.shared.hasPendingAttentionDeviceRevocation {
-            _ = await registerAccountAttentionDevice()
+        if liveActivityTokenClearPending {
+            await registerDevice()
+        } else if AccountService.shared.hasPendingAttentionDeviceRevocation
+            || liveActivityPushToStartTokenHex != nil {
+            if await registerAccountAttentionDevice() {
+                markLiveActivityTokenRegisteredIfPresent()
+            }
         }
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         permissionStatus = settings.authorizationStatus
@@ -141,12 +225,14 @@ final class PushNotificationService: ObservableObject {
         @unknown default:
             break
         }
+        startPreferencesSync()
     }
 
     /// Account auth ended. Keep the APNs token for any independently paired
     /// machine, but do not leave account-only settings claiming registration.
     func handleAccountSignOut() {
         registerPending = false
+        prefsSyncRetrier.cancel()
         guard SyncService.shared?.hasPairedHost != true else { return }
         relayStatus = nil
         relayRefreshError = nil
@@ -191,44 +277,46 @@ final class PushNotificationService: ObservableObject {
         let normalized = hex?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard normalized != liveActivityPushToStartTokenHex else { return }
         liveActivityPushToStartTokenHex = normalized?.isEmpty == true ? nil : normalized
+        if liveActivityPushToStartTokenHex != nil {
+            liveActivityTokenClearPending = false
+        }
         updateDiagnostics { diag in
             diag.liveActivityPushToStartTokenSuffix = liveActivityPushToStartTokenHex.map { String($0.suffix(8)) }
+            diag.liveActivityRegisteredTokenSuffix = nil
         }
-        // Only re-register if we already have an APNs token; otherwise the
-        // pending registration will pick this up.
-        if apnsTokenHex != nil {
+        // ActivityKit authorization and normal notification authorization are
+        // independent. A signed-in or paired installation must register a
+        // push-to-start token even when alert permission is denied and no
+        // regular APNs token exists.
+        if pushRegistrationRequiredAfterLiveActivityTokenChange(
+            hasApnsToken: apnsTokenHex != nil,
+            hasSignedInAccount: AccountService.shared.isSignedIn,
+            hasPairedHost: SyncService.shared?.hasPairedHost == true
+        ) {
             Task { await registerDevice() }
         }
+    }
+
+    func updateLiveActivitiesAuthorization(_ enabled: Bool) {
+        liveActivitiesAuthorized = enabled
+        if enabled {
+            didRequestAuthorizationOffTokenClear = false
+            return
+        }
+        guard !didRequestAuthorizationOffTokenClear else { return }
+        didRequestAuthorizationOffTokenClear = true
+        liveActivityPushToStartTokenHex = nil
+        liveActivityTokenClearPending = true
+        updateDiagnostics { diag in
+            diag.liveActivityPushToStartTokenSuffix = nil
+            diag.liveActivityRegisteredTokenSuffix = nil
+        }
+        Task { await registerDevice() }
     }
 
     // MARK: - Registration command
 
     private func registerDevice() async {
-        let accountRegistered = await registerAccountAttentionDevice()
-        guard let sync = SyncService.shared, sync.hasPairedHost else {
-            setRegistrationState(accountRegistered ? .registered : .unsupported)
-            relayRefreshError = nil
-            if accountRegistered {
-                updateDiagnostics { diag in
-                    diag.lastRegisteredAt = Date()
-                    diag.lastError = nil
-                }
-            }
-            return
-        }
-        guard sync.canSendPushCommands else {
-            if accountRegistered {
-                setRegistrationState(.registered)
-                relayRefreshError = nil
-                updateDiagnostics { diag in
-                    diag.lastRegisteredAt = Date()
-                    diag.lastError = nil
-                }
-            } else {
-                setRegistrationWaitingForMachine()
-            }
-            return
-        }
         // Coalesce instead of dropping: a push-to-start / APNs token that arrives
         // while a registration is in flight would otherwise never reach the relay
         // until the next foreground, silently breaking remote Live Activity starts.
@@ -241,42 +329,104 @@ final class PushNotificationService: ObservableObject {
 
         repeat {
             registerPending = false
-            setRegistrationState(.registering)
-            var args: [String: Any] = [
-                "deviceId": sync.deviceId,
-                "bundleId": Self.bundleId,
-                "apsEnvironment": Self.apsEnvironment,
-                "platform": "iOS",
-                "deviceName": UIDevice.current.name,
-                "prefs": prefs.commandPayload,
-            ]
-            if let apnsTokenHex { args["apnsToken"] = apnsTokenHex }
-            if let liveActivityPushToStartTokenHex { args["pushToStartToken"] = liveActivityPushToStartTokenHex }
+            let mutation = pushToStartTokenRegistrationMutation(
+                token: liveActivityPushToStartTokenHex,
+                clearPending: liveActivityTokenClearPending
+            )
+            let accountRouteRequired = AccountService.shared.isSignedIn
+            let accountRegistered = await registerAccountAttentionDevice(
+                clearPushToStartToken: mutation.clear
+            )
+            let latestMutation = pushToStartTokenRegistrationMutation(
+                token: liveActivityPushToStartTokenHex,
+                clearPending: liveActivityTokenClearPending
+            )
+            if latestMutation != mutation {
+                registerPending = true
+                continue
+            }
+            if accountRegistered {
+                markLiveActivityTokenRegisteredIfPresent()
+            }
 
-            do {
-                _ = try await sync.sendPushCommand(action: "push.registerDevice", args: args)
-                setRegistrationState(.registered)
-                relayRefreshError = nil
-                updateDiagnostics { diag in
-                    diag.lastRegisteredAt = Date()
-                    diag.lastError = nil
+            if let sync = SyncService.shared, sync.hasPairedHost {
+                guard sync.canSendPushCommands else {
+                    if accountRegistered {
+                        setRegistrationState(.registered)
+                        relayRefreshError = nil
+                        updateDiagnostics { diag in
+                            diag.lastRegisteredAt = Date()
+                            diag.lastError = nil
+                        }
+                    } else {
+                        setRegistrationWaitingForMachine()
+                    }
+                    continue
                 }
-            } catch {
-                if accountRegistered {
+
+                setRegistrationState(.registering)
+                var args: [String: Any] = [
+                    "deviceId": sync.deviceId,
+                    "bundleId": Self.bundleId,
+                    "apsEnvironment": Self.apsEnvironment,
+                    "platform": "iOS",
+                    "deviceName": UIDevice.current.name,
+                    "prefs": prefs.commandPayload,
+                ]
+                if let apnsTokenHex { args["apnsToken"] = apnsTokenHex }
+                if mutation.clear {
+                    args["clearPushToStartToken"] = true
+                } else if let token = mutation.token {
+                    args["pushToStartToken"] = token
+                }
+
+                do {
+                    _ = try await sync.sendPushCommand(action: "push.registerDevice", args: args)
+                    completeLiveActivityTokenClearIfSatisfied(
+                        clearRequested: mutation.clear,
+                        accountSatisfied: !accountRouteRequired || accountRegistered,
+                        machineSatisfied: true,
+                        hadAnyRoute: true
+                    )
+                    markLiveActivityTokenRegisteredIfPresent()
                     setRegistrationState(.registered)
                     relayRefreshError = nil
                     updateDiagnostics { diag in
                         diag.lastRegisteredAt = Date()
                         diag.lastError = nil
                     }
-                } else if let message = PushNotificationService.machineUnavailableMessage(
-                    for: error,
-                    fallback: PushNotificationService.machineSetupUnavailableMessage
-                ) {
-                    setRegistrationWaitingForMachine(message: message)
-                } else {
-                    relayRefreshError = nil
-                    setRegistrationState(.failed, error: PushNotificationService.shortError(error))
+                } catch {
+                    if accountRegistered {
+                        setRegistrationState(.registered)
+                        relayRefreshError = nil
+                        updateDiagnostics { diag in
+                            diag.lastRegisteredAt = Date()
+                            diag.lastError = nil
+                        }
+                    } else if let message = PushNotificationService.machineUnavailableMessage(
+                        for: error,
+                        fallback: PushNotificationService.machineSetupUnavailableMessage
+                    ) {
+                        setRegistrationWaitingForMachine(message: message)
+                    } else {
+                        relayRefreshError = nil
+                        setRegistrationState(.failed, error: PushNotificationService.shortError(error))
+                    }
+                }
+            } else {
+                completeLiveActivityTokenClearIfSatisfied(
+                    clearRequested: mutation.clear,
+                    accountSatisfied: !accountRouteRequired || accountRegistered,
+                    machineSatisfied: true,
+                    hadAnyRoute: accountRouteRequired
+                )
+                setRegistrationState(accountRegistered ? .registered : .unsupported)
+                relayRefreshError = nil
+                if accountRegistered {
+                    updateDiagnostics { diag in
+                        diag.lastRegisteredAt = Date()
+                        diag.lastError = nil
+                    }
                 }
             }
         } while registerPending
@@ -285,11 +435,15 @@ final class PushNotificationService: ObservableObject {
     /// Signed-in devices register their APNs and push-to-start tokens directly
     /// with the account Attention relay. Machine-scoped registration remains
     /// below for mixed-version brains and per-machine Live Activity updates.
-    private func registerAccountAttentionDevice() async -> Bool {
+    private func registerAccountAttentionDevice(
+        clearPushToStartToken: Bool? = nil
+    ) async -> Bool {
+        let shouldClear = clearPushToStartToken ?? liveActivityTokenClearPending
         return await AccountService.shared.registerAttentionDevice(
             deviceId: AccountService.shared.attentionDeviceId,
             apnsToken: apnsTokenHex,
-            pushToStartToken: liveActivityPushToStartTokenHex,
+            pushToStartToken: shouldClear ? nil : liveActivityPushToStartTokenHex,
+            clearPushToStartToken: shouldClear,
             bundleId: Self.bundleId,
             apsEnvironment: Self.apsEnvironment,
             preferences: prefs.commandPayload
@@ -307,7 +461,7 @@ final class PushNotificationService: ObservableObject {
         guard next != prefs else { return }
         prefs = next
         persistPrefs()
-        Task { await syncPrefs() }
+        startPreferencesSync()
     }
 
     func setMuted(_ muted: Bool, sessionId: String) {
@@ -318,29 +472,78 @@ final class PushNotificationService: ObservableObject {
         }
     }
 
-    private func syncPrefs() async {
-        let accountSynced = await registerAccountAttentionDevice()
-        guard let sync = SyncService.shared, sync.hasPairedHost else { return }
+    private func startPreferencesSync() {
+        prefsSyncRetrier.start { [weak self] in
+            guard let self else { return true }
+            return await self.syncPrefsOnce()
+        }
+    }
+
+    private func syncPrefsOnce() async -> Bool {
+        let accountRouteExpected = AccountService.shared.isSignedIn
+        let accountDevicePreferences = prefs.accountDeviceOverride
+        let machinePreferences = prefs.commandPayload
+        let accountRegistered = await registerAccountAttentionDevice()
+        guard !Task.isCancelled else { return true }
+        if accountRegistered {
+            markLiveActivityTokenRegisteredIfPresent()
+        }
+        let accountPreferencesSynced = accountRouteExpected
+            ? await AccountService.shared.updateAttentionDevicePreferences(
+                deviceId: AccountService.shared.attentionDeviceId,
+                devicePreferences: accountDevicePreferences
+            )
+            : false
+        guard !Task.isCancelled else { return true }
+        let accountSynced = accountRouteExpected && accountPreferencesSynced
+        let accountPreferencesFailed = accountRouteExpected
+            && !accountPreferencesSynced
+        guard let sync = SyncService.shared, sync.hasPairedHost else {
+            if accountSynced {
+                relayRefreshError = nil
+            } else if accountPreferencesFailed {
+                relayRefreshError = PushNotificationService.accountPrefsUnavailableMessage
+                clearTransientDiagnosticsError()
+            }
+            return !accountRouteExpected || accountSynced
+        }
         guard sync.canSendPushCommands else {
             if accountSynced {
                 relayRefreshError = nil
+                return true
+            } else if accountPreferencesFailed {
+                relayRefreshError = PushNotificationService.accountPrefsUnavailableMessage
+                clearTransientDiagnosticsError()
             } else {
                 relayRefreshError = PushNotificationService.machinePrefsUnavailableMessage
                 clearTransientDiagnosticsError()
             }
-            return
+            return false
         }
         let args: [String: Any] = [
             "deviceId": sync.deviceId,
-            "prefs": prefs.commandPayload,
+            "prefs": machinePreferences,
         ]
         do {
             _ = try await sync.sendPushCommand(action: "push.setPrefs", args: args)
-            relayRefreshError = nil
+            guard !Task.isCancelled else { return true }
+            if accountPreferencesFailed {
+                relayRefreshError = PushNotificationService.accountPrefsUnavailableMessage
+                clearTransientDiagnosticsError()
+                return false
+            } else {
+                relayRefreshError = nil
+                return true
+            }
         } catch {
+            guard !Task.isCancelled else { return true }
             if accountSynced {
                 relayRefreshError = nil
                 updateDiagnostics { $0.lastError = nil }
+                return true
+            } else if accountPreferencesFailed {
+                relayRefreshError = PushNotificationService.accountPrefsUnavailableMessage
+                clearTransientDiagnosticsError()
             } else if let message = PushNotificationService.machineUnavailableMessage(
                 for: error,
                 fallback: PushNotificationService.machinePrefsUnavailableMessage
@@ -351,6 +554,7 @@ final class PushNotificationService: ObservableObject {
                 relayRefreshError = nil
                 updateDiagnostics { $0.lastError = PushNotificationService.shortError(error) }
             }
+            return false
         }
     }
 
@@ -420,7 +624,9 @@ final class PushNotificationService: ObservableObject {
             }
             if preserveAccountAttention {
                 await LiveActivityService.shared.endMachineScopedActivities(immediate: true)
-                if apnsTokenHex != nil {
+                if apnsTokenHex != nil
+                    || liveActivityPushToStartTokenHex != nil
+                    || liveActivityTokenClearPending {
                     await registerDevice()
                 } else {
                     await enableIfPaired()
@@ -436,6 +642,8 @@ final class PushNotificationService: ObservableObject {
         } else {
             apnsTokenHex = nil
             liveActivityPushToStartTokenHex = nil
+            liveActivityTokenClearPending = false
+            didRequestAuthorizationOffTokenClear = false
             setRegistrationState(.unsupported)
             updateDiagnostics { diag in
                 diag.tokenSuffix = nil
@@ -484,6 +692,30 @@ final class PushNotificationService: ObservableObject {
         persistDiagnostics()
     }
 
+    private func markLiveActivityTokenRegisteredIfPresent() {
+        guard let token = liveActivityPushToStartTokenHex else { return }
+        updateDiagnostics { diagnostics in
+            diagnostics.liveActivityRegisteredTokenSuffix = String(token.suffix(8))
+        }
+    }
+
+    private func completeLiveActivityTokenClearIfSatisfied(
+        clearRequested: Bool,
+        accountSatisfied: Bool,
+        machineSatisfied: Bool,
+        hadAnyRoute: Bool
+    ) {
+        guard clearRequested,
+              liveActivityTokenClearPending,
+              liveActivityPushToStartTokenHex == nil,
+              hadAnyRoute,
+              accountSatisfied,
+              machineSatisfied else {
+            return
+        }
+        liveActivityTokenClearPending = false
+    }
+
     private func persistPrefs() {
         if let data = try? JSONEncoder().encode(prefs) {
             defaults.set(data, forKey: prefsKey)
@@ -523,6 +755,7 @@ final class PushNotificationService: ObservableObject {
     nonisolated private static let machineSetupUnavailableMessage = "Connect to the machine to finish push setup."
     nonisolated private static let machinePrefsUnavailableMessage = "Connect to the machine to sync push settings."
     nonisolated private static let machineRefreshUnavailableMessage = "Connect to the machine to refresh push delivery."
+    nonisolated private static let accountPrefsUnavailableMessage = "ADE couldn’t sync these settings to your account. It will retry shortly."
 
     nonisolated private static func machineUnavailableMessage(for error: Error, fallback: String) -> String? {
         if isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error) {
@@ -614,6 +847,33 @@ struct PushPrefs: Codable, Equatable {
         return payload
     }
 
+    var accountDeviceOverride: [String: Any] {
+        [
+            "notificationsEnabled": enabled,
+            "liveActivitiesEnabled": liveActivitiesEnabled,
+            "hideDetails": hideDetails,
+            "quietHours": [
+                "enabled": quietHoursEnabled,
+                "startMinute": Self.minute(of: quietHoursStart) ?? 22 * 60,
+                "endMinute": Self.minute(of: quietHoursEnd) ?? 8 * 60,
+                "timeZone": quietHoursTimezone,
+            ],
+            "mutedSessionIds": mutedSessionIds,
+        ]
+    }
+
+    private static func minute(of clock: String) -> Int? {
+        let components = clock.split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              let hour = Int(components[0]),
+              let minute = Int(components[1]),
+              (0..<24).contains(hour),
+              (0..<60).contains(minute) else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+
     private enum CodingKeys: String, CodingKey {
         case enabled
         case liveActivitiesEnabled
@@ -651,6 +911,7 @@ struct PushDiagnostics: Codable, Equatable {
     var lastPushReceivedAt: Date?
     var lastError: String?
     var liveActivityPushToStartTokenSuffix: String?
+    var liveActivityRegisteredTokenSuffix: String?
 }
 
 // MARK: - Relay status (push.getStatus result)

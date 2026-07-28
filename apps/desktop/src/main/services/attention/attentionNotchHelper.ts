@@ -12,6 +12,7 @@ import type { Logger } from "../logging/logger";
 const MAX_HELPER_LINE_BYTES = 256 * 1024;
 const MAX_RESTART_ATTEMPTS = 3;
 const GRACEFUL_SHUTDOWN_MS = 500;
+const DEFAULT_REFRESH_INTERVAL_MS = 15_000;
 
 export type AttentionNotchOutput =
   | {
@@ -41,6 +42,8 @@ type AttentionNotchHelperOptions = {
   executablePath: string;
   logger: Logger;
   onOutput: (output: AttentionNotchOutput) => void;
+  onRefreshRequested?: () => void;
+  refreshIntervalMs?: number;
   restartDelayMs?: number;
   platform?: NodeJS.Platform;
 };
@@ -57,10 +60,12 @@ export function resolveAttentionNotchExecutablePath(input: {
 
 export class AttentionNotchHelper {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private childReady = false;
   private disposed = false;
   private restartAttempts = 0;
   private restartTimer: NodeJS.Timeout | null = null;
   private stableTimer: NodeJS.Timeout | null = null;
+  private refreshTimer: NodeJS.Timeout | null = null;
   private stdoutBuffer = "";
   private latestSnapshot: AttentionSnapshot | null = null;
   private latestSettings: AttentionNotchSettings | null = null;
@@ -87,6 +92,7 @@ export class AttentionNotchHelper {
         windowsHide: true,
       });
       this.child = child;
+      this.childReady = false;
       this.stdoutBuffer = "";
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
@@ -104,9 +110,11 @@ export class AttentionNotchHelper {
         });
       });
       child.once("spawn", () => {
+        this.childReady = true;
         this.options.logger.info("attention.notch_helper_started", {
           pid: child.pid ?? null,
         });
+        this.ensureRefreshTimer();
         this.stableTimer = setTimeout(() => {
           this.stableTimer = null;
           this.restartAttempts = 0;
@@ -120,7 +128,9 @@ export class AttentionNotchHelper {
           error: error.message,
         });
       });
-      child.once("exit", (code, signal) => {
+      child.once("close", (code, signal) => {
+        this.childReady = false;
+        this.stopRefreshTimer();
         if (this.stableTimer) {
           clearTimeout(this.stableTimer);
           this.stableTimer = null;
@@ -154,14 +164,18 @@ export class AttentionNotchHelper {
 
   updateSettings(settings: AttentionNotchSettings): void {
     this.latestSettings = settings;
-    if (!settings.enabled && this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
+    if (!settings.enabled) {
+      this.stopRefreshTimer();
+      if (this.restartTimer) {
+        clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
     }
     if (!this.child && settings.enabled) {
       this.start();
     } else {
       this.write({ type: "settings", settings });
+      if (settings.enabled) this.ensureRefreshTimer();
     }
   }
 
@@ -184,8 +198,10 @@ export class AttentionNotchHelper {
       clearTimeout(this.stableTimer);
       this.stableTimer = null;
     }
+    this.stopRefreshTimer();
     const child = this.child;
     this.child = null;
+    this.childReady = false;
     if (!child) return;
 
     try {
@@ -253,6 +269,35 @@ export class AttentionNotchHelper {
       this.start();
     }, delay);
     this.restartTimer.unref();
+  }
+
+  private ensureRefreshTimer(): void {
+    if (
+      this.refreshTimer
+      || this.disposed
+      || this.latestSettings?.enabled !== true
+      || !this.child
+      || !this.childReady
+      || !this.options.onRefreshRequested
+    ) {
+      return;
+    }
+    this.refreshTimer = setInterval(() => {
+      try {
+        this.options.onRefreshRequested?.();
+      } catch (error) {
+        this.options.logger.warn("attention.notch_refresh_request_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, this.options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS);
+    this.refreshTimer.unref();
+  }
+
+  private stopRefreshTimer(): void {
+    if (!this.refreshTimer) return;
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
   }
 }
 

@@ -5,7 +5,10 @@ import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../../desktop/src/shared/types/attention";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import type { PushQuietHours } from "../../../../desktop/src/shared/types/push";
+import type {
+  PushDeviceRegistration,
+  PushQuietHours,
+} from "../../../../desktop/src/shared/types/push";
 import { createPushRegistrationStore, type PushRegistrationStore } from "./pushRegistrationStore";
 import { createPushRelayClient } from "./pushRelayClient";
 import {
@@ -135,21 +138,50 @@ describe("createPushPublisherService flush", () => {
     updatedAt: "",
   };
 
-  function makeHarness(deviceOverride = device, now?: () => number) {
+  function makeHarness(
+    deviceOverride: typeof device | Array<typeof device> = device,
+    now?: () => number,
+  ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
     const publishAttention = vi.fn().mockResolvedValue(null);
+    const devices = Array.isArray(deviceOverride) ? [...deviceOverride] : [deviceOverride];
     const store = {
       hasRegisteredDevices: () => true,
       getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
-      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: 1, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
-      listDevices: () => [deviceOverride],
-      getDevice: () => deviceOverride,
+      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: devices.length, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
+      listDevices: () => devices,
+      getDevice: (deviceId: string) => devices.find((entry) => entry.deviceId === deviceId) ?? null,
+      upsertDevice: (registration: PushDeviceRegistration) => {
+        const existingIndex = devices.findIndex((entry) => entry.deviceId === registration.deviceId);
+        const existing = existingIndex >= 0 ? devices[existingIndex] : null;
+        const updated = {
+          ...device,
+          ...existing,
+          ...registration,
+          apnsToken: registration.apnsToken ?? existing?.apnsToken ?? null,
+          pushToStartToken: registration.clearPushToStartToken
+            ? null
+            : registration.pushToStartToken ?? existing?.pushToStartToken ?? null,
+          prefs: registration.prefs ?? existing?.prefs ?? device.prefs,
+          updatedAt: "",
+        } as typeof device;
+        if (existingIndex >= 0) devices[existingIndex] = updated;
+        else devices.push(updated);
+        return updated;
+      },
+      removeDevice: (deviceId: string) => {
+        const index = devices.findIndex((entry) => entry.deviceId === deviceId);
+        if (index >= 0) devices.splice(index, 1);
+      },
       recordPublishResult: vi.fn(),
       recordRelayContact: vi.fn(),
     };
     const relayClient = {
       publish,
       publishAttention,
+      claim: vi.fn().mockResolvedValue(undefined),
+      registerDevice: vi.fn().mockResolvedValue(undefined),
+      unregisterDevice: vi.fn().mockResolvedValue(undefined),
       health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }),
       baseUrl: "https://relay.test",
     };
@@ -200,6 +232,7 @@ describe("createPushPublisherService flush", () => {
       publishAttention,
       emit: (env: AgentChatEventEnvelope) => chatCb?.(env),
       store,
+      relayClient,
       cliSessions,
       detach,
     };
@@ -247,6 +280,400 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(1);
 
+    publisher.dispose();
+  });
+
+  it("keeps updating a healthy phone while another phone persistently fails to start", async () => {
+    const secondDevice = {
+      ...device,
+      deviceId: "dev-2",
+      apnsToken: "c".repeat(64),
+      pushToStartToken: "d".repeat(64),
+    };
+    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
+    publish
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 0,
+        failed: 1,
+        suppressed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: true,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 0,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      });
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1", "dev-2"],
+    });
+
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "start",
+        deviceIds: ["dev-2"],
+      }),
+      expect.objectContaining({
+        event: "update",
+        deviceIds: ["dev-1"],
+        contentState: expect.objectContaining({
+          runs: [expect.objectContaining({ id: "s-1", phase: "running" })],
+        }),
+      }),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(publish).toHaveBeenCalledTimes(3);
+    expect(publish.mock.calls[2]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "start",
+        deviceIds: ["dev-2"],
+      }),
+    ]);
+
+    publisher.dispose();
+  });
+
+  it("restarts only the re-enabled device without duplicating other Live Activities", async () => {
+    const secondDevice = {
+      ...device,
+      deviceId: "dev-2",
+      apnsToken: "c".repeat(64),
+      pushToStartToken: "d".repeat(64),
+    };
+    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1", "dev-2"],
+    });
+
+    await publisher.handleDeviceRegistered({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      clearPushToStartToken: true,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    await publisher.handleDeviceRegistered({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      pushToStartToken: "e".repeat(64),
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "start",
+        deviceIds: ["dev-1"],
+      }),
+    ]);
+
+    publisher.dispose();
+  });
+
+  it("retries only the failed re-enabled device after a mixed restart", async () => {
+    const secondDevice = {
+      ...device,
+      deviceId: "dev-2",
+      apnsToken: "c".repeat(64),
+      pushToStartToken: "d".repeat(64),
+    };
+    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1", "dev-2"],
+    });
+
+    for (const deviceId of ["dev-1", "dev-2"]) {
+      await publisher.handleDeviceRegistered({
+        deviceId,
+        bundleId: "com.ade.ios",
+        apsEnvironment: "sandbox",
+        clearPushToStartToken: true,
+      });
+      await publisher.handleDeviceRegistered({
+        deviceId,
+        bundleId: "com.ade.ios",
+        apsEnvironment: "sandbox",
+        pushToStartToken: `${deviceId === "dev-1" ? "e" : "f"}`.repeat(64),
+      });
+    }
+    publish
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 0,
+        outcomes: [
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      });
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls[1]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1", "dev-2"],
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(publish).toHaveBeenCalledTimes(3);
+    expect(publish.mock.calls[2]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-2"],
+    });
+
+    publisher.dispose();
+  });
+
+  it("retries mixed Live Activity updates and ends only for failed phones", async () => {
+    const secondDevice = {
+      ...device,
+      deviceId: "dev-2",
+      apnsToken: "c".repeat(64),
+      pushToStartToken: "d".repeat(64),
+    };
+    const { publisher, publish, emit } = makeHarness([device, secondDevice]);
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1", "dev-2"],
+    });
+
+    publish
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 0,
+        outcomes: [
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      });
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls[1]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "update",
+        deviceIds: ["dev-1", "dev-2"],
+      }),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(publish.mock.calls[2]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "update",
+        deviceIds: ["dev-2"],
+      }),
+    ]);
+
+    publish
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 1,
+        outcomes: [
+          {
+            deviceId: "dev-1",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: false,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        delivered: 1,
+        failed: 0,
+        outcomes: [
+          {
+            deviceId: "dev-2",
+            kind: "liveactivity",
+            delivered: true,
+            suppressed: false,
+            skipped: null,
+          },
+        ],
+      });
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "status", turnStatus: "completed" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls[3]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "end",
+        deviceIds: ["dev-1", "dev-2"],
+      }),
+    ]);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(publish.mock.calls[4]?.[0].liveActivity).toEqual([
+      expect.objectContaining({
+        event: "end",
+        deviceIds: ["dev-2"],
+      }),
+    ]);
+
+    publisher.dispose();
+  });
+
+  it("does not restart a running Live Activity when its push-to-start token rotates", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0]?.[0].liveActivity?.[0]).toMatchObject({
+      event: "start",
+      deviceIds: ["dev-1"],
+    });
+
+    await publisher.handleDeviceRegistered({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      pushToStartToken: "e".repeat(64),
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publish).toHaveBeenCalledTimes(1);
     publisher.dispose();
   });
 
@@ -1278,6 +1705,29 @@ describe("createPushRegistrationStore", () => {
     const device = store.getDevice("dev-1");
     expect(device?.apnsToken).toBe("a".repeat(64));
     expect(device?.pushToStartToken).toBe("b".repeat(64));
+
+    store.upsertDevice({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+    });
+    expect(store.getDevice("dev-1")?.pushToStartToken).toBe("b".repeat(64));
+
+    store.upsertDevice({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      clearPushToStartToken: true,
+    });
+    expect(store.getDevice("dev-1")?.pushToStartToken).toBeNull();
+    expect(store.getDevice("dev-1")?.apnsToken).toBe("a".repeat(64));
+    expect(() => store.upsertDevice({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      pushToStartToken: "c".repeat(64),
+      clearPushToStartToken: true,
+    })).toThrow("Cannot set and clear pushToStartToken together.");
   });
 
   it("stores prefs and applies defaults", () => {
@@ -1403,6 +1853,27 @@ describe("createPushRelayClient", () => {
     expect(init.headers["x-ade-push-signature"]).toBe(
       expectedSignature(MACHINE_SECRET, init.headers["x-ade-push-timestamp"], "PUT", pathname, init.body),
     );
+  });
+
+  it("forwards explicit push-to-start clears and rejects conflicting registration", async () => {
+    const client = createPushRelayClient({ store: makeStore(), logger, baseUrl: "https://relay.test" });
+    await client.registerDevice({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      clearPushToStartToken: true,
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body) as Record<string, unknown>;
+    expect(body.clearPushToStartToken).toBe(true);
+    expect(body.pushToStartToken).toBeUndefined();
+    await expect(client.registerDevice({
+      deviceId: "dev-1",
+      bundleId: "com.ade.ios",
+      apsEnvironment: "sandbox",
+      pushToStartToken: "b".repeat(64),
+      clearPushToStartToken: true,
+    })).rejects.toThrow("Cannot set and clear pushToStartToken together.");
   });
 
   it("claims idempotently and never signs the claim call", async () => {

@@ -3,10 +3,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attentionTestInternals,
+  handleAttentionMachinePublish,
   pruneAttentionState,
   type AttentionRelayEnv,
 } from "../src/attention";
@@ -79,6 +81,7 @@ class SqliteD1Database {
         "../migrations/0001_push_registrations.sql",
         "../migrations/0002_rate_and_budget.sql",
         "../migrations/0003_account_attention.sql",
+        "../migrations/0004_device_registration_generation.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -152,6 +155,51 @@ async function generateTestP8(): Promise<string> {
   return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`;
 }
 
+async function attentionAccountId(issuer: string, subject: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${issuer}\0${subject}`),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function machinePublishAuthorization(): Promise<{
+  issuer: string;
+  jwksUrl: string;
+  token: string;
+  userId: string;
+  jwks: Record<string, unknown>;
+}> {
+  const issuer = `https://issuer-${crypto.randomUUID()}.example`;
+  const jwksUrl = `${issuer}/.well-known/jwks.json`;
+  const subject = "user-attention-test";
+  const keyId = crypto.randomUUID();
+  const { privateKey, publicKey } = await generateKeyPair("RS256");
+  const publicJwk = await exportJWK(publicKey);
+  const token = await new SignJWT({})
+    .setProtectedHeader({ alg: "RS256", kid: keyId })
+    .setIssuer(issuer)
+    .setSubject(subject)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
+  return {
+    issuer,
+    jwksUrl,
+    token,
+    userId: await attentionAccountId(issuer, subject),
+    jwks: {
+      keys: [{
+        ...publicJwk,
+        alg: "RS256",
+        kid: keyId,
+        use: "sig",
+      }],
+    },
+  };
+}
+
 function row<T extends Record<string, unknown>>(
   database: SqliteD1Database,
   sql: string,
@@ -196,6 +244,8 @@ function insertAttentionDevice(
     userId: string;
     deviceId: string;
     apnsToken?: string | null;
+    pushToStartToken?: string | null;
+    preferences?: Record<string, unknown>;
     sourceMachineKey?: string | null;
     leaseExpiresAt?: string;
     ownershipEpoch?: number;
@@ -207,12 +257,14 @@ function insertAttentionDevice(
       user_id, device_id, source_machine_key, apns_token, push_to_start_token,
       bundle_id, aps_environment, platform, device_name, preferences_json,
       registered_at, updated_at, lease_expires_at
-    ) values (?, ?, ?, ?, null, 'com.ade.ios', 'sandbox', 'iOS', null, '{}', ?, ?, ?)
+    ) values (?, ?, ?, ?, ?, 'com.ade.ios', 'sandbox', 'iOS', null, ?, ?, ?, ?)
   `).run(
     args.userId,
     args.deviceId,
     args.sourceMachineKey ?? null,
     args.apnsToken ?? null,
+    args.pushToStartToken ?? null,
+    JSON.stringify(args.preferences ?? {}),
     now,
     now,
     args.leaseExpiresAt ?? "2026-09-01T08:00:00.000Z",
@@ -296,6 +348,37 @@ function validAgentItem(): Record<string, unknown> {
 }
 
 describe("account Attention contract", () => {
+  it("resolves muted sessions device override then account then registration fallback", () => {
+    const device = {
+      device_id: "phone-1",
+      apns_token: "ab".repeat(32),
+      push_to_start_token: null,
+      bundle_id: "com.ade.ios",
+      aps_environment: "sandbox",
+      preferences_json: JSON.stringify({ mutedSessionIds: ["registration-muted"] }),
+    };
+    expect(attentionTestInternals.resolvedMutedSessionIds(
+      device,
+      { mutedSessionIds: ["account-muted"] },
+      { "phone-1": { mutedSessionIds: ["device-muted"] } },
+    )).toEqual(["device-muted"]);
+    expect(attentionTestInternals.resolvedMutedSessionIds(
+      device,
+      { mutedSessionIds: ["account-muted"] },
+      {},
+    )).toEqual(["account-muted"]);
+    expect(attentionTestInternals.resolvedMutedSessionIds(
+      device,
+      {},
+      {},
+    )).toEqual(["registration-muted"]);
+    expect(attentionTestInternals.resolvedMutedSessionIds(
+      device,
+      { mutedSessionIds: ["account-muted"] },
+      { "phone-1": { mutedSessionIds: [] } },
+    )).toEqual([]);
+  });
+
   it("accepts and normalizes a bounded machine-owned agent item", () => {
     const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
 
@@ -384,6 +467,260 @@ describe("account Attention contract", () => {
     expect(
       attentionTestInternals.attentionFullSnapshotUnchanged(current, incoming, 1),
     ).toBe(false);
+  });
+
+  it("atomically preserves concurrent account and per-device preference updates", async () => {
+    const database = new SqliteD1Database();
+    try {
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values ('account-a', ?, '2026-07-28T08:00:00.000Z')
+      `).run(JSON.stringify({
+        account: { notificationsEnabled: true },
+        devices: {
+          "phone-a": {
+            celebrationsEnabled: false,
+          },
+        },
+      }));
+
+      const [phoneAResponse, phoneBResponse, accountResponse] = await Promise.all([
+        accountRoute(
+          database,
+          "account-a",
+          "PATCH",
+          "/attention/account/preferences/devices/phone-a",
+          {
+            notificationsEnabled: false,
+            mutedSessionIds: ["session-a"],
+          },
+        ),
+        accountRoute(
+          database,
+          "account-a",
+          "PATCH",
+          "/attention/account/preferences/devices/phone-b",
+          {
+            liveActivitiesEnabled: true,
+          },
+        ),
+        accountRoute(
+          database,
+          "account-a",
+          "PUT",
+          "/attention/account/preferences",
+          {
+            account: {
+              notificationsEnabled: true,
+              hideDetails: true,
+            },
+            projects: {
+              "project-a": {
+                notificationsEnabled: false,
+              },
+            },
+          },
+        ),
+      ]);
+
+      expect(phoneAResponse.status).toBe(200);
+      expect(phoneBResponse.status).toBe(200);
+      expect(accountResponse.status).toBe(200);
+      const stored = row<{ payload_json: string }>(
+        database,
+        "select payload_json from attention_preferences where user_id = 'account-a'",
+      );
+      const preferences = JSON.parse(stored?.payload_json ?? "{}") as Record<string, unknown>;
+      expect(preferences).toMatchObject({
+        account: {
+          notificationsEnabled: true,
+          hideDetails: true,
+        },
+        projects: {
+          "project-a": {
+            notificationsEnabled: false,
+          },
+        },
+        devices: {
+          "phone-a": {
+            celebrationsEnabled: false,
+            notificationsEnabled: false,
+            mutedSessionIds: ["session-a"],
+          },
+          "phone-b": {
+            liveActivitiesEnabled: true,
+          },
+        },
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries a transient Live Activity start on an unchanged full-snapshot heartbeat", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    let liveActivityAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = input instanceof Request ? input.url : String(input);
+      if (requestUrl === authorization.jwksUrl) {
+        return Response.json(authorization.jwks);
+      }
+      if (requestUrl.startsWith("https://api.sandbox.push.apple.com/")) {
+        liveActivityAttempts += 1;
+        apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return liveActivityAttempts === 1
+          ? Response.json({ reason: "InternalServerError" }, { status: 500 })
+          : new Response(null, {
+              status: 200,
+              headers: { "apns-id": "live-activity-retry" },
+            });
+      }
+      throw new Error(`Unexpected fetch: ${requestUrl}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      insertAttentionDevice(database, {
+        userId: authorization.userId,
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values (?, ?, '2026-07-28T08:00:00.000Z')
+      `).run(
+        authorization.userId,
+        JSON.stringify({
+          account: {
+            notificationsEnabled: false,
+            liveActivitiesEnabled: true,
+          },
+        }),
+      );
+      const env = makeAttentionEnv(database, {
+        CLERK_JWKS_URL: authorization.jwksUrl,
+        CLERK_ISSUER: authorization.issuer,
+        CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "RETRYKEY12",
+        APNS_TEAM_ID: "RETRYTEAM1",
+      });
+      const payload = {
+        contractVersion: 1,
+        machineName: "Studio",
+        fullSnapshot: true,
+        items: [validAgentItem()],
+        tombstones: [],
+      };
+      const body = new TextEncoder().encode(JSON.stringify(payload)).buffer as ArrayBuffer;
+      const publish = () => handleAttentionMachinePublish(
+        new Request("https://push.example/attention/machine/publish", {
+          method: "POST",
+          headers: { authorization: `Bearer ${authorization.token}` },
+        }),
+        env,
+        MACHINE_KEY,
+        body,
+      );
+
+      const initial = await publish();
+      expect(initial.status).toBe(200);
+      expect(liveActivityAttempts).toBe(1);
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = ? and device_id = 'phone-1' and activity_id = 'agent-runs'
+      `, authorization.userId)).toBeUndefined();
+
+      const retry = await publish();
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({
+        ok: true,
+        upserted: 0,
+        removed: 0,
+        unchanged: true,
+      });
+      expect(liveActivityAttempts).toBe(2);
+      expect(apnsBodies).toHaveLength(2);
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = ? and device_id = 'phone-1' and activity_id = 'agent-runs'
+      `, authorization.userId)?.started).toBe(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("claims one account Live Activity start across concurrent deliveries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const sendPush = vi.fn(async () => {
+      await Promise.resolve();
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "single-concurrent-start" },
+      });
+    });
+    vi.stubGlobal("fetch", sendPush);
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-concurrent",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "CLAIMKEY12",
+        APNS_TEAM_ID: "CLAIMTEAM1",
+      });
+
+      await Promise.all([
+        attentionTestInternals.deliverAccountLiveActivity(env, "account-a"),
+        attentionTestInternals.deliverAccountLiveActivity(env, "account-a"),
+      ]);
+
+      expect(sendPush).toHaveBeenCalledTimes(1);
+      const state = row(database, `
+        select started, fingerprint
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-concurrent'
+          and activity_id = 'agent-runs'
+      `);
+      expect(state?.started).toBe(1);
+      expect(String(state?.fingerprint)).not.toMatch(/^pending:/);
+    } finally {
+      database.close();
+    }
   });
 
   it("rolls back a published item when its cursor transaction fails", async () => {
@@ -917,6 +1254,134 @@ describe("account Attention contract", () => {
     }
   });
 
+  it("applies account delivery and privacy settings above registration defaults", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const sendNotification = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      apnsId: "notification-id",
+      reason: null,
+      tokenInvalid: false,
+    }));
+    const liveActivityPushes: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      liveActivityPushes.push(
+        JSON.parse(String(init?.body)) as Record<string, unknown>,
+      );
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "privacy-start" },
+      });
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+        pushToStartToken: "cd".repeat(32),
+        preferences: {
+          enabled: true,
+          liveActivitiesEnabled: true,
+          hideDetails: false,
+        },
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values ('account-a', ?, '2026-07-28T08:00:00.000Z')
+      `).run(JSON.stringify({
+        account: {
+          notificationsEnabled: false,
+          liveActivitiesEnabled: false,
+          hideDetails: true,
+        },
+        devices: {},
+      }));
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "PREFSKEY12",
+        APNS_TEAM_ID: "PREFSTEAM1",
+      });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendNotification,
+      );
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(sendNotification).not.toHaveBeenCalled();
+      expect(liveActivityPushes).toHaveLength(0);
+
+      database.native.prepare(`
+        update attention_preferences
+        set payload_json = ?
+        where user_id = 'account-a'
+      `).run(JSON.stringify({
+        account: {
+          notificationsEnabled: false,
+          liveActivitiesEnabled: false,
+          hideDetails: true,
+        },
+        devices: {
+          "phone-1": {
+            liveActivitiesEnabled: true,
+          },
+        },
+      }));
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+
+      expect(liveActivityPushes).toHaveLength(1);
+      expect(liveActivityPushes[0]).toMatchObject({
+        aps: {
+          event: "start",
+          alert: {
+            title: "ADE activity started",
+          },
+          "content-state": {
+            runs: [{
+              title: "Agent activity",
+              model: null,
+              lane: null,
+              detail: null,
+            }],
+          },
+        },
+      });
+    } finally {
+      database.close();
+    }
+  });
+
   it("does not notify for an inbound item rejected by the committed account state", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
@@ -1170,6 +1635,203 @@ describe("account Attention contract", () => {
         );
         expect(response.status).toBe(400);
       }
+    } finally {
+      database.close();
+    }
+  });
+
+  it("preserves an omitted account push-to-start token and clears it explicitly", async () => {
+    const database = new SqliteD1Database();
+    const path = "/attention/account/devices/phone-token-clear";
+    const register = (body: Record<string, unknown>) => accountRoute(
+      database,
+      "account-a",
+      "PUT",
+      path,
+      {
+        ownershipEpoch: 1,
+        bundleId: "com.ade.ios",
+        apsEnvironment: "sandbox",
+        ...body,
+      },
+    );
+    try {
+      expect((await register({ pushToStartToken: "ab".repeat(32) })).status).toBe(200);
+      expect((await register({})).status).toBe(200);
+      expect(row(database, `
+        select push_to_start_token
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-token-clear'
+      `)?.push_to_start_token).toBe("ab".repeat(32));
+
+      expect((await register({ clearPushToStartToken: true })).status).toBe(200);
+      expect(row(database, `
+        select push_to_start_token
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-token-clear'
+      `)?.push_to_start_token).toBeNull();
+
+      expect((await register({
+        pushToStartToken: "cd".repeat(32),
+        clearPushToStartToken: true,
+      })).status).toBe(400);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("atomically clears account Live Activity state and starts unchanged work after re-registration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const liveActivityPushes: Array<{
+      url: string;
+      body: Record<string, unknown>;
+    }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      liveActivityPushes.push({
+        url: input instanceof Request ? input.url : String(input),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "re-enabled-start" },
+      });
+    }));
+    const env = makeAttentionEnv(database, {
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "REENABLE12",
+      APNS_TEAM_ID: "REENABLE1",
+    });
+    const register = async (body: Record<string, unknown>): Promise<Response> => {
+      const request = new Request(
+        "https://push.example/attention/account/devices/phone-reenable",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ownershipEpoch: 1,
+            bundleId: "com.ade.ios",
+            apsEnvironment: "sandbox",
+            platform: "iOS",
+            ...body,
+          }),
+        },
+      );
+      const response = await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
+        request,
+        env,
+        new URL(request.url),
+        "account-a",
+      );
+      if (!response) throw new Error("Attention device route was not handled");
+      return response;
+    };
+
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-reenable",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values (
+          'account-a', 'phone-reenable', 'agent-runs', ?,
+          '2026-07-28T08:00:00.000Z'
+        )
+      `).run("ef".repeat(32));
+      database.native.prepare(`
+        insert into attention_activity_state(
+          user_id, device_id, activity_id, started, fingerprint, updated_at
+        ) values (
+          'account-a', 'phone-reenable', 'agent-runs', 1, ?,
+          '2026-07-28T08:00:00.000Z'
+        )
+      `).run("old-fingerprint");
+
+      database.failNextBatchAt(3);
+      await expect(register({ clearPushToStartToken: true })).rejects.toThrow(
+        "injected batch failure at statement 3",
+      );
+      expect(row(database, `
+        select push_to_start_token
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)?.push_to_start_token).toBe("ab".repeat(32));
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_tokens
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)).toHaveLength(1);
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)).toHaveLength(1);
+
+      expect((await register({ clearPushToStartToken: true })).status).toBe(200);
+      expect(row(database, `
+        select push_to_start_token
+        from attention_devices
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)?.push_to_start_token).toBeNull();
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_tokens
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)).toHaveLength(0);
+      expect(rows(database, `
+        select activity_id
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+      `)).toHaveLength(0);
+      expect(liveActivityPushes).toHaveLength(0);
+
+      expect((await register({ pushToStartToken: "cd".repeat(32) })).status).toBe(200);
+      expect(liveActivityPushes).toHaveLength(1);
+      expect(liveActivityPushes[0]?.url).toContain("cd".repeat(32));
+      expect(liveActivityPushes[0]?.body).toMatchObject({
+        aps: {
+          event: "start",
+          "input-push-token": 1,
+        },
+      });
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-reenable'
+          and activity_id = 'agent-runs'
+      `)?.started).toBe(1);
     } finally {
       database.close();
     }

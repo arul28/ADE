@@ -21,7 +21,9 @@ struct SettingsPushDeliverySnapshot: Equatable {
     /// so push delivery does not require a currently paired Mac.
     var accountDeliveryAvailable = false
 
+    var liveActivitiesAuthorized = true
     var liveActivityTokenPresent = false
+    var liveActivityTokenRegistered = false
 
     // Relay status (push.getStatus). `nil` until the first successful refresh.
     var relayResolved = false
@@ -197,13 +199,11 @@ struct SettingsPushDeliverySection: View {
                     )
                 }
 
-                if snapshot.liveActivityTokenPresent {
-                    SettingsDetailRow(
-                        symbol: "dot.radiowaves.up.forward",
-                        label: "Live Activity",
-                        value: "Push-to-start ready"
-                    )
-                }
+                SettingsDetailRow(
+                    symbol: liveActivityDiagnosticSymbol,
+                    label: "Live Activity",
+                    value: liveActivityDiagnosticValue
+                )
 
                 if let lastPush = snapshot.lastPushReceivedAt {
                     SettingsDetailRow(
@@ -421,6 +421,22 @@ struct SettingsPushDeliverySection: View {
     private var relayValue: String {
         guard snapshot.publisherEnabled else { return "Publisher off" }
         return snapshot.relayApnsConfigured ? "Reachable · APNs key configured" : "Reachable · APNs key missing"
+    }
+
+    private var liveActivityDiagnosticSymbol: String {
+        if !pushService.prefs.liveActivitiesEnabled { return "slash.circle" }
+        if !snapshot.liveActivitiesAuthorized { return "slash.circle" }
+        if snapshot.liveActivityTokenRegistered { return "dot.radiowaves.up.forward" }
+        if snapshot.liveActivityTokenPresent { return "arrow.triangle.2.circlepath" }
+        return "hourglass"
+    }
+
+    private var liveActivityDiagnosticValue: String {
+        guard pushService.prefs.liveActivitiesEnabled else { return "Disabled in ADE" }
+        guard snapshot.liveActivitiesAuthorized else { return "Off in iOS Settings" }
+        if snapshot.liveActivityTokenRegistered { return "Push-to-start registered" }
+        if snapshot.liveActivityTokenPresent { return "Token ready · registration pending" }
+        return "Waiting for push-to-start token"
     }
 
     private var refreshButtonLabel: String {

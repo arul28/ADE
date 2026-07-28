@@ -62,6 +62,7 @@ type DeviceRow = {
   device_name: string | null;
   registered_at: string;
   updated_at: string;
+  generation: string | null;
 };
 
 type ActivityTokenRow = {
@@ -426,7 +427,8 @@ async function listMachineDevices(env: PushRelayEnv, machineKey: string): Promis
   return (await env.DB
     .prepare(`
       select machine_key, device_id, apns_token, push_to_start_token, bundle_id,
-             aps_environment, platform, device_name, registered_at, updated_at
+             aps_environment, platform, device_name, registered_at, updated_at,
+             generation
         from device_registrations
        where machine_key = ?
        order by updated_at desc
@@ -479,6 +481,47 @@ async function recordSuppression(
     `)
     .bind(machineKey, dedupeKey, contentHash, new Date().toISOString())
     .run();
+}
+
+function liveActivitySuppressionKey(dedupeKey: string, deviceId: string): string {
+  return `liveactivity:${deviceId.length}:${deviceId}:${dedupeKey}`;
+}
+
+function liveActivitySuppressionPrefix(deviceId: string): string {
+  return `liveactivity:${deviceId.length}:${deviceId}:`;
+}
+
+async function recordLiveActivitySuppressionIfCurrent(
+  env: PushRelayEnv,
+  machineKey: string,
+  device: DeviceRow,
+  dedupeKey: string,
+  contentHash: string,
+): Promise<void> {
+  await env.DB.prepare(`
+    insert into publish_suppression(
+      machine_key, suppression_key, content_hash, published_at
+    )
+    select ?, ?, ?, ?
+    where exists (
+      select 1
+      from device_registrations
+      where machine_key = ?
+        and device_id = ?
+        and generation = ?
+    )
+    on conflict(machine_key, suppression_key) do update set
+      content_hash = excluded.content_hash,
+      published_at = excluded.published_at
+  `).bind(
+    machineKey,
+    liveActivitySuppressionKey(dedupeKey, device.device_id),
+    contentHash,
+    new Date().toISOString(),
+    machineKey,
+    device.device_id,
+    device.generation,
+  ).run();
 }
 
 async function clearInvalidToken(
@@ -798,31 +841,46 @@ async function deliverLiveActivityItem(
   const expiration = phaseExpiration(item.phase, nowSeconds);
   const targets = selectTargets(devices, item.deviceIds);
 
-  let suppressionHash: string | null = null;
-  if (item.dedupeKey) {
-    suppressionHash = await sha256Hex(JSON.stringify({ event: item.event, contentState: item.contentState }));
-    if (await shouldSuppress(env, machineKey, item.dedupeKey, suppressionHash)) {
-      return targets.map((device) => ({
-        deviceId: device.device_id,
-        kind: "liveactivity" as const,
-        delivered: false,
-        suppressed: true,
-        skipped: null,
-        status: null,
-        reason: null,
-      }));
-    }
-  }
-
-  // See deliverAlertItem: suppression is recorded only after a delivered send.
-  const recordIfDelivered = async (): Promise<void> => {
-    if (item.dedupeKey && suppressionHash && outcomes.some((outcome) => outcome.delivered)) {
-      await recordSuppression(env, machineKey, item.dedupeKey, suppressionHash);
-    }
+  const suppressionHash = item.dedupeKey
+    ? await sha256Hex(JSON.stringify({ event: item.event, contentState: item.contentState }))
+    : null;
+  const isSuppressedForDevice = async (deviceId: string): Promise<boolean> => {
+    return Boolean(
+      item.dedupeKey
+      && suppressionHash
+      && await shouldSuppress(
+        env,
+        machineKey,
+        liveActivitySuppressionKey(item.dedupeKey, deviceId),
+        suppressionHash,
+      ),
+    );
+  };
+  const recordDeliveredForDevice = async (device: DeviceRow): Promise<void> => {
+    if (!item.dedupeKey || !suppressionHash) return;
+    await recordLiveActivitySuppressionIfCurrent(
+      env,
+      machineKey,
+      device,
+      item.dedupeKey,
+      suppressionHash,
+    );
   };
 
   if (item.event === "start") {
     for (const device of targets) {
+      if (await isSuppressedForDevice(device.device_id)) {
+        outcomes.push({
+          deviceId: device.device_id,
+          kind: "liveactivity",
+          delivered: false,
+          suppressed: true,
+          skipped: null,
+          status: null,
+          reason: null,
+        });
+        continue;
+      }
       if (!device.push_to_start_token) {
         outcomes.push({
           deviceId: device.device_id,
@@ -851,6 +909,8 @@ async function deliverLiveActivityItem(
       }
       if (!result.ok) {
         logEvent("apns_error", { push: "la_start", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+      } else {
+        await recordDeliveredForDevice(device);
       }
       outcomes.push({
         deviceId: device.device_id,
@@ -862,7 +922,6 @@ async function deliverLiveActivityItem(
         reason: result.reason,
       });
     }
-    await recordIfDelivered();
     return outcomes;
   }
 
@@ -874,6 +933,18 @@ async function deliverLiveActivityItem(
     if (wanted && !wanted.has(tokenRow.device_id)) continue;
     const device = deviceById.get(tokenRow.device_id);
     if (!device) continue;
+    if (await isSuppressedForDevice(tokenRow.device_id)) {
+      outcomes.push({
+        deviceId: tokenRow.device_id,
+        kind: "liveactivity",
+        delivered: false,
+        suppressed: true,
+        skipped: null,
+        status: null,
+        reason: null,
+      });
+      continue;
+    }
     const environment = normalizeEnvironment(device.aps_environment) ?? "production";
     const result = await sendApnsPush(config, {
       environment,
@@ -885,11 +956,13 @@ async function deliverLiveActivityItem(
       collapseId: item.activityId,
       payload,
     });
-    if (result.tokenInvalid || item.event === "end") {
+    if (result.tokenInvalid || (item.event === "end" && result.ok)) {
       await deleteActivityToken(env, machineKey, tokenRow.device_id, item.activityId);
     }
     if (!result.ok) {
       logEvent("apns_error", { push: `la_${item.event}`, device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+    } else {
+      await recordDeliveredForDevice(device);
     }
     outcomes.push({
       deviceId: tokenRow.device_id,
@@ -901,7 +974,6 @@ async function deliverLiveActivityItem(
       reason: result.reason,
     });
   }
-  await recordIfDelivered();
   return outcomes;
 }
 
@@ -967,6 +1039,13 @@ async function handleDeviceUpsert(
   }
   const apnsToken = readOptionalString(payload, "apnsToken");
   const pushToStartToken = readOptionalString(payload, "pushToStartToken");
+  const clearPushToStartToken = payload.clearPushToStartToken === true;
+  if (pushToStartToken && clearPushToStartToken) {
+    return json(
+      { ok: false, error: "pushToStartToken cannot be set and cleared together" },
+      { status: 400 },
+    );
+  }
   if (apnsToken && !APNS_TOKEN_PATTERN.test(apnsToken)) {
     return json({ ok: false, error: "invalid apnsToken" }, { status: 400 });
   }
@@ -983,20 +1062,25 @@ async function handleDeviceUpsert(
   }
 
   const now = new Date().toISOString();
-  await env.DB
-    .prepare(`
+  const generation = crypto.randomUUID();
+  const registrationStatement = env.DB.prepare(`
       insert into device_registrations(
         machine_key, device_id, apns_token, push_to_start_token, bundle_id,
-        aps_environment, platform, device_name, registered_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        aps_environment, platform, device_name, registered_at, updated_at,
+        generation
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(machine_key, device_id) do update set
         apns_token = coalesce(excluded.apns_token, device_registrations.apns_token),
-        push_to_start_token = coalesce(excluded.push_to_start_token, device_registrations.push_to_start_token),
+        push_to_start_token = case
+          when ? then null
+          else coalesce(excluded.push_to_start_token, device_registrations.push_to_start_token)
+        end,
         bundle_id = excluded.bundle_id,
         aps_environment = excluded.aps_environment,
         platform = coalesce(excluded.platform, device_registrations.platform),
         device_name = coalesce(excluded.device_name, device_registrations.device_name),
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        generation = excluded.generation
     `)
     .bind(
       machineKey,
@@ -1009,8 +1093,23 @@ async function handleDeviceUpsert(
       readOptionalString(payload, "deviceName"),
       now,
       now,
-    )
-    .run();
+      generation,
+      clearPushToStartToken ? 1 : 0,
+    );
+  if (clearPushToStartToken) {
+    const suppressionPrefix = liveActivitySuppressionPrefix(deviceId);
+    await env.DB.batch([
+      registrationStatement,
+      env.DB.prepare(
+        "delete from publish_suppression where machine_key = ? and substr(suppression_key, 1, ?) = ?",
+      ).bind(machineKey, suppressionPrefix.length, suppressionPrefix),
+      env.DB.prepare(
+        "delete from live_activity_tokens where machine_key = ? and device_id = ?",
+      ).bind(machineKey, deviceId),
+    ]);
+  } else {
+    await registrationStatement.run();
+  }
   await pruneRelayState(env);
   return json({ ok: true, deviceId, updatedAt: now });
 }

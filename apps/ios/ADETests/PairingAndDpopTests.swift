@@ -14,6 +14,28 @@ private func pairingTestData(hex: String) -> Data {
   return data
 }
 
+private func requestBodyData(_ request: URLRequest) throws -> Data {
+  if let body = request.httpBody {
+    return body
+  }
+  let stream = try XCTUnwrap(request.httpBodyStream)
+  stream.open()
+  defer { stream.close() }
+
+  var data = Data()
+  var buffer = [UInt8](repeating: 0, count: 4_096)
+  while true {
+    let count = stream.read(&buffer, maxLength: buffer.count)
+    if count > 0 {
+      data.append(contentsOf: buffer[..<count])
+    } else if count == 0 {
+      return data
+    } else {
+      throw stream.streamError ?? URLError(.cannotDecodeRawData)
+    }
+  }
+}
+
 private final class AccountDirectoryURLProtocolStub: URLProtocol {
   private static let lock = NSLock()
   private static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
@@ -264,7 +286,7 @@ final class PairingAndDpopTests: XCTestCase {
       XCTAssertEqual(request.url?.path, "/attention/account/ack")
       XCTAssertEqual(request.httpMethod, "POST")
       XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
-      let body = try XCTUnwrap(request.httpBody)
+      let body = try requestBodyData(request)
       let payload = try XCTUnwrap(
         try JSONSerialization.jsonObject(with: body) as? [String: Any]
       )
@@ -295,6 +317,45 @@ final class PairingAndDpopTests: XCTestCase {
     )
   }
 
+  func testAccountAttentionDevicePreferencesUseScopedPatch() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/attention/account/preferences/devices/ios-device"
+      )
+      XCTAssertEqual(request.httpMethod, "PATCH")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
+      let payload = try XCTUnwrap(
+        try JSONSerialization.jsonObject(with: requestBodyData(request)) as? [String: Any]
+      )
+      XCTAssertEqual(payload["notificationsEnabled"] as? Bool, true)
+      XCTAssertEqual(payload["mutedSessionIds"] as? [String], ["session-a"])
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      ))
+      return (response, Data(#"{"ok":true}"#.utf8))
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+    try await client.updateDevicePreferences(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      devicePreferences: [
+        "notificationsEnabled": true,
+        "mutedSessionIds": ["session-a"],
+      ]
+    )
+  }
+
   func testAccountAttentionActivityTokenUsesAccountScopedRoute() async throws {
     AccountDirectoryURLProtocolStub.install { request in
       XCTAssertEqual(
@@ -303,7 +364,7 @@ final class PairingAndDpopTests: XCTestCase {
       )
       XCTAssertEqual(request.httpMethod, "PUT")
       XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
-      let body = try XCTUnwrap(request.httpBody)
+      let body = try requestBodyData(request)
       let payload = try XCTUnwrap(
         try JSONSerialization.jsonObject(with: body) as? [String: String]
       )
@@ -375,7 +436,7 @@ final class PairingAndDpopTests: XCTestCase {
       XCTAssertEqual(request.httpMethod, "DELETE")
       XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
       XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-      let body = try XCTUnwrap(request.httpBody)
+      let body = try requestBodyData(request)
       let payload = try XCTUnwrap(
         JSONSerialization.jsonObject(with: body) as? [String: Any]
       )
@@ -411,12 +472,14 @@ final class PairingAndDpopTests: XCTestCase {
         "/attention/account/devices/ios-device"
       )
       XCTAssertEqual(request.httpMethod, "PUT")
-      let body = try XCTUnwrap(request.httpBody)
+      let body = try requestBodyData(request)
       let payload = try XCTUnwrap(
         JSONSerialization.jsonObject(with: body) as? [String: Any]
       )
       XCTAssertEqual(payload["ownershipEpoch"] as? Int, 23)
       XCTAssertEqual(payload["apnsToken"] as? String, "apns-token")
+      XCTAssertNil(payload["pushToStartToken"])
+      XCTAssertNil(payload["clearPushToStartToken"])
       let response = try XCTUnwrap(HTTPURLResponse(
         url: request.url ?? URL(string: "https://relay.example")!,
         statusCode: 204,
@@ -445,6 +508,67 @@ final class PairingAndDpopTests: XCTestCase {
       deviceName: "iPhone",
       preferences: [:]
     )
+  }
+
+  func testAccountAttentionRegistrationSerializesExplicitPushToStartClear() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      let body = try requestBodyData(request)
+      let payload = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: body) as? [String: Any]
+      )
+      XCTAssertEqual(payload["clearPushToStartToken"] as? Bool, true)
+      XCTAssertNil(payload["pushToStartToken"])
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 204,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.registerDevice(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      ownershipEpoch: 23,
+      apnsToken: nil,
+      pushToStartToken: nil,
+      clearPushToStartToken: true,
+      bundleId: "com.ade.ios",
+      apsEnvironment: "development",
+      deviceName: "iPhone",
+      preferences: [:]
+    )
+  }
+
+  func testAccountAttentionRegistrationRejectsPushToStartSetAndClearConflict() async throws {
+    let client = AccountAttentionRelayClient()
+    do {
+      try await client.registerDevice(
+        baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+        token: "clerk-token",
+        deviceId: "ios-device",
+        ownershipEpoch: 23,
+        apnsToken: nil,
+        pushToStartToken: "ab",
+        clearPushToStartToken: true,
+        bundleId: "com.ade.ios",
+        apsEnvironment: "development",
+        deviceName: "iPhone",
+        preferences: [:]
+      )
+      XCTFail("Expected conflicting push-to-start mutation to be rejected")
+    } catch let error as AccountAttentionRelayClient.RelayError {
+      XCTAssertEqual(error, .transport)
+    }
   }
 
   func testAccountAttentionDeviceMutationsRejectInvalidOwnershipEpochs() async throws {
@@ -726,6 +850,92 @@ final class PairingAndDpopTests: XCTestCase {
     )
     XCTAssertEqual(liveActivityTokenRoute(accountWide: true), .accountOnly)
     XCTAssertEqual(liveActivityTokenRoute(accountWide: false), .pairedMachine)
+  }
+
+  func testPushToStartRegistrationDoesNotRequireNotificationApnsToken() {
+    XCTAssertTrue(
+      pushRegistrationRequiredAfterLiveActivityTokenChange(
+        hasApnsToken: false,
+        hasSignedInAccount: true,
+        hasPairedHost: false
+      ),
+      "An account device must register ActivityKit independently of notification alerts"
+    )
+    XCTAssertTrue(
+      pushRegistrationRequiredAfterLiveActivityTokenChange(
+        hasApnsToken: false,
+        hasSignedInAccount: false,
+        hasPairedHost: true
+      ),
+      "A paired device must register ActivityKit independently of notification alerts"
+    )
+    XCTAssertFalse(
+      pushRegistrationRequiredAfterLiveActivityTokenChange(
+        hasApnsToken: false,
+        hasSignedInAccount: false,
+        hasPairedHost: false
+      )
+    )
+  }
+
+  func testFreshPushToStartTokenWinsOverPendingClearMutation() {
+    XCTAssertEqual(
+      pushToStartTokenRegistrationMutation(
+        token: "fresh-token",
+        clearPending: true
+      ),
+      PushToStartTokenRegistrationMutation(
+        token: "fresh-token",
+        clear: false
+      )
+    )
+    XCTAssertEqual(
+      pushToStartTokenRegistrationMutation(
+        token: nil,
+        clearPending: true
+      ),
+      PushToStartTokenRegistrationMutation(
+        token: nil,
+        clear: true
+      )
+    )
+  }
+
+  @MainActor
+  func testPushPreferenceSyncRetriesUntilSuccessWithBoundedBackoff() async {
+    var attempts = 0
+    var delays: [UInt64] = []
+    let retrier = PushPreferenceSyncRetrier { nanoseconds in
+      delays.append(nanoseconds)
+    }
+
+    let task = retrier.start {
+      attempts += 1
+      return attempts == 3
+    }
+    await task.value
+
+    XCTAssertEqual(attempts, 3)
+    XCTAssertEqual(delays, [5_000_000_000, 10_000_000_000])
+  }
+
+  @MainActor
+  func testPushPreferenceSyncCancellationStopsFurtherAttempts() async {
+    var attempts = 0
+    let retrier = PushPreferenceSyncRetrier { _ in
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+    let task = retrier.start {
+      attempts += 1
+      return false
+    }
+    while attempts == 0 {
+      await Task.yield()
+    }
+
+    retrier.cancel()
+    await task.value
+    XCTAssertEqual(attempts, 1)
   }
 
   func testAgentRunsActivityRecognizesAccountWideAndLegacyMarkers() {
@@ -1097,6 +1307,16 @@ final class PairingAndDpopTests: XCTestCase {
 
     preferences.hideDetails = true
     XCTAssertEqual(preferences.commandPayload["hideDetails"] as? Bool, true)
+    let accountOverride = preferences.accountDeviceOverride
+    XCTAssertEqual(accountOverride["notificationsEnabled"] as? Bool, true)
+    XCTAssertEqual(accountOverride["liveActivitiesEnabled"] as? Bool, false)
+    XCTAssertEqual(accountOverride["hideDetails"] as? Bool, true)
+    XCTAssertEqual(accountOverride["mutedSessionIds"] as? [String], ["session-1"])
+    let quietHours = try XCTUnwrap(accountOverride["quietHours"] as? [String: Any])
+    XCTAssertEqual(quietHours["enabled"] as? Bool, true)
+    XCTAssertEqual(quietHours["startMinute"] as? Int, 21 * 60 + 30)
+    XCTAssertEqual(quietHours["endMinute"] as? Int, 7 * 60 + 15)
+    XCTAssertEqual(quietHours["timeZone"] as? String, "America/New_York")
 
     let roundTrip = try JSONDecoder().decode(
       PushPrefs.self,

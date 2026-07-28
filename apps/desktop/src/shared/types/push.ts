@@ -31,6 +31,8 @@ export type PushDeviceRegistration = {
   apnsToken?: string | null;
   /** ActivityKit push-to-start token (hex). */
   pushToStartToken?: string | null;
+  /** Explicitly clear a previously registered push-to-start token. */
+  clearPushToStartToken?: boolean;
   bundleId: string;
   apsEnvironment: PushApsEnvironment;
   platform?: string | null;

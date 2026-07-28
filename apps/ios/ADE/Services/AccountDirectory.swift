@@ -310,6 +310,30 @@ struct AccountAttentionRelayClient {
     )
   }
 
+  func updateDevicePreferences(
+    baseURL: URL,
+    token: String,
+    deviceId: String,
+    devicePreferences: [String: Any],
+    refreshToken: (() async -> String?)? = nil
+  ) async throws {
+    guard !deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          JSONSerialization.isValidJSONObject(devicePreferences) else {
+      throw RelayError.transport
+    }
+    let body = try JSONSerialization.data(withJSONObject: devicePreferences)
+    let url = endpoint(baseURL, "preferences")
+      .appendingPathComponent("devices")
+      .appendingPathComponent(deviceId)
+    _ = try await perform(
+      url: url,
+      method: "PATCH",
+      token: token,
+      body: body,
+      refreshToken: refreshToken
+    )
+  }
+
   func registerDevice(
     baseURL: URL,
     token: String,
@@ -317,6 +341,7 @@ struct AccountAttentionRelayClient {
     ownershipEpoch: Int,
     apnsToken: String?,
     pushToStartToken: String?,
+    clearPushToStartToken: Bool = false,
     bundleId: String,
     apsEnvironment: String,
     deviceName: String,
@@ -325,7 +350,8 @@ struct AccountAttentionRelayClient {
   ) async throws {
     guard !deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           ownershipEpoch > 0,
-          ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch else {
+          ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch,
+          !(clearPushToStartToken && pushToStartToken != nil) else {
       throw RelayError.transport
     }
     var payload: [String: Any] = [
@@ -339,6 +365,9 @@ struct AccountAttentionRelayClient {
     if let apnsToken, !apnsToken.isEmpty { payload["apnsToken"] = apnsToken }
     if let pushToStartToken, !pushToStartToken.isEmpty {
       payload["pushToStartToken"] = pushToStartToken
+    }
+    if clearPushToStartToken {
+      payload["clearPushToStartToken"] = true
     }
     let body = try JSONSerialization.data(withJSONObject: payload)
     _ = try await perform(
