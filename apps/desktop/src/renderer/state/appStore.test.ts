@@ -661,6 +661,48 @@ describe("appStore", () => {
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
     });
 
+    it("refreshLanes keeps per-lane view state when the lane list comes back empty", async () => {
+      // An empty first tick is normal right after a project switch or a remote
+      // reconnect. Pruning against it deleted every per-lane view state for the
+      // project and flushed the deletion to storage immediately, so the state
+      // could not come back when the real lane list arrived.
+      useAppStore.setState({ project: { rootPath: "/proj" } as any });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "keep-me" });
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
+
+      await useAppStore.getState().refreshLanes();
+
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-1").search).toBe("keep-me");
+    });
+
+    it("refreshLanes prunes per-lane view state only for lanes the list omits", async () => {
+      useAppStore.setState({ project: { rootPath: "/proj" } as any });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-live", { search: "live" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-gone", { search: "gone" });
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([
+        {
+          lane: { id: "lane-live", name: "Live" },
+          runtime: {
+            bucket: "running",
+            runningCount: 1,
+            awaitingInputCount: 0,
+            endedCount: 0,
+            sessionCount: 1,
+          },
+          rebaseSuggestion: null,
+          autoRebaseStatus: null,
+          conflictStatus: null,
+          stateSnapshot: null,
+          adoptableAttached: false,
+        },
+      ] as any[]);
+
+      await useAppStore.getState().refreshLanes();
+
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-live").search).toBe("live");
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-gone").search).toBe("");
+    });
+
     it("refreshLanes keeps the previous lanes visible when the runtime call fails", async () => {
       // Offline contract: when a machine drops, its lanes must stay on screen as
       // stale data rather than vanishing. Today that only holds because the await
@@ -1068,7 +1110,7 @@ describe("appStore", () => {
           version?: number;
           workViewByProject?: Record<string, Record<string, unknown>>;
         };
-        expect(persisted.version).toBe(2);
+        expect(persisted.version).toBe(3);
         expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");
@@ -1081,6 +1123,68 @@ describe("appStore", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("merges into the stored blob instead of republishing its own whole map", async () => {
+      vi.useFakeTimers();
+      try {
+        // Project B's surface holds a copy of A's state from when it was
+        // created. A whole-map write from B republished that stale copy over
+        // A's newer state — the "I left the tab and my collapse reverted" bug.
+        mockStorage.set("ade.workViewState.v1", JSON.stringify({
+          version: 3,
+          workViewByProject: {
+            "/project/a": { workCollapsedLaneIds: ["lane-a"], search: "alpha" },
+            "/project/b": { workCollapsedLaneIds: [] },
+          },
+          laneWorkViewByScope: {},
+        }));
+
+        vi.resetModules();
+        const mod = await import("./appStore");
+        // Simulate another surface writing A directly to storage after this
+        // store took its snapshot.
+        mockStorage.set("ade.workViewState.v1", JSON.stringify({
+          version: 3,
+          workViewByProject: {
+            "/project/a": { workCollapsedLaneIds: ["lane-a", "lane-a2"], search: "alpha-updated" },
+            "/project/b": { workCollapsedLaneIds: [] },
+          },
+          laneWorkViewByScope: {},
+        }));
+
+        mod.useAppStore.getState().setWorkViewState("/project/b", { search: "beta" });
+        await vi.advanceTimersByTimeAsync(300);
+
+        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
+          workViewByProject?: Record<string, Record<string, unknown>>;
+        };
+        expect(persisted.workViewByProject?.["/project/b"]?.search).toBe("beta");
+        // A's newer state survives B's write.
+        expect(persisted.workViewByProject?.["/project/a"]?.search).toBe("alpha-updated");
+        expect(persisted.workViewByProject?.["/project/a"]?.workCollapsedLaneIds)
+          .toEqual(["lane-a", "lane-a2"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps Lanes-tab view state per project", () => {
+      useAppStore.getState().setWorkViewState("/proj-one", {
+        lanesFilter: "auth",
+        lanesPinnedLaneIds: ["lane-1"],
+        lanesExpandedLaneId: "lane-1",
+      });
+      useAppStore.getState().setWorkViewState("/proj-two", { lanesFilter: "docs" });
+
+      const one = useAppStore.getState().getWorkViewState("/proj-one");
+      expect(one.lanesFilter).toBe("auth");
+      expect(one.lanesPinnedLaneIds).toEqual(["lane-1"]);
+      expect(one.lanesExpandedLaneId).toBe("lane-1");
+      const two = useAppStore.getState().getWorkViewState("/proj-two");
+      expect(two.lanesFilter).toBe("docs");
+      expect(two.lanesPinnedLaneIds).toEqual([]);
+      expect(two.lanesExpandedLaneId).toBeNull();
     });
   });
 

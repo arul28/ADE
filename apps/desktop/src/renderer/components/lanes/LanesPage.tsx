@@ -405,7 +405,29 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
-  const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
+  // Pins/filter/expansion are persisted per project rather than held in
+  // component state: the Lanes route unmounts whenever it isn't the active tab,
+  // so anything kept in `useState` here is thrown away on every tab switch.
+  const persistedPinnedLaneIds = useAppStore(
+    (s) => (activeProjectStateKey
+      ? s.workViewByProject[activeProjectStateKey]?.lanesPinnedLaneIds
+      : undefined) ?? EMPTY_LANE_IDS,
+  );
+  const pinnedLaneIds = useMemo(
+    () => new Set(persistedPinnedLaneIds),
+    [persistedPinnedLaneIds],
+  );
+  const setPinnedLaneIds = useCallback(
+    (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      if (!activeProjectStateKey) return;
+      setWorkViewState(activeProjectStateKey, (current) => {
+        const prevSet = new Set(current.lanesPinnedLaneIds);
+        const nextSet = typeof next === "function" ? next(prevSet) : next;
+        return { ...current, lanesPinnedLaneIds: Array.from(nextSet) };
+      });
+    },
+    [activeProjectStateKey, setWorkViewState],
+  );
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
   // Sessions freshly launched from the Linear batch flow, to highlight in the drawer.
   const [highlightedSessionIds, setHighlightedSessionIds] = useState<Set<string>>(new Set());
@@ -422,7 +444,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // dropped and the real tab (with its loading agent) takes over.
   const [creatingIssues, setCreatingIssues] = useState<CreatingIssuePlaceholder[]>(() => consumeCreatingIssues());
   const [gridResetKey, setGridResetKey] = useState(0);
-  const [laneFilter, setLaneFilter] = useState("");
+  const laneFilter = useAppStore(
+    (s) => (activeProjectStateKey
+      ? s.workViewByProject[activeProjectStateKey]?.lanesFilter
+      : undefined) ?? "",
+  );
+  const setLaneFilter = useCallback(
+    (next: string) => {
+      if (!activeProjectStateKey) return;
+      setWorkViewState(activeProjectStateKey, { lanesFilter: next });
+    },
+    [activeProjectStateKey, setWorkViewState],
+  );
   const [manageOpen, setManageOpen] = useState(false);
   // Create-lane dialog is hosted by CreateLaneDialogHost, which owns all of the
   // form + submit + env-setup state. LanesPage only tracks whether it is open,
@@ -514,7 +547,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
-  const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
+  const expandedLaneId = useAppStore(
+    (s) => (activeProjectStateKey
+      ? s.workViewByProject[activeProjectStateKey]?.lanesExpandedLaneId
+      : undefined) ?? null,
+  );
+  const setExpandedLaneId = useCallback(
+    (next: string | null) => {
+      if (!activeProjectStateKey) return;
+      setWorkViewState(activeProjectStateKey, { lanesExpandedLaneId: next });
+    },
+    [activeProjectStateKey, setWorkViewState],
+  );
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);

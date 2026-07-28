@@ -2129,16 +2129,76 @@ function isTerminalSessionSummaryLike(value: unknown): value is TerminalSessionS
   return Boolean(asOptionalTrimmedString(value.id) && asOptionalTrimmedString(value.laneId));
 }
 
-function ptyAccessDenied(method: string): never {
-  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+/**
+ * A caller tried to reach past its own session's scope.
+ *
+ * These denials are NOT missing capabilities: the action exists and the host
+ * implements it — the caller is simply session-bound and may only aim it at
+ * itself. They used to be reported as `methodNotFound` / "Unsupported <x>
+ * method", which is indistinguishable from an old host that lacks the method,
+ * with two real consequences:
+ *
+ *  - Agents read it as "this runtime can't do that" and reported the capability
+ *    as unavailable instead of correcting the target session.
+ *  - Clients silently degraded: `adeApi` matches "Unsupported chat method: …"
+ *    as a compatibility signal and falls back to a legacy path, so a permission
+ *    error quietly took a code path meant for version skew.
+ *
+ * So scope denials use the policy-denied code, stable structured data, and a
+ * message that names the boundary and the way through it. Genuine unsupported-
+ * method errors keep the old wording, which is what the legacy-host fallbacks
+ * match on — do not reuse it here.
+ */
+function scopeAccessDenied(
+  scopeDescription: string,
+  method: string,
+  detail?: {
+    callerChatSessionId?: string | null;
+    requestedSessionId?: string | null;
+    alternativeAction?: string | null;
+  },
+): never {
+  const caller = asOptionalTrimmedString(detail?.callerChatSessionId);
+  const requested = asOptionalTrimmedString(detail?.requestedSessionId);
+  const alternativeAction = asOptionalTrimmedString(detail?.alternativeAction);
+  const parts = [`${method} is not permitted for this caller: ${scopeDescription}.`];
+  if (caller && requested) {
+    parts.push(`Caller session is ${caller}; requested session was ${requested}.`);
+  } else if (caller) {
+    parts.push(`Caller session is ${caller}.`);
+  } else if (requested) {
+    parts.push(`Requested session was ${requested}.`);
+  }
+  if (alternativeAction) {
+    parts.push(`To message another session, use ${alternativeAction}.`);
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.policyDenied, parts.join(" "), {
+    kind: "session_scope_denied",
+    method,
+    callerSessionId: caller,
+    requestedSessionId: requested,
+    alternativeAction,
+  });
 }
 
-function chatAccessDenied(method: string): never {
-  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported chat method: ${method}`);
+function ptyAccessDenied(method: string): never {
+  scopeAccessDenied("PTY access is limited to the caller's own terminal session and lane", method);
+}
+
+function chatAccessDenied(
+  method: string,
+  detail?: { callerChatSessionId?: string | null; requestedSessionId?: string | null },
+): never {
+  scopeAccessDenied("chat access is limited to the caller's own chat session", method, {
+    ...detail,
+    // The one chat action that is deliberately unscoped, so a denied caller has
+    // a real next step rather than concluding cross-session work is impossible.
+    alternativeAction: "chat.messageSession",
+  });
 }
 
 function builtInBrowserAccessDenied(method: string): never {
-  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported built-in browser method: ${method}`);
+  scopeAccessDenied("built-in browser access is limited to the caller's own session", method);
 }
 
 function externalSessionsAccessDenied(method: string): never {
@@ -2428,14 +2488,14 @@ function scopeChatAdeActionArgs(
 
   const scopedArgs = { ...chatArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const requestedSessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   if (session.identity.role === "external" && !callerChatSessionId) {
     if (action === "readTranscript" || action === "sendMessage") return scopedArgs;
-    chatAccessDenied(method);
+    chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
 
-  const requestedSessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   if (!callerChatSessionId || (requestedSessionId && requestedSessionId !== callerChatSessionId)) {
-    chatAccessDenied(method);
+    chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
   if (!requestedSessionId) scopedArgs.sessionId = callerChatSessionId;
   return scopedArgs;
@@ -5398,6 +5458,9 @@ export function createAdeRpcRequestHandler(args: {
           error: {
             code: error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed,
             message,
+            ...(error instanceof JsonRpcError && error.data !== undefined
+              ? { data: error.data }
+              : {}),
           },
         };
       }

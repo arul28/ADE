@@ -77,6 +77,7 @@ extension WorkRootScreen {
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
         }
+        pruneStaleQuietOpenMarkers(sessions: nextPresentation.mergedSessions)
         sessionPresentationRebuildTask = nil
         // Re-arm unconditionally, even when the presentation was unchanged: the
         // deadline this rebuild just crossed is gone, and the next one has to be
@@ -619,15 +620,20 @@ extension WorkRootScreen {
     navigationMutationPending = false
     selectedSessionTransitionId = nil
     path = NavigationPath()
+    // Framing for this one navigation, not a new preference: marking it keeps
+    // the reset below out of the project's persisted view state.
+    if !workViewStateDeeplinkActive {
+      workViewStateBeforeDeeplink = currentWorkViewState
+    }
+    workViewStateDeeplinkActive = true
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
     sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
 
-    var collapsed = collapsedSectionIds
-    if collapsed.remove(sectionId) != nil {
-      collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(collapsed)
-    }
+    collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(
+      workCollapsedSectionIdsFramingLane(collapsedSectionIds, laneId: request.laneId)
+    )
 
     if lanes.isEmpty || !lanes.contains(where: { $0.id == request.laneId }) {
       await reload(refreshRemote: isLive)

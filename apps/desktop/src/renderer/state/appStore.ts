@@ -182,6 +182,14 @@ export type WorkProjectViewState = {
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
   pinnedSessionIds: string[];
+  /**
+   * Lanes-tab view state. The Lanes route is unmounted whenever it isn't active
+   * (unlike Work, which is kept warm), so component state there cannot survive a
+   * tab switch by construction — it has to live here to be preserved at all.
+   */
+  lanesFilter: string;
+  lanesPinnedLaneIds: string[];
+  lanesExpandedLaneId: string | null;
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -210,7 +218,7 @@ const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-function createDefaultWorkProjectViewState(): WorkProjectViewState {
+export function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
     openItemIds: [],
     activeItemId: null,
@@ -234,6 +242,9 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarWidthPct: 36,
     laneSessionOrder: {},
     pinnedSessionIds: [],
+    lanesFilter: "",
+    lanesPinnedLaneIds: [],
+    lanesExpandedLaneId: null,
   };
 }
 
@@ -303,6 +314,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
+    lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
+    lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
+    lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
   };
 }
 
@@ -343,7 +357,15 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
   return out;
 }
 
-const WORK_VIEW_STATE_VERSION = 2;
+/**
+ * 2: force-collapse the Settled tier once.
+ * 3: adds Lanes-tab view state (`lanesFilter`, `lanesPinnedLaneIds`,
+ *    `lanesExpandedLaneId`). Purely additive — `normalizeWorkProjectViewState`
+ *    fills the defaults, so there is no migration step for it.
+ */
+const WORK_VIEW_STATE_VERSION = 3;
+/** The version whose one-time Settled collapse must not re-run on later bumps. */
+const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
 
 function readPersistedWorkViewState(): {
   workViewByProject: Record<string, WorkProjectViewState>;
@@ -363,7 +385,9 @@ function readPersistedWorkViewState(): {
       typeof parsed.version === "number" && Number.isFinite(parsed.version)
         ? parsed.version
         : 1;
-    const migrateSettledCollapse = persistedVersion < WORK_VIEW_STATE_VERSION;
+    // Gated on its own version, not the current one: re-running it on every
+    // later bump would silently re-collapse Settled for anyone who opened it.
+    const migrateSettledCollapse = persistedVersion < WORK_VIEW_SETTLED_COLLAPSE_VERSION;
     const workViewByProject: Record<string, WorkProjectViewState> = {};
     const laneWorkViewByScope: Record<string, WorkProjectViewState> = {};
     for (const [projectRoot, viewState] of Object.entries(parsed.workViewByProject ?? {})) {
@@ -399,36 +423,166 @@ function readPersistedWorkViewState(): {
   }
 }
 
-let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * A scoped edit to the persisted work-view blob.
+ *
+ * Writes are deltas, never whole-map snapshots. ADE mounts one app store per
+ * project surface, and every surface holds a *copy* of the global
+ * `workViewByProject` / `laneWorkViewByScope` maps taken when it was created.
+ * A whole-map write therefore republishes one surface's stale view of every
+ * *other* project — which is exactly how collapse/filter state used to revert
+ * when you left a project tab and came back. Naming the touched keys keeps each
+ * surface authoritative only for what it actually owns.
+ */
+export type WorkViewPersistUpdate = {
+  upsertProjects?: Record<string, WorkProjectViewState>;
+  upsertLaneScopes?: Record<string, WorkProjectViewState>;
+  /** Also drops every `<projectKey>::<laneId>` scope for these projects. */
+  deleteProjectKeys?: readonly string[];
+  deleteLaneScopeKeys?: readonly string[];
+};
 
-function persistWorkViewState(args: {
-  workViewByProject: Record<string, WorkProjectViewState>;
-  laneWorkViewByScope: Record<string, WorkProjectViewState>;
-}): void {
-  if (_debouncePersistTimer != null) {
-    clearTimeout(_debouncePersistTimer);
-    _debouncePersistTimer = null;
+type PendingWorkViewPersist = {
+  upsertProjects: Record<string, WorkProjectViewState>;
+  upsertLaneScopes: Record<string, WorkProjectViewState>;
+  deleteProjectKeys: Set<string>;
+  deleteLaneScopeKeys: Set<string>;
+};
+
+let _debouncePersistTimer: ReturnType<typeof setTimeout> | null = null;
+let _pendingWorkViewPersist: PendingWorkViewPersist | null = null;
+
+function laneScopeBelongsToProject(scopeKey: string, projectKey: string): boolean {
+  return scopeKey.startsWith(`${projectKey}::`);
+}
+
+/**
+ * Folds an update into the pending delta. Later intent wins per key: an upsert
+ * cancels a queued delete of the same key and vice versa, so a
+ * collapse-then-close sequence doesn't resurrect the closed project.
+ */
+function mergeIntoPendingWorkViewPersist(update: WorkViewPersistUpdate): PendingWorkViewPersist {
+  const pending: PendingWorkViewPersist = _pendingWorkViewPersist ?? {
+    upsertProjects: {},
+    upsertLaneScopes: {},
+    deleteProjectKeys: new Set<string>(),
+    deleteLaneScopeKeys: new Set<string>(),
+  };
+  for (const [key, value] of Object.entries(update.upsertProjects ?? {})) {
+    const projectKey = normalizeProjectKey(key);
+    if (!projectKey) continue;
+    pending.upsertProjects[projectKey] = value;
+    pending.deleteProjectKeys.delete(projectKey);
   }
+  for (const [key, value] of Object.entries(update.upsertLaneScopes ?? {})) {
+    const scopeKey = typeof key === "string" ? key.trim() : "";
+    if (!scopeKey) continue;
+    pending.upsertLaneScopes[scopeKey] = value;
+    pending.deleteLaneScopeKeys.delete(scopeKey);
+  }
+  for (const key of update.deleteProjectKeys ?? []) {
+    const projectKey = normalizeProjectKey(key);
+    if (!projectKey) continue;
+    pending.deleteProjectKeys.add(projectKey);
+    delete pending.upsertProjects[projectKey];
+    for (const scopeKey of Object.keys(pending.upsertLaneScopes)) {
+      if (laneScopeBelongsToProject(scopeKey, projectKey)) delete pending.upsertLaneScopes[scopeKey];
+    }
+  }
+  for (const key of update.deleteLaneScopeKeys ?? []) {
+    const scopeKey = typeof key === "string" ? key.trim() : "";
+    if (!scopeKey) continue;
+    pending.deleteLaneScopeKeys.add(scopeKey);
+    delete pending.upsertLaneScopes[scopeKey];
+  }
+  _pendingWorkViewPersist = pending;
+  return pending;
+}
+
+/**
+ * Read-modify-write: re-reads the blob so concurrently-mounted surfaces merge
+ * instead of overwriting, applies the pending delta, and writes back.
+ */
+function flushPendingWorkViewPersist(): void {
+  const pending = _pendingWorkViewPersist;
+  _pendingWorkViewPersist = null;
+  if (!pending) return;
   try {
+    const persisted = readPersistedWorkViewState();
+    const workViewByProject = { ...persisted.workViewByProject };
+    const laneWorkViewByScope = { ...persisted.laneWorkViewByScope };
+    for (const projectKey of pending.deleteProjectKeys) {
+      delete workViewByProject[projectKey];
+      for (const scopeKey of Object.keys(laneWorkViewByScope)) {
+        if (laneScopeBelongsToProject(scopeKey, projectKey)) delete laneWorkViewByScope[scopeKey];
+      }
+    }
+    for (const scopeKey of pending.deleteLaneScopeKeys) delete laneWorkViewByScope[scopeKey];
+    for (const [projectKey, value] of Object.entries(pending.upsertProjects)) {
+      workViewByProject[projectKey] = value;
+    }
+    for (const [scopeKey, value] of Object.entries(pending.upsertLaneScopes)) {
+      laneWorkViewByScope[scopeKey] = value;
+    }
     window.localStorage.setItem(
       WORK_VIEW_STORAGE_KEY,
-      JSON.stringify({ version: WORK_VIEW_STATE_VERSION, ...args }),
+      JSON.stringify({
+        version: WORK_VIEW_STATE_VERSION,
+        workViewByProject,
+        laneWorkViewByScope,
+      }),
     );
   } catch {
     // ignore
   }
 }
 
+/** Applies a scoped update to the persisted blob immediately. */
+function persistWorkViewState(update: WorkViewPersistUpdate): void {
+  if (_debouncePersistTimer != null) {
+    clearTimeout(_debouncePersistTimer);
+    _debouncePersistTimer = null;
+  }
+  mergeIntoPendingWorkViewPersist(update);
+  flushPendingWorkViewPersist();
+}
+
 /** Debounced persist: batches rapid setter calls into a single localStorage write. */
-function debouncedPersistWorkViewState(args: {
-  workViewByProject: Record<string, WorkProjectViewState>;
-  laneWorkViewByScope: Record<string, WorkProjectViewState>;
-}): void {
+function debouncedPersistWorkViewState(update: WorkViewPersistUpdate): void {
+  mergeIntoPendingWorkViewPersist(update);
   if (_debouncePersistTimer != null) clearTimeout(_debouncePersistTimer);
   _debouncePersistTimer = setTimeout(() => {
     _debouncePersistTimer = null;
-    persistWorkViewState(args);
+    flushPendingWorkViewPersist();
   }, 300);
+}
+
+/** Test seam: forces any debounced work-view write to land now. */
+export function flushWorkViewStatePersistForTests(): void {
+  if (_debouncePersistTimer != null) {
+    clearTimeout(_debouncePersistTimer);
+    _debouncePersistTimer = null;
+  }
+  flushPendingWorkViewPersist();
+}
+
+/**
+ * Reads one project's persisted view state straight from the blob. Surface
+ * stores hydrate through this rather than trusting the root store's copy, which
+ * only learns about a surface's edits when that surface is LRU-evicted.
+ */
+function readPersistedWorkViewForProject(projectKey: string): {
+  view: WorkProjectViewState | null;
+  laneScopes: Record<string, WorkProjectViewState>;
+} {
+  const key = normalizeProjectKey(projectKey);
+  if (!key) return { view: null, laneScopes: {} };
+  const persisted = readPersistedWorkViewState();
+  const laneScopes: Record<string, WorkProjectViewState> = {};
+  for (const [scopeKey, value] of Object.entries(persisted.laneWorkViewByScope)) {
+    if (laneScopeBelongsToProject(scopeKey, key)) laneScopes[scopeKey] = value;
+  }
+  return { view: persisted.workViewByProject[key] ?? null, laneScopes };
 }
 
 function normalizeProjectKey(projectRoot: string | null | undefined): string {
@@ -1418,7 +1572,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       delete laneSelectionByProject[key];
       delete laneCacheByProject[key];
       delete sessionsCacheByProject[key];
-      persistWorkViewState({ workViewByProject, laneWorkViewByScope });
+      persistWorkViewState({ deleteProjectKeys: [key] });
       return {
         workViewByProject,
         laneWorkViewByScope,
@@ -1792,10 +1946,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ...prev.workViewByProject,
         [key]: updated,
       };
-      debouncedPersistWorkViewState({
-        workViewByProject: nextWorkViews,
-        laneWorkViewByScope: prev.laneWorkViewByScope,
-      });
+      debouncedPersistWorkViewState({ upsertProjects: { [key]: updated } });
       return {
         workViewByProject: nextWorkViews,
       };
@@ -1824,10 +1975,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ...prev.laneWorkViewByScope,
         [key]: updated,
       };
-      debouncedPersistWorkViewState({
-        workViewByProject: prev.workViewByProject,
-        laneWorkViewByScope: nextLaneWorkViews,
-      });
+      debouncedPersistWorkViewState({ upsertLaneScopes: { [key]: updated } });
       return {
         laneWorkViewByScope: nextLaneWorkViews,
       };
@@ -1917,18 +2065,33 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       set((prev) => {
         const allowed = new Set(lanes.map((lane) => lane.id));
         const nextTabs: Record<string, LaneInspectorTab> = {};
-        const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+        // An empty lane list is the normal first tick after a project switch or
+        // a remote reconnect, not proof that every lane was deleted. Pruning on
+        // it wiped every per-lane view state for the project — permanently,
+        // because the deletion was flushed to storage immediately. Only prune
+        // against a list that actually enumerates lanes.
+        const canPruneLaneScopes = Boolean(projectKey) && lanes.length > 0;
+        const nextLaneWorkViews: Record<string, WorkProjectViewState> = canPruneLaneScopes
+          ? {}
+          : prev.laneWorkViewByScope;
+        const removedLaneScopeKeys: string[] = [];
         for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
           if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
         }
-        for (const [scopeKey, viewState] of Object.entries(prev.laneWorkViewByScope)) {
-          if (!projectKey || !scopeKey.startsWith(`${projectKey}::`)) {
-            nextLaneWorkViews[scopeKey] = viewState;
-            continue;
-          }
-          const laneId = scopeKey.slice(projectKey.length + 2);
-          if (allowed.has(laneId)) {
-            nextLaneWorkViews[scopeKey] = viewState;
+        if (canPruneLaneScopes) {
+          for (const [scopeKey, viewState] of Object.entries(prev.laneWorkViewByScope)) {
+            // Never touch another project's scopes: this store's copy of them is
+            // whatever it happened to inherit when the surface was created.
+            if (!laneScopeBelongsToProject(scopeKey, projectKey)) {
+              nextLaneWorkViews[scopeKey] = viewState;
+              continue;
+            }
+            const laneId = scopeKey.slice(projectKey.length + 2);
+            if (allowed.has(laneId)) {
+              nextLaneWorkViews[scopeKey] = viewState;
+            } else {
+              removedLaneScopeKeys.push(scopeKey);
+            }
           }
         }
         const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -1940,10 +2103,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               const nextLane = lanesById.get(snapshot.lane.id);
               return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
             });
-        persistWorkViewState({
-          workViewByProject: prev.workViewByProject,
-          laneWorkViewByScope: nextLaneWorkViews,
-        });
+        if (removedLaneScopeKeys.length > 0) {
+          persistWorkViewState({ deleteLaneScopeKeys: removedLaneScopeKeys });
+        }
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
         const activeProjectKey = selectActiveProjectStateKey(get());
@@ -2309,14 +2471,21 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             if (key) retainedRootSet.add(key);
           }
           const retainedRoots = Array.from(retainedRootSet);
+          // An empty recents list means the IPC hiccuped, not that the user has
+          // no projects. GCing against it would drop every project's view state.
+          if (recentRows.length === 0 && retainedRootSet.size <= 1) return;
           set((prev) => {
             const nextWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneSelections: Record<string, { laneId: string | null; sessionId: string | null }> = {};
             const nextLaneCache: Record<string, WarmLaneCache> = {};
             const nextSessionsCache: Record<string, TerminalSessionSummary[]> = {};
+            // Delete-only: this store's map is authoritative for what it *has*,
+            // never for what another surface may have written since.
+            const droppedProjectKeys: string[] = [];
             for (const [key, value] of Object.entries(prev.workViewByProject)) {
               if (retainedRootSet.has(key)) nextWorkViews[key] = value;
+              else droppedProjectKeys.push(key);
             }
             for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
               const projectKey = scopeKey.split("::")[0];
@@ -2332,10 +2501,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             for (const [key, value] of Object.entries(prev.sessionsCacheByProject)) {
               if (retainedRootSet.has(key)) nextSessionsCache[key] = value;
             }
-            persistWorkViewState({
-              workViewByProject: nextWorkViews,
-              laneWorkViewByScope: nextLaneWorkViews,
-            });
+            if (droppedProjectKeys.length > 0) {
+              persistWorkViewState({ deleteProjectKeys: droppedProjectKeys });
+            }
             return {
               workViewByProject: nextWorkViews,
               laneWorkViewByScope: nextLaneWorkViews,
@@ -2560,6 +2728,19 @@ export function createProjectAppStore(
       laneId: cachedLanes?.lanes[0]?.id ?? null,
       sessionId: null,
     };
+  // Storage, not the root store, is the freshest source for this project's view
+  // state: the root store only learns a surface's edits when that surface is
+  // LRU-evicted, so re-opening a project tab within the session would otherwise
+  // resurrect whatever the root store last saw.
+  const persistedOwnView = readPersistedWorkViewForProject(projectKey);
+  const hydratedWorkViewByProject = persistedOwnView.view
+    ? { ...rootState.workViewByProject, [projectKey]: persistedOwnView.view }
+    : rootState.workViewByProject;
+  const hydratedLaneWorkViewByScope = { ...rootState.laneWorkViewByScope };
+  for (const key of Object.keys(hydratedLaneWorkViewByScope)) {
+    if (laneScopeBelongsToProject(key, projectKey)) delete hydratedLaneWorkViewByScope[key];
+  }
+  Object.assign(hydratedLaneWorkViewByScope, persistedOwnView.laneScopes);
   store.setState({
     project,
     projectBinding,
@@ -2604,8 +2785,8 @@ export function createProjectAppStore(
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
-    workViewByProject: rootState.workViewByProject,
-    laneWorkViewByScope: rootState.laneWorkViewByScope,
+    workViewByProject: hydratedWorkViewByProject,
+    laneWorkViewByScope: hydratedLaneWorkViewByScope,
     laneSelectionByProject: rootState.laneSelectionByProject,
     laneCacheByProject: cachedLanes && !rootState.laneCacheByProject[projectKey]
       ? {
@@ -2622,7 +2803,48 @@ export function createProjectAppStore(
     selectedLaneId: restoredSelection.laneId,
     focusedSessionId: restoredSelection.sessionId,
   });
+  registerProjectSurfaceStore(projectKey, store);
   return store;
+}
+
+/**
+ * Live project surface stores, keyed by project state key.
+ *
+ * `AppShell` and `TopBar` render *above* `AppStoreProvider`, so `useAppStore`
+ * resolves to the root store for them. Per-project view-state writes made there
+ * used to land on the root store, which the mounted Work surface never reads —
+ * the toggle appeared to do nothing, and the root store's later flush undid the
+ * surface's newer state. This registry lets those call sites reach the store
+ * that actually owns the project.
+ */
+const _projectSurfaceStores = new Map<string, AppStoreApi>();
+
+export function registerProjectSurfaceStore(projectKey: string, store: AppStoreApi): void {
+  const key = normalizeProjectKey(projectKey);
+  if (!key) return;
+  _projectSurfaceStores.set(key, store);
+}
+
+export function unregisterProjectSurfaceStore(projectKey: string, store: AppStoreApi): void {
+  const key = normalizeProjectKey(projectKey);
+  if (!key) return;
+  if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
+}
+
+/** The store that owns per-project view state for `projectRootOrKey`. */
+export function workViewStoreForProject(
+  projectRootOrKey: string | null | undefined,
+): AppStoreApi {
+  const key = resolveProjectStateKey(rootAppStore.getState(), projectRootOrKey);
+  if (!key) return rootAppStore;
+  return _projectSurfaceStores.get(key) ?? rootAppStore;
+}
+
+export function releaseProjectAppStore(
+  store: AppStoreApi,
+  binding: OpenProjectBinding,
+): void {
+  unregisterProjectSurfaceStore(projectStateKeyForBinding(binding), store);
 }
 
 export function retainProjectAppStoreState(
@@ -2668,7 +2890,16 @@ export function retainProjectAppStoreState(
       sessionsCacheByProject[projectKey] =
         surfaceState.sessionsCacheByProject[projectKey];
     }
-    persistWorkViewState({ workViewByProject, laneWorkViewByScope });
+    const retainedLaneScopes: Record<string, WorkProjectViewState> = {};
+    for (const [key, value] of Object.entries(surfaceState.laneWorkViewByScope)) {
+      if (laneScopeBelongsToProject(key, projectKey)) retainedLaneScopes[key] = value;
+    }
+    persistWorkViewState({
+      upsertProjects: workViewByProject[projectKey]
+        ? { [projectKey]: workViewByProject[projectKey] }
+        : {},
+      upsertLaneScopes: retainedLaneScopes,
+    });
     persistLaneCache(projectKey, laneCacheByProject[projectKey]?.lanes ?? []);
     return {
       workViewByProject,

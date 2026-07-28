@@ -8,6 +8,7 @@ import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
 import {
   canonicalInputFromSummary,
+  sessionCanonicalUiState,
   sessionNeedsYou,
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
@@ -33,6 +34,7 @@ import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessio
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
+import { isSessionFiledAsSnoozed } from "../../lib/sessionSnooze";
 import {
   handoffJobLikelyMaterialized,
   handoffLaunchMatchesQuery,
@@ -145,6 +147,93 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
   );
 }
 
+function QuietLaneGroupHeader({
+  sectionId,
+  icon,
+  label,
+  count,
+  collapsed,
+  onToggleCollapsed,
+  onContextMenu,
+  laneHeaderTitle,
+  prBadge,
+  machineMarker,
+  busyLabel,
+  quietCounts,
+}: {
+  sectionId: string;
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void;
+  laneHeaderTitle: string;
+  prBadge: React.ReactNode;
+  machineMarker: React.ReactNode;
+  busyLabel: string | null;
+  quietCounts: { snoozed: number; settled: number };
+}) {
+  return (
+    <div
+      className={cn(
+        "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1 transition-colors select-none",
+        "hover:bg-white/[0.04]",
+        busyLabel && "opacity-70",
+      )}
+      style={{ border: "1px solid rgba(255, 255, 255, 0.05)" }}
+      data-section-id={sectionId}
+      data-lane-quiet="true"
+      aria-busy={busyLabel ? "true" : undefined}
+      onContextMenu={onContextMenu}
+    >
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 overflow-hidden text-left"
+        onClick={onToggleCollapsed}
+        disabled={Boolean(busyLabel)}
+        aria-expanded={!collapsed}
+        aria-label={`${label} (${count} quiet)`}
+      >
+        <CaretRight size={10} className="shrink-0 text-muted-fg/25" />
+        {icon}
+        <span
+          className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 flex-1 shrink truncate text-[11px] font-medium leading-tight text-fg/55"
+          title={laneHeaderTitle}
+        >
+          {label}
+        </span>
+      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        {machineMarker}
+        {prBadge}
+        {quietCounts.snoozed > 0 ? (
+          <span
+            className="flex items-center gap-0.5 text-[9px] font-medium tabular-nums text-muted-fg/40"
+            title={`${quietCounts.snoozed} snoozed`}
+          >
+            <Moon size={9} weight="fill" aria-hidden />
+            {quietCounts.snoozed}
+          </span>
+        ) : null}
+        {quietCounts.settled > 0 ? (
+          <span
+            className="flex items-center gap-0.5 text-[9px] font-medium tabular-nums text-muted-fg/40"
+            title={`${quietCounts.settled} settled`}
+          >
+            <span
+              className="h-1.5 w-1.5 shrink-0 rounded-full border bg-transparent"
+              style={{ borderColor: "rgba(255,255,255,0.3)" }}
+              aria-hidden
+            />
+            {quietCounts.settled}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function StickyGroupHeader({
   sectionId,
   icon,
@@ -163,6 +252,7 @@ function StickyGroupHeader({
   busyLabel = null,
   heading = false,
   dimmed = false,
+  quietCounts = null,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -196,9 +286,12 @@ function StickyGroupHeader({
   variant?: "default" | "lane";
   /** Disables the lane group and overlays lifecycle progress. */
   busyLabel?: string | null;
+  /** Quiet-lane mode plus inline `☾n ○n` counts replacing the total pill. */
+  quietCounts?: { snoozed: number; settled: number } | null;
 }) {
   if (count === 0) return null;
   const isLane = variant === "lane";
+  const isQuietLane = isLane && quietCounts != null;
   const branchText = subLabel?.trim() ?? "";
   // The lane header no longer renders the branch. The lane name is already
   // derived from the branch (CreateLaneDialog seeds one from the other), so
@@ -210,8 +303,23 @@ function StickyGroupHeader({
   const laneTint = laneSurfaceTint(accentColor, isLane ? "pastel" : "soft");
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
-    <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0", dimmed && "opacity-55")}>
-      {isLane ? (
+    <div className={cn(isLane ? (isQuietLane ? "mb-px" : "mb-1.5") : "mt-0.5 first:mt-0", dimmed && "opacity-55")}>
+      {isQuietLane ? (
+        <QuietLaneGroupHeader
+          sectionId={sectionId}
+          icon={icon}
+          label={label}
+          count={count}
+          collapsed={collapsed}
+          onToggleCollapsed={onToggleCollapsed}
+          onContextMenu={onContextMenu}
+          laneHeaderTitle={laneHeaderTitle}
+          prBadge={prBadge}
+          machineMarker={machineMarker}
+          busyLabel={busyLabel}
+          quietCounts={quietCounts}
+        />
+      ) : isLane ? (
         // The lane header is a flex row, NOT one big <button>: the PR badge is
         // itself interactive, and nesting interactive elements inside a native
         // button is invalid HTML (breaks focus order / assistive tech). The
@@ -549,7 +657,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   workCollapsedLaneIds: string[];
   toggleWorkLaneCollapsed: (laneId: string) => void;
   workCollapsedSectionIds: string[];
-  toggleWorkSectionCollapsed: (sectionId: string) => void;
+  toggleWorkSectionCollapsed: (
+    sectionId: string,
+    options?: { preserveDeeplink?: boolean },
+  ) => void;
   sessionsGroupedByLane: Map<string, TerminalSessionSummary[]> | null;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
@@ -615,6 +726,35 @@ export const SessionListPane = React.memo(function SessionListPane({
     if (snoozedIdSet.size === 0) return settledIdSet;
     return new Set([...settledIdSet, ...snoozedIdSet]);
   }, [settledIdSet, snoozedIdSet]);
+  // Quietness is a property of the full lane roster, not the search/filter
+  // subset. Otherwise a filtered-out needs-you row can disappear from this
+  // check and let the lane fold into a thin quiet header.
+  const unfilteredQuietIdSet = useMemo(() => {
+    const nowMs = Date.now();
+    const ids = new Set<string>();
+    for (const session of allSessionsUnfiltered) {
+      const input = canonicalInputFromSummary(session);
+      const phase = sessionCanonicalUiState(input).phase;
+      if (
+        isSessionFiledAsSnoozed(session, phase, nowMs)
+        || sessionStatusBucket(input) === "settled"
+      ) {
+        ids.add(session.id);
+      }
+    }
+    return ids;
+    // Snooze expiry changes `snoozedFiltered`, forcing this full-roster
+    // classification to re-evaluate even when the session array is reused.
+  }, [allSessionsUnfiltered, snoozedFiltered]);
+  const unfilteredSessionsByLane = useMemo(() => {
+    const map = new Map<string, TerminalSessionSummary[]>();
+    for (const session of allSessionsUnfiltered) {
+      const list = map.get(session.laneId) ?? [];
+      list.push(session);
+      map.set(session.laneId, list);
+    }
+    return map;
+  }, [allSessionsUnfiltered]);
   const visibleSessionIdSet = useMemo(
     () => new Set(allSessions.map((session) => session.id)),
     [allSessions],
@@ -745,6 +885,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return map;
   }, [filteredHandoffJobs]);
+  const unfilteredHandoffCountByLaneId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const job of handoffJobs) {
+      if (allSessionsUnfiltered.some((session) => handoffJobLikelyMaterialized(job, session))) continue;
+      map.set(job.laneId, (map.get(job.laneId) ?? 0) + 1);
+    }
+    return map;
+  }, [allSessionsUnfiltered, handoffJobs]);
   const missingLaneSessionGroups = useMemo(() => {
     if (!sessionsGroupedByLane) return [];
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
@@ -939,12 +1087,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
-  const renderCards = (list: TerminalSessionSummary[]) =>
+  const renderCards = (list: TerminalSessionSummary[], options?: { compact?: boolean }) =>
     list
       .filter((session) => !excludedTopLevelIds.has(session.id))
       .map((session) => {
         const children = childrenByParentId.get(session.id) ?? [];
-        const card = renderCardCore(session);
+        const card = renderCardCore(session, options);
         if (children.length === 0) return card;
         return (
           <div key={`group-${session.id}`}>
@@ -981,6 +1129,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     icon: React.ReactNode,
     label: string,
     list: TerminalSessionSummary[],
+    options?: { compact?: boolean },
   ) => {
     if (list.length === 0) return null;
     // Quiet tails start collapsed without needing to persist one entry per lane.
@@ -1004,7 +1153,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             {list.length} {label}
           </span>
         </button>
-        {!collapsed ? <div className="space-y-px">{renderCards(list)}</div> : null}
+        {!collapsed ? <div className="space-y-px">{renderCards(list, options)}</div> : null}
       </div>
     );
   };
@@ -1014,18 +1163,60 @@ export const SessionListPane = React.memo(function SessionListPane({
    * settled tails so hidden work stays openable in-stream without occupying the
    * folder's prime rows.
    */
-  const renderLaneSessionLists = (laneKey: string, list: TerminalSessionSummary[]) => {
+  const renderLaneSessionLists = (
+    laneKey: string,
+    list: TerminalSessionSummary[],
+    options?: { quiet?: boolean },
+  ) => {
     const active = list.filter((session) => !quietIdSet.has(session.id));
     const snoozed = list.filter((session) => snoozedIdSet.has(session.id));
     const settled = list.filter((session) => settledIdSet.has(session.id));
+    // An expanded quiet lane holds nothing but quiet rows, so render them
+    // compact — the full card's preview line and meta row are all about work in
+    // flight, which by definition there isn't any of here.
+    const tailOptions = options?.quiet ? { compact: true } : undefined;
     return (
       <>
         {renderCards(active)}
-        {renderLaneQuietTail(`snoozed-open:${laneKey}`, snoozedSectionIcon, "snoozed", snoozed)}
-        {renderLaneQuietTail(`settled-open:${laneKey}`, settledSectionIcon, "settled", settled)}
+        {renderLaneQuietTail(`snoozed-open:${laneKey}`, snoozedSectionIcon, "snoozed", snoozed, tailOptions)}
+        {renderLaneQuietTail(`settled-open:${laneKey}`, settledSectionIcon, "settled", settled, tailOptions)}
       </>
     );
   };
+
+  /**
+   * A lane whose every session is snoozed or settled. `isSessionFiledAsSnoozed`
+   * already yields to `needs_you`, so a lane can never read as quiet while
+   * something in it is waiting on the user.
+   */
+  const isLaneQuiet = useCallback((laneId: string) => {
+    const fullList = unfilteredSessionsByLane.get(laneId) ?? [];
+    return fullList.length > 0
+    && (unfilteredHandoffCountByLaneId.get(laneId) ?? 0) === 0
+    && fullList.every((session) => unfilteredQuietIdSet.has(session.id));
+  }, [unfilteredHandoffCountByLaneId, unfilteredQuietIdSet, unfilteredSessionsByLane]);
+
+  // An explicit quiet expansion belongs only to the current quiet spell. Once
+  // real work returns, discard it so the next all-quiet transition defaults
+  // back to the thin collapsed row.
+  useEffect(() => {
+    for (const marker of workCollapsedSectionIds) {
+      if (!marker.startsWith("lane-open:")) continue;
+      const laneId = marker.slice("lane-open:".length);
+      const hasLaneEvidence =
+        (unfilteredSessionsByLane.get(laneId)?.length ?? 0) > 0
+        || (unfilteredHandoffCountByLaneId.get(laneId) ?? 0) > 0;
+      if (hasLaneEvidence && !isLaneQuiet(laneId)) {
+        toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
+      }
+    }
+  }, [
+    isLaneQuiet,
+    toggleWorkSectionCollapsed,
+    unfilteredSessionsByLane,
+    unfilteredHandoffCountByLaneId,
+    workCollapsedSectionIds,
+  ]);
 
   // Snoozed sits directly ABOVE Settled: hidden-for-now ranks above done.
   const snoozedStatusSection = visibleSnoozed.length > 0 ? (
@@ -1144,7 +1335,14 @@ export const SessionListPane = React.memo(function SessionListPane({
       {orderedLanes.map((lane) => {
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
         const laneHandoffJobs = handoffJobsByLaneId.get(lane.id) ?? [];
-        const collapsed = workCollapsedLaneIds.includes(lane.id);
+        const laneQuiet = isLaneQuiet(lane.id);
+        // A quiet lane starts collapsed, and — like the quiet tails — records
+        // only the *explicit expand*, so it re-quiets on its own once the user
+        // moves on instead of leaving a stale "expanded" entry behind forever.
+        const laneOpenMarker = `lane-open:${lane.id}`;
+        const collapsed = laneQuiet
+          ? !workCollapsedSectionIds.includes(laneOpenMarker)
+          : workCollapsedLaneIds.includes(lane.id);
         const total = list.length + laneHandoffJobs.length;
         const laneAccent = lane.color ?? null;
         const laneHeaderTint = laneSurfaceTint(laneAccent, "pastel");
@@ -1181,13 +1379,21 @@ export const SessionListPane = React.memo(function SessionListPane({
             prBadge={prBadge}
             machineMarker={machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
             busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+            quietCounts={laneQuiet && collapsed
+              ? {
+                  snoozed: list.filter((session) => snoozedIdSet.has(session.id)).length,
+                  settled: list.filter((session) => settledIdSet.has(session.id)).length,
+                }
+              : null}
             onToggleCollapsed={() => {
-              if (!deleteProgress) toggleWorkLaneCollapsed(lane.id);
+              if (deleteProgress) return;
+              if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
+              else toggleWorkLaneCollapsed(lane.id);
             }}
             onContextMenu={deleteProgress ? undefined : (e) => triggerLaneContextMenu(lane.id, e)}
           >
             {renderHandoffCards(laneHandoffJobs)}
-            {renderLaneSessionLists(lane.id, list)}
+            {renderLaneSessionLists(lane.id, list, { quiet: laneQuiet })}
           </StickyGroupHeader>
         );
       })}

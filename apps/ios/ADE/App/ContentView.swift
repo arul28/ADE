@@ -55,7 +55,55 @@ struct ContentView: View {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
   }
 
+  // Split into two stages with an explicit `some View` boundary between them.
+  // As one expression this chain exceeds the Swift type-checker's budget and
+  // fails to build; each half on its own is well inside it.
   var body: some View {
+    rootWithChrome
+      .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        // A linear-issue deep link opens the global pane (it consumes the
+        // request once presented). Only reached when a project is active — the
+        // router bounces the link to the Mac otherwise.
+        syncService.closeProjectHub()
+        syncService.linearPanePresented = true
+      }
+      .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        syncService.closeProjectHub()
+        if selectedTab != .files {
+          selectedTab = .files
+        }
+      }
+      .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        syncService.closeProjectHub()
+        if selectedTab != .lanes {
+          selectedTab = .lanes
+        }
+      }
+      .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        syncService.closeProjectHub()
+        if selectedTab != .work {
+          selectedTab = .work
+        }
+      }
+      .task(id: syncService.requestedPrNavigation?.id) {
+        guard let request = syncService.requestedPrNavigation,
+              await syncService.ensureAccountMachineForNavigation(
+                request.accountMachineKey
+              ),
+              syncService.requestedPrNavigation?.id == request.id else { return }
+        syncService.closeProjectHub()
+        if selectedTab != .prs {
+          selectedTab = .prs
+        }
+      }
+      .modifier(WorkSessionNavigationModifier(syncService: syncService, selectedTab: $selectedTab))
+  }
+
+  private var rootWithChrome: some View {
     // The hub is the home screen: all projects open and ready. Opening a
     // project swaps to the detailed tab view. Keep these roots mutually
     // mounted: if the hub stays alive under the project tabs it continues
@@ -157,47 +205,6 @@ struct ContentView: View {
       } message: {
         Text("ADE can send a small, daily-capped set of screen and feature categories to help improve the app. It never sends prompts, code, project or file names, terminal content, raw errors, or screen recordings. You can change this later in Settings.")
       }
-      .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
-        // A linear-issue deep link opens the global pane (it consumes the
-        // request once presented). Only reached when a project is active — the
-        // router bounces the link to the Mac otherwise.
-        syncService.closeProjectHub()
-        syncService.linearPanePresented = true
-      }
-      .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
-        syncService.closeProjectHub()
-        if selectedTab != .files {
-          selectedTab = .files
-        }
-      }
-      .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
-        syncService.closeProjectHub()
-        if selectedTab != .lanes {
-          selectedTab = .lanes
-        }
-      }
-      .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
-        syncService.closeProjectHub()
-        if selectedTab != .work {
-          selectedTab = .work
-        }
-      }
-      .task(id: syncService.requestedPrNavigation?.id) {
-        guard let request = syncService.requestedPrNavigation,
-              await syncService.ensureAccountMachineForNavigation(
-                request.accountMachineKey
-              ),
-              syncService.requestedPrNavigation?.id == request.id else { return }
-        syncService.closeProjectHub()
-        if selectedTab != .prs {
-          selectedTab = .prs
-        }
-      }
-      .modifier(WorkSessionNavigationModifier(syncService: syncService, selectedTab: $selectedTab))
   }
 
   private var hasMobileAccess: Bool {

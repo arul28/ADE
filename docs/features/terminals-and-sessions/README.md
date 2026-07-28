@@ -507,6 +507,15 @@ Renderer surfaces:
   enter a bulk action accidentally. Group headers carry an explicit
   `role="heading"` with a `"<label> (<count>)"` accessible name so a screen
   reader can navigate to a group rather than inferring it from a bare toggle.
+  In lane organization, a lane whose complete unfiltered roster is snoozed or
+  settled starts as one thin muted header with inline snoozed/settled counts;
+  the nested quiet tails are omitted while it is collapsed. Expanding it
+  restores the normal lane header and compact quiet rows. Quiet expansion uses
+  the inverted `lane-open:<laneId>` marker, which is removed when active work
+  returns so the next quiet spell collapses automatically. The classification
+  uses the canonical snooze helper, whose `needs_you` precedence is
+  load-bearing: filtering or snoozing must never fold a row that is waiting on
+  the user into the quiet header.
   Renders a bulk action bar at the bottom when sessions are multi-selected
   (Stop N running / Settle N / Delete N ended / clear selection), and offers an
   eight-second undo after bulk settle. The filter panel is width-constrained by
@@ -683,7 +692,10 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`. Invalidates the shared session-list cache
+  `ade.workViewState.v1`. Lane/status deeplinks layer a transient
+  `deeplinkViewOverride` over the saved project state instead of rewriting
+  grouping and collapsed sections; an explicit filter, organization, or
+  section change clears the framing. Invalidates the shared session-list cache
   and schedules a background refresh on window focus /
   `visibilitychange` and on chat events, so returning to Work after a
   tab switch always renders the current session set. Renderer-local
@@ -889,7 +901,13 @@ iOS Work surfaces:
   driven by sending text to the durable session, not a standalone
   row action. The earlier
   in-list activity feed is gone — running chats surface through the
-  session list and the live-count chip.
+  session list and the live-count chip. Work filters, organization, and
+  collapsed-section ids are restored from `WorkViewStateStore` per
+  project-plus-host scope; lane deeplinks temporarily frame the list without
+  persisting their resets. By-lane groups whose full roster is settled,
+  snoozed, or archived use the same inverted `lane-open:<laneId>` marker as
+  desktop: collapsed is a thin muted row, while explicit expansion shows
+  compact session rows until active work returns.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
@@ -1248,11 +1266,22 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
   `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
   | "app-control" | "browser"`, and `workSidebarWidthPct: number`
   (clamped to 26–55). Lane-scoped state uses a composite
-  `projectRoot::laneId` key. The payload is version 2: its one-shot migration
-  starts the Status-mode Settled section collapsed without re-collapsing a
-  section the user expands later. Per-lane quiet tails use
+  `projectRoot::laneId` key. The payload is version 3 and also owns the Lanes
+  tab's filter, pinned lane ids, and expanded lane id so those controls survive
+  route/project remounts. Its version-2 one-shot migration is gated by the
+  dedicated settled-collapse version, not by the current schema version, so
+  later additive bumps cannot re-collapse a section the user expanded.
+  Mounted project stores persist scoped read-modify-write deltas and hydrate
+  their own project key directly from storage; they never republish a stale
+  whole-map snapshot from another project surface. `refreshLanes` prunes
+  lane-scoped records only after a non-empty authoritative lane list arrives,
+  and only for its own project key. `AppShell`/`TopBar` callers above the
+  per-project provider route writes through the live project-store registry.
+  Per-lane quiet tails use
   `settled-open:<laneId>` and `snoozed-open:<laneId>` markers and also start
-  collapsed.
+  collapsed; a fully quiet lane uses the equivalent inverted
+  `lane-open:<laneId>` marker. Deeplink filters/grouping are transient framing
+  and do not overwrite the persisted base.
 
 ## IPC surface summary
 

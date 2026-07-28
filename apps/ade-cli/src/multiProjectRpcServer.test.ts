@@ -16,6 +16,7 @@ import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import { JsonRpcErrorCode } from "./jsonrpc";
 
 const originalAdeHome = process.env.ADE_HOME;
 let isolatedAdeHome = "";
@@ -1695,9 +1696,25 @@ describe("multi-project RPC server", () => {
             args: { sessionId: "chat-2", note: "Cross-session write" },
           },
         },
-      }) as { ok?: boolean; error?: { message?: string } };
+      }) as {
+        ok?: boolean;
+        error?: { code?: number; message?: string; data?: Record<string, unknown> };
+      };
       expect(denied.ok).toBe(false);
-      expect(denied.error?.message).toContain("Unsupported chat method");
+      // A scope denial must not masquerade as a missing capability: it names the
+      // boundary and both sessions, and never reuses the "Unsupported chat
+      // method" wording that clients match to detect an old host.
+      expect(denied.error?.code).toBe(JsonRpcErrorCode.policyDenied);
+      expect(denied.error?.data).toMatchObject({
+        kind: "session_scope_denied",
+        callerSessionId: "chat-1",
+        requestedSessionId: "chat-2",
+        alternativeAction: "chat.messageSession",
+      });
+      expect(denied.error?.message).toContain("is not permitted for this caller");
+      expect(denied.error?.message).toContain("chat-1");
+      expect(denied.error?.message).toContain("chat-2");
+      expect(denied.error?.message).not.toContain("Unsupported chat method");
       expect(setStatusNote).not.toHaveBeenCalledWith("chat-2", "Cross-session write");
       handler.dispose();
     } finally {

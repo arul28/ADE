@@ -8,6 +8,7 @@ import {
   type ExternalSessionSummary,
 } from "./importSessions/contract";
 import {
+  createDefaultWorkProjectViewState,
   selectActiveProjectStateKey,
   selectActiveProjectRoot,
   useAppStore,
@@ -43,29 +44,7 @@ import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
 
-const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
-  openItemIds: [],
-  activeItemId: null,
-  selectedItemId: null,
-  gridSets: [],
-  activeGridSetId: null,
-  draftKind: "chat",
-  orchestratorEnabled: false,
-  draftLaneId: null,
-  draftMachineId: null,
-  laneFilter: "all",
-  search: "",
-  sessionListOrganization: "by-lane",
-  workCollapsedLaneIds: [],
-  workCollapsedSectionIds: ["status:settled"],
-  workCollapsedTabGroupIds: [],
-  workFocusSessionsHidden: false,
-  workSidebarOpen: false,
-  workSidebarTab: "git",
-  workSidebarWidthPct: 36,
-  laneSessionOrder: {},
-  pinnedSessionIds: [],
-};
+const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = createDefaultWorkProjectViewState();
 
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 /** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
@@ -503,10 +482,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     projectRootRef.current = projectRoot;
   }, [projectRoot]);
 
+  /**
+   * A `?laneId=`/`?status=` deeplink retargets the view for one navigation. It
+   * must not be written to the persisted view state: now that grouping and
+   * collapse survive tab switches, persisting it would mean a single
+   * notification tap permanently replaced the grouping the user chose. Held as
+   * a transient layer over the persisted state instead, dropped as soon as the
+   * user touches the view themselves or leaves Work.
+   */
+  const [deeplinkViewOverride, setDeeplinkViewOverride] = useState<{
+    laneFilter: string | null;
+    sessionListOrganization: WorkSessionListOrganization | null;
+    expandSectionId: string | null;
+  } | null>(null);
+
   const projectViewState = useMemo(() => {
-    if (!projectStateKey) return DEFAULT_PROJECT_WORK_STATE;
-    return workViewByProject[projectStateKey] ?? DEFAULT_PROJECT_WORK_STATE;
-  }, [projectStateKey, workViewByProject]);
+    const persisted = projectStateKey
+      ? workViewByProject[projectStateKey] ?? DEFAULT_PROJECT_WORK_STATE
+      : DEFAULT_PROJECT_WORK_STATE;
+    if (!deeplinkViewOverride) return persisted;
+    return {
+      ...persisted,
+      laneFilter: deeplinkViewOverride.laneFilter ?? persisted.laneFilter,
+      sessionListOrganization:
+        deeplinkViewOverride.sessionListOrganization ?? persisted.sessionListOrganization,
+      workCollapsedSectionIds: deeplinkViewOverride.expandSectionId
+        ? (persisted.workCollapsedSectionIds ?? []).filter(
+          (sectionId) => sectionId !== deeplinkViewOverride.expandSectionId,
+        )
+        : persisted.workCollapsedSectionIds,
+    };
+  }, [deeplinkViewOverride, projectStateKey, workViewByProject]);
 
   const setProjectViewState = useCallback(
     (
@@ -519,6 +525,21 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     },
     [projectStateKey, setWorkViewState],
   );
+
+  /**
+   * Re-asserts the user's own view over a deeplink's temporary framing. Called
+   * from the setters for the fields the override shadows — not from every
+   * `setProjectViewState`, since opening a tab or focusing a session writes
+   * unrelated fields and must not cancel the navigation the user just followed.
+   */
+  const clearDeeplinkViewOverride = useCallback(() => {
+    setDeeplinkViewOverride((prev) => (prev ? null : prev));
+  }, []);
+
+  // Leaving Work ends the deeplink's navigation context.
+  useEffect(() => {
+    if (!isWorkRoute) setDeeplinkViewOverride(null);
+  }, [isWorkRoute]);
 
   const openItemIds = projectViewState.openItemIds;
   const activeItemId = projectViewState.activeItemId;
@@ -664,28 +685,33 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const setFilterLaneId = useCallback(
     (laneId: string) => {
+      clearDeeplinkViewOverride();
       setProjectViewState({ laneFilter: laneId || "all" });
     },
-    [setProjectViewState],
+    [clearDeeplinkViewOverride, setProjectViewState],
   );
 
   const setSessionListOrganization = useCallback(
     (org: WorkSessionListOrganization) => {
+      clearDeeplinkViewOverride();
       setProjectViewState({ sessionListOrganization: org });
     },
-    [setProjectViewState],
+    [clearDeeplinkViewOverride, setProjectViewState],
   );
 
   const makeCollapsedToggle = useCallback(
     (key: "workCollapsedLaneIds" | "workCollapsedTabGroupIds" | "workCollapsedSectionIds") =>
-      (itemId: string) => {
+      (itemId: string, options?: { preserveDeeplink?: boolean }) => {
+        if (key === "workCollapsedSectionIds" && !options?.preserveDeeplink) {
+          clearDeeplinkViewOverride();
+        }
         setProjectViewState((prev) => {
           const cur = prev[key] ?? [];
           const has = cur.includes(itemId);
           return { ...prev, [key]: has ? cur.filter((id) => id !== itemId) : [...cur, itemId] };
         });
       },
-    [setProjectViewState],
+    [clearDeeplinkViewOverride, setProjectViewState],
   );
 
   const toggleWorkLaneCollapsed = useMemo(
@@ -1216,24 +1242,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     } else {
       partiallyAppliedUrlFilterKeyRef.current = urlKey;
     }
-    setProjectViewState((prev) => {
-      const shouldApplyStatus = Boolean(status && !wasPartiallyApplied);
-      const targetSectionId = status ? statusSectionId(status) : null;
-      return {
-        ...prev,
-        laneFilter: laneExists ? laneParam : prev.laneFilter,
-        // Status hints are navigation, not an invisible filter: show the
-        // complete Status grouping and expand the requested section.
-        sessionListOrganization: shouldApplyStatus
-          ? "all-lanes-by-status"
-          : prev.sessionListOrganization,
-        workCollapsedSectionIds: shouldApplyStatus && targetSectionId
-          ? (prev.workCollapsedSectionIds ?? []).filter(
-            (sectionId) => sectionId !== targetSectionId,
-          )
-          : prev.workCollapsedSectionIds,
-      };
-    });
+    const shouldApplyStatus = Boolean(status && !wasPartiallyApplied);
+    const targetSectionId = status ? statusSectionId(status) : null;
+    setDeeplinkViewOverride((prev) => ({
+      laneFilter: laneExists ? laneParam : prev?.laneFilter ?? null,
+      // Status hints are navigation, not an invisible filter: show the
+      // complete Status grouping and expand the requested section.
+      sessionListOrganization: shouldApplyStatus
+        ? "all-lanes-by-status"
+        : prev?.sessionListOrganization ?? null,
+      expandSectionId: shouldApplyStatus && targetSectionId
+        ? targetSectionId
+        : prev?.expandSectionId ?? null,
+    }));
     if (laneDeterminable) stripUrlFilterParams();
   }, [isWorkRoute, lanes, searchParams, sessions, setProjectViewState, stripUrlFilterParams]);
 

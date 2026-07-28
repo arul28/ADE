@@ -97,7 +97,8 @@ vi.mock("react-router-dom", () => ({
   useSearchParams: useSearchParamsMock,
 }));
 
-vi.mock("../../state/appStore", () => {
+vi.mock("../../state/appStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/appStore")>();
   const useAppStore = vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
     return selector(fakeAppStoreState);
   }) as unknown as {
@@ -132,6 +133,7 @@ vi.mock("../../state/appStore", () => {
     return selectActiveProjectRoot(state);
   };
   return {
+    createDefaultWorkProjectViewState: actual.createDefaultWorkProjectViewState,
     selectActiveProjectRoot,
     selectActiveProjectStateKey,
     useAppStore,
@@ -1274,13 +1276,20 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       Object.assign(workState, resolved);
     });
 
-    renderHook(() => useWorkSessions());
+    const { result } = renderHook(() => useWorkSessions());
 
+    // The deeplink retargets the *view*, transiently. It must not be written to
+    // the persisted project state, which now survives tab switches.
     await waitFor(() => {
-      expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
+      expect(result.current.filterLaneId).toBe("lane-1");
+      expect(result.current.sessionListOrganization).toBe("all-lanes-by-status");
     });
-    expect(workState.workCollapsedSectionIds).toEqual(["status:settled"]);
+    expect(workState.laneFilter).toBe("all");
+    expect(workState.sessionListOrganization).toBe("by-lane");
+    // The requested section reads as expanded, but the user's saved collapse set
+    // is untouched, so it re-collapses once this navigation is over.
+    expect(result.current.workCollapsedSectionIds).not.toContain("status:running");
+    expect(workState.workCollapsedSectionIds).toEqual(["status:running", "status:settled"]);
 
     // The stale session never existed, so focusSession must not fire for it.
     expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
@@ -1410,14 +1419,13 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       Object.assign(workState, resolved);
     });
 
-    const { rerender } = renderHook(() => useWorkSessions());
+    const { result, rerender } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
+      expect(result.current.filterLaneId).toBe("lane-1");
+      expect(result.current.sessionListOrganization).toBe("all-lanes-by-status");
     });
 
-    workState.laneFilter = "all";
     (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
     routerLocation.pathname = "/files";
     currentSearchParams = new URLSearchParams("tab=preview");
@@ -1431,8 +1439,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       rerender();
     });
 
+    // Back on Work with the same params: the deeplink does not re-fire, and the
+    // user's own view state is what shows.
+    expect(result.current.filterLaneId).toBe("all");
+    expect(result.current.sessionListOrganization).toBe("by-time");
     expect(workState.laneFilter).toBe("all");
-    expect(workState.sessionListOrganization).toBe("by-time");
   });
 
   it("does not keep reapplying a partially applied URL status while lanes are loading", async () => {
@@ -1491,19 +1502,22 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     const { result, rerender } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
+      expect(result.current.sessionListOrganization).toBe("all-lanes-by-status");
     });
-    expect(workState.laneFilter).toBe("all");
+    expect(result.current.filterLaneId).toBe("all");
 
-    (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
+    // The user picks their own grouping, which drops the deeplink's framing.
+    act(() => {
+      result.current.setSessionListOrganization("by-time");
+    });
     listSessionsCachedMock.mockResolvedValue([{ ...session, id: "session-3" }]);
 
     await act(async () => {
       await result.current.refresh({ force: true });
     });
 
-    expect(workState.sessionListOrganization).toBe("by-time");
-    expect(workState.laneFilter).toBe("all");
+    expect(result.current.sessionListOrganization).toBe("by-time");
+    expect(result.current.filterLaneId).toBe("all");
 
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -1514,10 +1528,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       rerender();
     });
 
+    // Lanes arriving completes the lane half of the deeplink without re-applying
+    // the status half over the grouping the user just chose.
     await waitFor(() => {
-      expect(workState.laneFilter).toBe("lane-1");
+      expect(result.current.filterLaneId).toBe("lane-1");
     });
-    expect(workState.sessionListOrganization).toBe("by-time");
+    expect(result.current.sessionListOrganization).toBe("by-time");
   });
 
   it("keeps every status visible without an implicit status filter", async () => {
@@ -1759,11 +1775,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       Object.assign(workState, resolved);
     });
 
-    const { rerender } = renderHook(() => useWorkSessions());
+    const { result, rerender } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
+      expect(result.current.filterLaneId).toBe("lane-1");
+      expect(result.current.sessionListOrganization).toBe("all-lanes-by-status");
     });
 
     currentSearchParams = new URLSearchParams("sessionId=session-2");
@@ -1771,17 +1787,20 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       rerender();
     });
 
-    workState.laneFilter = "all";
-    (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
+    act(() => {
+      result.current.setSessionListOrganization("by-time");
+    });
     currentSearchParams = deepLinkParams;
     act(() => {
       rerender();
     });
 
     await waitFor(() => {
-      expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
+      expect(result.current.filterLaneId).toBe("lane-1");
+      expect(result.current.sessionListOrganization).toBe("all-lanes-by-status");
     });
+    // Still transient — the user's saved grouping is untouched underneath.
+    expect(workState.sessionListOrganization).toBe("by-time");
   });
 
   it("refreshes against the newly active project before pruning that project's saved tabs", async () => {

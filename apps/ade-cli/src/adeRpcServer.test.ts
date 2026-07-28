@@ -1012,49 +1012,49 @@ describe("adeRpcServer", () => {
       id: 3,
       method: "pty.list",
       params: { args: { laneId: peer.laneId } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 4,
       method: "pty.create",
       params: { args: { laneId: peer.laneId, title: "Peer", cols: 120, rows: 40 } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 5,
       method: "pty.sendToSession",
       params: { args: { sessionId: peer.id, text: "continue" } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 6,
       method: "pty.resumeSession",
       params: { args: { sessionId: peer.id } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 7,
       method: "pty.write",
       params: { args: { ptyId: peer.ptyId, data: "x" } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 8,
       method: "pty.resize",
       params: { args: { ptyId: peer.ptyId, cols: 100, rows: 30 } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     await expect(handler({
       jsonrpc: "2.0",
       id: 9,
       method: "pty.dispose",
       params: { args: { ptyId: peer.ptyId, sessionId: owned.id } },
-    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     expect(runtime.ptyService.create).not.toHaveBeenCalled();
     expect(runtime.ptyService.sendToSession).not.toHaveBeenCalled();
@@ -3553,6 +3553,25 @@ describe("adeRpcServer", () => {
     });
     expect(deniedChatRead.isError).toBe(true);
     expect(fixture.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+    // The denial must read as "you may not aim this at that session", not as
+    // "this host cannot do that": `adeApi` matches the "Unsupported chat
+    // method" wording to detect an OLD host and silently falls back to a legacy
+    // path, so reusing it here makes a permission error trigger version-skew
+    // handling. It must also name both sessions and the unscoped alternative,
+    // so the caller can correct the target instead of giving up.
+    expect(deniedChatRead.error?.code).toBe(JsonRpcErrorCode.policyDenied);
+    expect(deniedChatRead.error?.data).toEqual({
+      kind: "session_scope_denied",
+      method: "run_ade_action:chat.readTranscript",
+      callerSessionId: "chat-1",
+      requestedSessionId: "chat-2",
+      alternativeAction: "chat.messageSession",
+    });
+    expect(deniedChatRead.error?.message).not.toContain("Unsupported chat method");
+    expect(deniedChatRead.error?.message).toContain("is not permitted for this caller");
+    expect(deniedChatRead.error?.message).toContain("chat-1");
+    expect(deniedChatRead.error?.message).toContain("chat-2");
+    expect(deniedChatRead.error?.message).toContain("chat.messageSession");
 
     const deniedChatHistory = await callTool(handler, "run_ade_action", {
       domain: "chat",

@@ -892,6 +892,192 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   // grouped output, so it has to be told when to re-derive. These cover the
   // scheduling input for that single wait.
 
+  // MARK: - Quiet lane sections
+
+  func testLaneGroupIsQuietOnlyWhenEverySessionIsSettled() {
+    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    settled.id = "s-settled"
+    settled.settledAt = iso(now.addingTimeInterval(-120))
+    var alsoSettled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    alsoSettled.id = "s-settled-2"
+    alsoSettled.settledAt = iso(now.addingTimeInterval(-60))
+
+    let lane = makeLane(id: "lane-1", name: "Lane 1")
+    let quietGroups = workSessionGroups(
+      organization: .byLane,
+      sessions: [settled, alsoSettled],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertEqual(quietGroups.map(\.id), ["lane:lane-1"])
+    XCTAssertTrue(quietGroups[0].isQuiet)
+    XCTAssertEqual(quietGroups[0].quietOpenSectionId, "lane-open:lane-1")
+
+    // One live row is enough to keep the whole lane loud.
+    var running = makeSession(status: "running", runtimeState: "running", toolType: "claude-chat")
+    running.id = "s-running"
+    let loudGroups = workSessionGroups(
+      organization: .byLane,
+      sessions: [settled, running],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertEqual(loudGroups.map(\.id), ["lane:lane-1"])
+    XCTAssertFalse(loudGroups[0].isQuiet)
+  }
+
+  func testLaneGroupWithAnAttentionSessionIsNeverQuiet() {
+    // A row blocked on the user must never be folded behind a thin header.
+    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    settled.id = "s-settled"
+    settled.settledAt = iso(now.addingTimeInterval(-120))
+    var blocked = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "claude-chat",
+      pendingInputItemId: "ask-1"
+    )
+    blocked.id = "s-blocked"
+
+    let groups = workSessionGroups(
+      organization: .byLane,
+      sessions: [settled, blocked],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
+      now: now
+    )
+
+    XCTAssertEqual(groups.count, 1)
+    XCTAssertFalse(groups[0].isQuiet)
+  }
+
+  func testFilteredLaneGroupUsesFullRosterForQuietness() {
+    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    settled.id = "s-visible-settled"
+    settled.settledAt = iso(now.addingTimeInterval(-120))
+    var hiddenNeedsYou = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "claude-chat",
+      pendingInputItemId: "approval-1"
+    )
+    hiddenNeedsYou.id = "s-hidden-needs-you"
+
+    let groups = workSessionGroups(
+      organization: .byLane,
+      sessions: [settled],
+      quietReferenceSessions: [settled, hiddenNeedsYou],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
+      now: now
+    )
+
+    XCTAssertEqual(groups.count, 1)
+    XCTAssertEqual(groups[0].sessions.map(\.id), [settled.id])
+    XCTAssertFalse(groups[0].isQuiet)
+  }
+
+  func testStatusAndTimeGroupsAreNeverQuiet() {
+    // Quiet is a lane-folder affordance; status/time sections span lanes and
+    // keep their normal headers.
+    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    settled.id = "s-settled"
+    settled.settledAt = iso(now.addingTimeInterval(-120))
+
+    for organization in [WorkSessionOrganization.byStatus, .byTime] {
+      let groups = workSessionGroups(
+        organization: organization,
+        sessions: [settled],
+        chatSummaries: [:],
+        archivedSessionIds: [],
+        orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
+        now: now
+      )
+      XCTAssertFalse(groups.contains(where: \.isQuiet), "\(organization) produced a quiet group")
+    }
+  }
+
+  // MARK: - Scoped Work view state
+
+  func testWorkViewStateScopeKeyIsPerProjectAndHost() {
+    XCTAssertNil(WorkViewStateStore.scopeKey(projectId: nil, hostIdentity: "host-a"))
+    XCTAssertNil(WorkViewStateStore.scopeKey(projectId: "  ", hostIdentity: "host-a"))
+    XCTAssertEqual(WorkViewStateStore.scopeKey(projectId: "proj", hostIdentity: nil), "proj")
+    // The same project id on two machines is two different views.
+    XCTAssertNotEqual(
+      WorkViewStateStore.scopeKey(projectId: "proj", hostIdentity: "host-a"),
+      WorkViewStateStore.scopeKey(projectId: "proj", hostIdentity: "host-b")
+    )
+  }
+
+  func testWorkViewStateRoundTripsPerScopeAndDefaultsWhenAbsent() {
+    let scopeA = WorkViewStateStore.scopeKey(projectId: "proj-a", hostIdentity: "host-1")
+    let scopeB = WorkViewStateStore.scopeKey(projectId: "proj-b", hostIdentity: "host-1")
+    var stateA = WorkProjectViewState.empty
+    stateA.laneFilter = "lane-7"
+    stateA.collapsedSectionIds = "lane:lane-7,status:settled"
+    stateA.organization = WorkSessionOrganization.byStatus.rawValue
+
+    WorkViewStateStore.save(stateA, scope: scopeA)
+
+    XCTAssertEqual(WorkViewStateStore.load(scope: scopeA), stateA)
+    // Collapse ids are `lane:<laneId>`, so leaking them across projects could
+    // collapse an unrelated project's lane. A untouched scope stays default.
+    XCTAssertEqual(WorkViewStateStore.load(scope: scopeB), .empty)
+    XCTAssertEqual(WorkViewStateStore.load(scope: nil), .empty)
+
+    // A nil scope must never clobber a real project's record.
+    WorkViewStateStore.save(stateA, scope: nil)
+    XCTAssertEqual(WorkViewStateStore.load(scope: scopeA), stateA)
+  }
+
+  func testEndingDeeplinkFramingRestoresUnrelatedSavedViewState() {
+    let saved = WorkProjectViewState(
+      searchText: "saved search",
+      laneFilter: "lane-7",
+      statusFilter: WorkSessionStatusFilter.ended.rawValue,
+      organization: WorkSessionOrganization.byStatus.rawValue,
+      collapsedSectionIds: "lane:lane-7,status:settled"
+    )
+    let transient = WorkProjectViewState(
+      searchText: "",
+      laneFilter: "all",
+      statusFilter: WorkSessionStatusFilter.all.rawValue,
+      organization: WorkSessionOrganization.byLane.rawValue,
+      collapsedSectionIds: ""
+    )
+
+    var restored = workViewStateRestoringUserControl(savedBase: saved, current: transient)
+    restored.statusFilter = WorkSessionStatusFilter.all.rawValue
+
+    XCTAssertEqual(restored.searchText, saved.searchText)
+    XCTAssertEqual(restored.organization, saved.organization)
+    XCTAssertEqual(restored.collapsedSectionIds, saved.collapsedSectionIds)
+    XCTAssertEqual(restored.statusFilter, WorkSessionStatusFilter.all.rawValue)
+  }
+
+  func testLaneDeeplinkFramingExpandsOrdinaryAndQuietLaneGroups() {
+    let saved: Set<String> = [
+      "lane:lane-7",
+      "lane:other",
+      "status:settled",
+    ]
+
+    let framed = workCollapsedSectionIdsFramingLane(saved, laneId: "lane-7")
+
+    XCTAssertFalse(framed.contains("lane:lane-7"), "ordinary lane group must be expanded")
+    XCTAssertTrue(framed.contains("lane-open:lane-7"), "quiet lane group must be expanded")
+    XCTAssertTrue(framed.contains("lane:other"), "unrelated lane state must be preserved")
+    XCTAssertTrue(framed.contains("status:settled"), "unrelated section state must be preserved")
+    XCTAssertTrue(saved.contains("lane:lane-7"), "transient framing must not mutate the saved base")
+  }
+
   func testGroupsRefileASnoozedRowOnceItsDeadlineLapses() {
     var calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
     calm.id = "s-calm"

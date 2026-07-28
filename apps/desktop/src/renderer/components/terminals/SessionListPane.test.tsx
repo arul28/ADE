@@ -641,6 +641,14 @@ describe("SessionListPane", () => {
   });
 
   it("keeps settled lane tails reachable but collapsed by default", () => {
+    // The lane keeps one active session so it stays a normal lane: an all-quiet
+    // lane collapses to the thin header instead and hides its tails entirely.
+    const active = makeSession({
+      id: "session-active-keeps-lane-loud",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Active lane work",
+    });
     const settled = makeSession({
       id: "session-settled-tail",
       laneId: "lane-known",
@@ -653,10 +661,10 @@ describe("SessionListPane", () => {
 
     const toggleWorkSectionCollapsed = vi.fn();
     renderPane({
-      runningFiltered: [],
+      runningFiltered: [active],
       settledFiltered: [settled],
-      allSessionsUnfiltered: [settled],
-      sessionsGroupedByLane: new Map([[settled.laneId, [settled]]]),
+      allSessionsUnfiltered: [active, settled],
+      sessionsGroupedByLane: new Map([[settled.laneId, [active, settled]]]),
       toggleWorkSectionCollapsed,
     });
 
@@ -666,6 +674,163 @@ describe("SessionListPane", () => {
 
     fireEvent.click(tailButton);
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("settled-open:lane-known");
+  });
+
+  it("collapses an all-quiet lane to the thin header with inline counts", () => {
+    const snoozed = makeSession({
+      id: "session-snoozed-quiet",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Snoozed lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      snoozedUntil: "2099-01-01T00:00:00.000Z",
+    });
+    const settled = makeSession({
+      id: "session-settled-quiet",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Finished lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    const toggleWorkSectionCollapsed = vi.fn();
+    renderPane({
+      runningFiltered: [],
+      snoozedFiltered: [snoozed],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [snoozed, settled],
+      sessionsGroupedByLane: new Map([["lane-known", [snoozed, settled]]]),
+      toggleWorkSectionCollapsed,
+    });
+
+    const laneHeader = document.querySelector('[data-section-id="lane-known"]');
+    expect(laneHeader?.getAttribute("data-lane-quiet")).toBe("true");
+    // The quiet tails are gone: nothing but the one thin row.
+    expect(screen.queryByRole("button", { name: /1 settled/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /1 snoozed/i })).toBeNull();
+    expect(screen.queryByText("Finished lane work")).toBeNull();
+    expect(screen.queryByText("Snoozed lane work")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Known Lane \(2 quiet\)/i }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("lane-open:lane-known");
+  });
+
+  it("renders the full lane header once a quiet lane is explicitly expanded", () => {
+    const settled = makeSession({
+      id: "session-settled-expanded",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Finished lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [settled],
+      sessionsGroupedByLane: new Map([["lane-known", [settled]]]),
+      workCollapsedSectionIds: ["lane-open:lane-known"],
+    });
+
+    const laneHeader = document.querySelector('[data-section-id="lane-known"]');
+    expect(laneHeader?.getAttribute("data-lane-quiet")).toBeNull();
+    expect(screen.getByRole("button", { name: /1 settled/i })).toBeTruthy();
+  });
+
+  it("does not treat a lane with an attention session as quiet", () => {
+    // `isSessionFiledAsSnoozed` yields to needs_you upstream, so a lane holding
+    // something that wants the user must never fold into the thin header.
+    const awaiting = makeSession({
+      id: "session-awaiting-quiet-check",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Needs your input",
+    });
+    const settled = makeSession({
+      id: "session-settled-quiet-check",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Finished lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      awaitingInputFiltered: [awaiting],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [awaiting, settled],
+      sessionsGroupedByLane: new Map([["lane-known", [awaiting, settled]]]),
+    });
+
+    const laneHeader = document.querySelector('[data-section-id="lane-known"]');
+    expect(laneHeader?.getAttribute("data-lane-quiet")).toBeNull();
+    expect(screen.getByText("Needs your input")).toBeTruthy();
+  });
+
+  it("does not quiet a lane when search hides its needs-you session", () => {
+    const hiddenNeedsYou = makeSession({
+      id: "session-hidden-needs-you",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Hidden approval",
+      pendingInputItemId: "approval-1",
+    });
+    const visibleSettled = makeSession({
+      id: "session-visible-settled",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Matching settled result",
+      status: "completed",
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      settledFiltered: [visibleSettled],
+      allSessionsUnfiltered: [hiddenNeedsYou, visibleSettled],
+      q: "matching",
+      sessionsGroupedByLane: new Map([["lane-known", [visibleSettled]]]),
+    });
+
+    const laneHeader = document.querySelector('[data-section-id="lane-known"]');
+    expect(laneHeader?.getAttribute("data-lane-quiet")).toBeNull();
+    expect(screen.getByRole("button", { name: /1 settled/i })).toBeTruthy();
+    expect(screen.queryByText("Hidden approval")).toBeNull();
+  });
+
+  it("removes a stale quiet-open marker without claiming a user section toggle", async () => {
+    const active = makeSession({
+      id: "session-active-after-quiet",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Work resumed",
+    });
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    renderPane({
+      runningFiltered: [active],
+      allSessionsUnfiltered: [active],
+      workCollapsedSectionIds: ["lane-open:lane-known"],
+      sessionsGroupedByLane: new Map([["lane-known", [active]]]),
+      toggleWorkSectionCollapsed,
+    });
+
+    await waitFor(() => {
+      expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    });
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+      "lane-open:lane-known",
+      { preserveDeeplink: true },
+    );
+    expect(screen.getByText("Work resumed")).toBeTruthy();
   });
 
   it("bulk settles selected sessions through the preload surface", async () => {

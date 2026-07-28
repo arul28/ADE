@@ -173,12 +173,18 @@ struct AgentRunsPresentation {
             self.primaryPr = sortedPrs.first
         }
 
-        let remainingRuns = sorted.filter { $0.id != self.primary?.id }
-        self.secondaryRuns = Array(remainingRuns.prefix(2))
-        let remainingSlots = max(0, 2 - self.secondaryRuns.count)
+        // Read the chosen primaries through locals: a closure that touches
+        // `self` inside init captures every stored property, including the ones
+        // assigned on the next line, which the compiler rejects.
+        let primaryRunId = self.primary?.id
+        let primaryPrId = self.primaryPr?.id
+        let remainingRuns = sorted.filter { $0.id != primaryRunId }
+        let resolvedSecondaryRuns = Array(remainingRuns.prefix(2))
+        self.secondaryRuns = resolvedSecondaryRuns
+        let remainingSlots = max(0, 2 - resolvedSecondaryRuns.count)
         self.secondaryPrs = Array(
             sortedPrs
-                .filter { $0.id != self.primaryPr?.id }
+                .filter { $0.id != primaryPrId }
                 .prefix(remainingSlots)
         )
         let represented = (self.primary == nil && self.primaryPr == nil ? 0 : 1)
