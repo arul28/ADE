@@ -11724,6 +11724,7 @@ export function AgentChatPane({
             draft={draft}
             lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}
+            chatRuntimePin={chatRuntimePin}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}

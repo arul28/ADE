@@ -344,6 +344,65 @@ describe("AgentChatComposer", () => {
     expect(props.onDraftChange).toHaveBeenCalledWith("");
   });
 
+  it("reads a stashed source image through the selected chat runtime pin", async () => {
+    const chatRuntimePin = {
+      kind: "remote" as const,
+      key: "remote:source-machine:source-project",
+      targetId: "source-machine",
+      runtimeName: "Source Mac",
+      projectId: "source-project",
+      rootPath: "/remote/source-project",
+      displayName: "Source project",
+    };
+    const sourceAttachment = {
+      path: "/remote/source-project/design.png",
+      type: "image" as const,
+    };
+    const storedAttachment = {
+      path: "/bound-project/.ade/attachments/design.png",
+      type: "image" as const,
+    };
+    const getImageDataUrl = vi.fn().mockResolvedValue({
+      dataUrl: "data:image/png;base64,cHJldmlldw==",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({
+      path: storedAttachment.path,
+    });
+    (window as any).ade = {
+      agentChat: {
+        promptStashes: {
+          list: vi.fn().mockResolvedValue([]),
+          create: vi.fn().mockResolvedValue({
+            id: "stash-image",
+            text: "Need a steer message",
+            provider: "codex",
+            modelId: "openai/gpt-5.4",
+            attachments: [storedAttachment],
+            createdAt: "2026-07-28T12:00:00.000Z",
+          }),
+          delete: vi.fn().mockResolvedValue(true),
+        },
+        getImageDataUrl,
+        saveTempAttachment,
+      },
+    };
+
+    renderComposer({
+      attachments: [sourceAttachment],
+      chatRuntimePin,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith(
+      sourceAttachment.path,
+      chatRuntimePin,
+    ));
+    expect(saveTempAttachment).toHaveBeenCalledWith({
+      data: "cHJldmlldw==",
+      filename: "design.png",
+    });
+  });
+
   it("moves a queued steer message back to the composer for editing", () => {
     const onEditSteer = vi.fn();
     const attachments = [{ path: "docs/queued.md", type: "file" as const }];

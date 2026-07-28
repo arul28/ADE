@@ -22,6 +22,33 @@ function createLogger() {
   } as const;
 }
 
+function insertSyncedPromptStash(
+  db: AdeDb,
+  entry: {
+    id: string;
+    createdAt: string;
+    attachmentPath?: string;
+  },
+): void {
+  db.run(
+    `
+      insert into prompt_stashes(
+        id, text, attachments_json, attachment_origin_site_id, provider, model_id, created_at
+      )
+      values (?, ?, ?, ?, null, null, ?)
+    `,
+    [
+      entry.id,
+      entry.id,
+      JSON.stringify(entry.attachmentPath
+        ? [{ path: entry.attachmentPath, type: "image" }]
+        : []),
+      entry.attachmentPath ? db.sync.getSiteId() : null,
+      entry.createdAt,
+    ],
+  );
+}
+
 describe("promptStashService", () => {
   let root: string;
   let db: AdeDb;
@@ -158,6 +185,53 @@ describe("promptStashService", () => {
     expect(listed.map((entry) => entry.id)).not.toContain(created[0]?.id);
     expect(listed.map((entry) => entry.id)).not.toContain(created[1]?.id);
     expect(listed.map((entry) => entry.id)).not.toContain(created[2]?.id);
+  });
+
+  it("prunes synchronized overflow before returning a bounded list", () => {
+    const olderTimestamp = "2026-07-28T12:00:00.000Z";
+    const newerTimestamp = "2026-07-28T12:00:01.000Z";
+    for (let index = 0; index < MAX_PROMPT_STASHES + 3; index += 1) {
+      insertSyncedPromptStash(db, {
+        id: `synced-${String(index).padStart(2, "0")}`,
+        createdAt: index === 0 ? olderTimestamp : newerTimestamp,
+      });
+    }
+
+    const listed = listPromptStashes(db, 5);
+    const retainedIds = db.all<{ id: string }>(
+      "select id from prompt_stashes order by created_at desc, id desc",
+    ).map((row) => row.id);
+
+    expect(listed.map((entry) => entry.id)).toEqual(retainedIds.slice(0, 5));
+    expect(retainedIds).toHaveLength(MAX_PROMPT_STASHES);
+    expect(retainedIds).not.toContain("synced-00");
+    expect(retainedIds).not.toContain("synced-01");
+    expect(retainedIds).not.toContain("synced-02");
+  });
+
+  it("prunes synchronized overflow before protecting live attachment paths", () => {
+    const inserted = Array.from(
+      { length: MAX_PROMPT_STASHES + 3 },
+      (_, index) => ({
+        id: `synced-image-${String(index).padStart(2, "0")}`,
+        createdAt: new Date(Date.parse("2026-07-28T12:00:00.000Z") + index).toISOString(),
+        attachmentPath: path.join(root, ".ade", "attachments", `image-${index}.png`),
+      }),
+    );
+    inserted.forEach((entry) => insertSyncedPromptStash(db, entry));
+
+    const protectedPaths = listPromptStashAttachmentPaths(db);
+    const retainedIds = db.all<{ id: string }>(
+      "select id from prompt_stashes order by created_at desc, id desc",
+    ).map((row) => row.id);
+
+    expect(retainedIds).toHaveLength(MAX_PROMPT_STASHES);
+    expect(protectedPaths).toEqual(new Set(
+      inserted.slice(-MAX_PROMPT_STASHES).map((entry) => entry.attachmentPath),
+    ));
+    expect(protectedPaths.has(inserted[0]!.attachmentPath)).toBe(false);
+    expect(protectedPaths.has(inserted[1]!.attachmentPath)).toBe(false);
+    expect(protectedPaths.has(inserted[2]!.attachmentPath)).toBe(false);
   });
 
   it("deletes atomically and reports already-consumed stashes", () => {

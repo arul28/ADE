@@ -17135,6 +17135,7 @@ describe("createAgentChatService", () => {
         db: {
           getJson: vi.fn(),
           setJson: vi.fn(),
+          run: vi.fn(),
           get: vi.fn().mockReturnValue({ site_id: "site-a" }),
           all: vi.fn().mockReturnValue([{
             attachments_json: JSON.stringify([{ path: stashedImage, type: "image" }]),

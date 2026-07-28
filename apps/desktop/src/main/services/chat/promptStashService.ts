@@ -135,10 +135,34 @@ function nextCreatedAt(db: AdeDb): string {
   )).toISOString();
 }
 
+type PromptStashRetentionDb = Pick<AdeDb, "run">;
+
+/**
+ * Keep retention convergent when CRR sync delivers rows created by another
+ * runtime. The deterministic created_at/id order matches local creation, and
+ * the single DELETE remains safe on partially converged replicas: adding more
+ * rows cannot promote an entry that was already outside the top N.
+ */
+function prunePromptStashRetention(db: PromptStashRetentionDb): void {
+  db.run(
+    `
+      delete from prompt_stashes
+      where id in (
+        select id
+        from prompt_stashes
+        order by created_at desc, id desc
+        limit -1 offset ?
+      )
+    `,
+    [MAX_PROMPT_STASHES],
+  );
+}
+
 export function listPromptStashes(
   db: AdeDb,
   limit = MAX_PROMPT_STASHES,
 ): PromptStashEntry[] {
+  prunePromptStashRetention(db);
   const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : MAX_PROMPT_STASHES;
   const safeLimit = Math.max(1, Math.min(MAX_PROMPT_STASHES, normalizedLimit));
   return db.all<PromptStashRow>(
@@ -153,8 +177,9 @@ export function listPromptStashes(
 }
 
 export function listPromptStashAttachmentPaths(
-  db: Pick<AdeDb, "get" | "all"> & Partial<Pick<AdeDb, "sync">>,
+  db: Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
 ): Set<string> {
+  prunePromptStashRetention(db);
   const localSiteId = currentSiteId(db);
   if (!localSiteId) return new Set();
   const rows = db.all<Pick<PromptStashRow, "attachments_json" | "attachment_origin_site_id">>(
@@ -217,18 +242,7 @@ export function createPromptStash(
     ],
   );
 
-  db.run(
-    `
-      delete from prompt_stashes
-      where id in (
-        select id
-        from prompt_stashes
-        order by created_at desc, id desc
-        limit -1 offset ?
-      )
-    `,
-    [MAX_PROMPT_STASHES],
-  );
+  prunePromptStashRetention(db);
   return entry;
 }
 

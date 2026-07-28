@@ -865,7 +865,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPathInEditor, expect.anything());
   });
 
-  it("routes chat image preview reads through the remote runtime for remote project paths", async () => {
+  it("routes chat image preview reads through the bound or explicitly pinned runtime", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",
@@ -874,6 +874,15 @@ describe("preload OAuth bridge", () => {
       projectId: "project-1",
       rootPath: "/remote/project",
       displayName: "Project",
+    };
+    const chatRuntimePin = {
+      kind: "remote",
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      runtimeName: "Remote chat",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Chat project",
     };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
@@ -911,9 +920,9 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.getImageDataUrl("/remote/project/.ade/attachments/image.png"))
-      .resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
-
+    await expect(bridge.agentChat.getImageDataUrl(
+      "/remote/project/.ade/attachments/image.png",
+    )).resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
       projectId: "project-1",
@@ -921,6 +930,23 @@ describe("preload OAuth bridge", () => {
         domain: "chat",
         action: "getImageDataUrl",
         args: { path: "/remote/project/.ade/attachments/image.png" },
+      },
+    });
+    invoke.mockClear();
+
+    await expect(bridge.agentChat.getImageDataUrl(
+      "/remote/chat-project/.ade/attachments/image.png",
+      chatRuntimePin,
+    ))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-2",
+      projectId: "project-2",
+      request: {
+        domain: "chat",
+        action: "getImageDataUrl",
+        args: { path: "/remote/chat-project/.ade/attachments/image.png" },
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());

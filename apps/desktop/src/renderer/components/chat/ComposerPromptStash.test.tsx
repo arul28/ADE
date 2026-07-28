@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, forwardRef, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PromptStashEntry } from "../../../shared/types";
+import type { OpenProjectBinding, PromptStashEntry } from "../../../shared/types";
 import {
   ComposerPromptStash as ProductionComposerPromptStash,
   type ComposerPromptStashHandle,
@@ -187,8 +187,17 @@ describe("ComposerPromptStash", () => {
   });
 
   it("moves image attachments into a stash and restores their thumbnail and attachment", async () => {
+    const chatRuntimePin: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:source-machine:source-project",
+      targetId: "source-machine",
+      runtimeName: "Source Mac",
+      projectId: "source-project",
+      rootPath: "/remote/source-project",
+      displayName: "Source project",
+    };
     const imageAttachment = {
-      path: "/Users/me/Desktop/design.png",
+      path: "/remote/source-project/design.png",
       type: "image" as const,
     };
     const storedImageAttachment = {
@@ -204,13 +213,21 @@ describe("ComposerPromptStash", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({
       path: storedImageAttachment.path,
     });
-    installBridge({ create, saveTempAttachment });
+    const sourceImageRead = vi.fn().mockResolvedValue({
+      dataUrl: "data:image/png;base64,cHJldmlldw==",
+    });
+    installBridge({
+      create,
+      getImageDataUrl: sourceImageRead,
+      saveTempAttachment,
+    });
     const onDraftChange = vi.fn();
     const onRemoveAttachment = vi.fn();
     const saveView = render(
       <ComposerPromptStash
         draft="Use this design"
         attachments={[imageAttachment]}
+        chatRuntimePin={chatRuntimePin}
         active
         buttonVisible
         shortcutLabel="⌘+S"
@@ -230,6 +247,10 @@ describe("ComposerPromptStash", () => {
       data: "cHJldmlldw==",
       filename: "design.png",
     });
+    expect(sourceImageRead).toHaveBeenCalledWith(
+      imageAttachment.path,
+      chatRuntimePin,
+    );
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(onRemoveAttachment).toHaveBeenCalledWith(imageAttachment.path);
     saveView.unmount();
@@ -262,6 +283,46 @@ describe("ComposerPromptStash", () => {
     fireEvent.click(screen.getByRole("button", { name: /Use this design/i }));
     expect(onAddAttachment).toHaveBeenCalledWith(storedImageAttachment);
     await waitFor(() => expect(remove).toHaveBeenCalledWith({ id: imageEntry.id }));
+  });
+
+  it("never falls back to this desktop for an image owned by a pinned remote chat", async () => {
+    const chatRuntimePin: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:source-machine:source-project",
+      targetId: "source-machine",
+      runtimeName: "Source Mac",
+      projectId: "source-project",
+      rootPath: "/remote/source-project",
+      displayName: "Source project",
+    };
+    const runtimeRead = vi.fn().mockRejectedValue(new Error("source runtime unavailable"));
+    installBridge({ getImageDataUrl: runtimeRead });
+    const localRead = vi.fn();
+    (window as any).ade.app = { getImageDataUrl: localRead };
+
+    render(
+      <ComposerPromptStash
+        draft="Keep the remote image"
+        attachments={[{
+          path: "/remote/source-project/design.png",
+          type: "image",
+        }]}
+        chatRuntimePin={chatRuntimePin}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash prompt" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("source runtime unavailable");
+    expect(runtimeRead).toHaveBeenCalledWith(
+      "/remote/source-project/design.png",
+      chatRuntimePin,
+    );
+    expect(localRead).not.toHaveBeenCalled();
   });
 
   it("keeps the original image when an older runtime cannot confirm attachment persistence", async () => {

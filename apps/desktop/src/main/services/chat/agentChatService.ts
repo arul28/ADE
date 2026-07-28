@@ -6579,7 +6579,7 @@ export function createAgentChatService(args: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
-    & Partial<Pick<AdeDb, "get" | "all" | "sync">>
+    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
   ) | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
@@ -42321,8 +42321,9 @@ export function createAgentChatService(args: {
         const protectedAttachmentPaths = promptStashDb
           && typeof promptStashDb.get === "function"
           && typeof promptStashDb.all === "function"
+          && typeof promptStashDb.run === "function"
           ? new Set(Array.from(listPromptStashAttachmentPaths(
-            promptStashDb as Pick<AdeDb, "get" | "all"> & Partial<Pick<AdeDb, "sync">>,
+            promptStashDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
           ), (filePath) => path.resolve(filePath)))
           : new Set<string>();
         const cleanupDir = (dirPath: string) => {

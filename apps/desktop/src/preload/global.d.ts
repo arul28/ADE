@@ -1725,7 +1725,10 @@ declare global {
           },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ path: string }>;
-        getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
+        getImageDataUrl: (
+          path: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
         getEventHistory: (
           args: {

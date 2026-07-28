@@ -21,6 +21,7 @@ import {
   type AgentChatFileRef,
   MAX_PROMPT_STASH_ATTACHMENTS,
   MAX_PROMPT_STASHES,
+  type OpenProjectBinding,
   type PromptStashEntry,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -154,6 +155,7 @@ function StashImageThumbnail({ attachment }: { attachment: AgentChatFileRef }) {
 export type ComposerPromptStashProps = {
   draft: string;
   attachments?: AgentChatFileRef[];
+  chatRuntimePin?: OpenProjectBinding | null;
   provider?: string | null;
   modelId?: string | null;
   active: boolean;
@@ -168,6 +170,7 @@ export type ComposerPromptStashProps = {
 export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, ComposerPromptStashProps>(function ComposerPromptStash({
   draft,
   attachments = [],
+  chatRuntimePin = null,
   provider,
   modelId,
   active,
@@ -361,8 +364,14 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
         if (attachment.type === "image-url") return attachment;
         let dataUrl: string;
         try {
-          dataUrl = (await window.ade.agentChat.getImageDataUrl(attachment.path)).dataUrl;
+          dataUrl = (await window.ade.agentChat.getImageDataUrl(
+            attachment.path,
+            chatRuntimePin,
+          )).dataUrl;
         } catch (runtimeReadError) {
+          // An explicit remote pin identifies a path on another machine.
+          // Never reinterpret that path on the desktop running the renderer.
+          if (chatRuntimePin?.kind === "remote") throw runtimeReadError;
           const localRead = window.ade?.app?.getImageDataUrl;
           if (!localRead) throw runtimeReadError;
           dataUrl = (await localRead(attachment.path)).dataUrl;
@@ -423,7 +432,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
+  }, [chatRuntimePin, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
 
   const restore = useCallback(async (entry: PromptStashEntry) => {
     if (operationInFlightRef.current) return;

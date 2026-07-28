@@ -6387,8 +6387,11 @@ contextBridge.exposeInMainWorld("ade", {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
-    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
-      callProjectRuntimeActionOr("chat", "getImageDataUrl", { args: { path } }, () =>
+    getImageDataUrl: async (
+      path: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ dataUrl: string }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getImageDataUrl", { args: { path } }, () =>
         ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
       ),
     resolveSmartLinkPreview: async (args: { url: string }): Promise<SmartLinkPreview | null> =>
