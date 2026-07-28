@@ -548,9 +548,14 @@ export async function listPrsByLane(connection: AdeCodeConnection): Promise<PrLa
 export async function getChatHistory(
   connection: AdeCodeConnection,
   sessionId: string,
-  maxEvents = 20_000,
+  maxEvents = 1_000,
+  maxBytes = 256 * 1024,
 ): Promise<ChatHistorySnapshot> {
-  return await connection.actionList<ChatHistorySnapshot>("chat", "getChatEventHistory", [sessionId, { maxEvents }]);
+  return await connection.actionList<ChatHistorySnapshot>(
+    "chat",
+    "getChatEventHistory",
+    [sessionId, { maxEvents, maxBytes }],
+  );
 }
 
 export async function getChatHistoryPage(

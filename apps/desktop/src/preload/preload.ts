@@ -6343,16 +6343,21 @@ contextBridge.exposeInMainWorld("ade", {
       args: {
         sessionId: string;
         maxEvents?: number;
+        maxBytes?: number;
       },
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatEventHistorySnapshot> => {
+      const historyOptions = {
+        ...(args.maxEvents != null ? { maxEvents: args.maxEvents } : {}),
+        ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
+      };
       if (pin) {
         return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
-          argsList: [args.sessionId, { maxEvents: args.maxEvents }],
+          argsList: [args.sessionId, historyOptions],
         });
       }
       const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
-        argsList: [args.sessionId, { maxEvents: args.maxEvents }],
+        argsList: [args.sessionId, historyOptions],
       });
       if (runtime.handled) return runtime.result;
       // Read-only chat calls are intentionally left unhandled while a project

@@ -1294,6 +1294,7 @@ final class ADETests: XCTestCase {
       "terminal_resize",
       "chat_subscribe",
       "chat_unsubscribe",
+      "chat_history",
     ]
 
     for type in projectScopedTypes {
@@ -4557,7 +4558,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
     XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
-    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["maxBytes"] as? Int }, [2_000_000, 2_000_000])
+    XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["maxBytes"] as? Int }, [262_144, 262_144])
 
     service.disconnect(clearCredentials: false)
 
@@ -4605,6 +4606,53 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(offlineRequestDispatched)
     XCTAssertFalse(service.isFullChatEventSnapshotPending(sessionId: "session-1"))
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"), 1)
+  }
+
+  @MainActor
+  func testSubscribedChatHistoryPagingStaysGatedForLegacyHosts() async throws {
+    let legacyService = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try legacyService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-legacy",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "chatStreaming": ["enabled": true],
+      ],
+    ])
+    legacyService.configureConnectedTransportForTesting()
+    legacyService.beginOutboundEnvelopeCaptureForTesting()
+    defer { legacyService.endOutboundEnvelopeCaptureForTesting() }
+
+    _ = try await legacyService.subscribeToChatEvents(sessionId: "chat-legacy")
+    XCTAssertFalse(legacyService.supportsSubscribedChatHistory(sessionId: "chat-legacy"))
+    XCTAssertEqual(
+      legacyService.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"),
+      1
+    )
+
+    let modernService = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try modernService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-modern",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "chatStreaming": ["enabled": true],
+        "chatHistoryPaging": ["enabled": true],
+      ],
+    ])
+    modernService.configureConnectedTransportForTesting()
+    modernService.beginOutboundEnvelopeCaptureForTesting()
+    defer { modernService.endOutboundEnvelopeCaptureForTesting() }
+
+    XCTAssertFalse(modernService.supportsSubscribedChatHistory(sessionId: "chat-modern"))
+    _ = try await modernService.subscribeToChatEvents(sessionId: "chat-modern")
+    XCTAssertTrue(modernService.supportsSubscribedChatHistory(sessionId: "chat-modern"))
+    XCTAssertEqual(
+      modernService.capturedOutboundEnvelopeCountForTesting(type: "chat_subscribe"),
+      1
+    )
   }
 
   func testOpeningSnapshotRequestDoesNotRepeatAfterDispatch() {
@@ -13470,6 +13518,318 @@ final class ADETests: XCTestCase {
     // cursor in this degraded case.
     XCTAssertNil(
       workChatSnapshotOlderHistoryCursor(hasOlderHistory: true, tailStartOffset: nil)
+    )
+  }
+
+  @MainActor
+  func testMobileHistoryRoutingRequiresScopedProgressingCursors() {
+    XCTAssertTrue(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: 2_048
+    ))
+    XCTAssertTrue(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: nil
+    ))
+    XCTAssertFalse(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: 4_096
+    ))
+    XCTAssertFalse(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: -1
+    ))
+    XCTAssertFalse(workChatOlderTranscriptPageAdvances(
+      beforeOffset: 4_096,
+      nextCursor: 8_192
+    ))
+    XCTAssertTrue(workChatHasOlderTranscriptHistory(
+      chatEventCursor: 2_048,
+      canonicalTranscriptCursor: nil,
+      allowsCanonicalFallback: false
+    ))
+    XCTAssertFalse(workChatHasOlderTranscriptHistory(
+      chatEventCursor: nil,
+      canonicalTranscriptCursor: 2_048,
+      allowsCanonicalFallback: false
+    ))
+    XCTAssertTrue(workChatHasOlderTranscriptHistory(
+      chatEventCursor: nil,
+      canonicalTranscriptCursor: 2_048,
+      allowsCanonicalFallback: true
+    ))
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.seedChatHistoryCursorForTesting(sessionId: "chat-1", cursor: 4_096)
+    let firstPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 2_048,
+      hasMore: true,
+      sessionFound: true,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 4_096,
+      page: firstPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A delayed ordinary subscribe ack cannot resurrect a consumed page.
+    service.seedChatHistoryCursorForTesting(
+      sessionId: "chat-1",
+      cursor: 4_096,
+      allowForward: false
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A duplicate response for the consumed cursor cannot repeat the page.
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 4_096,
+      page: firstPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var unavailablePage = firstPage
+    unavailablePage.startOffset = 1_024
+    unavailablePage.unavailable = true
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: unavailablePage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var mismatchedPage = firstPage
+    mismatchedPage.sessionId = "different-chat"
+    mismatchedPage.startOffset = 1_024
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: mismatchedPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    var nonProgressingPage = firstPage
+    nonProgressingPage.startOffset = 4_096
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: nonProgressingPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    // A live event rebuild reads this service cursor into the destination.
+    // Recording the event must not restore the original subscribe cursor.
+    service.recordChatEventEnvelope(AgentChatEventEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-07-28T10:00:00.000Z",
+      event: .text(text: "live", messageId: "message-1", turnId: "turn-1", itemId: "item-1"),
+      sequence: 1
+    ))
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 2_048)
+
+    let secondPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 1_024,
+      hasMore: false,
+      sessionFound: true,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 2_048,
+      page: secondPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 0)
+
+    // A later authoritative full snapshot may legitimately re-arm paging after
+    // a previously small transcript grows beyond the bounded tail.
+    service.seedChatHistoryCursorForTesting(sessionId: "chat-1", cursor: 8_192)
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 8_192)
+
+    let missingPage = AgentChatEventHistoryPage(
+      sessionId: "chat-1",
+      events: [],
+      startOffset: 8_192,
+      hasMore: false,
+      sessionFound: false,
+      unavailable: false
+    )
+    service.recordChatHistoryPageCursorForTesting(
+      requestedSessionId: "chat-1",
+      beforeOffset: 8_192,
+      page: missingPage
+    )
+    XCTAssertEqual(service.chatOlderHistoryCursorState(sessionId: "chat-1"), 0)
+  }
+
+  func testMobileHistoryPayloadsDecodeCursorAndUnavailableState() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [],
+      "startOffset": 4096,
+      "hasMore": true,
+      "sessionFound": false,
+      "unavailable": true
+    }
+    """
+    let page = try JSONDecoder().decode(
+      AgentChatEventHistoryPage.self,
+      from: Data(json.utf8)
+    )
+    XCTAssertEqual(page.startOffset, 4096)
+    XCTAssertEqual(page.hasMore, true)
+    XCTAssertEqual(page.sessionFound, false)
+    XCTAssertEqual(page.unavailable, true)
+
+    let snapshotJSON = """
+    {
+      "sessionId": "chat-1",
+      "capturedAt": "2026-07-28T10:00:00.000Z",
+      "truncated": true,
+      "tailStartOffset": 2048,
+      "hasOlderHistory": true,
+      "cursorKind": "byte",
+      "events": []
+    }
+    """
+    let snapshot = try JSONDecoder().decode(
+      SyncChatSubscribeSnapshotPayload.self,
+      from: Data(snapshotJSON.utf8)
+    )
+    XCTAssertEqual(snapshot.tailStartOffset, 2048)
+    XCTAssertEqual(snapshot.hasOlderHistory, true)
+    XCTAssertEqual(snapshot.cursorKind, "byte")
+  }
+
+  func testChatSubscribeCursorPreservesLegacyUnknownAndOnlyExhaustsExplicitly() {
+    XCTAssertNil(syncChatSubscribeHistoryCursor(
+      hasOlderHistory: nil,
+      tailStartOffset: nil
+    ))
+    XCTAssertNil(syncChatSubscribeHistoryCursor(
+      hasOlderHistory: true,
+      tailStartOffset: nil
+    ))
+    XCTAssertEqual(syncChatSubscribeHistoryCursor(
+      hasOlderHistory: nil,
+      tailStartOffset: 4_096
+    ), 4_096)
+    XCTAssertNil(syncChatSubscribeHistoryCursor(
+      hasOlderHistory: true,
+      tailStartOffset: 4_096,
+      cursorKind: "row"
+    ))
+    XCTAssertEqual(syncChatSubscribeHistoryCursor(
+      hasOlderHistory: false,
+      tailStartOffset: 4_096,
+      cursorKind: "row"
+    ), 0)
+  }
+
+  func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
+    XCTAssertTrue(workChatShouldRequestOlderHistory(
+      topY: -120,
+      triggerArmed: true,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      topY: -500,
+      triggerArmed: true,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      topY: 0,
+      triggerArmed: false,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      topY: 0,
+      triggerArmed: true,
+      loading: true,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      topY: 0,
+      triggerArmed: true,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 80,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: false
+    ))
+
+    XCTAssertEqual(
+      workTimelineVisibleCountAfterHistoryPrepend(
+        currentVisibleCount: workTimelinePageSize,
+        prependedCount: 2_000
+      ),
+      workTimelinePageSize * 2
+    )
+    XCTAssertEqual(
+      workTimelineVisibleCountAfterHistoryPrepend(
+        currentVisibleCount: workTimelinePageSize,
+        prependedCount: 5
+      ),
+      workTimelinePageSize + 5
+    )
+    XCTAssertEqual(
+      workTimelineVisibleCountAfterHistoryPrepend(
+        currentVisibleCount: workTimelinePageSize,
+        prependedCount: -1
+      ),
+      workTimelinePageSize
     )
   }
 

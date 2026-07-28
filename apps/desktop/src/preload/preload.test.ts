@@ -6588,7 +6588,11 @@ describe("per-chat runtime routing", () => {
         throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
       });
 
-      await bridge.agentChat.getEventHistory({ sessionId: "chat-on-a", maxEvents: 5 }, machineA);
+      await bridge.agentChat.getEventHistory({
+        sessionId: "chat-on-a",
+        maxEvents: 5,
+        maxBytes: 256 * 1024,
+      }, machineA);
       const callback = vi.fn();
       const unsubscribe = bridge.agentChat.onEvent(callback, machineA);
       await vi.advanceTimersByTimeAsync(0);
@@ -6612,7 +6616,7 @@ describe("per-chat runtime routing", () => {
         request: {
           domain: "chat",
           action: "getChatEventHistory",
-          argsList: ["chat-on-a", { maxEvents: 5 }],
+          argsList: ["chat-on-a", { maxEvents: 5, maxBytes: 256 * 1024 }],
         },
       });
       expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {

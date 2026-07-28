@@ -2399,6 +2399,8 @@ function scopeTerminalAdeActionArgs(
 
 const SCOPED_CHAT_ACTIONS = new Set([
   "readTranscript",
+  "getChatEventHistory",
+  "getChatEventHistoryPage",
   "sendMessage",
   "createScheduledWork",
   "listScheduledWork",

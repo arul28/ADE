@@ -7294,7 +7294,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
     _event,
-    arg: { sessionId?: string; maxEvents?: number },
+    arg: { sessionId?: string; maxEvents?: number; maxBytes?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
@@ -7314,7 +7314,17 @@ export function registerIpc({
       rawMaxEvents != null && Number.isFinite(rawMaxEvents) && rawMaxEvents > 0
         ? rawMaxEvents
         : undefined;
-    const options = maxEvents != null ? { maxEvents } : undefined;
+    const rawMaxBytes = typeof arg?.maxBytes === "number" ? arg.maxBytes : undefined;
+    const maxBytes =
+      rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
+        ? rawMaxBytes
+        : undefined;
+    const options = maxEvents != null || maxBytes != null
+      ? {
+          ...(maxEvents != null ? { maxEvents } : {}),
+          ...(maxBytes != null ? { maxBytes } : {}),
+        }
+      : undefined;
     return await service.getChatEventHistory(sessionId, options);
   });
 

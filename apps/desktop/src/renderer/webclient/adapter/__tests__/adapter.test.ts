@@ -373,6 +373,36 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("uses the legacy history-page alias when that is all the connected host advertises", async () => {
+    fake.descriptors = descriptors(["agentChat.getEventHistoryPage"]);
+    fake.commandResults.set("agentChat.getEventHistoryPage", {
+      sessionId: "chat-long-running",
+      events: [],
+      startOffset: 1024,
+      hasMore: true,
+      sessionFound: true,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistoryPage({
+      sessionId: "chat-long-running",
+      beforeOffset: 4096,
+    });
+
+    const call = fake.commandCalls.at(-1);
+    expect(call?.action).toBe("agentChat.getEventHistoryPage");
+    expect(call?.args).toMatchObject({
+      sessionId: "chat-long-running",
+      beforeOffset: 4096,
+      maxBytes: 256 * 1024,
+    });
+    expect(fake.commandCalls).toContainEqual(expect.objectContaining({
+      action: "agentChat.getEventHistoryPage",
+    }));
+    adapter.dispose();
+  });
+
   it("keeps only the eight most recently used project chat subscriptions", async () => {
     fake.descriptors = descriptors(["chat.getChatEventHistory"]);
     const adapter = createAdeWebAdapter(fake.asClient());

@@ -2367,11 +2367,14 @@ describe("registerIpc sync bridge", () => {
     await expect(
       ipcHandlers.get(IPC.agentChatGetEventHistory)?.(
         eventForSender(),
-        { sessionId: " chat-1 ", maxEvents: 25 },
+        { sessionId: " chat-1 ", maxEvents: 25, maxBytes: 256 * 1024 },
       ),
     ).resolves.toBe(snapshot);
 
-    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", { maxEvents: 25 });
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
+      maxEvents: 25,
+      maxBytes: 256 * 1024,
+    });
   });
 
   it("validates and forwards main transcript requests", async () => {

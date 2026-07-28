@@ -65,7 +65,7 @@ function expandAllWorkGroups(
 
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | null; expanded?: boolean } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | "error" | null; expanded?: boolean } = {},
 ): string {
   const provider = options.provider ?? "codex";
   const activeSession = { ...session, provider };
@@ -855,11 +855,13 @@ describe("ChatView", () => {
 
     const idle = renderEvents(events, { maxRows, width: 80 });
     const loading = renderEvents(events, { maxRows, width: 80, olderHistory: "loading" });
+    const failed = renderEvents(events, { maxRows, width: 80, olderHistory: "error" });
     const exhausted = renderEvents(events, { maxRows, width: 80, olderHistory: "exhausted" });
 
     expect(idle).toContain("↑ older messages");
     expect(loading).toContain("↑ loading earlier…");
     expect(loading).not.toContain("↑ older messages");
+    expect(failed).toContain("↑ couldn’t load earlier · Ctrl+R to retry");
     // "exhausted"/"available" keep the existing indicator behavior untouched.
     expect(exhausted).toContain("↑ older messages");
     // The indicator swaps text in the SAME row: row count is identical in all
@@ -867,6 +869,25 @@ describe("ChatView", () => {
     expect(transcriptLines(loading)).toHaveLength(transcriptLines(idle).length);
     expect(transcriptLines(loading)[0]).toContain("↑ loading earlier…");
     expect(transcriptLines(idle)[0]).toContain("↑ older messages");
+  });
+
+  it("keeps retry visible when a short remote tail cannot fill the viewport", () => {
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "s1",
+      timestamp: "2026-01-01T12:00:00.000Z",
+      sequence: 1,
+      event: { type: "user_message", text: "newest tail only" },
+    }];
+
+    const failed = renderEvents(events, {
+      maxRows: 8,
+      width: 80,
+      olderHistory: "error",
+    });
+
+    expect(failed).toContain("↑ couldn’t load earlier · Ctrl+R to retry");
+    expect(transcriptLines(failed)).toHaveLength(8);
+    expect(failed).toContain("newest tail only");
   });
 
   it("stays at the oldest rows when the transcript is overscrolled", () => {

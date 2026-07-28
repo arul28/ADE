@@ -322,8 +322,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     getEventHistoryPage: async (args: unknown) => {
       const record = asRecord(args);
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
+      const historyPageAction = commands.hasAction("chat.getChatEventHistoryPage")
+        ? "chat.getChatEventHistoryPage"
+        : commands.hasAction("agentChat.getEventHistoryPage")
+          ? "agentChat.getEventHistoryPage"
+          : "chat.getChatEventHistoryPage";
       return await callRequiredRead(
-        "chat.getChatEventHistoryPage",
+        historyPageAction,
         {
           ...record,
           maxBytes: boundedPositiveInteger(

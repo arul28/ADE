@@ -260,7 +260,10 @@ Browser `window.ade` adapter:
   keeping aggregate snapshots below the Relay bridge budget. Host-side
   pagination ranks durable and legacy transcript candidates through one fixed
   identity window, so the initial tail and every older page keep addressing the
-  same file even when their response byte budgets differ. It routes
+  same file even when their response byte budgets differ. The adapter prefers
+  the canonical `chat.getChatEventHistoryPage` descriptor but accepts the
+  legacy `agentChat.getEventHistoryPage` alias from older hosts, so the shared
+  transcript's Retry path does not become a no-op during a rolling upgrade. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
   does not advertise the action. It also routes
@@ -783,6 +786,9 @@ check, so a short tail keeps loading until the viewport is scrollable (or the
 transcript head is reached) without requiring a synthetic scroll event.
 Failures preserve the cursor and expose a stable Retry control instead of
 treating a missing descriptor or transient disconnect as the end of history.
+The adapter resolves both the canonical page action and the older
+`agentChat.getEventHistoryPage` alias; only a host advertising neither is
+treated as unsupported.
 The scrollbar stays visible, live appends follow only while the reader is
 already at the bottom, and ADE's explicit prepend anchor disables native CSS
 scroll anchoring to prevent double compensation.

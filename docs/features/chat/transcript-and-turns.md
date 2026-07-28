@@ -624,3 +624,12 @@ regain duplicate visible failures after restart.
 - **`tailStartOffset > 0` does not mean older history exists.** In the degraded
   tier it is a conservative end-of-file cursor. Gate scroll-back UI on
   `hasOlderHistory`.
+- **Subscribed mobile history pages do not activate project runtimes.**
+  Modern sync hosts advertise `chatHistoryPaging`; the `chat_subscribe` ack
+  carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`, and
+  the phone requests `chat_history` pages against the already-authorized
+  subscription. The host reads the same local, personal, or foreign quick-look
+  transcript path already bound to that subscription. A scope mismatch or
+  transient read failure returns `unavailable: true` with the caller's cursor
+  intact; only an authoritative missing session or a strictly decreasing page
+  that reaches zero exhausts history.

@@ -6927,6 +6927,10 @@ function AgentChatMessageListMain({
         entries={minimapSourceEntries}
         activeIndex={activeFullUserOrdinal}
         onJumpToRow={jumpToRowFromMinimap}
+        hasOlderHistory={hasOlderHistory}
+        loadingOlderHistory={loadingOlderHistory}
+        olderHistoryError={olderHistoryError}
+        onLoadOlderHistory={onLoadOlderHistory}
         listWidthPx={listRootBoxPx.width}
         listHeightPx={listRootBoxPx.height}
         listTopViewportPx={listRootBoxPx.top}

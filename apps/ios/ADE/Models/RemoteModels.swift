@@ -2069,6 +2069,7 @@ struct AgentChatEventHistoryPage: Decodable, Equatable {
   var startOffset: Int
   var hasMore: Bool
   var sessionFound: Bool
+  var unavailable: Bool?
 }
 
 struct AgentChatFileRef: Codable, Equatable, Hashable {
@@ -3066,6 +3067,9 @@ struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
   var sessionId: String
   var capturedAt: String
   var truncated: Bool
+  var tailStartOffset: Int?
+  var hasOlderHistory: Bool?
+  var cursorKind: String?
   @ADELossyArray var events: [AgentChatEventEnvelope]
   /// Live turn state from the host's agent chat service at subscribe time.
   /// Snapshots are byte-capped transcript tails, so a long turn's

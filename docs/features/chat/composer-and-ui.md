@@ -615,7 +615,18 @@ render unwindowed. Key rules:
   the transcript.
 - The left tick rail (`ChatUserMinimap`) mounts as a direct child of the
   list root, because its `left-0` gutter maths assume the offset parent
-  is the element measured as `listWidthPx`.
+  is the element measured as `listWidthPx`. When older transcript pages
+  exist before the resident tail, the rail keeps a top continuation marker
+  even if the loaded window contains fewer than two user turns; paging fills
+  in real ticks progressively instead of making the rail disappear at the
+  cutoff.
+- iOS uses the same healthy-path contract: a fixed-height head sentinel
+  automatically reveals the next local window and requests a 256 KiB host
+  page near the top. It renders words only while loading or after a retryable
+  failure, preserves the cursor on failure, and uses `LazyVStack` so older
+  history does not make every transcript row resident. The subagent roster is
+  owned exclusively by Chat Info; only lifecycle cards remain inline at their
+  transcript positions.
 - **Per-chat scroll memory.** The owning pane force-remounts the list with
   `key={selectedSessionId}`, so every ref and state value dies on a chat
   switch; the memory therefore lives in a module-scope LRU `Map`
@@ -772,7 +783,7 @@ row. ADE Code mirrors the grouped row model in-memory, while iOS mirrors the
 same predicates, caps, persistence semantics, and fired/late decoding.
 
 Desktop renders those rows in the Chat Info drawer, ADE Code renders them
-in the Chat Info right pane, and iOS shows a Chat Info popup/sheet for
+in the Chat Info right pane, and iOS shows the roster only in its Chat Info popup/sheet for
 active scheduled items above the composer. The renderer does not own the
 timers: all controls mutate the project runtime's durable scheduler.
 

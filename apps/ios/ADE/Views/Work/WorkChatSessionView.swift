@@ -9,6 +9,57 @@ let workChatTouchScrollDeadband: CGFloat = 2
 let workChatBottomAnchorSpacerHeight: CGFloat = 1
 let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
+let workChatOlderHistoryTriggerDistance: CGFloat = 240
+let workChatOlderHistoryRearmDistance: CGFloat = 420
+let workChatOlderHistoryScrollableDistance: CGFloat = 1
+
+struct WorkChatOlderHistoryLoadResult {
+  let succeeded: Bool
+  let hasMoreHistory: Bool
+  let addedTimelineEntries: Bool
+
+  static let failed = WorkChatOlderHistoryLoadResult(
+    succeeded: false,
+    hasMoreHistory: false,
+    addedTimelineEntries: false
+  )
+
+  static func loaded(hasMoreHistory: Bool, addedTimelineEntries: Bool) -> Self {
+    WorkChatOlderHistoryLoadResult(
+      succeeded: true,
+      hasMoreHistory: hasMoreHistory,
+      addedTimelineEntries: addedTimelineEntries
+    )
+  }
+}
+
+func workChatShouldRequestOlderHistory(
+  topY: CGFloat,
+  triggerArmed: Bool,
+  loading: Bool,
+  hasError: Bool,
+  hasBufferedEntries: Bool,
+  hasHostHistory: Bool
+) -> Bool {
+  topY >= -workChatOlderHistoryTriggerDistance
+    && triggerArmed
+    && !loading
+    && !hasError
+    && (hasBufferedEntries || hasHostHistory)
+}
+
+func workChatShouldContinueAutomaticOlderHistory(
+  distanceFromBottom: CGFloat,
+  loading: Bool,
+  hasError: Bool,
+  hasBufferedEntries: Bool,
+  hasHostHistory: Bool
+) -> Bool {
+  distanceFromBottom <= workChatOlderHistoryScrollableDistance
+    && !loading
+    && !hasError
+    && (hasBufferedEntries || hasHostHistory)
+}
 
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
@@ -163,6 +214,11 @@ struct WorkChatSessionView: View {
   @State var scrollStateSessionId: String?
   @State var pendingInitialBottomPinSessionId: String?
   @State var timelineLayoutPinToken = 0
+  @State var olderHistoryLoadInFlight = false
+  @State var olderHistoryLoadError: String?
+  @State var olderHistoryTriggerArmed = true
+  @State var olderHistoryAutomaticContinuationPending = false
+  @State var olderHistoryLoadTask: Task<Void, Never>?
   let isLive: Bool
   let hostUnreachable: Bool
   let canComposeMessages: Bool
@@ -204,7 +260,7 @@ struct WorkChatSessionView: View {
   // Host-side scroll-back: true while older transcript pages remain on the
   // host beyond what the phone has fetched; the callback pulls the next page.
   var hasOlderTranscriptHistory: Bool = false
-  var onLoadOlderTranscript: (@MainActor () async -> Void)? = nil
+  var onLoadOlderTranscript: (@MainActor () async -> WorkChatOlderHistoryLoadResult)? = nil
   var subagentSnapshots: [WorkSubagentSnapshot] = []
   var subagentSnapshotsRenderSignature: Int = 0
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
@@ -499,17 +555,12 @@ struct WorkChatSessionView: View {
     "chat-end"
   }
 
-  @ViewBuilder
-  var subagentOverviewSection: some View {
-    if selectedSubagentTaskId == nil && !subagentSnapshots.isEmpty {
-      WorkSubagentStrip(snapshots: subagentSnapshots)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .id("chat-subagents-strip")
-    }
-  }
-
   var hiddenTimelineCount: Int {
     timelinePresentation.hiddenCount
+  }
+
+  var canRequestOlderTranscriptHistory: Bool {
+    hasOlderTranscriptHistory && onLoadOlderTranscript != nil
   }
 
   @MainActor
@@ -538,7 +589,10 @@ struct WorkChatSessionView: View {
       && timelinePresentation.timelineFirstId != nextPresentation.timelineFirstId
     )
     if prependedHistory {
-      visibleTimelineCount += timelineDelta
+      visibleTimelineCount = workTimelineVisibleCountAfterHistoryPrepend(
+        currentVisibleCount: visibleTimelineCount,
+        prependedCount: timelineDelta
+      )
       nextPresentation = makeWorkTimelinePresentation(
         timeline: presentedTimeline,
         visibleCount: visibleTimelineCount,
@@ -637,6 +691,45 @@ struct WorkChatSessionView: View {
 
   @ViewBuilder
   func timelineSection(proxy: ScrollViewProxy) -> some View {
+    if hiddenTimelineCount > 0 || canRequestOlderTranscriptHistory {
+      Group {
+        if olderHistoryLoadInFlight {
+          HStack(spacing: 8) {
+            ProgressView()
+              .controlSize(.small)
+            Text("Loading earlier messages…")
+          }
+          .frame(maxWidth: .infinity, minHeight: 28)
+        } else if let olderHistoryLoadError {
+          Button {
+            requestEarlierTimelineEntries(
+              automatically: olderHistoryAutomaticContinuationPending
+            )
+          } label: {
+            Label("Couldn’t load earlier messages · Retry", systemImage: "arrow.clockwise")
+              .frame(maxWidth: .infinity, minHeight: 44)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.accent)
+          .accessibilityHint(olderHistoryLoadError)
+        } else {
+          Color.clear
+            .frame(height: 1)
+            .accessibilityHidden(true)
+        }
+      }
+      .font(.footnote.weight(.semibold))
+      .background(
+        GeometryReader { geometry in
+          Color.clear.preference(
+            key: WorkChatContentTopPreferenceKey.self,
+            value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).minY
+          )
+        }
+      )
+    }
+
     if timeline.isEmpty {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
@@ -646,29 +739,6 @@ struct WorkChatSessionView: View {
           : "This subagent did not publish detailed transcript output."
       )
     } else {
-      if hiddenTimelineCount > 0 || hasOlderTranscriptHistory {
-        let nextPageCount = min(hiddenTimelineCount, workTimelinePageSize)
-        let loadEarlierTitle = nextPageCount > 0
-          ? "Load \(nextPageCount) earlier message\(nextPageCount == 1 ? "" : "s")"
-          : "Load earlier messages"
-        Button {
-          loadEarlierTimelineEntries()
-        } label: {
-          Label(loadEarlierTitle, systemImage: "chevron.up.circle")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 8)
-          .background(ADEColor.cardBackground.opacity(0.4), in: Capsule(style: .continuous))
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(ADEColor.glassBorder, lineWidth: 1)
-          )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Load earlier messages")
-      }
-
       let streamingMessageId = streamingAssistantMessageId
       let userBubbleWidth = maxUserBubbleWidth
       ForEach(visibleTimelineRenderEntries) { entry in
@@ -870,9 +940,8 @@ struct WorkChatSessionView: View {
     ScrollViewReader { proxy in
       VStack(spacing: 0) {
         ScrollView {
-          VStack(alignment: .leading, spacing: 14) {
+          LazyVStack(alignment: .leading, spacing: 14) {
             sessionOverviewSection
-            subagentOverviewSection
             timelineSection(proxy: proxy)
             streamingStatusSection
 
@@ -1005,7 +1074,23 @@ struct WorkChatSessionView: View {
             distanceFromBottom: max(0, bottomY - scrollViewportHeight),
             proxy: proxy
           )
+          continueAutomaticOlderHistoryIfNeeded()
           resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-bottom")
+        }
+        .onPreferenceChange(WorkChatContentTopPreferenceKey.self) { topY in
+          if topY < -workChatOlderHistoryRearmDistance {
+            olderHistoryTriggerArmed = true
+          }
+          guard workChatShouldRequestOlderHistory(
+            topY: topY,
+            triggerArmed: olderHistoryTriggerArmed,
+            loading: olderHistoryLoadInFlight,
+            hasError: olderHistoryLoadError != nil,
+            hasBufferedEntries: hiddenTimelineCount > 0,
+            hasHostHistory: canRequestOlderTranscriptHistory
+          ) else { return }
+          olderHistoryTriggerArmed = false
+          requestEarlierTimelineEntries(automatically: true)
         }
         .onChange(of: timeline.count) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
@@ -1069,6 +1154,12 @@ struct WorkChatSessionView: View {
           recoverEmptyTimelineSnapshotIfNeeded()
         }
         .onDisappear {
+          olderHistoryLoadTask?.cancel()
+          olderHistoryLoadTask = nil
+          olderHistoryLoadInFlight = false
+          olderHistoryLoadError = nil
+          olderHistoryAutomaticContinuationPending = false
+          olderHistoryTriggerArmed = true
           cancelScheduledTimelineSnapshotRebuild()
         }
         .onChange(of: chatSummaryTimelineKey) { _, _ in
@@ -1431,6 +1522,14 @@ private struct WorkChatContentBottomPreferenceKey: PreferenceKey {
   }
 }
 
+private struct WorkChatContentTopPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = -CGFloat.greatestFiniteMagnitude
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
 /// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
 /// the agent prose — no card, no gradient. Light mode keeps the app's warm
 /// paper tone so the chat doesn't look out of place there.
@@ -1543,6 +1642,13 @@ private func makeWorkTimelinePresentation(
       hiddenCount: hiddenCount
     )
   )
+}
+
+func workTimelineVisibleCountAfterHistoryPrepend(
+  currentVisibleCount: Int,
+  prependedCount: Int
+) -> Int {
+  max(0, currentVisibleCount) + min(max(0, prependedCount), workTimelinePageSize)
 }
 
 private func workTimelinePresentationSignature(

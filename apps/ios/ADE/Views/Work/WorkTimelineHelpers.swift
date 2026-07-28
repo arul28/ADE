@@ -2831,9 +2831,9 @@ private func eventCard(
         metadata: ["Tasks · \(progressLabel)"]
       )
     case .subagentStarted, .subagentProgress, .subagentResult:
-      // Subagent lifecycle is represented by WorkSubagentStrip, the composer
-      // badge, and the Subagents drawer. Rendering every lifecycle envelope as
-      // a normal event card makes mobile chats look much longer than desktop.
+      // Subagent lifecycle is represented by compact timeline boundaries, the
+      // composer badge, and Chat Info. Rendering every lifecycle envelope as a
+      // normal event card makes mobile chats look much longer than desktop.
       return nil
     case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
       // Background shell commands are owned by the Chat Info pane's Background
