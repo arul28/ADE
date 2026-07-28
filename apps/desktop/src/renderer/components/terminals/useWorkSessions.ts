@@ -21,9 +21,13 @@ import {
   type WorkSessionListOrganization,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
-import { canonicalStatusBucket, type CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
-import { isSessionFiledAsSnoozed, nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionFilingBucket,
+} from "../../lib/terminalAttention";
+import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
+import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
@@ -294,13 +298,10 @@ export function buildWorkTabGroupModel(args: {
     // Snooze is a visibility overlay: it pulls the row out of its normal bucket
     // entirely — the same partitioning the flat sidebar list uses — EXCEPT when
     // the row's canonical phase is needs_you. The overlay yields to a raised
-    // hand (`isSessionFiledAsSnoozed`), which is the only thing that makes
+    // hand (`sessionFilingBucket`), which is the only thing that makes
     // "Until I'm asked" true for tracked CLI rows: their needs-input state is
     // derived, so no early-wake event ever fires for them.
-    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-    const bucket: WorkStatusGroupBucket = isSessionFiledAsSnoozed(session, phase, nowMs)
-      ? "snoozed"
-      : canonicalStatusBucket(phase);
+    const bucket: WorkStatusGroupBucket = sessionFilingBucket(session, nowMs);
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
     statusBuckets.set(bucket, list);
@@ -1446,11 +1447,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // what keeps "Until I'm asked" honest for tracked CLI rows (their
       // needs-input state is derived, so no early-wake event can fire).
       const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-      if (isSessionFiledAsSnoozed(session, phase, nowMs)) {
+      const filingBucket = sessionFilingBucket(session, nowMs);
+      if (filingBucket === "snoozed") {
         snoozed.push(session);
         continue;
       }
-      const bucket = canonicalStatusBucket(phase);
+      const bucket = filingBucket;
       if (bucket === "running") running.push(session);
       else if (bucket === "awaiting-input") {
         // Loud (Needs you) rows float to the top of the Your-move section; the

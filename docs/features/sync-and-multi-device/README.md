@@ -455,6 +455,25 @@ Desktop connection UI:
   Phone/Web variants, This Mac PIN management, internal phone-QR interactions,
   account-only web guidance, web-peer chip, and sheet dismissal coverage.
 
+Cross-machine Work union:
+
+- `apps/desktop/src/renderer/state/crossMachineLanes.ts` — renderer-owned,
+  repository-scoped projection of each connected machine's lanes and bounded
+  session preview into the active Work sidebar. It is not CRDT replication and
+  does not change the project tab's runtime binding. A detached chat created
+  against another `OpenProjectBinding` is optimistically filed in that
+  binding's machine slice using its stable session id and resolved lane name;
+  binding-scoped reconciliation retains it across stale list responses, then
+  replaces it when the owning runtime returns the authoritative row. Foreign
+  lane presentation applies the same active/snoozed/settled filing and quiet
+  collapse rules as local lanes while keeping runtime-pinned actions directed
+  to the owner.
+- `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`,
+  `SessionListPane.tsx`, and
+  `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
+  ownership metadata into the local or foreign optimistic path and render both
+  through the shared `sessionFilingBucket` lifecycle-plus-snooze contract.
+
 Cross-machine Work chat handoff:
 
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and

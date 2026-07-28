@@ -513,7 +513,8 @@ Renderer surfaces:
   restores the normal lane header and compact quiet rows. Quiet expansion uses
   the inverted `lane-open:<laneId>` marker, which is removed when active work
   returns so the next quiet spell collapses automatically. The classification
-  uses the canonical snooze helper, whose `needs_you` precedence is
+  runs through `sessionFilingBucket`, the shared canonical-lifecycle-plus-snooze
+  filing helper, whose `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
   Renders a bulk action bar at the bottom when sessions are multi-selected
@@ -534,11 +535,19 @@ Renderer surfaces:
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
   everywhere; the empty state accounts for them, so "No sessions" cannot claim an
-  empty machine while another is busy. Foreign session rows are read-only:
-  clicking one switches the tab to that machine (`switchRemoteProject`), which is
-  the same explicit move as opening a remote project — nothing executes across
-  machines implicitly. A machine that goes offline keeps its rows, dimmed and
-  inert, rather than having them reflow away on a wifi blip. A lane with shared delete progress is dimmed and
+  empty machine while another is busy. Foreign lanes use the same active /
+  snoozed / settled partition, collapsed-by-default fully quiet header, quiet
+  counts, and nested quiet-tail renderer as local lanes. Their persistence keys
+  include the owning machine id (`<machineId>:<laneId>`), and an explicit
+  `lane-open:` marker is cleared when active foreign work returns so a future
+  quiet spell starts collapsed instead of inheriting stale expanded state.
+  Every foreign row carries its owning `OpenProjectBinding`. Chat rows open
+  through the per-chat runtime pin without rebinding the project tab; shell and
+  CLI rows switch the tab to the owning project first because a PTY has no
+  per-session runtime pin. Row/lane context actions pass the same binding so
+  mutations cannot fall through to the active machine. A machine that goes
+  offline keeps its rows, dimmed and inert, rather than having them reflow away
+  on a wifi blip. A lane with shared delete progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
   organization modes. The bottom Add Lane button opens
@@ -548,6 +557,15 @@ Renderer surfaces:
   retry toast. It also builds parent-title and live-child indexes from the
   unfiltered session list, so a lineage tooltip can name a parent hidden by
   the current lane/search filter.
+- `apps/desktop/src/renderer/state/crossMachineLanes.ts` — repository-scoped
+  union loader and optimistic foreign-chat ownership bridge. A detached launch
+  that targets a binding other than the active project is inserted immediately
+  into that binding's machine slice with the resolved lane name. Pending
+  summaries are keyed by binding and session id, survive stale in-flight
+  foreign list responses, and are removed when the authoritative list returns
+  the same id, the launch is deleted, or the two-minute optimistic window
+  expires. This reconciliation prevents both a blank launch interval and a
+  duplicate raw-id lane under the active machine.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Any session with `orchestrationParentSessionId` renders a
@@ -721,9 +739,9 @@ Renderer surfaces:
   `disposition` is `"background"` the hook skips `selectLane`,
   `focusSession`, and `openSessionTab` so the launch happens silently
   without stealing the user's current focus.
-  It also owns the quiet-tier partitioning and ordering. `snoozedFiltered` is
-  split off through `isSessionFiledAsSnoozed`, and `buildWorkTabGroupModel`
-  applies the same rule for by-status grouping, where `"snoozed"` is a
+  It also owns the quiet-tier partitioning and ordering. `snoozedFiltered` and
+  `buildWorkTabGroupModel` both file through `sessionFilingBucket`, where
+  `"snoozed"` is a
   partition of the grouping rather than a canonical bucket
   (`running`, `awaiting-input`, `ended`, `snoozed`, `settled`). Ordering inside
   the quiet tails deliberately diverges from the list's default `startedAt`
@@ -1158,7 +1176,8 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    through `isSessionFiledAsSnoozed(session, phase)`, which yields to a
    `needs_you` phase, so a snoozed row blocked on the user is never hidden even
    under an "Until I'm asked" (~100 year) deadline. The desktop flat list and
-   `buildWorkTabGroupModel`, the `ade code` row marker
+   `buildWorkTabGroupModel` consume that rule through `sessionFilingBucket`;
+   the `ade code` row marker
    (`tuiClient/sessionLifecycle.ts`), and the iOS `workSessionGroups` snoozed
    tail all use it; `isSessionSnoozed` stays the raw read for row chrome.
 
@@ -1242,8 +1261,9 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
   fails.
 - **Two quiet tiers, not one** — Settled is a lifecycle phase; Snoozed is a
   visibility overlay that files a row without changing what its status dot says.
-  They are computed by different code (`canonicalSessionState()` vs
-  `isSessionFiledAsSnoozed`) and rendered as two separate tails, and every
+  They remain distinct inputs, combined for desktop filing by
+  `sessionFilingBucket` (canonical lifecycle plus
+  `isSessionFiledAsSnoozed`), and rendered as two separate tails; every
   surface — desktop, iOS, `ade code`, hosted web, `ade` CLI, CTO tools — has
   both. Nothing about session lifecycle is desktop-only.
 - **Two-tier attention** — the Your move bucket contains loud `needs_you` rows
@@ -1355,7 +1375,9 @@ runtime and agent chat runtime both layer the same identity envs
   derived from `snoozed_until`, a snoozed row starts lying about what it is
   doing and every count, badge, and capsule downstream inherits the lie. Snooze
   only changes where a surface *files* the row, through
-  `isSessionFiledAsSnoozed`. That helper also yields to a `needs_you` phase,
+  `isSessionFiledAsSnoozed` (wrapped with canonical lifecycle as
+  `sessionFilingBucket` in the desktop renderer). The shared helper yields to a
+  `needs_you` phase,
   which is what makes "Until I'm asked" true for tracked CLI rows at all: their
   needs-input state is purely derived, so no early-wake event ever fires for
   them and filing is the only thing that can un-hide them.

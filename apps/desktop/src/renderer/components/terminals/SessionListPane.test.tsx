@@ -1010,6 +1010,53 @@ describe("SessionListPane", () => {
       );
     });
 
+    it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
+      const active = makeSession({
+        id: "session-foreign-active",
+        laneId: "lane-elsewhere",
+        laneName: "Elsewhere Lane",
+        title: "Active foreign chat",
+      });
+      const settled = makeSession({
+        id: "session-foreign-settled",
+        laneId: "lane-elsewhere",
+        laneName: "Elsewhere Lane",
+        title: "Settled foreign chat",
+        status: "completed",
+        runtimeState: "idle",
+        endedAt: "2026-07-28T12:10:00.000Z",
+        exitCode: 0,
+        settledAt: "2026-07-28T12:11:00.000Z",
+        statusNote: "Removed and verified all identified artifacts.",
+      });
+      seedForeignMachine({ sessions: [active, settled] });
+
+      renderPane();
+
+      expect(screen.getByText("Active foreign chat")).toBeTruthy();
+      expect(screen.queryByText("Settled foreign chat")).toBeNull();
+      const settledTail = screen.getByRole("button", { name: /1 settled/i });
+      expect(settledTail.getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector('[data-session-id="session-foreign-settled"]')).toBeNull();
+    });
+
+    it("clears a foreign quiet-lane expansion marker when active work returns", async () => {
+      seedForeignMachine();
+      const toggleWorkSectionCollapsed = vi.fn();
+
+      renderPane({
+        workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
+        toggleWorkSectionCollapsed,
+      });
+
+      await waitFor(() => {
+        expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+          "lane-open:target-studio:lane-elsewhere",
+          { preserveDeeplink: true },
+        );
+      });
+    });
+
     it("routes a foreign card's context menu through its owning binding", () => {
       seedForeignMachine();
       const onContextMenu = vi.fn();

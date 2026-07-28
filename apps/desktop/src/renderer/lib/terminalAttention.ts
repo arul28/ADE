@@ -2,7 +2,7 @@ import type { SessionSettleOverride, TerminalRuntimeState, TerminalSessionStatus
 import {
   canonicalSessionState,
   canonicalStatusBucket,
-  type CanonicalSessionPhase,
+  isSessionFiledAsSnoozed,
   type CanonicalSessionState,
   type SessionBadge,
 } from "../../shared/sessionCanonicalState";
@@ -11,6 +11,7 @@ import { isChatToolType } from "./sessions";
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
 export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended" | "settled";
 export type SessionStatusBucket = Exclude<SessionStatusFilter, "all">;
+export type SessionFilingBucket = SessionStatusBucket | "snoozed";
 
 export type LaneTerminalAttentionSummary = {
   runningCount: number;
@@ -202,6 +203,18 @@ export function sessionNeedsChatTabHighlight(args: {
 
 export function sessionStatusBucket(args: SessionCanonicalUiInput): SessionStatusBucket {
   return canonicalStatusBucket(sessionCanonicalUiState(args).phase);
+}
+
+/** Sidebar filing rule: canonical lifecycle plus the snooze visibility overlay. */
+export function sessionFilingBucket(
+  session: TerminalSessionSummary,
+  nowMs: number = Date.now(),
+): SessionFilingBucket {
+  const input = canonicalInputFromSummary(session);
+  const phase = sessionCanonicalUiState(input).phase;
+  return isSessionFiledAsSnoozed(session, phase, nowMs)
+    ? "snoozed"
+    : canonicalStatusBucket(phase);
 }
 
 export function sessionMatchesStatusFilter(

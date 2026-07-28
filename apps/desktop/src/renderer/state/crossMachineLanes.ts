@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type {
+  AgentChatSession,
   LaneSummary,
   OpenProjectBinding,
   RecentProjectSummary,
@@ -33,6 +34,7 @@ import type {
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
 } from "../../shared/types";
+import { buildOptimisticChatSessionSummary } from "../lib/sessions";
 import {
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
@@ -64,6 +66,18 @@ const FOREIGN_MACHINE_REFRESH_MS = 5_000;
 const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
 /** Foreign session reads are a sidebar preview, not an archive. */
 const FOREIGN_SESSION_LIMIT = 60;
+/** Match the local optimistic-session window while a foreign list catches up. */
+const FOREIGN_OPTIMISTIC_SESSION_TTL_MS = 2 * 60 * 1000;
+
+type PendingForeignOptimisticSession = {
+  session: TerminalSessionSummary;
+  createdAtMs: number;
+};
+
+const pendingForeignOptimisticSessionsByBinding = new Map<
+  string,
+  Map<string, PendingForeignOptimisticSession>
+>();
 
 export function resolveThisMachineBindingForOrigin(
   projects: readonly RecentProjectSummary[],
@@ -144,6 +158,97 @@ export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
   foreignRows: EMPTY_ROWS,
   markersByLaneId: EMPTY_MARKERS,
 };
+
+/**
+ * Immediately projects a foreign launch into its owning machine slice. The
+ * periodic union refresh replaces this optimistic summary by stable session id.
+ */
+export function seedCrossMachineOptimisticChatSession(
+  session: AgentChatSession,
+  binding: OpenProjectBinding,
+  laneName?: string | null,
+): void {
+  const store = rootAppStoreApi.getState();
+  const existing = Object.values(store.crossMachineLanesByMachineId).find(
+    (entry) => entry.binding?.key === binding.key,
+  ) ?? null;
+  const machineId = existing?.machineId ?? (
+    binding.kind === "remote" ? binding.targetId : THIS_MACHINE_ID
+  );
+  const machineName = existing?.machineName ?? (
+    binding.kind === "remote" ? binding.runtimeName : THIS_MACHINE_NAME
+  );
+  const optimistic = buildOptimisticChatSessionSummary({
+    session,
+    laneName: laneName
+      ?? existing?.lanes.find((lane) => lane.id === session.laneId)?.name
+      ?? session.laneId,
+  });
+  const pending = pendingForeignOptimisticSessionsByBinding.get(binding.key) ?? new Map();
+  pending.set(session.id, { session: optimistic, createdAtMs: Date.now() });
+  pendingForeignOptimisticSessionsByBinding.set(binding.key, pending);
+  store.mergeCrossMachineLanes({
+    machineId,
+    machineName,
+    targetId: binding.kind === "remote" ? binding.targetId : null,
+    projectId: binding.kind === "remote" ? binding.projectId : null,
+    binding,
+    online: true,
+    sessions: [
+      optimistic,
+      ...(existing?.sessions ?? []).filter((candidate) => candidate.id !== session.id),
+    ],
+    error: null,
+  });
+}
+
+/** Removes a foreign optimistic row after a successful pinned delete. */
+export function cancelCrossMachineOptimisticChatSession(
+  binding: OpenProjectBinding,
+  sessionId: string,
+): void {
+  const pending = pendingForeignOptimisticSessionsByBinding.get(binding.key);
+  pending?.delete(sessionId);
+  if (pending && pending.size === 0) {
+    pendingForeignOptimisticSessionsByBinding.delete(binding.key);
+  }
+  const store = rootAppStoreApi.getState();
+  const existing = Object.values(store.crossMachineLanesByMachineId).find(
+    (entry) => entry.binding?.key === binding.key,
+  );
+  if (existing?.sessions.some((session) => session.id === sessionId)) {
+    store.mergeCrossMachineLanes({
+      machineId: existing.machineId,
+      machineName: existing.machineName,
+      sessions: existing.sessions.filter((session) => session.id !== sessionId),
+    });
+  }
+}
+
+/** Retains foreign optimistic rows across stale in-flight list responses. */
+export function reconcileCrossMachineOptimisticSessions(
+  binding: OpenProjectBinding,
+  sessions: TerminalSessionSummary[],
+  nowMs: number = Date.now(),
+): TerminalSessionSummary[] {
+  const pending = pendingForeignOptimisticSessionsByBinding.get(binding.key);
+  if (!pending?.size) return sessions;
+  const authoritativeIds = new Set(sessions.map((session) => session.id));
+  const retained: TerminalSessionSummary[] = [];
+  for (const [sessionId, entry] of pending) {
+    if (authoritativeIds.has(sessionId)) {
+      pending.delete(sessionId);
+    } else if (nowMs - entry.createdAtMs > FOREIGN_OPTIMISTIC_SESSION_TTL_MS) {
+      pending.delete(sessionId);
+    } else {
+      retained.push(entry.session);
+    }
+  }
+  if (pending.size === 0) {
+    pendingForeignOptimisticSessionsByBinding.delete(binding.key);
+  }
+  return retained.length > 0 ? [...retained, ...sessions] : sessions;
+}
 
 /** `refs/heads/x`, `x`, and `  x  ` are the same branch (matches laneDivergence). */
 function normalizeBranchRef(branchRef: string | null | undefined): string {
@@ -598,7 +703,10 @@ async function readMachine(
       binding,
       online: true,
       lanes: decodeForeignLanes(laneResult.result),
-      sessions: decodeForeignSessions(sessionResult.result),
+      sessions: reconcileCrossMachineOptimisticSessions(
+        binding,
+        decodeForeignSessions(sessionResult.result),
+      ),
       error: null,
     });
   } catch (error) {
@@ -648,7 +756,7 @@ async function readThisMachine(
       binding,
       online: true,
       lanes,
-      sessions,
+      sessions: reconcileCrossMachineOptimisticSessions(binding, sessions),
       error: null,
     });
   } catch (error) {
@@ -838,6 +946,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   detach();
   runtime.refCount = 0;
   runtime.connections = [];
+  pendingForeignOptimisticSessionsByBinding.clear();
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,

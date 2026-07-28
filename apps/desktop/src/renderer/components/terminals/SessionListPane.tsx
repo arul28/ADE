@@ -8,7 +8,7 @@ import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
 import {
   canonicalInputFromSummary,
-  sessionCanonicalUiState,
+  sessionFilingBucket,
   sessionNeedsYou,
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
@@ -34,7 +34,6 @@ import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessio
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
-import { isSessionFiledAsSnoozed } from "../../lib/sessionSnooze";
 import {
   handoffJobLikelyMaterialized,
   handoffLaunchMatchesQuery,
@@ -81,6 +80,28 @@ function bucketHandoffJobsByTime(jobs: HandoffLaunchJob[]) {
     else older.push(job);
   }
   return { today, yesterday, older };
+}
+
+function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
+  active: TerminalSessionSummary[];
+  snoozed: TerminalSessionSummary[];
+  settled: TerminalSessionSummary[];
+} {
+  const active: TerminalSessionSummary[] = [];
+  const snoozed: TerminalSessionSummary[] = [];
+  const settled: TerminalSessionSummary[] = [];
+  const nowMs = Date.now();
+  for (const session of sessions) {
+    const bucket = sessionFilingBucket(session, nowMs);
+    if (bucket === "snoozed") {
+      snoozed.push(session);
+    } else if (bucket === "settled") {
+      settled.push(session);
+    } else {
+      active.push(session);
+    }
+  }
+  return { active, snoozed, settled };
 }
 
 function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
@@ -733,12 +754,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     const nowMs = Date.now();
     const ids = new Set<string>();
     for (const session of allSessionsUnfiltered) {
-      const input = canonicalInputFromSummary(session);
-      const phase = sessionCanonicalUiState(input).phase;
-      if (
-        isSessionFiledAsSnoozed(session, phase, nowMs)
-        || sessionStatusBucket(input) === "settled"
-      ) {
+      const bucket = sessionFilingBucket(session, nowMs);
+      if (bucket === "snoozed" || bucket === "settled") {
         ids.add(session.id);
       }
     }
@@ -1019,32 +1036,61 @@ export const SessionListPane = React.memo(function SessionListPane({
     return set.id === activeGridSetId ? "active" : "inactive";
   };
 
-  const renderCardCore = (session: TerminalSessionSummary, options?: { compact?: boolean }) => {
+  type RenderCardOptions = {
+    compact?: boolean;
+    foreignRow?: CrossMachineLaneRow;
+    visibleSessionIds?: string[];
+  };
+  const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
+    const foreignRow = options?.foreignRow;
+    const disabledReason = foreignRow
+      ? !foreignRow.online
+        ? `${foreignRow.machineName} is offline`
+        : !foreignRow.binding
+          ? `${foreignRow.machineName} is unavailable`
+          : null
+      : deleteProgressByLaneId[session.laneId]
+        ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
+        : null;
     const card = (
       <SessionCard
         key={session.id}
         session={session}
-        lane={laneById.get(session.laneId) ?? null}
-        liveChildrenCount={liveChildrenByParentId.get(session.id) ?? 0}
+        lane={foreignRow?.lane ?? laneById.get(session.laneId) ?? null}
+        liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         parentSessionTitle={
-          session.orchestrationParentSessionId
+          !foreignRow && session.orchestrationParentSessionId
             ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null
             : null
         }
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
-        onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
+        onSelect={(id, event) => {
+          if (!foreignRow) {
+            onSelectSession(id, event, renderedSessionIds);
+          } else if (isChatToolType(session.toolType)) {
+            onSelectSession(id, event, options?.visibleSessionIds ?? [], foreignRow.binding);
+          } else if (foreignRow.binding && onSelectForeignRuntimeSession) {
+            onSelectForeignRuntimeSession(
+              session,
+              foreignRow.binding,
+              event,
+              options?.visibleSessionIds ?? [],
+            );
+          }
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
-          onContextMenu(session, e);
+          onContextMenu(session, e, foreignRow?.binding, foreignRow?.machineName);
         }}
         compact={options?.compact}
-        gridBadge={gridBadgeFor(session.id)}
-        disabledReason={deleteProgressByLaneId[session.laneId]
-          ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
-          : null}
+        gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
+        runtimePin={foreignRow?.binding}
+        deltaEnabled={!foreignRow}
+        disabledReason={disabledReason}
+        disabledBusy={!foreignRow}
       />
     );
     if (!isFirst) return card;
@@ -1087,8 +1133,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
-  const renderCards = (list: TerminalSessionSummary[], options?: { compact?: boolean }) =>
-    list
+  const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
+    if (options?.foreignRow) {
+      const visibleSessionIds = list.map((session) => session.id);
+      return list.map((session) =>
+        renderCardCore(session, { ...options, visibleSessionIds }));
+    }
+    return list
       .filter((session) => !excludedTopLevelIds.has(session.id))
       .map((session) => {
         const children = childrenByParentId.get(session.id) ?? [];
@@ -1101,6 +1152,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           </div>
         );
       });
+  };
+
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
     <AnimatePresence initial={false}>
       {jobs.map((job) => (
@@ -1129,7 +1182,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     icon: React.ReactNode,
     label: string,
     list: TerminalSessionSummary[],
-    options?: { compact?: boolean },
+    options?: RenderCardOptions,
   ) => {
     if (list.length === 0) return null;
     // Quiet tails start collapsed without needing to persist one entry per lane.
@@ -1185,7 +1238,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   };
 
   /**
-   * A lane whose every session is snoozed or settled. `isSessionFiledAsSnoozed`
+   * A lane whose every session is snoozed or settled. `sessionFilingBucket`
    * already yields to `needs_you`, so a lane can never read as quiet while
    * something in it is waiting on the user.
    */
@@ -1208,9 +1261,17 @@ export const SessionListPane = React.memo(function SessionListPane({
         || (unfilteredHandoffCountByLaneId.get(laneId) ?? 0) > 0;
       if (hasLaneEvidence && !isLaneQuiet(laneId)) {
         toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
+        continue;
+      }
+      const foreignRow = foreignRows.find(
+        (row) => `${row.machineId}:${row.lane.id}` === laneId,
+      );
+      if (foreignRow && partitionQuietSessions(foreignRow.sessions).active.length > 0) {
+        toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
       }
     }
   }, [
+    foreignRows,
     isLaneQuiet,
     toggleWorkSectionCollapsed,
     unfilteredSessionsByLane,
@@ -1439,7 +1500,12 @@ export const SessionListPane = React.memo(function SessionListPane({
       {visibleForeignRows.map((row) => {
         const compositeLaneId = `${row.machineId}:${row.lane.id}`;
         const marker = markersByLaneId.get(compositeLaneId) ?? null;
-        const collapsed = workCollapsedLaneIds.includes(compositeLaneId);
+        const quiet = partitionQuietSessions(row.sessions);
+        const laneQuiet = quiet.active.length === 0;
+        const laneOpenMarker = `lane-open:${compositeLaneId}`;
+        const collapsed = laneQuiet
+          ? !workCollapsedSectionIds.includes(laneOpenMarker)
+          : workCollapsedLaneIds.includes(compositeLaneId);
         return (
           <StickyGroupHeader
             key={`${row.machineId}:${row.lane.id}`}
@@ -1456,10 +1522,19 @@ export const SessionListPane = React.memo(function SessionListPane({
             collapsed={collapsed}
             accentColor={row.lane.color ?? null}
             machineMarker={marker ? <LaneMachineMarker marker={marker} /> : null}
+            quietCounts={laneQuiet && collapsed
+              ? {
+                  snoozed: quiet.snoozed.length,
+                  settled: quiet.settled.length,
+                }
+              : null}
             // Offline machines keep every lane they last reported, dimmed and
             // read-only. A wifi blip must never reflow the sidebar.
             dimmed={!row.online}
-            onToggleCollapsed={() => toggleWorkLaneCollapsed(compositeLaneId)}
+            onToggleCollapsed={() => {
+              if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
+              else toggleWorkLaneCollapsed(compositeLaneId);
+            }}
             onContextMenu={row.binding
               ? (event) => triggerForeignLaneContextMenu(
                 row.lane,
@@ -1470,45 +1545,21 @@ export const SessionListPane = React.memo(function SessionListPane({
               )
               : undefined}
           >
-            {row.sessions.map((session) => (
-              <SessionCard
-                key={session.id}
-                session={session}
-                lane={row.lane}
-                isSelected={selectedSessionId === session.id}
-                isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
-                onSelect={(_id, event) => {
-                  if (isChatToolType(session.toolType)) {
-                    onSelectSession(
-                      session.id,
-                      event,
-                      row.sessions.map((candidate) => candidate.id),
-                      row.binding,
-                    );
-                  } else if (row.binding && onSelectForeignRuntimeSession) {
-                    onSelectForeignRuntimeSession(
-                      session,
-                      row.binding,
-                      event,
-                      row.sessions.map((candidate) => candidate.id),
-                    );
-                  }
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  onContextMenu(session, event, row.binding, row.machineName);
-                }}
-                runtimePin={row.binding}
-                deltaEnabled={false}
-                disabledReason={!row.online
-                  ? `${row.machineName} is offline`
-                  : !row.binding
-                    ? `${row.machineName} is unavailable`
-                    : null
-                }
-                disabledBusy={false}
-              />
-            ))}
+            {renderCards(quiet.active, { foreignRow: row })}
+            {renderLaneQuietTail(
+              `snoozed-open:${compositeLaneId}`,
+              snoozedSectionIcon,
+              "snoozed",
+              quiet.snoozed,
+              { compact: laneQuiet, foreignRow: row },
+            )}
+            {renderLaneQuietTail(
+              `settled-open:${compositeLaneId}`,
+              settledSectionIcon,
+              "settled",
+              quiet.settled,
+              { compact: laneQuiet, foreignRow: row },
+            )}
           </StickyGroupHeader>
         );
       })}
