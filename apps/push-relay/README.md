@@ -1,10 +1,9 @@
 # ADE Push Relay
 
-Cloudflare Worker that fans ADE agent-state transitions out to iPhones as APNs
-alert pushes and Live Activity updates. The ADE machine runtime (brain) is the
-only publisher; phones never talk to this worker directly — they hand their
-APNs tokens to the brain over the paired sync WebSocket, and the brain
-registers them here.
+Cloudflare Worker that consolidates ADE attention state across a signed-in
+account, then fans it out to desktop Attention Center, iPhone, APNs, and Live
+Activities. ADE machine runtimes publish sanitized state; signed-in clients
+read and acknowledge the account stream directly.
 
 This is a **separate worker** from `apps/webhook-relay` (the GitHub webhook
 relay): different trust model, different lifecycle, and free-plan compatible on
@@ -18,9 +17,15 @@ its own (single D1 database, no Durable Objects, no queues).
 - Every other call is HMAC-signed with that secret:
   - `x-ade-push-timestamp`: unix seconds (±5 min skew allowed)
   - `x-ade-push-signature`: `sha256=HMAC(secret, "<timestamp>.<METHOD>.<path>.<sha256(body)>")`
-- The secret is scoped to push publishing only. It never grants access to any
-  project data, and the worker stores no chat/PR content — only device tokens
-  and notification payloads in flight.
+- `POST /machines/:key/attention` additionally requires the signed-in user's
+  Clerk bearer token. That binds the machine stream to an account without
+  making the machine secret an account credential.
+- Account routes require a Clerk bearer token whose issuer and
+  audience/authorized-party match this deployment.
+- The machine secret is scoped to push publishing only. Account Attention
+  stores bounded, sanitized presentation metadata (titles, previews,
+  destinations, progress, and acknowledgements), never transcripts, prompts,
+  diffs, or artifact contents. Entries expire and tombstones are pruned.
 
 ## Endpoints
 
@@ -33,6 +38,29 @@ its own (single D1 database, no Durable Objects, no queues).
 | GET | `/machines/:key/devices` | List registrations (diagnostics) |
 | POST | `/machines/:key/live-activity-tokens` | Upsert/remove a per-activity update token (`deviceId`, `activityId`, `token`; empty token removes) |
 | POST | `/machines/:key/publish` | Publish `notifications` (alert pushes) and/or `liveActivity` events |
+| POST | `/machines/:key/attention` | Publish the machine's complete account Attention snapshot (HMAC + Clerk bearer) |
+| GET | `/attention/account/snapshot?since=<revision>` | Read account Attention changes |
+| POST | `/attention/account/ack` | Mark items seen or dismissed across devices |
+| POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
+| GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
+| PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. DELETE retains that ownership epoch so delayed requests cannot reclaim the install. |
+| PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
+
+### Account Attention semantics
+
+- Each brain publishes one bounded full snapshot for its machine. The worker
+  merges every linked machine into a revisioned account stream, including
+  tombstones so desktop and iOS converge after removals.
+- Seen and dismissed state belongs to the account, so acknowledging an item on
+  iPhone clears it on desktop and vice versa.
+- Routine running/progress state remains ambient. Needs-input, failure,
+  checks-failing, review-requested, changes-requested, and merge-ready
+  transitions may notify according to account/device preferences.
+- A foreground Mac suppresses the immediate phone alert. If the item remains
+  unseen after the escalation window, a later machine heartbeat can send it.
+- The relay owns one account-wide Live Activity per iPhone. It focuses the
+  highest-priority work across machines and avoids competing per-machine
+  activities when the account publisher is healthy.
 
 ### Publish semantics
 
@@ -112,6 +140,31 @@ TestFlight/App Store builds register `production`), and uses the registration's
 
 Until `APNS_KEY`/`APNS_KEY_ID`/`APNS_TEAM_ID` are set, registration endpoints
 work but `publish` returns 503 (`/health` reports `apnsConfigured: false`).
+
+### Clerk verification (required for account Attention)
+
+Configure the same Clerk instance and ADE OAuth client used by desktop and iOS:
+
+```bash
+npx wrangler secret put CLERK_JWKS_URL
+npx wrangler secret put CLERK_ISSUER
+npx wrangler secret put CLERK_OAUTH_CLIENT_ID
+```
+
+If these are absent, legacy machine-scoped push routes continue to work, while
+account Attention routes fail closed with `401`.
+
+The iOS Debug configuration uses ADE's development Clerk instance. A shared
+relay deployment can accept it without mixing identity domains by configuring:
+
+```bash
+npx wrangler secret put CLERK_SECONDARY_JWKS_URL
+npx wrangler secret put CLERK_SECONDARY_ISSUER
+npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
+```
+
+Verified account keys are namespaced by issuer before persistence, so identical
+opaque user ids from development and production cannot collide.
 
 ## Local dev
 

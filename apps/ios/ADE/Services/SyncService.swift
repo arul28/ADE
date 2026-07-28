@@ -1982,6 +1982,9 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let repoOwner: String?
   let repoName: String?
   let branch: String?
+  let accountMachineKey: String?
+  let itemId: String?
+  let eventId: String?
   /// Optional anchors parsed from ADE session deeplinks. The Work view keeps
   /// them for parity with desktop, but currently ignores them because iOS has
   /// no route-level chat/terminal scroll hook.
@@ -1998,12 +2001,20 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     repoName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
   }
 
+  var hasCanonicalScope: Bool {
+    hasRepositoryScope
+      || accountMachineKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+  }
+
   init(
     sessionId: String,
     laneId: String? = nil,
     repoOwner: String? = nil,
     repoName: String? = nil,
     branch: String? = nil,
+    accountMachineKey: String? = nil,
+    itemId: String? = nil,
+    eventId: String? = nil,
     event: Int? = nil,
     offset: Int? = nil
   ) {
@@ -2013,6 +2024,9 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     self.repoOwner = repoOwner
     self.repoName = repoName
     self.branch = branch
+    self.accountMachineKey = accountMachineKey
+    self.itemId = itemId
+    self.eventId = eventId
     self.event = event
     self.offset = offset
   }
@@ -2021,6 +2035,35 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
 enum WorkSessionNavigationDestination: Equatable {
   case activeWork
   case hub
+}
+
+func syncAccountMachineNavigationTarget(
+  rawMachineKey: String?,
+  machines: [AccountMachine]
+) -> AccountMachine? {
+  guard let machineKey = rawMachineKey?
+    .trimmingCharacters(in: .whitespacesAndNewlines),
+    !machineKey.isEmpty else {
+    return nil
+  }
+  return machines.first { $0.machineKey == machineKey }
+}
+
+func syncAccountMachineNavigationIsCurrent(
+  targetDeviceId: String?,
+  activeHostIdentity: String?,
+  connectionState: RemoteConnectionState
+) -> Bool {
+  guard connectionState == .connected,
+        let targetDeviceId = targetDeviceId?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        !targetDeviceId.isEmpty,
+        let activeHostIdentity = activeHostIdentity?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        !activeHostIdentity.isEmpty else {
+    return false
+  }
+  return targetDeviceId == activeHostIdentity
 }
 
 /// One decision table shared by the app root and both possible consumers. The
@@ -2083,33 +2126,45 @@ struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
   let target: PrNavigationRequestTarget
   let detailTab: PrDetailTab?
+  let accountMachineKey: String?
+  let eventId: String?
 
   init(
     prId: String,
     prNumber: Int? = nil,
     laneId: String? = nil,
-    detailTab: PrDetailTab? = nil
+    detailTab: PrDetailTab? = nil,
+    accountMachineKey: String? = nil,
+    eventId: String? = nil
   ) {
     self.id = UUID().uuidString
     self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
     self.detailTab = detailTab
+    self.accountMachineKey = accountMachineKey
+    self.eventId = eventId
   }
 
   init(
     prNumber: Int,
     repoOwner: String? = nil,
     repoName: String? = nil,
-    detailTab: PrDetailTab? = nil
+    detailTab: PrDetailTab? = nil,
+    accountMachineKey: String? = nil,
+    eventId: String? = nil
   ) {
     self.id = UUID().uuidString
     self.target = .githubNumber(prNumber, repoOwner: repoOwner, repoName: repoName)
     self.detailTab = detailTab
+    self.accountMachineKey = accountMachineKey
+    self.eventId = eventId
   }
 
   init(createLaneId: String) {
     self.id = UUID().uuidString
     self.target = .create(laneId: createLaneId)
     self.detailTab = nil
+    self.accountMachineKey = nil
+    self.eventId = nil
   }
 
   var laneId: String? {
@@ -2593,6 +2648,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var accountConnectStageLabel: String?
   /// A brief success affordance shared by the access gate, Hub, and Settings.
   @Published private(set) var accountConnectSuccessLabel: String?
+  private var accountNavigationInFlight: (
+    id: UUID,
+    machineKey: String,
+    task: Task<Bool, Never>
+  )?
   /// Direct route to offer when a legacy (no identity pubkey) Relay adoption
   /// fails and PIN pairing is the only safe fallback.
   @Published private(set) var accountPairingPinFallbackHost: DiscoveredSyncHost?
@@ -5443,6 +5503,68 @@ final class SyncService: ObservableObject {
       ProductAnalytics.shared.captureError(.pairing)
       return false
     }
+  }
+
+  /// Ensures a notification/Attention deeplink is resolved against its owning
+  /// account machine before any project/session/PR lookup runs. A nil key is a
+  /// legacy local link and needs no machine transition.
+  func ensureAccountMachineForNavigation(_ rawMachineKey: String?) async -> Bool {
+    guard let machineKey = syncNonEmpty(rawMachineKey) else { return true }
+    if let current = accountNavigationInFlight {
+      let result = await current.task.value
+      if accountNavigationInFlight?.id == current.id {
+        accountNavigationInFlight = nil
+      }
+      if current.machineKey == machineKey {
+        return result
+      }
+    }
+    let id = UUID()
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return false }
+      return await self.performAccountMachineNavigation(machineKey)
+    }
+    accountNavigationInFlight = (id, machineKey, task)
+    let result = await task.value
+    if accountNavigationInFlight?.id == id {
+      accountNavigationInFlight = nil
+    }
+    return result
+  }
+
+  private func performAccountMachineNavigation(_ machineKey: String) async -> Bool {
+    var machine = syncAccountMachineNavigationTarget(
+      rawMachineKey: machineKey,
+      machines: AccountService.shared.machines
+    )
+    if machine == nil {
+      await AccountService.shared.loadMachines()
+      machine = syncAccountMachineNavigationTarget(
+        rawMachineKey: machineKey,
+        machines: AccountService.shared.machines
+      )
+    }
+    guard let machine else {
+      lastError = "That Mac is not available in your ADE account."
+      return false
+    }
+
+    let targetIdentity = syncNonEmpty(machine.deviceId)
+    let activeIdentity = syncNonEmpty(
+      activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+    )
+    if syncAccountMachineNavigationIsCurrent(
+      targetDeviceId: targetIdentity,
+      activeHostIdentity: activeIdentity,
+      connectionState: connectionState
+    ) {
+      return true
+    }
+    guard let authorization = AccountService.shared.currentPairingAuthorization else {
+      lastError = "Sign in again to open work from that Mac."
+      return false
+    }
+    return await pairWithAccountMachine(machine, authorization: authorization)
   }
 
   /// Adds directory-verified relay metadata to already-paired Macs without
@@ -17953,7 +18075,7 @@ extension SyncService {
       hasActiveSession: database.fetchSession(id: request.sessionId) != nil,
       targetIsActiveProject: target.map { isActiveProject($0.project) },
       targetIsKnownChat: target?.chat.isChatTool == true,
-      hasRepositoryScope: request.hasRepositoryScope
+      hasRepositoryScope: request.hasCanonicalScope
     )
   }
 

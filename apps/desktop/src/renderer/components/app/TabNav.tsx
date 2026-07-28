@@ -8,6 +8,7 @@ import {
   GitPullRequest,
   MagnifyingGlass,
   ClockCounterClockwise,
+  BellRinging,
   Robot,
   Brain,
   ChatCircleDots,
@@ -30,8 +31,13 @@ import { docs } from "../../onboarding/docsLinks";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import {
+  selectAttentionUnseenCount,
+  useAttentionStore,
+} from "../../state/attentionStore";
 
 const mainItems = [
+  { to: "/attention", label: "Attention", icon: BellRinging },
   { to: "/work", label: "Work", icon: Terminal },
   { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/files", label: "Files", icon: FileCode },
@@ -47,6 +53,9 @@ const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as co
 const SIDEBAR_ICON_SIZE = 20;
 const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
 const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = {
+  "/attention": {
+    description: "See agents and pull requests that are live, need you, or recently finished across every machine and project.",
+  },
   "/work": {
     description: "Chat with agents, launch CLI sessions, inspect shells, and use the right-side tool drawers.",
     docUrl: docs.chatOverview,
@@ -101,6 +110,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const projectBinding = useAppStore((s) => s.projectBinding);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
+  const unseenAttentionCount = useAttentionStore(selectAttentionUnseenCount);
   const location = useLocation();
   const { status: accountStatus } = useAccountStatus();
   const activeProjectRoot =
@@ -144,21 +154,26 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const renderItem = (
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
-    const onWelcomeLanding = showWelcome || !hasActiveProject;
+    const globallyAvailable = it.to === "/attention";
+    const onWelcomeLanding = !globallyAvailable && (showWelcome || !hasActiveProject);
     const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
-    const isActiveAllowed = !showWelcome && hasActiveProject;
+    const isActiveAllowed = globallyAvailable || (!showWelcome && hasActiveProject);
     const navTarget = it.to === "/prs" ? readStoredPrsRoute(activeProjectRoot) ?? it.to : it.to;
     const tooltipBase = TAB_TOOLTIP_BY_PATH[it.to];
     const tooltip: SmartTooltipContent = {
       label: it.label,
       description: tooltipBase?.description ?? `Open the ${it.label} tab.`,
-      effect: !hasActiveProject
-        ? "Open or create a project first."
-        : showWelcome
-          ? "Finish choosing a project before navigating."
-          : isActive
-            ? "Already viewing this tab."
-            : `Opens ${it.label}.`,
+      effect: globallyAvailable
+        ? isActive
+          ? "Already viewing this tab."
+          : `Opens ${it.label}.`
+        : !hasActiveProject
+          ? "Open or create a project first."
+          : showWelcome
+            ? "Finish choosing a project before navigating."
+            : isActive
+              ? "Already viewing this tab."
+              : `Opens ${it.label}.`,
       docUrl: tooltipBase?.docUrl,
     };
 
@@ -250,6 +265,13 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                       : "ade-status-dot-active",
                   )}
                 />
+              ) : it.to === "/attention" && unseenAttentionCount > 0 ? (
+                <span
+                  title={`${unseenAttentionCount} unseen attention item${unseenAttentionCount === 1 ? "" : "s"}`}
+                  className="absolute -right-2 -top-1 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-bg bg-amber-400 px-0.5 font-mono text-[7px] font-extrabold leading-none text-stone-950 shadow-[0_0_10px_rgba(251,191,36,0.28)]"
+                >
+                  {Math.min(99, unseenAttentionCount)}
+                </span>
               ) : null}
             </span>
           </span>
@@ -280,7 +302,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       >
         {/* Core navigation items */}
         <div className="flex flex-col gap-px">
-          {mainItems.slice(0, 4).map((it) => renderItem(it))}
+          {mainItems.slice(0, 5).map((it) => renderItem(it))}
         </div>
 
         {!webMode ? (
@@ -290,7 +312,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
 
             {/* Tool navigation items */}
             <div className="flex flex-col gap-px">
-              {mainItems.slice(4).map((it) => renderItem(it))}
+              {mainItems.slice(5).map((it) => renderItem(it))}
             </div>
           </>
         ) : null}

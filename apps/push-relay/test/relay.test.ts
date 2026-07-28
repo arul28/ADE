@@ -51,9 +51,45 @@ class FakeD1Database {
   activityTokens: ActivityTokenRow[] = [];
   suppressions: SuppressionRow[] = [];
   rateCounters = new Map<string, { window_start: number; count: number; updated_at: string }>();
+  private nextBatchFailureIndex: number | null = null;
 
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(sql, this);
+  }
+
+  async batch(statements: FakeD1Statement[]): Promise<Array<{ success: boolean }>> {
+    const snapshot = {
+      machines: this.machines.map((row) => ({ ...row })),
+      devices: this.devices.map((row) => ({ ...row })),
+      activityTokens: this.activityTokens.map((row) => ({ ...row })),
+      suppressions: this.suppressions.map((row) => ({ ...row })),
+      rateCounters: new Map(
+        [...this.rateCounters].map(([key, value]) => [key, { ...value }]),
+      ),
+    };
+    try {
+      const results: Array<{ success: boolean }> = [];
+      for (const [index, statement] of statements.entries()) {
+        if (index === this.nextBatchFailureIndex) {
+          throw new Error(`injected batch failure at statement ${index}`);
+        }
+        results.push(await statement.run());
+      }
+      return results;
+    } catch (error) {
+      this.machines = snapshot.machines;
+      this.devices = snapshot.devices;
+      this.activityTokens = snapshot.activityTokens;
+      this.suppressions = snapshot.suppressions;
+      this.rateCounters = snapshot.rateCounters;
+      throw error;
+    } finally {
+      this.nextBatchFailureIndex = null;
+    }
+  }
+
+  failNextBatchAt(index: number): void {
+    this.nextBatchFailureIndex = index;
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
@@ -359,6 +395,19 @@ describe("push relay", () => {
       body: '{"notifications":[{"title":"parity","phase":"waiting"}]}',
     });
     expect(signature).toBe("sha256=5c5c3a3081a0c6bec96c4191a88ab17b59382b902c6071672ea6d8daa30764f3"); // gitleaks:allow
+  });
+
+  it("rolls back the fake D1 batch when a later statement fails", async () => {
+    db.failNextBatchAt(1);
+    await expect(db.batch([
+      db.prepare("insert into machines(machine_key, secret, created_at, last_seen_at) values (?, ?, ?, ?)")
+        .bind(MACHINE_KEY, SECRET, "2026-07-28T08:00:00.000Z", "2026-07-28T08:00:00.000Z"),
+      db.prepare("insert into publish_suppression(machine_key, suppression_key, content_hash, published_at) values (?, ?, ?, ?)")
+        .bind(MACHINE_KEY, "attention", "fingerprint", "2026-07-28T08:00:00.000Z"),
+    ])).rejects.toThrow("injected batch failure at statement 1");
+
+    expect(db.machines).toEqual([]);
+    expect(db.suppressions).toEqual([]);
   });
 
   it("claims a machine once and allows an idempotent re-claim", async () => {

@@ -160,5 +160,5 @@ jobs:
         with:
           node-version: 22
       - run: cd apps/push-relay && npm ci
-      - name: Deploy Worker
-        run: cd apps/push-relay && npx wrangler deploy
+      - name: Apply D1 migrations and deploy Worker
+        run: cd apps/push-relay && npm run deploy

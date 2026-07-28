@@ -1,5 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type {
+  AttentionItem,
+  AttentionPreferences,
+  AttentionPresence,
+  AttentionSnapshot,
+} from "../../../../desktop/src/shared/types/attention";
 import type { PushDeviceRegistration } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 
@@ -56,6 +62,13 @@ export type PushRelayHealth = {
   apnsConfigured: boolean;
 };
 
+export type AttentionRelayPublishPayload = {
+  machineName: string;
+  fullSnapshot: true;
+  items: AttentionItem[];
+  tombstones?: Array<{ id: string; revision: number }>;
+};
+
 /**
  * Canonical string the relay commits every signed call to. Binding method,
  * path and body hash prevents replaying a captured signature against another
@@ -78,13 +91,20 @@ export function createPushRelayClient(args: {
   store: PushRegistrationStore;
   logger: Logger;
   baseUrl?: string;
+  getAccountAccessToken?: () => Promise<string | null>;
+  getAccountUserId?: () => string | null;
 }) {
   const baseUrl = (args.baseUrl ?? process.env.ADE_PUSH_RELAY_URL?.trim() ?? "").trim() || DEFAULT_RELAY_URL;
 
   const request = async (
     method: string,
     pathSuffix: string,
-    options?: { body?: unknown; signed?: boolean },
+    options?: {
+      body?: unknown;
+      signed?: boolean;
+      accountAuthorized?: boolean;
+      expectedAccountUserId?: string;
+    },
   ): Promise<RelayResponse> => {
     const url = new URL(`${baseUrl}${pathSuffix}`);
     const bodyString = options?.body === undefined ? "" : JSON.stringify(options.body);
@@ -103,6 +123,33 @@ export function createPushRelayClient(args: {
         pathname: url.pathname,
         body: bodyString,
       });
+    }
+    if (options?.accountAuthorized) {
+      if (
+        options.expectedAccountUserId
+        && args.getAccountUserId?.() !== options.expectedAccountUserId
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "ADE account changed before the request was authorized" },
+        };
+      }
+      const token = await args.getAccountAccessToken?.();
+      if (!token) {
+        return { ok: false, status: 401, body: { error: "ADE account is not signed in" } };
+      }
+      if (
+        options.expectedAccountUserId
+        && args.getAccountUserId?.() !== options.expectedAccountUserId
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "ADE account changed while the request was authorized" },
+        };
+      }
+      headers.authorization = `Bearer ${token}`;
     }
 
     const controller = new AbortController();
@@ -140,22 +187,26 @@ export function createPushRelayClient(args: {
     return `/machines/${machineKey}${suffix}`;
   };
 
+  const claimMachine = async (): Promise<void> => {
+    if (args.store.isClaimed()) return;
+    const { machineKey, machineSecret } = args.store.getOrCreateIdentity();
+    const response = await request("POST", `/machines/${machineKey}/claim`, {
+      body: { secret: machineSecret },
+    });
+    // 200 (already claimed with same secret) and 201 (fresh) both mean claimed.
+    if (response.ok) {
+      args.store.markClaimed();
+      return;
+    }
+    requireOk("claim", response);
+  };
+
   return {
     baseUrl,
 
     /** Idempotent claim; the relay treats a re-claim with the same secret as a no-op. */
     async claim(): Promise<void> {
-      if (args.store.isClaimed()) return;
-      const { machineKey, machineSecret } = args.store.getOrCreateIdentity();
-      const response = await request("POST", `/machines/${machineKey}/claim`, {
-        body: { secret: machineSecret },
-      });
-      // 200 (already claimed with same secret) and 201 (fresh) both mean claimed.
-      if (response.ok) {
-        args.store.markClaimed();
-        return;
-      }
-      requireOk("claim", response);
+      await claimMachine();
     },
 
     async registerDevice(registration: PushDeviceRegistration): Promise<void> {
@@ -196,6 +247,92 @@ export function createPushRelayClient(args: {
     async publish(payload: PushRelayPublishPayload): Promise<Record<string, unknown>> {
       const response = await request("POST", machinePath(`/publish`), { body: payload, signed: true });
       return requireOk("publish", response);
+    },
+
+    async publishAttention(payload: AttentionRelayPublishPayload): Promise<Record<string, unknown> | null> {
+      if (!args.getAccountAccessToken) return null;
+      await claimMachine();
+      const response = await request("POST", machinePath("/attention"), {
+        body: payload,
+        signed: true,
+        accountAuthorized: true,
+      });
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+        return null;
+      }
+      return requireOk("publishAttention", response);
+    },
+
+    async getAttentionSnapshot(
+      since = 0,
+      streamId?: string | null,
+    ): Promise<AttentionSnapshot | null> {
+      if (!args.getAccountAccessToken) return null;
+      const query = new URLSearchParams({
+        since: String(Math.max(0, Math.trunc(since))),
+      });
+      if (streamId?.trim()) query.set("streamId", streamId.trim());
+      const response = await request(
+        "GET",
+        `/attention/account/snapshot?${query.toString()}`,
+        { accountAuthorized: true },
+      );
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+        return null;
+      }
+      return requireOk("getAttentionSnapshot", response) as unknown as AttentionSnapshot;
+    },
+
+    async acknowledgeAttention(acknowledgment: {
+      itemIds: string[];
+      seenAt?: string;
+      dismissedAt?: string | null;
+    }): Promise<Record<string, unknown> | null> {
+      if (!args.getAccountAccessToken) return null;
+      const response = await request("POST", "/attention/account/ack", {
+        body: acknowledgment,
+        accountAuthorized: true,
+      });
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+        return null;
+      }
+      return requireOk("acknowledgeAttention", response);
+    },
+
+    async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
+      const response = await request("POST", "/attention/account/presence", {
+        body: presence,
+        accountAuthorized: true,
+      });
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
+      requireOk("reportAttentionPresence", response);
+    },
+
+    async getAttentionPreferences(
+      expectedAccountUserId: string,
+    ): Promise<AttentionPreferences | null> {
+      const response = await request("GET", "/attention/account/preferences", {
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
+        return null;
+      }
+      const body = requireOk("getAttentionPreferences", response);
+      return (body.preferences ?? null) as AttentionPreferences | null;
+    },
+
+    async putAttentionPreferences(
+      expectedAccountUserId: string,
+      preferences: AttentionPreferences,
+    ): Promise<void> {
+      const response = await request("PUT", "/attention/account/preferences", {
+        body: preferences,
+        accountAuthorized: true,
+        expectedAccountUserId,
+      });
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
+      requireOk("putAttentionPreferences", response);
     },
 
     async health(): Promise<PushRelayHealth> {

@@ -2,6 +2,14 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
+import {
+  type AttentionItem,
+  type AttentionNotchAcknowledgeRequest,
+  type AttentionNotchSettings,
+  type AttentionPreferences,
+  type AttentionPresence,
+  type AttentionSnapshot,
+} from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
@@ -4704,6 +4712,54 @@ contextBridge.exposeInMainWorld("ade", {
         });
       }
       return ipcRenderer.invoke(IPC.adeActionsListRegistry);
+    },
+  },
+  attention: {
+    getSnapshot: async (
+      since = 0,
+      streamId?: string | null,
+    ): Promise<AttentionSnapshot> =>
+      ipcRenderer.invoke(IPC.attentionGetSnapshot, {
+        since,
+        streamId: streamId?.trim() || null,
+      }),
+    acknowledge: async (args: {
+      itemIds: string[];
+      seenAt?: string;
+      dismissedAt?: string | null;
+    }): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionAcknowledge, args),
+    reportPresence: async (presence: AttentionPresence): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionReportPresence, presence),
+    getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences> =>
+      ipcRenderer.invoke(IPC.attentionGetPreferences, { accountOwnerId }),
+    putPreferences: async (
+      accountOwnerId: string,
+      preferences: AttentionPreferences,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutPreferences, {
+        accountOwnerId,
+        preferences,
+      }),
+    openItem: async (item: AttentionItem): Promise<void> => {
+      await ipcRenderer.invoke(IPC.attentionOpenItem, item);
+    },
+  },
+  attentionNotch: {
+    publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
+    updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
+    onAcknowledgeRequested: (
+      cb: (request: AttentionNotchAcknowledgeRequest) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: AttentionNotchAcknowledgeRequest,
+      ) => cb(request);
+      ipcRenderer.on(IPC.attentionNotchAcknowledgeRequested, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.attentionNotchAcknowledgeRequested, listener);
     },
   },
   usage: {

@@ -19,6 +19,7 @@ struct ADEAgentActivityWidget: Widget {
             )
             .activityBackgroundTint(Color.black.opacity(0.28))
             .activitySystemActionForegroundColor(.primary)
+            .privacySensitive()
         } dynamicIsland: { context in
             let presentation = AgentRunsPresentation(
                 state: context.state,
@@ -27,40 +28,77 @@ struct ADEAgentActivityWidget: Widget {
             )
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: presentation.primarySymbol)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(presentation.tint)
+                    HStack(spacing: 5) {
+                        Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                            .font(.system(size: 14, weight: .bold))
+                        Text(presentation.compactCountLabel)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(presentation.tint)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     AgentRunsCountBadge(presentation: presentation)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(presentation.runs.prefix(2)) { run in
-                            AgentRunRow(run: run, compact: true)
-                        }
-                        if presentation.runs.isEmpty {
-                            ForEach(presentation.prs.prefix(2)) { pr in
-                                PullRequestActivityRow(pr: pr, compact: true)
-                            }
-                        }
-                        if presentation.isStale {
-                            AgentRunsStaleHint()
+                    Group {
+                        if let run = presentation.primary {
+                            AgentActivityRunHero(
+                                run: run,
+                                compact: true,
+                                allowsInlineActions: !presentation.accountWide,
+                                hideDetails: presentation.hideDetails
+                            )
+                        } else if let pr = presentation.primaryPr {
+                            AgentActivityPullRequestHero(
+                                pr: pr,
+                                compact: true,
+                                hideDetails: presentation.hideDetails
+                            )
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .privacySensitive()
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let machine = presentation.machineFooter {
-                        Text(machine)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(presentation.secondaryRuns) { run in
+                            AgentRunRow(
+                                run: run,
+                                compact: true,
+                                hideDetails: presentation.hideDetails
+                            )
+                        }
+                        ForEach(presentation.secondaryPrs) { pr in
+                            PullRequestActivityRow(
+                                pr: pr,
+                                compact: true,
+                                hideDetails: presentation.hideDetails
+                            )
+                        }
+                        HStack(spacing: 5) {
+                            if presentation.overflowCount > 0 {
+                                Text("+\(presentation.overflowCount) more")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(presentation.tint)
+                            }
+                            if presentation.isStale {
+                                AgentRunsStaleHint()
+                            }
+                            Spacer(minLength: 0)
+                            if let machine = presentation.machineFooter {
+                                Text(machine)
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
                     }
+                    .padding(.horizontal, 4)
+                    .privacySensitive()
                 }
             } compactLeading: {
-                Image(systemName: presentation.primarySymbol)
-                    .font(.system(size: 13, weight: .semibold))
+                Image(systemName: presentation.waitingCount > 0 ? presentation.primarySymbol : "point.3.filled.connected.trianglepath.dotted")
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(presentation.tint)
             } compactTrailing: {
                 if presentation.waitingCount > 0 {
@@ -92,31 +130,65 @@ struct AgentRunsPresentation {
     let waitingCount: Int
     let primary: ADEAgentRunsAttributes.Run?
     let primaryPr: ADEAgentRunsAttributes.PullRequest?
+    let secondaryRuns: [ADEAgentRunsAttributes.Run]
+    let secondaryPrs: [ADEAgentRunsAttributes.PullRequest]
+    let overflowCount: Int
     let isStale: Bool
     let machineName: String
+    let accountWide: Bool
+    let hideDetails: Bool
 
     init(state: ADEAgentRunsAttributes.ContentState, attributes: ADEAgentRunsAttributes, isStale: Bool) {
-        // Attention-needing runs float to the top of the glance.
+        // Match the original T3 Code activity hierarchy: user-blocked work,
+        // failures, in-flight work, then outcomes. PR attention participates in
+        // the same focus decision instead of being hidden behind a running run.
         let sorted = state.runs.sorted { lhs, rhs in
-            let l = lhs.resolvedPhase.needsAttention ? 0 : 1
-            let r = rhs.resolvedPhase.needsAttention ? 0 : 1
-            return l < r
+            Self.priority(lhs.resolvedPhase) < Self.priority(rhs.resolvedPhase)
         }
-        self.runs = Array(sorted.prefix(3))
+        self.runs = sorted
         let sortedPrs = Array(state.prs.sorted { lhs, rhs in
-            let l = lhs.resolvedPhase.needsAttention ? 0 : 1
-            let r = rhs.resolvedPhase.needsAttention ? 0 : 1
+            let l = Self.priority(lhs.resolvedPhase)
+            let r = Self.priority(rhs.resolvedPhase)
             if l != r { return l < r }
             return lhs.updatedAt > rhs.updatedAt
-        }.prefix(2))
+        })
         self.prs = sortedPrs
         self.activeCount = max(state.activeCount, state.runs.count)
         self.waitingCount = state.runs.filter { $0.resolvedPhase.needsAttention }.count
             + state.prs.filter { $0.resolvedPhase.needsAttention }.count
-        self.primary = sorted.first
-        self.primaryPr = sortedPrs.first
+
+        let attentionRun = sorted.first(where: { $0.resolvedPhase.needsAttention })
+        let attentionPr = sortedPrs.first(where: { $0.resolvedPhase.needsAttention })
+        if let attentionRun {
+            self.primary = attentionRun
+            self.primaryPr = nil
+        } else if let attentionPr {
+            self.primary = nil
+            self.primaryPr = attentionPr
+        } else if let first = sorted.first {
+            self.primary = first
+            self.primaryPr = nil
+        } else {
+            self.primary = nil
+            self.primaryPr = sortedPrs.first
+        }
+
+        let remainingRuns = sorted.filter { $0.id != self.primary?.id }
+        self.secondaryRuns = Array(remainingRuns.prefix(2))
+        let remainingSlots = max(0, 2 - self.secondaryRuns.count)
+        self.secondaryPrs = Array(
+            sortedPrs
+                .filter { $0.id != self.primaryPr?.id }
+                .prefix(remainingSlots)
+        )
+        let represented = (self.primary == nil && self.primaryPr == nil ? 0 : 1)
+            + self.secondaryRuns.count
+            + self.secondaryPrs.count
+        self.overflowCount = max(0, self.activeCount + state.prs.count - represented)
         self.isStale = isStale || state.runs.contains { $0.resolvedPhase == .stale }
         self.machineName = attributes.machineName
+        self.accountWide = attributes.isAccountWide
+        self.hideDetails = ADESharedContainer.hideAttentionDetails
     }
 
     /// Tint of the glance — attention amber wins, otherwise the primary run's
@@ -133,12 +205,20 @@ struct AgentRunsPresentation {
     }
 
     var glanceCount: Int {
-        max(activeCount, prs.count)
+        activeCount + prs.count
+    }
+
+    var compactCountLabel: String {
+        if waitingCount > 0 { return "\(waitingCount)" }
+        if activeCount == 0, primary?.resolvedPhase == .failed { return "!" }
+        if activeCount == 0, primaryPr?.resolvedPhase == .checksFailing { return "!" }
+        return "\(glanceCount)"
     }
 
     /// Footer only earns its space when there's more than one run or a machine
     /// name worth showing.
     var machineFooter: String? {
+        if hideDetails { return "ADE" }
         let trimmed = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if activeCount > runs.count {
@@ -150,33 +230,37 @@ struct AgentRunsPresentation {
     var destinationURL: URL {
         let workspace = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
         let attentionRun = runs.first(where: { $0.resolvedPhase.needsAttention })
-        if let id = attentionRun?.id.trimmingCharacters(in: .whitespacesAndNewlines),
-           !id.isEmpty,
-           let url = sessionURL(for: id) {
+        if let url = attentionRun?.deepLinkURL {
             return url
         }
         if let prUrl = prs.first(where: { $0.resolvedPhase.needsAttention })?.deepLinkURL {
             return prUrl
         }
-        let target = primary
-        guard let id = target?.id.trimmingCharacters(in: .whitespacesAndNewlines),
-              !id.isEmpty else {
+        guard let target = primary else {
             if let prUrl = primaryPr?.deepLinkURL {
                 return prUrl
             }
             return workspace
         }
-        return sessionURL(for: id) ?? workspace
+        return target.deepLinkURL ?? workspace
     }
 
-    private func sessionURL(for id: String) -> URL? {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        guard let encoded = id.addingPercentEncoding(withAllowedCharacters: allowed),
-              let url = URL(string: "ade://session/\(encoded)") else {
-            return nil
+    private static func priority(_ phase: AgentRunPhase) -> Int {
+        switch phase {
+        case .waitingForApproval, .waitingForInput: return 0
+        case .failed: return 1
+        case .starting, .running: return 2
+        case .completed, .stale: return 3
         }
-        return url
+    }
+
+    private static func priority(_ phase: PullRequestPhase) -> Int {
+        switch phase {
+        case .checksFailing, .changesRequested: return 1
+        case .reviewRequested, .mergeReady: return 2
+        case .opened, .reopened: return 3
+        case .merged, .closed: return 4
+        }
     }
 }
 
@@ -186,36 +270,65 @@ private struct AgentRunsLockScreenView: View {
     let presentation: AgentRunsPresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
-                Image(systemName: presentation.waitingCount > 0 ? "bell.badge.fill" : "circle.dotted")
-                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(presentation.tint)
                 Text(headline)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
                 if let footer = presentation.machineFooter {
                     Text(footer)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
 
-            if presentation.runs.isEmpty && presentation.prs.isEmpty {
+            if presentation.primary == nil && presentation.primaryPr == nil {
                 Text("No active runs")
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(presentation.runs) { run in
-                        AgentRunRow(run: run, compact: false)
+                    if let run = presentation.primary {
+                        AgentActivityRunHero(
+                            run: run,
+                            compact: false,
+                            allowsInlineActions: !presentation.accountWide,
+                            hideDetails: presentation.hideDetails
+                        )
                     }
-                    ForEach(presentation.prs) { pr in
-                        PullRequestActivityRow(pr: pr, compact: false)
+                    if let pr = presentation.primaryPr {
+                        AgentActivityPullRequestHero(
+                            pr: pr,
+                            compact: false,
+                            hideDetails: presentation.hideDetails
+                        )
+                    }
+                    ForEach(presentation.secondaryRuns) { run in
+                        AgentRunRow(
+                            run: run,
+                            compact: true,
+                            hideDetails: presentation.hideDetails
+                        )
+                    }
+                    ForEach(presentation.secondaryPrs) { pr in
+                        PullRequestActivityRow(
+                            pr: pr,
+                            compact: true,
+                            hideDetails: presentation.hideDetails
+                        )
+                    }
+                    if presentation.overflowCount > 0 {
+                        Text("+\(presentation.overflowCount) more")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(presentation.tint)
+                            .padding(.leading, 22)
                     }
                 }
             }
@@ -233,6 +346,10 @@ private struct AgentRunsLockScreenView: View {
         if presentation.waitingCount > 0 {
             return presentation.waitingCount == 1 ? "1 item needs you" : "\(presentation.waitingCount) items need you"
         }
+        if presentation.activeCount == 0, let phase = presentation.primary?.resolvedPhase {
+            if phase == .failed { return "Agent work failed" }
+            if phase == .completed { return "Agent work completed" }
+        }
         if presentation.runs.isEmpty && !presentation.prs.isEmpty {
             return presentation.prs.count == 1 ? "1 pull request updated" : "\(presentation.prs.count) pull requests updated"
         }
@@ -241,11 +358,197 @@ private struct AgentRunsLockScreenView: View {
     }
 }
 
+// MARK: - Focus cards
+
+private struct ProviderActivityMark: View {
+    let model: String?
+    let fallbackSymbol: String
+    let tint: Color
+    let compact: Bool
+
+    var body: some View {
+        let provider = ADESharedTheme.providerSlug(forModel: model)
+        ZStack {
+            Circle()
+                .fill(tint.opacity(0.16))
+            if let assetName = ADESharedTheme.providerAssetName(for: provider) {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(compact ? 2.5 : 3)
+            } else {
+                Image(systemName: fallbackSymbol)
+                    .font(.system(size: compact ? 9 : 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .frame(width: compact ? 16 : 20, height: compact ? 16 : 20)
+        .overlay(Circle().strokeBorder(tint.opacity(0.24), lineWidth: 0.5))
+        .accessibilityHidden(true)
+    }
+}
+
+private struct AgentActivityRunHero: View {
+    let run: ADEAgentRunsAttributes.Run
+    let compact: Bool
+    let allowsInlineActions: Bool
+    let hideDetails: Bool
+
+    private var phase: AgentRunPhase { run.resolvedPhase }
+    private var showsApprovalActions: Bool {
+        allowsInlineActions
+            && !compact
+            && phase == .waitingForApproval
+            && !(run.itemId ?? "").isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: showsApprovalActions ? 7 : 0) {
+            if let url = run.deepLinkURL {
+                Link(destination: url) { content }
+                    .buttonStyle(.plain)
+            } else {
+                content
+            }
+
+            if showsApprovalActions {
+                HStack(spacing: 8) {
+                    Button(intent: ApproveSessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
+                        heroAction("Approve", symbol: "checkmark", tint: phase.tint)
+                    }
+                    .buttonStyle(.plain)
+                    Button(intent: DenySessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
+                        heroAction("Deny", symbol: "xmark", tint: .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 27)
+            }
+        }
+        .padding(.horizontal, compact ? 5 : 8)
+        .padding(.vertical, compact ? 3 : 7)
+        .background(
+            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
+                .fill(phase.tint.opacity(phase.needsAttention || phase == .failed ? 0.16 : 0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
+                .stroke(phase.tint.opacity(0.22), lineWidth: 0.6)
+        )
+    }
+
+    private var content: some View {
+        HStack(spacing: 8) {
+            ProviderActivityMark(
+                model: run.model,
+                fallbackSymbol: phase.symbol,
+                tint: phase.tint,
+                compact: compact
+            )
+            VStack(alignment: .leading, spacing: compact ? 0 : 2) {
+                Text(hideDetails ? "Agent activity" : run.title)
+                    .font(compact ? .system(size: 11.5, weight: .semibold) : .footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if !compact, let subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 5)
+            Text(phase.label)
+                .font(compact ? .system(size: 9.5, weight: .bold) : .caption2.weight(.bold))
+                .foregroundStyle(phase.tint)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var subtitle: String? {
+        guard !hideDetails else { return nil }
+        let detail = run.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let detail, !detail.isEmpty { return detail }
+        return run.subtitle
+    }
+
+    private func heroAction(_ title: String, symbol: String, tint: Color) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(tint.opacity(0.13), in: Capsule())
+    }
+}
+
+private struct AgentActivityPullRequestHero: View {
+    let pr: ADEAgentRunsAttributes.PullRequest
+    let compact: Bool
+    let hideDetails: Bool
+
+    private var phase: PullRequestPhase { pr.resolvedPhase }
+
+    var body: some View {
+        Group {
+            if let url = pr.deepLinkURL {
+                Link(destination: url) { content }
+                    .buttonStyle(.plain)
+            } else {
+                content
+            }
+        }
+        .padding(.horizontal, compact ? 5 : 8)
+        .padding(.vertical, compact ? 3 : 7)
+        .background(
+            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
+                .fill(phase.tint.opacity(0.14))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
+                .stroke(phase.tint.opacity(0.22), lineWidth: 0.6)
+        )
+    }
+
+    private var content: some View {
+        HStack(spacing: 8) {
+            Image(systemName: phase.symbol)
+                .font(.system(size: compact ? 11 : 14, weight: .semibold))
+                .foregroundStyle(phase.tint)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: compact ? 0 : 2) {
+                Text(hideDetails ? "Pull request update" : "#\(pr.prNumber) \(pr.title)")
+                    .font(compact ? .system(size: 11.5, weight: .semibold) : .footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if !hideDetails, !compact, let subtitle = pr.subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 5)
+            Text(phase.label)
+                .font(compact ? .system(size: 9.5, weight: .bold) : .caption2.weight(.bold))
+                .foregroundStyle(phase.tint)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Shared row
 
 private struct AgentRunRow: View {
     let run: ADEAgentRunsAttributes.Run
     let compact: Bool
+    let hideDetails: Bool
 
     private var phase: AgentRunPhase { run.resolvedPhase }
 
@@ -262,11 +565,11 @@ private struct AgentRunRow: View {
         Group {
             if showsApprovalActions {
                 VStack(alignment: .leading, spacing: 7) {
-                    rowContent
+                    linkedRowContent
                     approvalActions
                 }
             } else {
-                rowContent
+                linkedRowContent
             }
         }
         .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
@@ -278,22 +581,35 @@ private struct AgentRunRow: View {
         )
     }
 
+    @ViewBuilder
+    private var linkedRowContent: some View {
+        if let url = run.deepLinkURL {
+            Link(destination: url) { rowContent }
+                .buttonStyle(.plain)
+        } else {
+            rowContent
+        }
+    }
+
     private var rowContent: some View {
         HStack(spacing: 8) {
-            Image(systemName: phase.symbol)
-                .font(.system(size: compact ? 10 : 11, weight: .semibold))
-                .foregroundStyle(phase.tint)
-                .frame(width: 14, alignment: .center)
+            ProviderActivityMark(
+                model: run.model,
+                fallbackSymbol: phase.symbol,
+                tint: phase.tint,
+                compact: true
+            )
+            .frame(width: 14, alignment: .center)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(run.title)
-                    .font(.system(size: compact ? 11 : 12.5, weight: .medium))
+                Text(hideDetails ? "Agent activity" : run.title)
+                    .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 if let subtitle = subtitle {
                     Text(subtitle)
-                        .font(.system(size: compact ? 9 : 10, weight: .regular))
+                        .font(compact ? .system(size: 9, weight: .regular) : .caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
@@ -303,10 +619,11 @@ private struct AgentRunRow: View {
             Spacer(minLength: 4)
 
             Text(phase.label)
-                .font(.system(size: compact ? 9 : 9.5, weight: .semibold))
+                .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
                 .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
                 .lineLimit(1)
         }
+        .contentShape(Rectangle())
     }
 
     /// Approve / Deny capsules, aligned under the title (past the status glyph).
@@ -345,6 +662,7 @@ private struct AgentRunRow: View {
 
     /// Prefer the host-supplied detail line; fall back to "lane · model".
     private var subtitle: String? {
+        guard !hideDetails else { return nil }
         let detail = run.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let detail, !detail.isEmpty { return detail }
         return run.subtitle
@@ -354,10 +672,29 @@ private struct AgentRunRow: View {
 private struct PullRequestActivityRow: View {
     let pr: ADEAgentRunsAttributes.PullRequest
     let compact: Bool
+    let hideDetails: Bool
 
     private var phase: PullRequestPhase { pr.resolvedPhase }
 
     var body: some View {
+        Group {
+            if let url = pr.deepLinkURL {
+                Link(destination: url) { rowContent }
+                    .buttonStyle(.plain)
+            } else {
+                rowContent
+            }
+        }
+        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
+        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
+        .background(
+            phase.needsAttention && !compact
+                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
+                : nil
+        )
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 8) {
             Image(systemName: phase.symbol)
                 .font(.system(size: compact ? 10 : 11, weight: .semibold))
@@ -365,14 +702,14 @@ private struct PullRequestActivityRow: View {
                 .frame(width: 14, alignment: .center)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("#\(pr.prNumber) \(pr.title)")
-                    .font(.system(size: compact ? 11 : 12.5, weight: .medium))
+                Text(hideDetails ? "Pull request update" : "#\(pr.prNumber) \(pr.title)")
+                    .font(compact ? .system(size: 11, weight: .medium) : .caption.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
-                if let subtitle = pr.subtitle {
+                if !hideDetails, let subtitle = pr.subtitle {
                     Text(subtitle)
-                        .font(.system(size: compact ? 9 : 10, weight: .regular))
+                        .font(compact ? .system(size: 9, weight: .regular) : .caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
@@ -382,17 +719,11 @@ private struct PullRequestActivityRow: View {
             Spacer(minLength: 4)
 
             Text(phase.label)
-                .font(.system(size: compact ? 9 : 9.5, weight: .semibold))
+                .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
                 .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
                 .lineLimit(1)
         }
-        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
-        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
-        .background(
-            phase.needsAttention && !compact
-                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
-                : nil
-        )
+        .contentShape(Rectangle())
     }
 }
 

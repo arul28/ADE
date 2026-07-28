@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import { ATTENTION_CONTRACT_VERSION, type AttentionItem } from "../../../shared/types/attention";
 import type {
   OpenProjectBinding,
   RemoteRuntimeTarget,
@@ -1457,6 +1458,167 @@ describe("registerIpc sync bridge", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("routes account Attention through the machine runtime without a project binding", async () => {
+    const snapshot = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      streamId: "account-stream",
+      revision: 5,
+      generatedAt: "2026-07-28T12:00:00.000Z",
+      items: [],
+      tombstones: [],
+    };
+    const callAttention = vi.fn(async (action: string) => {
+      if (action === "getSnapshot") return snapshot;
+      if (action === "getPreferences") return { account: { hideDetails: true } };
+      return undefined;
+    });
+    const openAttentionItem = vi.fn(async () => undefined);
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      getCurrentAccountOwnerId: () => "account-a",
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: {
+          kind: "remote",
+          key: "remote:other-machine:project",
+          targetId: "other-machine",
+          runtimeName: "Other machine",
+          projectId: "remote-project",
+          rootPath: "/srv/remote",
+          displayName: "Remote",
+        },
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+      openAttentionItem,
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.attentionGetSnapshot)?.(eventForSender(), {
+        since: 4,
+        streamId: "account-stream",
+      }),
+    ).resolves.toEqual(snapshot);
+    await ipcHandlers.get(IPC.attentionAcknowledge)?.(eventForSender(), {
+      itemIds: ["attention-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
+    });
+    await ipcHandlers.get(IPC.attentionReportPresence)?.(eventForSender(), {
+      deviceId: "desktop-1",
+      platform: "macOS",
+    });
+    await expect(
+      ipcHandlers.get(IPC.attentionGetPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+      }),
+    ).resolves.toEqual({ account: { hideDetails: true } });
+    await ipcHandlers.get(IPC.attentionPutPreferences)?.(
+      eventForSender(),
+      {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: false } },
+      },
+    );
+    const attentionItem: AttentionItem = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      id: "attention-1",
+      revision: 5,
+      fingerprint: "attention-1:5",
+      kind: "agent",
+      eventKind: "agent_needs_you",
+      phase: "needs_you",
+      machine: {
+        machineKey: "machine-a",
+        name: "Machine A",
+        online: true,
+        lastSeenAt: "2026-07-28T12:00:00.000Z",
+      },
+      project: {
+        projectId: "project-a",
+        name: "Project A",
+        rootPath: "/repo",
+      },
+      provider: "codex",
+      model: "gpt-5",
+      title: "Needs approval",
+      preview: "Approve the command",
+      privacyPreview: "Agent needs attention",
+      detail: null,
+      recentActivity: [],
+      planProgress: null,
+      destination: {
+        kind: "session",
+        sessionId: "session-a",
+        itemId: "attention-1",
+        eventId: null,
+      },
+      actions: [],
+      occurredAt: "2026-07-28T12:00:00.000Z",
+      updatedAt: "2026-07-28T12:00:00.000Z",
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: null,
+    };
+    await ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem);
+
+    expect(callAttention.mock.calls.map(([action]) => action)).toEqual([
+      "getSnapshot",
+      "acknowledge",
+      "reportPresence",
+      "getPreferences",
+      "putPreferences",
+    ]);
+    expect(callAttention).toHaveBeenNthCalledWith(4, "getPreferences", {
+      accountOwnerId: "account-a",
+    });
+    expect(callAttention).toHaveBeenNthCalledWith(5, "putPreferences", {
+      accountOwnerId: "account-a",
+      preferences: { account: { hideDetails: false } },
+    });
+    expect(openAttentionItem).toHaveBeenCalledWith(attentionItem);
+
+    openAttentionItem.mockRejectedValueOnce(
+      new Error("No ADE window is available for this project."),
+    );
+    await expect(
+      ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem),
+    ).rejects.toThrow("No ADE window is available for this project.");
+  });
+
+  it("rejects a stale renderer Attention preference owner before calling the runtime", async () => {
+    const callAttention = vi.fn();
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      getCurrentAccountOwnerId: () => "account-b",
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.attentionGetPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+      }),
+    ).rejects.toThrow(/account changed/i);
+    await expect(
+      ipcHandlers.get(IPC.attentionPutPreferences)?.(eventForSender(), {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: true } },
+      }),
+    ).rejects.toThrow(/account changed/i);
+    expect(callAttention).not.toHaveBeenCalled();
   });
 
   it("validates recovery identifiers and target ownership before mutating chat state", async () => {

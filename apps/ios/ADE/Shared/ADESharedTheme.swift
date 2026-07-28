@@ -39,20 +39,76 @@ public enum ADESharedTheme {
         }
     }
 
+    /// Bundled provider mark shared by the main app and widget extension.
+    /// Unknown providers intentionally return nil so callers can keep a clear
+    /// status-symbol fallback without introducing a new image dependency.
+    public static func providerAssetName(for providerSlug: String?) -> String? {
+        guard let providerSlug else { return nil }
+        switch providerSlug.lowercased() {
+        case "claude":              return "ProviderClaude"
+        case "anthropic":           return "ProviderAnthropic"
+        case "codex":               return "ProviderCodex"
+        case "openai":              return "ProviderOpenAI"
+        case "cursor":              return "ProviderCursor"
+        case "opencode":            return "ProviderOpenCode"
+        case "droid", "factory":    return "ProviderDroid"
+        case "github":              return "ProviderGitHub"
+        default:                    return nil
+        }
+    }
+
+    public static func providerDisplayName(for providerSlug: String?) -> String? {
+        guard let providerSlug else { return nil }
+        switch providerSlug.lowercased() {
+        case "claude":              return "Claude"
+        case "anthropic":           return "Anthropic"
+        case "codex":               return "Codex"
+        case "openai":              return "OpenAI"
+        case "cursor":              return "Cursor"
+        case "opencode":            return "OpenCode"
+        case "droid", "factory":    return "Droid"
+        case "google", "gemini":    return "Gemini"
+        case "mistral":             return "Mistral"
+        case "deepseek":            return "DeepSeek"
+        case "xai", "grok":         return "Grok"
+        case "groq":                return "Groq"
+        case "cto":                 return "CTO"
+        case "github":              return "GitHub"
+        case "ade":                 return "ADE"
+        default:
+            let value = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+    }
+
+    /// Live Activity payloads carry a model id rather than a provider slug.
+    /// Infer only high-confidence families so an unknown model keeps the phase
+    /// symbol instead of being assigned the wrong brand.
+    public static func providerSlug(forModel model: String?) -> String? {
+        guard let model else { return nil }
+        let value = model.lowercased()
+        if value.contains("claude") || value.contains("anthropic") { return "claude" }
+        if value.contains("codex") { return "codex" }
+        if value.contains("gpt") || value.contains("openai") || value.hasPrefix("o3") || value.hasPrefix("o4") {
+            return "openai"
+        }
+        if value.contains("cursor") { return "cursor" }
+        if value.contains("opencode") { return "opencode" }
+        if value.contains("droid") || value.contains("factory") { return "droid" }
+        if value.contains("gemini") || value.contains("google") { return "google" }
+        return nil
+    }
+
     // MARK: - Semantic status colors
 
-    /// Red used for failed / CI-failing states. Matches the XAI brand red to
-    /// keep the palette tight; the two states are not visually confusable
-    /// because they carry distinct SF Symbols.
-    public static let statusFailed = brandXAI
-    /// Green used for passing / completed. Derived from the Codex teal.
-    public static let statusSuccess = brandCodex
-    /// Amber used for awaiting-input / warnings.
-    public static let statusAttention = Color(red: 0xF5 / 255.0, green: 0x9E / 255.0, blue: 0x0B / 255.0)
-    /// Brighter amber used in the mockup palette for attention pulses, review
-    /// states, and inline warning chips. Matches `STATUS.attention` /
-    /// `STATUS.review` from `surfaces.jsx`.
+    /// Attention phase colors mirror the desktop attention center so the same
+    /// state reads identically on every ADE surface.
+    public static let statusRunning = Color(red: 0x60 / 255.0, green: 0xA5 / 255.0, blue: 0xFA / 255.0) // #60A5FA
+    public static let statusFailed = Color(red: 0xF8 / 255.0, green: 0x71 / 255.0, blue: 0x71 / 255.0) // #F87171
+    public static let statusReview = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
+    public static let statusSuccess = Color(red: 0x34 / 255.0, green: 0xD3 / 255.0, blue: 0x99 / 255.0) // #34D399
     public static let warningAmber = Color(red: 0xFB / 255.0, green: 0xBF / 255.0, blue: 0x24 / 255.0) // #FBBF24
+    public static let statusAttention = warningAmber
     /// Neutral gray used for idle / pending.
     public static let statusIdle = Color(red: 0x71 / 255.0, green: 0x71 / 255.0, blue: 0x7A / 255.0)
 

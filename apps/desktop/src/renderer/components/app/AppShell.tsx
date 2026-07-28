@@ -82,6 +82,7 @@ import {
   WebAnalyticsConsentBanner,
 } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
+import { useAttentionSync } from "../attention/useAttentionSync";
 
 type PrToast = {
   id: string;
@@ -96,11 +97,12 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
 const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
+  "/attention",
   "/lanes",
   "/files",
   "/work",
@@ -361,6 +363,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
+  const isAttentionRoute =
+    location.pathname === "/attention" || location.pathname.startsWith("/attention/");
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
   const isLanesRoute = location.pathname.startsWith("/lanes");
@@ -373,6 +377,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
   useAppWideSessionAttention();
+  useAttentionSync(isAttentionRoute);
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
@@ -1113,6 +1118,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
+      "/attention": "tab-tint-work",
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
       "/work": "tab-tint-work",

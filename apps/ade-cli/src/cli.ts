@@ -2274,6 +2274,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
       $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
+    $ ade --role cto actions list --domain attention --text
+                                                    Discover account-wide Attention actions
+    $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
+                                                    Read work across connected machines and projects
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
     $ ade actions run <domain> <action> --input-json '{"key":"value"}'
     $ ade actions status --text                     Runtime action availability
@@ -4528,7 +4532,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         autoCreateLane: lane.autoCreateLane,
         ...(lane.createLaneArgs ? { createLane: lane.createLaneArgs } : { laneId: lane.laneId }),
         launch: compactPreviewObject(launchArgs),
-        ...(mode === "chat" && prompt ? { afterCreate: [{ action: "chat.sendMessage", text: prompt }] } : {}),
+        ...(mode === "chat" && prompt
+          ? { afterCreate: [{ action: "chat.messageSession", input: { text: prompt, kind: "auto" } }] }
+          : {}),
       },
     };
   }
@@ -4598,10 +4604,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
           name: "run_ade_action",
           arguments: {
             domain: "chat",
-            action: "sendMessage",
+            action: "messageSession",
             args: {
               sessionId: targetSession,
               text: prompt,
+              kind: "auto",
             },
           },
         };
@@ -4725,10 +4732,11 @@ function buildChatCreateConfigPreview(
   }
   if (!options.noKickoff && options.kickoffText) {
     afterCreate.push({
-      action: "chat.sendMessage",
+      action: "chat.messageSession",
       input: {
         sessionId: "<created-session-id>",
         text: options.kickoffText,
+        kind: "auto",
       },
     });
   }
@@ -4834,8 +4842,8 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
           name: "run_ade_action",
           arguments: {
             domain: "chat",
-            action: "sendMessage",
-            args: { sessionId, text: kickoff },
+            action: "messageSession",
+            args: { sessionId, text: kickoff, kind: "auto" },
           },
         };
       },
@@ -7288,10 +7296,11 @@ function buildChatPlan(args: string[]): CliPlan {
                   name: "run_ade_action",
                   arguments: {
                     domain: "chat",
-                    action: "sendMessage",
+                    action: "messageSession",
                     args: {
                       sessionId: targetSession,
                       text: explicitKickoff,
+                      kind: "auto",
                     },
                   },
                 };
@@ -7340,10 +7349,11 @@ function buildChatPlan(args: string[]): CliPlan {
             name: "run_ade_action",
             arguments: {
               domain: "chat",
-              action: "sendMessage",
+              action: "messageSession",
               args: {
                 sessionId: targetSession,
                 text: explicitKickoff ?? deriveLinearKickoffPrompt(issueForKickoff),
+                kind: "auto",
               },
             },
           };

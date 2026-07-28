@@ -180,12 +180,14 @@ apps/ios/
 │   ├── Services/
 │   │   ├── AccountService.swift     # Clerk-backed optional account identity,
 │   │   │                            # transferable social auth outcomes,
-│   │   │                            # durable sign-out boundary, and exact
-│   │   │                            # pairing generations
+│   │   │                            # durable sign-out/device-ownership epochs,
+│   │   │                            # serialized account push registration,
+│   │   │                            # and exact pairing generations
 │   │   ├── AccountEmailAuthFlow.swift # identifier-first email sign-in-or-up:
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
-│   │   ├── AccountDirectory.swift   # account machine directory client
+│   │   ├── AccountDirectory.swift   # account machine directory + Attention
+│   │   │                            # relay clients
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -203,7 +205,7 @@ apps/ios/
 │   │   ├── PushNotificationService.swift # APNs registration, alert/deep-link
 │   │   │                                 # handling, prefs, push.getStatus
 │   │   ├── LiveActivityService.swift # ActivityKit start/update/end for the
-│   │   │                             # aggregate "agent runs" activity
+│   │   │                             # account-wide "agent runs" activity
 │   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
 │   │   │                               # quota snapshot + refresh state
 │   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, path-change,
@@ -235,8 +237,8 @@ apps/ios/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
 │   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
-│   │   ├── ADEAgentActivityAttributes.swift # ActivityKit attributes +
-│   │   │                            # ContentState (shared app ↔ widget)
+│   │   ├── ADEAgentActivityAttributes.swift # account-wide ActivityKit
+│   │   │                            # content-state + exact machine links
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
 │   │   ├── Account/                 # account choice/sign-in plus the mobile
@@ -1044,40 +1046,50 @@ pipeline (Cloudflare relay, brain publisher, APNs, content-state
 contract) is documented in
 [`push-notifications.md`](./push-notifications.md); the phone-side pieces:
 
-- **Registration is post-pairing only.** The app requests notification
-  authorization and registers for remote notifications after a machine
-  is paired, never on first launch. `ADEAppDelegate` receives the APNs
-  device token and hands it to `PushNotificationService`, which sends
-  `push.registerDevice` / `push.setPrefs` /
-  `push.reportLiveActivityToken` over the paired sync WebSocket
-  (runtime-scoped commands the brain forwards to the relay). Every
-  foreground transition re-reports tokens and ends orphaned activities;
-  unpair/forget sends `push.unregisterDevice` and ends local activities.
+- **Account registration does not require pairing.** After notification
+  authorization, a signed-in phone registers its APNs and push-to-start tokens
+  directly with the account Attention relay. `AccountService` serializes
+  account device PUTs, coalesces queued token/preferences refreshes, and sends a
+  persisted monotonic `ownershipEpoch` on every device PUT/DELETE. Sign-out
+  commits an unowned epoch before revocation; a direct account switch commits
+  `account A → unowned → account B`, so a delayed old-account request cannot
+  reclaim the install. Relay `409` means a newer boundary already won and is
+  not retried. The older `push.registerDevice` / `push.setPrefs` /
+  `push.reportLiveActivityToken` commands remain as a paired-machine
+  compatibility path.
 - **Alert payloads deep-link.** A default tap carries a top-level
-  `deepLink` (`ade://session/<id>`, `ade://pr/<n>`) routed through
-  `DeepLinkRouter.handleNotificationUserInfo`.
-- **Approval alerts are actionable.** `ADEAppDelegate` registers the
+  `deepLink` routed through `DeepLinkRouter.handleNotificationUserInfo`.
+  Account alerts preserve `accountMachineKey` plus exact session
+  item/event or PR-tab anchors, and the app adopts/selects that machine before
+  opening the destination.
+- **Approval alerts are actionable only against the owning host.**
+  `ADEAppDelegate` registers the
   `ADE_APPROVAL` notification category so approval pushes (stamped
   `aps.category = "ADE_APPROVAL"` plus top-level `sessionId` / `itemId` by
   the brain) show inline Approve / Deny. `didReceive response` maps the
   `ADE_APPROVE` / `ADE_DENY` action ids to `ADEIntentCommandRegistry`
   (`chat.approve`), so approvals resolve from the lock screen without
   opening the app. The `waiting_for_approval` Live Activity row carries the
-  same buttons via `ApproveSessionIntent` / `DenySessionIntent`, which are
+  same buttons only for a current-host activity via
+  `ApproveSessionIntent` / `DenySessionIntent`, which are
   `LiveActivityIntent`s (so they run in-app, not the widget extension); a
   tap while the app is dead queues in the registry and drains on the next
-  launch / foreground.
-- **App-icon badge.** The brain stamps `aps.badge` = the machine-wide
-  count of runs awaiting attention on every alert (and a silent badge-only
-  item when the count changes with no alert). The phone clears the badge
+  launch / foreground. Remote account rows navigate to the exact machine and
+  pending item instead of executing a current-host intent.
+- **App-icon badge.** Account Attention delivery stamps the account-wide
+  unresolved attention count on alerts and badge-only refreshes. The phone clears the badge
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
   reads as stale.
 - **Live Activity** mirrors up to three active agent runs plus up to two
   recent PR lifecycle/status rows on the Lock Screen and Dynamic Island.
-  `LiveActivityService` starts one aggregate activity per machine
-  (`activityId: "agent-runs"`), applies brain-pushed content-state updates,
-  and ends it when all runs are terminal and the short-lived PR rows expire.
+  `LiveActivityService` owns one account-wide `agent-runs` activity per phone,
+  applies relay-pushed content-state updates, and ends it when the account
+  activity settles, Live Activities are disabled, or the user signs out. Each
+  `Run` / `PullRequest` row carries an optional `accountMachineKey`; exact
+  element-level links preserve it so tapping a secondary row never opens the
+  primary item or the wrong machine. Legacy payloads without the additive key
+  still decode.
   PR rows are sourced from the same `pr-notification` fan-out as desktop
   toasts and cover opened, reopened, closed, merged, checks failing, changes
   requested, review requested, and merge-ready states. `NSSupportsLiveActivities`
@@ -1110,37 +1122,41 @@ contract) is documented in
 
 Source: `apps/ios/ADE/Views/AttentionDrawer/`.
 
-The attention drawer is a single global sheet (`AttentionDrawerSheet`)
-opened from the navigation bar bell. `AttentionDrawerModel` rebuilds the
-roster from the App Group `WorkspaceSnapshot` whenever
-`SyncService.activeSessions` or `workspaceSnapshotRevision` changes, and
-projects each row into an `AttentionItem` that carries the originating
-session/PR ids plus an optional `itemId` lifted from
-`AgentChatSessionSummary.pendingInputItemId` / `AgentSnapshot.pendingInputItemId`.
+The navigation-bar bell opens one global account-wide Attention Center
+(`AttentionDrawerSheet`). The signed-in app reads the Clerk-authenticated
+relay snapshot incrementally and persists it in the App Group container with
+the same source-revision, account-cursor, tombstone, and expiry rules as
+desktop. The existing per-project drawer is a project lens over that model; it
+is not a separate inbox.
 
-Each row renders inline actions sourced from the same surface the
-notification banners use:
+The sheet has **Needs you**, **Live**, and **Recent** views, a project lens
+picker, and machine/project context on every item. It remains useful when the
+phone is account-signed-in but not directly paired to a machine.
 
-- **Awaiting input** — when an `itemId` is present, the row shows
-  Approve / Deny buttons backed by `ApproveSessionIntent` /
-  `DenySessionIntent`; otherwise the primary action is "Open session"
-  (which still routes through `Reply`-style behaviour via deep link). An
-  explicit `ade chat ask` uses its persisted question as the drawer subtitle;
-  older approvals without a message fall back to "Approval needed."
-- **Failed** — "Open agent" plus a `RestartSessionIntent` chip.
-- **CI failing** — "Open #N" plus `RetryCheckIntent` to rerun checks.
-- **Review requested / merge ready** — "Review" / "Merge" /
-  "View" entries that deep-link into the PR detail surface.
+Each row uses the shared item destination and actions:
 
-`AttentionDrawerModel.clearVisibleItems()` snapshots the current set of
-ids into `dismissedItemIDs` (persisted under
-`ade.attention.dismissedItemIDsKey` in App Group `UserDefaults`) and
-prunes the in-memory list. The pruning step in
-`pruneDismissedItems(activeIDs:)` runs on every rebuild, so a future
-regression — a chat re-entering awaiting-input, a PR going red again —
-re-surfaces the card automatically. The "Clear all" toolbar button calls
-this method; the cards do not silently come back until the underlying
-attention recurs.
+- **Needs you** — exact session/question/approval navigation; locally owned
+  approvals may expose Approve/Deny.
+- **Failed** — exact agent navigation and a locally safe restart affordance.
+- **CI failing / review requested / merge ready** — exact PR tab navigation.
+- **Completed / merged** — retained in Recent until seen or dismissed.
+
+Acknowledgments write through the account relay so desktop, ADE Notch, and
+mobile settle together. A device never executes a current-host App Intent for
+an item that originated on another machine; those items expose exact Open or
+Reply navigation instead.
+
+Push settings work for account-only users and cover notifications, Live
+Activities, desktop-first behavior, preview privacy, sound, celebration, and
+quiet-hour policy. Sign-out best-effort deletes the account device
+registration and ends account-wide local Live Activities.
+
+The Lock Screen widget and account-wide `agent-runs` Live Activity read the
+same App Group snapshot/phase vocabulary. The relay prioritizes up to three
+agent rows and two PR rows; ordinary open PRs do not keep the activity alive.
+Every secondary row has its own `Link`, so it cannot accidentally open the
+activity's primary item. Remote account activity rows never expose host-local
+approval intents.
 
 ## Tab structure
 
@@ -1834,9 +1850,9 @@ different machine's cached limits.
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | Automations / Graph / History tabs | Planned |
 | Full Settings parity | Planned |
-| Lock Screen widget | Implemented; single prioritized status across agents, PRs, sync, offline, and idle states |
-| Push notifications (APNs alerts + deep links) | Implemented (on-device E2E needs a physical iPhone) |
-| Live Activity + Dynamic Island (`ADEAgentActivityWidget`) | Implemented (push-to-start / background updates verifiable on-device only) |
+| Lock Screen widget | Implemented; one prioritized account status across signed-in machines/projects, agents, PRs, sync, offline, and idle states |
+| Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |
+| Account-wide Live Activity + Dynamic Island (`ADEAgentActivityWidget`) | Implemented; one prioritized activity per phone (push-to-start / background updates verifiable on-device only) |
 | Push delivery settings panel (`SettingsPushDeliverySection`) | Implemented |
 | Home Screen / Control Center widgets | Not shipped |
 | iPad adaptive layout | Planned |
@@ -2207,6 +2223,21 @@ different machine's cached limits.
   Approve / Deny / Reply buttons need to address a specific approval —
   the phone can decide an awaiting-input row at the source instead of
   forcing the user to open the session.
+- **Account device ownership is epoch-ordered.** `AccountService` persists a
+  positive JavaScript-safe `ownershipEpoch` in the App Group and includes it on
+  every authenticated account device PUT/DELETE. A direct account switch is
+  two committed transitions (`old owner → nil → new owner`), registration PUTs
+  are serialized/latest-wins, and a Relay `409` is terminal because a newer
+  owner boundary already superseded the request. Do not replace this with task
+  cancellation: cancellation cannot recall an HTTP request that already
+  reached Relay.
+- **Account routes must retain `accountMachineKey`.** Attention destinations,
+  APNs payloads, Live Activity `Run`/`PullRequest` rows, and their element-level
+  links carry the canonical account machine key. `DeepLinkRouter` threads it
+  into `WorkSessionNavigationRequest` / `PrNavigationRequest`, and navigation
+  selects or adopts that exact machine before opening the session, pending
+  item/event, PR, or PR tab. Missing keys remain valid only for legacy/local
+  payloads.
 - **The chat-summary cache merges, it never wholesale-replaces.**
   `cacheChatSummaries` folds each incoming summary into
   `chatSummaryCache` by session id rather than swapping the whole map.

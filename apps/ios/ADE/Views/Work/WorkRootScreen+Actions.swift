@@ -591,6 +591,10 @@ extension WorkRootScreen {
   @MainActor
   func handleRequestedWorkSessionNavigation() async {
     guard let request = syncService.requestedWorkSessionNavigation else { return }
+    guard await syncService.ensureAccountMachineForNavigation(
+      request.accountMachineKey
+    ),
+    syncService.requestedWorkSessionNavigation?.id == request.id else { return }
     // Scoped links are machine-wide identities, not requests against whichever
     // project happens to own this mounted Work view. Leave the request intact
     // and hand it to Hub's roster resolver, including on a cold app launch

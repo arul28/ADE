@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run d1:migrate:remote && wrangler deploy",
     "d1:migrate:local": "wrangler d1 migrations apply ade-push-relay --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-push-relay --remote",
     "test": "vitest run",
@@ -17,5 +17,8 @@
     "typescript": "^5.7.3",
     "vitest": "^0.34.6",
     "wrangler": "^4.53.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.4"
   }
 }

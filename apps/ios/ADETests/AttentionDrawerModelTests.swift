@@ -189,6 +189,438 @@ final class AttentionDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.sessionId), ["newer", "older"])
     }
 
+    func testWorkspaceFallbackBuildsPriorityLiveAndRecentStacks() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let snapshot = WorkspaceSnapshot(
+            generatedAt: now,
+            agents: [
+                AgentSnapshot(
+                    sessionId: "waiting",
+                    provider: "claude",
+                    laneName: "Primary",
+                    title: "Approve release",
+                    status: "awaiting_input",
+                    awaitingInput: true,
+                    lastActivityAt: now,
+                    elapsedSeconds: 12,
+                    preview: "Approve the push",
+                    pendingInputItemId: "approval-1",
+                    progress: nil,
+                    phase: "validation",
+                    toolCalls: 2
+                ),
+                AgentSnapshot(
+                    sessionId: "working",
+                    provider: "codex",
+                    laneName: "feature/attention",
+                    title: "Polish mobile UI",
+                    status: "running",
+                    awaitingInput: false,
+                    lastActivityAt: now.addingTimeInterval(-30),
+                    elapsedSeconds: 300,
+                    preview: "Rendering the priority stack",
+                    progress: 0.7,
+                    phase: "development",
+                    toolCalls: 8
+                ),
+                AgentSnapshot(
+                    sessionId: "done",
+                    provider: "codex",
+                    laneName: "feature/attention",
+                    title: "Model contract",
+                    status: "completed",
+                    awaitingInput: false,
+                    lastActivityAt: now.addingTimeInterval(-120),
+                    elapsedSeconds: 180,
+                    preview: "Completed",
+                    progress: 1,
+                    phase: "validation",
+                    toolCalls: 4
+                ),
+            ],
+            prs: [],
+            connection: "connected",
+            machineId: "studio",
+            machineName: "Studio Mac",
+            projectId: "ade",
+            projectName: "ADE"
+        )
+
+        model.rebuild(from: snapshot)
+
+        XCTAssertEqual(model.items.map(\.sessionId), ["waiting"])
+        XCTAssertEqual(model.liveItems.map(\.sessionId), ["working"])
+        XCTAssertEqual(model.recentItems.map(\.sessionId), ["done"])
+        XCTAssertEqual(model.projectLenses.map(\.name), ["ADE"])
+        XCTAssertEqual(model.visibleMachineCount, 1)
+        XCTAssertEqual(model.liveItems.first?.scopeLabel, "Studio Mac · ADE")
+    }
+
+    func testAccountSnapshotSupportsProjectLensAndExactDestinations() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let studio = AccountAttentionMachine(
+            machineKey: "studio",
+            accountMachineKey: "account-studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now
+        )
+        let laptop = AccountAttentionMachine(
+            machineKey: "laptop",
+            name: "MacBook",
+            online: false,
+            lastSeenAt: now.addingTimeInterval(-120)
+        )
+
+        let snapshot = AccountAttentionSnapshot(
+            revision: 7,
+            generatedAt: now,
+            items: [
+                AccountAttentionItem(
+                    id: "approval",
+                    revision: 2,
+                    fingerprint: "approval:2",
+                    kind: .agent,
+                    eventKind: .agentNeedsYou,
+                    phase: .needsYou,
+                    machine: studio,
+                    project: .init(projectId: "ade", name: "ADE"),
+                    laneName: "Primary",
+                    provider: "claude",
+                    title: "Release ADE",
+                    preview: "Approve git push",
+                    privacyPreview: "Approval required",
+                    destination: .session(sessionId: "session-a", itemId: "item-a", eventId: "event-a"),
+                    occurredAt: now,
+                    updatedAt: now
+                ),
+                AccountAttentionItem(
+                    id: "live",
+                    revision: 1,
+                    fingerprint: "live:1",
+                    kind: .agent,
+                    eventKind: .agentCompleted,
+                    phase: .running,
+                    machine: laptop,
+                    project: .init(projectId: "versic", name: "Versic"),
+                    provider: "codex",
+                    title: "Fix Windows sync",
+                    preview: "Running tests",
+                    privacyPreview: "Agent working",
+                    destination: .session(sessionId: "session-b", itemId: nil, eventId: nil),
+                    occurredAt: now,
+                    updatedAt: now
+                ),
+            ]
+        )
+
+        model.rebuild(from: snapshot)
+
+        XCTAssertEqual(model.projectLenses.map(\.name).sorted(), ["ADE", "Versic"])
+        XCTAssertEqual(
+            model.items.first?.deepLink,
+            URL(
+                string: "ade://session/session-a?item=item-a&event=event-a&accountMachineKey=account-studio"
+            )
+        )
+        XCTAssertEqual(model.items.first?.inlineActionsAllowed, false)
+        XCTAssertEqual(model.visibleMachineCount, 2)
+        XCTAssertEqual(
+            AccountAttentionDestination.pullRequest(
+                prId: "pr-42",
+                repoOwner: "openai",
+                repoName: "ade",
+                number: 42,
+                tab: "checks",
+                eventId: "event-pr"
+            ).deepLinkURL(accountMachineKey: studio.accountMachineKey),
+            URL(
+                string: "ade://pr/openai/ade/42?tab=checks&event=event-pr&accountMachineKey=account-studio"
+            )
+        )
+
+        model.selectProject("versic")
+        XCTAssertTrue(model.visibleItems(in: .needsYou).isEmpty)
+        XCTAssertEqual(model.visibleItems(in: .live).map(\.id), ["live"])
+        XCTAssertEqual(model.visibleMachineCount, 1)
+    }
+
+    func testAccountSnapshotDeltaHonorsItemAndTombstoneRevisions() {
+        let now = Date()
+        let current = AccountAttentionSnapshot(
+            revision: 8,
+            generatedAt: now,
+            items: [
+                makeAccountItem(id: "keep", revision: 5, title: "Newest value", now: now),
+                makeAccountItem(id: "remove", revision: 2, title: "Remove me", now: now),
+            ]
+        )
+        let delta = AccountAttentionSnapshot(
+            revision: 9,
+            generatedAt: now.addingTimeInterval(1),
+            items: [
+                makeAccountItem(id: "keep", revision: 4, title: "Stale value", now: now),
+                makeAccountItem(id: "add", revision: 1, title: "Added", now: now),
+            ],
+            tombstones: [
+                AccountAttentionTombstone(
+                    id: "keep",
+                    revision: 4,
+                    deletedAt: now
+                ),
+                AccountAttentionTombstone(
+                    id: "remove",
+                    revision: 3,
+                    deletedAt: now
+                ),
+            ]
+        )
+
+        let merged = current.merging(delta)
+
+        XCTAssertEqual(merged.revision, 9)
+        XCTAssertEqual(Set(merged.items.map(\.id)), ["keep", "add"])
+        XCTAssertEqual(
+            merged.items.first(where: { $0.id == "keep" })?.title,
+            "Newest value"
+        )
+    }
+
+    func testAccountSnapshotRefreshesCachedMachinePresenceWithoutItemChanges() {
+        let now = Date()
+        let cachedMachine = AccountAttentionMachine(
+            machineKey: "studio",
+            accountMachineKey: "account-studio",
+            name: "Studio Mac",
+            online: false,
+            lastSeenAt: now.addingTimeInterval(-120)
+        )
+        let current = AccountAttentionSnapshot(
+            revision: 8,
+            generatedAt: now,
+            machines: [cachedMachine],
+            items: [
+                makeAccountItem(
+                    id: "cached",
+                    revision: 8,
+                    title: "Cached",
+                    now: now,
+                    machine: cachedMachine
+                ),
+            ]
+        )
+        let refreshedPresence = AccountAttentionMachine(
+            machineKey: "studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now.addingTimeInterval(1)
+        )
+        let unchangedRevision = AccountAttentionSnapshot(
+            revision: 8,
+            generatedAt: now.addingTimeInterval(1),
+            machines: [refreshedPresence],
+            items: []
+        )
+
+        let merged = current.merging(unchangedRevision)
+
+        XCTAssertEqual(merged.items.count, 1)
+        XCTAssertTrue(merged.items[0].machine.online)
+        XCTAssertEqual(merged.items[0].machine.lastSeenAt, refreshedPresence.lastSeenAt)
+        XCTAssertEqual(
+            merged.items[0].machine.accountMachineKey,
+            cachedMachine.accountMachineKey,
+            "Presence-only rows must not erase the canonical routing identity"
+        )
+        XCTAssertEqual(merged.machines, [refreshedPresence])
+    }
+
+    func testAccountSnapshotDuplicateItemIdsKeepHighestRevision() {
+        let now = Date()
+        let incoming = AccountAttentionSnapshot(
+            revision: 7,
+            generatedAt: now,
+            items: [
+                makeAccountItem(id: "duplicate", revision: 2, title: "Older", now: now),
+                makeAccountItem(id: "duplicate", revision: 7, title: "Newest", now: now),
+            ]
+        )
+
+        let committed = accountAttentionSnapshotForCommit(current: nil, incoming: incoming)
+
+        XCTAssertEqual(committed.items.count, 1)
+        XCTAssertEqual(committed.items[0].revision, 7)
+        XCTAssertEqual(committed.items[0].title, "Newest")
+    }
+
+    func testOutOfOrderSnapshotCommitCannotRegressRevisionOrDropNewerItems() {
+        let now = Date()
+        let base = AccountAttentionSnapshot(
+            streamId: "account-a",
+            revision: 10,
+            generatedAt: now,
+            items: [
+                makeAccountItem(id: "existing", revision: 10, title: "Existing", now: now),
+            ]
+        )
+        let revisionTwelve = AccountAttentionSnapshot(
+            streamId: "account-a",
+            revision: 12,
+            generatedAt: now.addingTimeInterval(2),
+            items: [
+                makeAccountItem(id: "newer", revision: 12, title: "Newer", now: now),
+            ]
+        )
+        let revisionEleven = AccountAttentionSnapshot(
+            streamId: "account-a",
+            revision: 11,
+            generatedAt: now.addingTimeInterval(1),
+            items: [
+                makeAccountItem(id: "stale", revision: 11, title: "Stale", now: now),
+            ]
+        )
+
+        let committedTwelve = accountAttentionSnapshotForCommit(
+            current: base,
+            incoming: revisionTwelve
+        )
+        let afterLateEleven = accountAttentionSnapshotForCommit(
+            current: committedTwelve,
+            incoming: revisionEleven
+        )
+
+        XCTAssertEqual(afterLateEleven.revision, 12)
+        XCTAssertEqual(
+            Set(afterLateEleven.items.map(\.id)),
+            ["existing", "newer"]
+        )
+    }
+
+    func testSnapshotStreamChangeResetsPriorAccountItems() {
+        let now = Date()
+        let priorAccount = AccountAttentionSnapshot(
+            streamId: "account-a",
+            revision: 42,
+            generatedAt: now,
+            items: [
+                makeAccountItem(id: "private-a", revision: 42, title: "Private A", now: now),
+            ]
+        )
+        let newAccount = AccountAttentionSnapshot(
+            streamId: "account-b",
+            revision: 1,
+            generatedAt: now.addingTimeInterval(1),
+            items: [
+                makeAccountItem(id: "private-b", revision: 1, title: "Private B", now: now),
+            ]
+        )
+
+        let committed = accountAttentionSnapshotForCommit(
+            current: priorAccount,
+            incoming: newAccount
+        )
+
+        XCTAssertEqual(committed.streamId, "account-b")
+        XCTAssertEqual(committed.revision, 1)
+        XCTAssertEqual(committed.items.map(\.id), ["private-b"])
+    }
+
+    func testOpenPullRequestIsRecentAndExpiredItemsAreRemoved() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let scope = AccountAttentionMachine(
+            machineKey: "studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now
+        )
+        let openPullRequest = AccountAttentionItem(
+            id: "pr-open",
+            revision: 1,
+            fingerprint: "pr-open:1",
+            kind: .pullRequest,
+            eventKind: .prOpened,
+            phase: .open,
+            machine: scope,
+            project: .init(projectId: "ade", name: "ADE"),
+            title: "Open pull request",
+            preview: "Waiting for activity",
+            privacyPreview: "Pull request open",
+            destination: .pullRequest(
+                prId: "pr-open",
+                repoOwner: "ade",
+                repoName: "ade",
+                number: 42,
+                tab: "overview",
+                eventId: nil
+            ),
+            occurredAt: now,
+            updatedAt: now
+        )
+        let expired = AccountAttentionItem(
+            id: "expired",
+            revision: 1,
+            fingerprint: "expired:1",
+            kind: .agent,
+            eventKind: .agentNeedsYou,
+            phase: .needsYou,
+            machine: scope,
+            project: .init(projectId: "ade", name: "ADE"),
+            title: "Old approval",
+            preview: "No longer actionable",
+            privacyPreview: "Approval required",
+            destination: .session(sessionId: "old", itemId: "item-old", eventId: nil),
+            occurredAt: now.addingTimeInterval(-120),
+            updatedAt: now.addingTimeInterval(-120),
+            expiresAt: now.addingTimeInterval(-1)
+        )
+
+        model.rebuild(from: .init(
+            revision: 1,
+            generatedAt: now.addingTimeInterval(-60),
+            items: [openPullRequest, expired]
+        ))
+
+        XCTAssertFalse(openPullRequest.isLive)
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.liveItems.isEmpty)
+        XCTAssertEqual(model.recentItems.map(\.id), ["pr-open"])
+        XCTAssertEqual(model.recentItems.first?.kind, .open)
+    }
+
+    func testMarkingOneItemSeenDoesNotClearOtherUnreadItems() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let agents = ["one", "two"].map { id in
+            AgentSnapshot(
+                sessionId: id,
+                provider: "codex",
+                title: id,
+                status: "awaiting_input",
+                awaitingInput: true,
+                lastActivityAt: now,
+                elapsedSeconds: 0,
+                preview: nil,
+                progress: nil,
+                phase: nil,
+                toolCalls: 0
+            )
+        }
+        model.rebuild(from: .init(
+            generatedAt: now,
+            agents: agents,
+            prs: [],
+            connection: "connected"
+        ))
+
+        model.markSeen("awaiting:one")
+
+        XCTAssertEqual(model.unreadCount, 1)
+        XCTAssertEqual(model.badgeLabel, "1")
+    }
+
     // MARK: - markAllSeen
 
     func testMarkAllSeenZeroesUnreadCount() {
@@ -263,6 +695,48 @@ final class AttentionDrawerModelTests: XCTestCase {
         let freshModel = AttentionDrawerModel(defaults: defaults)
         freshModel.rebuild(from: snapshot)
         XCTAssertTrue(freshModel.items.isEmpty, "persisted dismissals should hide the same still-active attention")
+    }
+
+    func testClearVisibleItemsOnlyDismissesNeedsYouItemsInSelectedProject() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        model.rebuild(from: AccountAttentionSnapshot(
+            revision: 2,
+            generatedAt: now,
+            items: [
+                makeAccountItem(
+                    id: "project-a",
+                    revision: 1,
+                    title: "Project A",
+                    now: now,
+                    eventKind: .agentNeedsYou,
+                    phase: .needsYou,
+                    projectId: "a",
+                    projectName: "Project A"
+                ),
+                makeAccountItem(
+                    id: "project-b",
+                    revision: 2,
+                    title: "Project B",
+                    now: now,
+                    eventKind: .agentNeedsYou,
+                    phase: .needsYou,
+                    projectId: "b",
+                    projectName: "Project B"
+                ),
+            ]
+        ))
+        model.selectProject("a")
+
+        model.clearVisibleItems()
+
+        XCTAssertEqual(model.items.map(\.id), ["project-b"])
+        XCTAssertNil(model.selectedProjectId)
+        XCTAssertEqual(model.unreadCount, 1)
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: AttentionDrawerModel.dismissedItemIDsKey) ?? []),
+            ["project-a"]
+        )
     }
 
     func testClearedItemsReappearAfterBackingStateClears() {
@@ -459,5 +933,48 @@ final class AttentionDrawerModelTests: XCTestCase {
         )
 
         XCTAssertEqual(ADESharedContainer.inlineSummary(for: snapshot), "ADE · idle")
+    }
+
+    func testAccountAttentionPhaseLabelsUseUnifiedVocabulary() {
+        XCTAssertEqual(AccountAttentionPhase.running.displayLabel, "Running")
+        XCTAssertEqual(AccountAttentionPhase.needsYou.displayLabel, "Needs you")
+        XCTAssertEqual(AccountAttentionPhase.checksFailing.displayLabel, "Checks failing")
+        XCTAssertEqual(AccountAttentionPhase.reviewRequested.displayLabel, "Review requested")
+        XCTAssertEqual(AccountAttentionPhase.mergeReady.displayLabel, "Ready to merge")
+        XCTAssertEqual(AccountAttentionPhase.completed.displayLabel, "Completed")
+    }
+
+    private func makeAccountItem(
+        id: String,
+        revision: Int,
+        title: String,
+        now: Date,
+        machine: AccountAttentionMachine? = nil,
+        eventKind: AccountAttentionEventKind = .agentRunning,
+        phase: AccountAttentionPhase = .running,
+        projectId: String = "ade",
+        projectName: String = "ADE"
+    ) -> AccountAttentionItem {
+        AccountAttentionItem(
+            id: id,
+            revision: revision,
+            fingerprint: "\(id):\(revision)",
+            kind: .agent,
+            eventKind: eventKind,
+            phase: phase,
+            machine: machine ?? .init(
+                machineKey: "studio",
+                name: "Studio Mac",
+                online: true,
+                lastSeenAt: now
+            ),
+            project: .init(projectId: projectId, name: projectName),
+            title: title,
+            preview: "Working",
+            privacyPreview: "Agent working",
+            destination: .session(sessionId: id, itemId: nil, eventId: nil),
+            occurredAt: now,
+            updatedAt: now
+        )
     }
 }

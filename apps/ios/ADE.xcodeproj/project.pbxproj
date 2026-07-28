@@ -1641,6 +1641,7 @@
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
 				ADE_ACCOUNT_DIRECTORY_BASE_URL = "https://ade-account-directory.arulsharma1028.workers.dev";
+				ADE_PUSH_RELAY_BASE_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 				CLERK_PUBLISHABLE_KEY = "pk_test_Y29oZXJlbnQtZm94aG91bmQtNjIuY2xlcmsuYWNjb3VudHMuZGV2JA";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
@@ -1722,6 +1723,7 @@
 				ADE_POSTHOG_HOST = "";
 				ADE_POSTHOG_PROJECT_TOKEN = "";
 				ADE_ACCOUNT_DIRECTORY_BASE_URL = "https://ade-account-directory-production.arulsharma1028.workers.dev";
+				ADE_PUSH_RELAY_BASE_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 				CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuYWRlLWFwcC5kZXYk";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;

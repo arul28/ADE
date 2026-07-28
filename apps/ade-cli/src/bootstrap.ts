@@ -1324,6 +1324,7 @@ export async function createAdeRuntime(args: {
     if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
       const notification: PushPrNotification = {
         kind: event.kind,
+        prId: event.prId,
         prNumber: event.prNumber,
         prTitle: event.prTitle ?? null,
         laneId: event.laneId ?? null,
@@ -1426,14 +1427,45 @@ export async function createAdeRuntime(args: {
   // push-identity file), so a run in one project doesn't clobber the phone's
   // single "agent-runs" Live Activity for another. Each scope wires its own
   // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
+  // This is also the canonical account-directory identity used to route an
+  // Attention click back to this exact machine, even when another machine has
+  // a project at the same path.
+  const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+  const cloudRelayFilePath = path.join(
+    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+    "sync-cloud-relay.json",
+  );
+  const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
+  const syncDeviceIdPath = path.join(
+    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+    "sync-device-id",
+  );
   const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
   const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
     const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
     return {
       logger,
       store,
-      relayClient: createPushRelayClient({ store, logger }),
+      relayClient: createPushRelayClient({
+        store,
+        logger,
+        getAccountAccessToken,
+        getAccountUserId: () => {
+          const status = accountAuthService.getStatus();
+          return status.signedIn ? status.userId?.trim() || null : null;
+        },
+      }),
       machineName: os.hostname(),
+      getAccountMachineIdentity: () => {
+        const { machineKey } = cloudRelayStore.getMachineIdentity();
+        let deviceId: string | null = null;
+        try {
+          deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+        } catch {
+          deviceId = null;
+        }
+        return { machineKey, deviceId };
+      },
     };
   });
   const detachPushSources = publishPushEvents
@@ -1445,6 +1477,8 @@ export async function createAdeRuntime(args: {
           ? agentChatService
           : null,
         ptyService,
+        projectName: project.displayName,
+        projectRoot,
         subscribePrNotifications: (cb) => {
           pushPrNotificationSubscribers.add(cb);
           return () => pushPrNotificationSubscribers.delete(cb);
@@ -1551,13 +1585,7 @@ export async function createAdeRuntime(args: {
   // Cloud tunnel relay (phone → Cloudflare DO → this brain). The store
   // instance is shared with the sync service so the relay candidate in
   // pairingConnectInfo and the tunnel client use one machine identity.
-  const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
   const { createSyncTunnelClientService, getSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-  const cloudRelayFilePath = path.join(
-    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-    "sync-cloud-relay.json",
-  );
-  const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
   // ONE tunnel client per machine (keyed by the config file): per-scope
   // instances would re-register the same machineKey with the relay on every
   // project open and churn the connection paired phones dial through.

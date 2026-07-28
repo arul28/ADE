@@ -186,8 +186,12 @@ struct ContentView: View {
           selectedTab = .work
         }
       }
-      .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
+      .task(id: syncService.requestedPrNavigation?.id) {
+        guard let request = syncService.requestedPrNavigation,
+              await syncService.ensureAccountMachineForNavigation(
+                request.accountMachineKey
+              ),
+              syncService.requestedPrNavigation?.id == request.id else { return }
         syncService.closeProjectHub()
         if selectedTab != .prs {
           selectedTab = .prs
@@ -293,6 +297,10 @@ private struct WorkSessionNavigationModifier: ViewModifier {
     // changes; onChange alone misses the initial value before this root mounts.
     content.task(id: syncService.requestedWorkSessionNavigation?.id) {
       guard let request = syncService.requestedWorkSessionNavigation else { return }
+      guard await syncService.ensureAccountMachineForNavigation(
+        request.accountMachineKey
+      ),
+      syncService.requestedWorkSessionNavigation?.id == request.id else { return }
       // A scoped or roster-resolved session may belong to any project. Keep
       // the machine-wide Hub mounted so it can activate and hydrate the target.
       if syncService.navigationDestination(request) == .hub {

@@ -565,6 +565,88 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testDeepLinkRouterPreservesAccountAttentionSessionIdentityAndAnchors() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://session/session-account?item=pending-approval&event=event-abc&accountMachineKey=machine-relay-key"
+    )))
+
+    let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
+    XCTAssertEqual(request.sessionId, "session-account")
+    XCTAssertEqual(request.itemId, "pending-approval")
+    XCTAssertEqual(request.eventId, "event-abc")
+    XCTAssertNil(request.event)
+    XCTAssertEqual(request.accountMachineKey, "machine-relay-key")
+    XCTAssertTrue(request.hasCanonicalScope)
+  }
+
+  func testAccountAttentionMachineRoutingUsesCanonicalKeyAndConnectionIdentity() throws {
+    let machines = try JSONDecoder().decode(
+      [AccountMachine].self,
+      from: Data(
+        #"""
+        [{
+          "machineKey": "machine-relay-key",
+          "deviceId": "device-studio",
+          "name": "Studio Mac",
+          "reachableEndpoints": [],
+          "online": true
+        }, {
+          "machineKey": "machine-laptop-key",
+          "deviceId": "device-laptop",
+          "name": "Laptop",
+          "reachableEndpoints": [],
+          "online": true
+        }]
+        """#.utf8
+      )
+    )
+
+    let target = try XCTUnwrap(
+      syncAccountMachineNavigationTarget(
+        rawMachineKey: "machine-relay-key",
+        machines: machines
+      )
+    )
+    XCTAssertEqual(target.deviceId, "device-studio")
+    XCTAssertNil(
+      syncAccountMachineNavigationTarget(
+        rawMachineKey: "Studio Mac",
+        machines: machines
+      ),
+      "Display names must never substitute for the canonical account machine key"
+    )
+    XCTAssertTrue(
+      syncAccountMachineNavigationIsCurrent(
+        targetDeviceId: target.deviceId,
+        activeHostIdentity: "device-studio",
+        connectionState: .connected
+      )
+    )
+    XCTAssertFalse(
+      syncAccountMachineNavigationIsCurrent(
+        targetDeviceId: target.deviceId,
+        activeHostIdentity: "device-laptop",
+        connectionState: .connected
+      )
+    )
+    XCTAssertFalse(
+      syncAccountMachineNavigationIsCurrent(
+        targetDeviceId: target.deviceId,
+        activeHostIdentity: "device-studio",
+        connectionState: .disconnected
+      )
+    )
+  }
+
+  @MainActor
   func testDeepLinkRouterPreservesHttpsSessionProjectScope() throws {
     let previousShared = SyncService.shared
     defer { SyncService.shared = previousShared }
@@ -585,7 +667,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testDeepLinkRouterRejectsMalformedSessionProjectScope() throws {
+  func testDeepLinkRouterRejectsMalformedCrossMachineScope() throws {
     let previousShared = SyncService.shared
     defer { SyncService.shared = previousShared }
 
@@ -600,6 +682,21 @@ final class ADETests: XCTestCase {
     )))
 
     XCTAssertNil(service.requestedWorkSessionNavigation)
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://session/foreign-chat?accountMachineKey=not%20valid"
+    )))
+    XCTAssertNil(service.requestedWorkSessionNavigation)
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://session/foreign-chat?item=%2F"
+    )))
+    XCTAssertNil(service.requestedWorkSessionNavigation)
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://pr/arul28/ADE/42?accountMachineKey=not%20valid"
+    )))
+    XCTAssertNil(service.requestedPrNavigation)
   }
 
   @MainActor
@@ -639,13 +736,17 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     SyncService.shared = service
 
-    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://pr/arul28/ADE/729?tab=checks")))
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://pr/arul28/ADE/729?tab=checks&event=checks-failed&accountMachineKey=machine-relay-key"
+    )))
 
     XCTAssertEqual(
       service.requestedPrNavigation?.target,
       .githubNumber(729, repoOwner: "arul28", repoName: "ADE")
     )
     XCTAssertEqual(service.requestedPrNavigation?.detailTab, .checks)
+    XCTAssertEqual(service.requestedPrNavigation?.eventId, "checks-failed")
+    XCTAssertEqual(service.requestedPrNavigation?.accountMachineKey, "machine-relay-key")
   }
 
   @MainActor
@@ -661,12 +762,40 @@ final class ADETests: XCTestCase {
     DeepLinkRouter.shared.handleNotificationUserInfo([
       "prId": "pr_123",
       "prNumber": "42",
+      "accountMachineKey": "machine-relay-key",
+      "eventId": "checks-failed",
     ])
 
     XCTAssertEqual(
       service.requestedPrNavigation?.target,
       .detail(prId: "pr_123", prNumber: 42, laneId: nil)
     )
+    XCTAssertEqual(service.requestedPrNavigation?.accountMachineKey, "machine-relay-key")
+    XCTAssertEqual(service.requestedPrNavigation?.eventId, "checks-failed")
+  }
+
+  @MainActor
+  func testAccountSessionNotificationRoutesToExactMachineAndPendingItem() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handleNotificationUserInfo([
+      "sessionId": "session-remote",
+      "accountMachineKey": "machine-studio",
+      "itemId": "approval-7",
+      "eventId": "question-7",
+    ])
+
+    let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
+    XCTAssertEqual(request.sessionId, "session-remote")
+    XCTAssertEqual(request.accountMachineKey, "machine-studio")
+    XCTAssertEqual(request.itemId, "approval-7")
+    XCTAssertEqual(request.eventId, "question-7")
   }
 
   @MainActor
@@ -688,6 +817,40 @@ final class ADETests: XCTestCase {
       .githubNumber(42, repoOwner: "arul", repoName: "ADE")
     )
     XCTAssertEqual(service.requestedPrNavigation?.detailTab, .files)
+  }
+
+  @MainActor
+  func testDeepLinkRouterDropsInvalidOptionalHttpsPrScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42&accountMachineKey=not%20valid&event=%2F"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(42, repoOwner: "arul", repoName: "ADE")
+    )
+    XCTAssertNil(service.requestedPrNavigation?.accountMachineKey)
+    XCTAssertNil(service.requestedPrNavigation?.eventId)
+
+    service.requestedPrNavigation = nil
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=pr&number=43&accountMachineKey=%2F&event=not%20valid"
+    )))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(43, repoOwner: nil, repoName: nil)
+    )
+    XCTAssertNil(service.requestedPrNavigation?.accountMachineKey)
+    XCTAssertNil(service.requestedPrNavigation?.eventId)
   }
 
   func testSendToMacTargetParsesHttpsAdePrLinks() throws {
@@ -10117,7 +10280,7 @@ final class ADETests: XCTestCase {
       "updatedAt": 1720000000,
       "activeCount": 2,
       "runs": [
-        { "id": "c", "title": "Release checklist", "phase": "waiting_for_approval", "itemId": "item_release_push" },
+        { "id": "c", "title": "Release checklist", "phase": "waiting_for_approval", "itemId": "item_release_push", "accountMachineKey": "machine-studio" },
         { "id": "a", "title": "Refactor sync transport", "phase": "running" }
       ]
     }
@@ -10127,7 +10290,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.runs.count, 2)
     XCTAssertEqual(state.runs[0].resolvedPhase, .waitingForApproval)
     XCTAssertEqual(state.runs[0].itemId, "item_release_push")
+    XCTAssertEqual(state.runs[0].accountMachineKey, "machine-studio")
+    XCTAssertEqual(
+      state.runs[0].deepLinkURL?.absoluteString,
+      "ade://session/c?item=item_release_push&accountMachineKey=machine-studio"
+    )
     XCTAssertNil(state.runs[1].itemId, "runs without an itemId key decode to nil")
+    XCTAssertNil(state.runs[1].accountMachineKey)
   }
 
   func testAgentRunsContentStateDecodesPullRequestRows() throws {
@@ -10137,7 +10306,7 @@ final class ADETests: XCTestCase {
       "activeCount": 0,
       "runs": [],
       "prs": [
-        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "updatedAt": 1720000000 }
+        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "accountMachineKey": "machine-studio", "updatedAt": 1720000000 }
       ]
     }
     """.utf8)
@@ -10149,7 +10318,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
     XCTAssertEqual(state.prs[0].repoOwner, "arul28")
     XCTAssertEqual(state.prs[0].repoName, "ADE")
-    XCTAssertEqual(state.prs[0].deepLinkURL?.absoluteString, "ade://pr/arul28/ADE/42")
+    XCTAssertEqual(state.prs[0].accountMachineKey, "machine-studio")
+    XCTAssertEqual(
+      state.prs[0].deepLinkURL?.absoluteString,
+      "ade://pr/arul28/ADE/42?accountMachineKey=machine-studio"
+    )
   }
 
   @MainActor

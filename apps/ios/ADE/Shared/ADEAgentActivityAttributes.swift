@@ -7,7 +7,7 @@ import SwiftUI
 /// content-state update decodes without a translation layer:
 ///
 ///   attributesType: "ADEAgentRunsAttributes"
-///   attributes:     { "machineName": String }
+///   attributes:     { "machineName": String, "accountWide"?: Bool }
 ///   activityId:     "agent-runs"
 ///   contentState:   { updatedAt, activeCount, runs: [Run], prs: [PullRequest] }
 ///
@@ -61,6 +61,9 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public let lane: String?
         public let repoOwner: String?
         public let repoName: String?
+        /// Canonical Relay machine identity for account-wide activities.
+        /// Taps use it to connect to the exact host before opening the PR.
+        public let accountMachineKey: String?
         public let updatedAt: Double
 
         public init(
@@ -71,6 +74,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             lane: String? = nil,
             repoOwner: String? = nil,
             repoName: String? = nil,
+            accountMachineKey: String? = nil,
             updatedAt: Double = 0
         ) {
             self.id = id
@@ -80,11 +84,12 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.lane = lane
             self.repoOwner = repoOwner
             self.repoName = repoName
+            self.accountMachineKey = accountMachineKey
             self.updatedAt = updatedAt
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, prNumber, title, phase, lane, repoOwner, repoName, updatedAt
+            case id, prNumber, title, phase, lane, repoOwner, repoName, accountMachineKey, updatedAt
         }
 
         public init(from decoder: Decoder) throws {
@@ -96,6 +101,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
             self.repoOwner = try? c.decodeIfPresent(String.self, forKey: .repoOwner)
             self.repoName = try? c.decodeIfPresent(String.self, forKey: .repoName)
+            self.accountMachineKey = try? c.decodeIfPresent(String.self, forKey: .accountMachineKey)
             self.updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
         }
 
@@ -116,9 +122,22 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                !repo.isEmpty,
                let encodedOwner = owner.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed),
                let encodedRepo = repo.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed) {
-                return URL(string: "ade://pr/\(encodedOwner)/\(encodedRepo)/\(prNumber)")
+                var components = URLComponents(
+                    string: "ade://pr/\(encodedOwner)/\(encodedRepo)/\(prNumber)"
+                )
+                components?.queryItems = accountMachineQueryItems
+                return components?.url
             }
-            return URL(string: "ade://pr/\(prNumber)")
+            var components = URLComponents(string: "ade://pr/\(prNumber)")
+            components?.queryItems = accountMachineQueryItems
+            return components?.url
+        }
+
+        private var accountMachineQueryItems: [URLQueryItem]? {
+            guard let key = accountMachineKey?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty else { return nil }
+            return [URLQueryItem(name: "accountMachineKey", value: key)]
         }
 
         private static var pathSegmentAllowed: CharacterSet {
@@ -142,6 +161,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         /// intents so they resolve the exact pending request. Optional and
         /// additive — older payloads without it decode to `nil`.
         public let itemId: String?
+        /// Canonical Relay machine identity for account-wide activities.
+        public let accountMachineKey: String?
 
         public init(
             id: String,
@@ -150,7 +171,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             model: String? = nil,
             lane: String? = nil,
             detail: String? = nil,
-            itemId: String? = nil
+            itemId: String? = nil,
+            accountMachineKey: String? = nil
         ) {
             self.id = id
             self.title = title
@@ -159,10 +181,11 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.lane = lane
             self.detail = detail
             self.itemId = itemId
+            self.accountMachineKey = accountMachineKey
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, phase, model, lane, detail, itemId
+            case id, title, phase, model, lane, detail, itemId, accountMachineKey
         }
 
         public init(from decoder: Decoder) throws {
@@ -174,6 +197,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
             self.detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             self.itemId = try? c.decodeIfPresent(String.self, forKey: .itemId)
+            self.accountMachineKey = try? c.decodeIfPresent(String.self, forKey: .accountMachineKey)
         }
 
         public var resolvedPhase: AgentRunPhase {
@@ -187,14 +211,46 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
                 .filter { !$0.isEmpty }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
+
+        public var deepLinkURL: URL? {
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~")
+            guard let encoded = id.addingPercentEncoding(withAllowedCharacters: allowed) else {
+                return nil
+            }
+            var components = URLComponents(string: "ade://session/\(encoded)")
+            var queryItems: [URLQueryItem] = []
+            if let itemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !itemId.isEmpty {
+                queryItems.append(URLQueryItem(name: "item", value: itemId))
+            }
+            if let key = accountMachineKey?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !key.isEmpty {
+                queryItems.append(URLQueryItem(name: "accountMachineKey", value: key))
+            }
+            components?.queryItems = queryItems.isEmpty ? nil : queryItems
+            return components?.url
+        }
     }
 
-    /// Machine that owns these runs. Rendered in the footer so a glance shows
-    /// which paired Mac is producing output.
+    /// Machine that owns these runs, or an account-level label when this is an
+    /// aggregate. Rendered in the footer so scope is always visible.
     public var machineName: String
+    /// Account aggregates span several machines and must survive the
+    /// single-paired-host orphan cleanup. Optional keeps attributes started by
+    /// older relay versions decodable.
+    public var accountWide: Bool?
 
-    public init(machineName: String) {
+    public init(machineName: String, accountWide: Bool? = nil) {
         self.machineName = machineName
+        self.accountWide = accountWide
+    }
+
+    public var isAccountWide: Bool {
+        if let accountWide { return accountWide }
+        let marker = machineName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return marker == "all machines" || marker == "account"
     }
 }
 
@@ -211,13 +267,13 @@ public enum PullRequestPhase: String, CaseIterable, Sendable {
     public var tint: Color {
         switch self {
         case .opened, .reopened:
-            return ADESharedTheme.statusSuccess
+            return ADESharedTheme.statusRunning
         case .merged, .mergeReady:
             return ADESharedTheme.statusSuccess
         case .checksFailing, .changesRequested:
             return ADESharedTheme.statusFailed
         case .reviewRequested:
-            return ADESharedTheme.warningAmber
+            return ADESharedTheme.statusReview
         case .closed:
             return ADESharedTheme.statusIdle
         }
@@ -248,10 +304,10 @@ public enum PullRequestPhase: String, CaseIterable, Sendable {
         case .reopened: return "Reopened"
         case .closed: return "Closed"
         case .merged: return "Merged"
-        case .checksFailing: return "Checks"
-        case .reviewRequested: return "Review"
-        case .changesRequested: return "Changes"
-        case .mergeReady: return "Ready"
+        case .checksFailing: return "Checks failing"
+        case .reviewRequested: return "Review requested"
+        case .changesRequested: return "Changes requested"
+        case .mergeReady: return "Ready to merge"
         }
     }
 
@@ -284,10 +340,9 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
 
     public var tint: Color {
         switch self {
-        case .starting: return ADESharedTheme.statusIdle
-        case .running: return ADESharedTheme.statusSuccess
+        case .starting, .running: return ADESharedTheme.statusRunning
         case .waitingForApproval: return ADESharedTheme.warningAmber
-        case .waitingForInput: return ADESharedTheme.statusAttention
+        case .waitingForInput: return ADESharedTheme.warningAmber
         case .completed: return ADESharedTheme.statusSuccess
         case .failed: return ADESharedTheme.statusFailed
         case .stale: return ADESharedTheme.statusIdle
@@ -311,9 +366,8 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
         switch self {
         case .starting: return "Starting"
         case .running: return "Running"
-        case .waitingForApproval: return "Approve"
-        case .waitingForInput: return "Reply"
-        case .completed: return "Done"
+        case .waitingForApproval, .waitingForInput: return "Needs you"
+        case .completed: return "Completed"
         case .failed: return "Failed"
         case .stale: return "Stale"
         }

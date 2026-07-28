@@ -126,6 +126,628 @@ final class PairingAndDpopTests: XCTestCase {
     XCTAssertEqual(refreshCount, 1)
   }
 
+  func testAccountAttentionRelayFetchesDeltaWithClerkBearer() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(request.url?.path, "/attention/account/snapshot")
+      XCTAssertEqual(request.url?.query, "since=41")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      ))
+      let body = #"""
+      {
+        "ok": true,
+        "contractVersion": 1,
+        "revision": 42,
+        "generatedAt": "2026-07-28T15:04:05.123Z",
+        "items": [{
+          "contractVersion": 1,
+          "id": "run-1",
+          "revision": 3,
+          "fingerprint": "run-1:3",
+          "kind": "agent",
+          "eventKind": "agent_running",
+          "phase": "running",
+          "machine": {
+            "machineKey": "machine-1",
+            "name": "Studio Mac",
+            "online": true,
+            "lastSeenAt": "2026-07-28T15:04:04.999Z"
+          },
+          "project": {"projectId": "ade", "name": "ADE"},
+          "laneId": null,
+          "laneName": "Primary",
+          "provider": "codex",
+          "model": "gpt-5",
+          "title": "Polish mobile Attention",
+          "preview": "Type checking widgets",
+          "privacyPreview": "Agent working",
+          "detail": null,
+          "recentActivity": [],
+          "planProgress": null,
+          "destination": {
+            "kind": "session",
+            "sessionId": "session-1",
+            "itemId": null,
+            "eventId": "event-2"
+          },
+          "actions": [{
+            "id": "open",
+            "kind": "open",
+            "label": "Open",
+            "payload": {"offset": 12, "exact": true}
+          }],
+          "occurredAt": "2026-07-28T15:04:00.000Z",
+          "updatedAt": "2026-07-28T15:04:05.123Z",
+          "seenAt": null,
+          "dismissedAt": null,
+          "expiresAt": null
+        }],
+        "tombstones": []
+      }
+      """#
+      return (response, Data(body.utf8))
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    let snapshot = try await client.fetchSnapshot(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      since: 41
+    )
+
+    XCTAssertEqual(snapshot.revision, 42)
+    XCTAssertEqual(snapshot.items.first?.eventKind, .agentRunning)
+    XCTAssertEqual(snapshot.items.first?.machine.name, "Studio Mac")
+    XCTAssertEqual(
+      snapshot.items.first?.destination.deepLinkURL,
+      URL(string: "ade://session/session-1?event=event-2")
+    )
+    XCTAssertNil(snapshot.streamId)
+  }
+
+  func testAccountAttentionRelayPropagatesSnapshotStreamIdentity() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(request.url?.path, "/attention/account/snapshot")
+      XCTAssertEqual(request.url?.query, "since=12&streamId=account-stream-a")
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      ))
+      return (
+        response,
+        Data(
+          #"""
+          {
+            "contractVersion": 1,
+            "streamId": "account-stream-a",
+            "revision": 13,
+            "generatedAt": "2026-07-28T15:04:05.123Z",
+            "items": [],
+            "tombstones": []
+          }
+          """#.utf8
+        )
+      )
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+    let snapshot = try await client.fetchSnapshot(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      since: 12,
+      streamId: "account-stream-a"
+    )
+
+    XCTAssertEqual(snapshot.streamId, "account-stream-a")
+    XCTAssertEqual(snapshot.revision, 13)
+  }
+
+  func testAccountAttentionAcknowledgmentUsesExactItemIds() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(request.url?.path, "/attention/account/ack")
+      XCTAssertEqual(request.httpMethod, "POST")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
+      let body = try XCTUnwrap(request.httpBody)
+      let payload = try XCTUnwrap(
+        try JSONSerialization.jsonObject(with: body) as? [String: Any]
+      )
+      XCTAssertEqual(payload["itemIds"] as? [String], ["item-a", "item-b"])
+      XCTAssertNotNil(payload["seenAt"] as? String)
+      XCTAssertNotNil(payload["dismissedAt"] as? String)
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      ))
+      return (response, Data(#"{"ok":true,"revision":9}"#.utf8))
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.acknowledge(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      itemIds: ["item-a", "item-b"],
+      dismiss: true
+    )
+  }
+
+  func testAccountAttentionActivityTokenUsesAccountScopedRoute() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/attention/account/devices/ios-device/activities/agent-runs"
+      )
+      XCTAssertEqual(request.httpMethod, "PUT")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
+      let body = try XCTUnwrap(request.httpBody)
+      let payload = try XCTUnwrap(
+        try JSONSerialization.jsonObject(with: body) as? [String: String]
+      )
+      XCTAssertEqual(payload, ["token": "activity-token"])
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 204,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.reportActivityToken(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      activityId: "agent-runs",
+      activityToken: "activity-token"
+    )
+  }
+
+  func testAccountAttentionEmptyActivityTokenDeletesAccountTarget() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/attention/account/devices/ios-device/activities/agent-runs"
+      )
+      XCTAssertEqual(request.httpMethod, "DELETE")
+      XCTAssertNil(request.httpBody)
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 204,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.reportActivityToken(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      activityId: "agent-runs",
+      activityToken: "  "
+    )
+  }
+
+  func testAccountAttentionUnregisterDeletesOnlyCurrentDevice() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/attention/account/devices/ios-device"
+      )
+      XCTAssertEqual(request.httpMethod, "DELETE")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+      let body = try XCTUnwrap(request.httpBody)
+      let payload = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: body) as? [String: Any]
+      )
+      XCTAssertEqual(payload["ownershipEpoch"] as? Int, 17)
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 204,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.unregisterDevice(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      ownershipEpoch: 17
+    )
+  }
+
+  func testAccountAttentionRegistrationIncludesOwnershipEpoch() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/attention/account/devices/ios-device"
+      )
+      XCTAssertEqual(request.httpMethod, "PUT")
+      let body = try XCTUnwrap(request.httpBody)
+      let payload = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: body) as? [String: Any]
+      )
+      XCTAssertEqual(payload["ownershipEpoch"] as? Int, 23)
+      XCTAssertEqual(payload["apnsToken"] as? String, "apns-token")
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 204,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    try await client.registerDevice(
+      baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+      token: "clerk-token",
+      deviceId: "ios-device",
+      ownershipEpoch: 23,
+      apnsToken: "apns-token",
+      pushToStartToken: nil,
+      bundleId: "com.ade.ios",
+      apsEnvironment: "development",
+      deviceName: "iPhone",
+      preferences: [:]
+    )
+  }
+
+  func testAccountAttentionDeviceMutationsRejectInvalidOwnershipEpochs() async throws {
+    let requests = AccountDirectoryRequestRecorder()
+    AccountDirectoryURLProtocolStub.install { request in
+      _ = requests.append(request.httpMethod ?? "")
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 500,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+    let baseURL = try XCTUnwrap(URL(string: "https://relay.example"))
+    let invalidEpochs = [
+      0,
+      -1,
+      AccountDeviceOwnershipState.maximumSafeEpoch + 1,
+    ]
+
+    for ownershipEpoch in invalidEpochs {
+      do {
+        try await client.registerDevice(
+          baseURL: baseURL,
+          token: "clerk-token",
+          deviceId: "ios-device",
+          ownershipEpoch: ownershipEpoch,
+          apnsToken: "apns-token",
+          pushToStartToken: nil,
+          bundleId: "com.ade.ios",
+          apsEnvironment: "development",
+          deviceName: "iPhone",
+          preferences: [:]
+        )
+        XCTFail("Expected invalid registration ownership epoch \(ownershipEpoch)")
+      } catch let error as AccountAttentionRelayClient.RelayError {
+        XCTAssertEqual(error, .transport)
+      }
+
+      do {
+        try await client.unregisterDevice(
+          baseURL: baseURL,
+          token: "clerk-token",
+          deviceId: "ios-device",
+          ownershipEpoch: ownershipEpoch
+        )
+        XCTFail("Expected invalid deletion ownership epoch \(ownershipEpoch)")
+      } catch let error as AccountAttentionRelayClient.RelayError {
+        XCTAssertEqual(error, .transport)
+      }
+    }
+
+    XCTAssertEqual(requests.snapshot(), [], "invalid epochs must fail before network I/O")
+  }
+
+  func testAccountAttentionConflictIsNonRetryableStaleOwnership() async throws {
+    AccountDirectoryURLProtocolStub.install { request in
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://relay.example")!,
+        statusCode: 409,
+        httpVersion: nil,
+        headerFields: nil
+      ))
+      return (response, Data())
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let client = AccountAttentionRelayClient(
+      session: URLSession(configuration: configuration)
+    )
+
+    do {
+      try await client.unregisterDevice(
+        baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
+        token: "clerk-token",
+        deviceId: "ios-device",
+        ownershipEpoch: 4
+      )
+      XCTFail("Expected stale ownership")
+    } catch let error as AccountAttentionRelayClient.RelayError {
+      XCTAssertEqual(error, .staleOwnership)
+    }
+  }
+
+  func testPendingAccountDeviceRevocationPersistsUntilMatchingSuccess() throws {
+    let suiteName = "PairingAndDpopTests.revocation.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let key = "pending-revocation"
+    let store = AccountDeviceRevocationStore(defaults: defaults, key: key)
+    let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+    let pending = try XCTUnwrap(
+      store.mark(
+        ownerId: "user-a",
+        deviceId: "ios-device",
+        ownershipEpoch: 2,
+        now: createdAt
+      )
+    )
+    XCTAssertEqual(
+      AccountDeviceRevocationStore(defaults: defaults, key: key).pending,
+      pending
+    )
+    XCTAssertEqual(
+      store.mark(ownerId: "user-a", deviceId: "ios-device", ownershipEpoch: 1),
+      pending,
+      "An older boundary must not replace a newer pending revocation"
+    )
+
+    let different = PendingAccountDeviceRevocation(
+      ownerId: "user-b",
+      deviceId: "ios-device",
+      ownershipEpoch: 3,
+      createdAt: createdAt
+    )
+    store.clear(ifMatching: different)
+    XCTAssertEqual(store.pending, pending)
+    store.clear(ifMatching: pending)
+    XCTAssertNil(store.pending)
+  }
+
+  func testAccountDeviceOwnershipEpochPersistsAcrossSignOutAndAccountSwitch() throws {
+    let suiteName = "PairingAndDpopTests.ownership.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let key = "ownership"
+    let store = AccountDeviceOwnershipStore(defaults: defaults, key: key)
+
+    let accountA = store.transition(to: "user-a")
+    XCTAssertEqual(accountA, AccountDeviceOwnershipState(ownershipEpoch: 2, ownerId: "user-a"))
+    XCTAssertEqual(store.transition(to: "user-a"), accountA)
+
+    let signedOut = store.transition(to: nil)
+    XCTAssertEqual(signedOut.ownershipEpoch, 3)
+    XCTAssertNil(signedOut.ownerId)
+
+    let accountB = store.transition(to: "user-b")
+    XCTAssertEqual(accountB.ownershipEpoch, 4)
+    XCTAssertEqual(accountB.ownerId, "user-b")
+    XCTAssertEqual(
+      AccountDeviceOwnershipStore(defaults: defaults, key: key).state,
+      accountB
+    )
+    XCTAssertLessThanOrEqual(
+      accountB.ownershipEpoch,
+      AccountDeviceOwnershipState.maximumSafeEpoch
+    )
+    XCTAssertFalse(
+      accountDeviceMutationMatchesCurrentOwnership(
+        ownerId: accountA.ownerId ?? "",
+        ownershipEpoch: accountA.ownershipEpoch,
+        state: accountB
+      ),
+      "A delayed account-A request cannot become effective after sign-out and account-B login"
+    )
+    XCTAssertTrue(
+      accountDeviceMutationMatchesCurrentOwnership(
+        ownerId: "user-b",
+        ownershipEpoch: accountB.ownershipEpoch,
+        state: accountB
+      )
+    )
+  }
+
+  func testAccountDeviceOwnershipEpochRecoversAfterAppGroupReset() throws {
+    let suiteName = "PairingAndDpopTests.ownership-reinstall.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let key = "ownership"
+    let deviceId = "durable-device"
+    var durableEpochs: [String: Int] = [:]
+    let makeStore = {
+      AccountDeviceOwnershipStore(
+        defaults: defaults,
+        key: key,
+        durableDeviceId: { deviceId },
+        loadDurableEpoch: { durableEpochs[$0] },
+        saveDurableEpoch: { durableEpochs[$1] = $0 }
+      )
+    }
+
+    let original = makeStore()
+    XCTAssertEqual(original.transition(to: "user-a").ownershipEpoch, 2)
+    XCTAssertEqual(original.transition(to: nil).ownershipEpoch, 3)
+    XCTAssertEqual(durableEpochs[deviceId], 3)
+
+    defaults.removeObject(forKey: key)
+    let reinstalled = makeStore()
+    XCTAssertEqual(
+      reinstalled.state,
+      AccountDeviceOwnershipState(ownershipEpoch: 3, ownerId: nil),
+      "A reset App Group must recover the high-water mark without restoring a stale owner"
+    )
+    XCTAssertEqual(
+      reinstalled.transition(to: "user-a"),
+      AccountDeviceOwnershipState(ownershipEpoch: 4, ownerId: "user-a"),
+      "The surviving device identity must advance past Relay's prior ownership epoch"
+    )
+  }
+
+  @MainActor
+  func testAccountRegistrationSerializesDelayedAThenRunsLatestB() async {
+    let queue = LatestAccountRegistrationQueue<String>()
+    var starts: [String] = []
+    var activeCount = 0
+    var maximumActiveCount = 0
+    var releaseAccountA: CheckedContinuation<Void, Never>?
+
+    let perform: @MainActor (String) async -> Bool = { owner in
+      starts.append(owner)
+      activeCount += 1
+      maximumActiveCount = max(maximumActiveCount, activeCount)
+      if owner == "account-a" {
+        await withCheckedContinuation { continuation in
+          releaseAccountA = continuation
+        }
+      }
+      activeCount -= 1
+      return true
+    }
+
+    let accountA = Task { @MainActor in
+      await queue.submit("account-a", perform: perform)
+    }
+    while starts.isEmpty {
+      await Task.yield()
+    }
+    let staleAccountBRefresh = Task { @MainActor in
+      await queue.submit("account-b-stale-refresh", perform: perform)
+    }
+    await Task.yield()
+    let accountB = Task { @MainActor in
+      await queue.submit("account-b", perform: perform)
+    }
+    for _ in 0..<8 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(starts, ["account-a"])
+    XCTAssertEqual(maximumActiveCount, 1)
+    releaseAccountA?.resume()
+    _ = await (accountA.value, staleAccountBRefresh.value, accountB.value)
+
+    XCTAssertEqual(starts, ["account-a", "account-b"])
+    XCTAssertEqual(maximumActiveCount, 1)
+  }
+
+  func testAccountActivityTokenRetryPreservesAccountOnlyIdentityAndEmptyDelete() throws {
+    let suiteName = "PairingAndDpopTests.activity-token.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let key = "pending-account-token"
+    let store = AccountActivityTokenRegistrationStore(defaults: defaults, key: key)
+
+    let pending = try XCTUnwrap(
+      store.persist(
+        deviceId: "ios-device",
+        activityId: "agent-runs",
+        token: "  "
+      )
+    )
+
+    XCTAssertTrue(pending.accountWide)
+    XCTAssertEqual(pending.token, "")
+    XCTAssertEqual(
+      AccountActivityTokenRegistrationStore(defaults: defaults, key: key).pending,
+      pending
+    )
+    XCTAssertEqual(liveActivityTokenRoute(accountWide: true), .accountOnly)
+    XCTAssertEqual(liveActivityTokenRoute(accountWide: false), .pairedMachine)
+  }
+
+  func testAgentRunsActivityRecognizesAccountWideAndLegacyMarkers() {
+    XCTAssertTrue(
+      ADEAgentRunsAttributes(
+        machineName: "Studio Mac",
+        accountWide: true
+      ).isAccountWide
+    )
+    XCTAssertTrue(
+      ADEAgentRunsAttributes(machineName: "All machines").isAccountWide
+    )
+    for legacyMarker in ["All machines", "account"] {
+      XCTAssertFalse(
+        ADEAgentRunsAttributes(
+          machineName: legacyMarker,
+          accountWide: false
+        ).isAccountWide
+      )
+    }
+  }
+
   // MARK: - Sealed account adoption
 
   func testAdoptChannelMatchesTypeScriptChaChaPolyVector() throws {
@@ -454,5 +1076,34 @@ final class PairingAndDpopTests: XCTestCase {
       )
       XCTAssertFalse(verifies(wrongChallengeCanonical))
     }
+  }
+
+  func testPushPreferencesDecodeLegacyPayloadAndPublishPrivacyChoice() throws {
+    let legacy = Data("""
+    {
+      "enabled": true,
+      "liveActivitiesEnabled": false,
+      "mutedSessionIds": ["session-1"],
+      "quietHoursEnabled": true,
+      "quietHoursStart": "21:30",
+      "quietHoursEnd": "07:15",
+      "quietHoursTimezone": "America/New_York"
+    }
+    """.utf8)
+
+    var preferences = try JSONDecoder().decode(PushPrefs.self, from: legacy)
+    XCTAssertFalse(preferences.hideDetails)
+    XCTAssertEqual(preferences.mutedSessionIds, ["session-1"])
+
+    preferences.hideDetails = true
+    XCTAssertEqual(preferences.commandPayload["hideDetails"] as? Bool, true)
+
+    let roundTrip = try JSONDecoder().decode(
+      PushPrefs.self,
+      from: JSONEncoder().encode(preferences)
+    )
+    XCTAssertTrue(roundTrip.hideDetails)
+    XCTAssertEqual(roundTrip.quietHoursStart, "21:30")
+    XCTAssertEqual(roundTrip.quietHoursEnd, "07:15")
   }
 }

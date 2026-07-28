@@ -26,6 +26,10 @@ import type {
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
 import type { AgentSessionSettlementResult } from "../../../shared/types/sessions";
+import type {
+  AttentionPreferences,
+  AttentionPresence,
+} from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import type {
   AgentChatFileSearchArgs,
@@ -117,6 +121,7 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 
 export const ADE_ACTION_DOMAIN_NAMES = [
   "account",
+  "attention",
   "lane",
   "git",
   "diff",
@@ -186,6 +191,13 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "listMachines",
     "pairMachine",
     "deleteMachine",
+  ],
+  attention: [
+    "getSnapshot",
+    "acknowledge",
+    "reportPresence",
+    "getPreferences",
+    "putPreferences",
   ],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
@@ -268,6 +280,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "signOut",
     "getToken",
     "createToken",
+  ],
+  attention: [
+    "getSnapshot",
+    "acknowledge",
+    "reportPresence",
+    "getPreferences",
+    "putPreferences",
   ],
   lane: [
     "adoptAttached",
@@ -890,6 +909,33 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Return a self-contained durable account token once for ADE_ACCOUNT_TOKEN provisioning.",
       input: "no input",
       example: "ade account token create",
+    },
+  },
+  attention: {
+    getSnapshot: {
+      description: "Read the account-wide Attention stream across every connected machine and project.",
+      input: "object { since?: non-negative integer, streamId?: string | null }",
+      example: "ade --role cto actions run attention.getSnapshot --input-json '{\"since\":0}' --json",
+    },
+    acknowledge: {
+      description: "Mark up to 64 Attention items as seen or dismissed across account surfaces.",
+      input: "object { itemIds: string[], seenAt?: ISO timestamp, dismissedAt?: ISO timestamp | null }",
+      example: "ade --role cto actions run attention.acknowledge --input-json '{\"itemIds\":[\"attention-item-1\"],\"seenAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
+    },
+    reportPresence: {
+      description: "Report one device's foreground and ambient-surface presence for desktop-first notification delivery.",
+      input: "AttentionPresence object { deviceId, deviceName, platform, appForeground, ambientSurfaceVisible, visibleItemIds, observedAt }",
+      example: "ade --role cto actions run attention.reportPresence --input-json '{\"deviceId\":\"mac-1\",\"deviceName\":\"MacBook Pro\",\"platform\":\"macOS\",\"appForeground\":true,\"ambientSurfaceVisible\":true,\"visibleItemIds\":[],\"observedAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
+    },
+    getPreferences: {
+      description: "Read account, device, project, and muted-session Attention preferences for the signed-in owner.",
+      input: "object { accountOwnerId: string }",
+      example: "ade --role cto actions run attention.getPreferences --input-json '{\"accountOwnerId\":\"user_123\"}' --json",
+    },
+    putPreferences: {
+      description: "Replace Attention preferences for the signed-in account owner.",
+      input: "object { accountOwnerId: string, preferences: AttentionPreferences }",
+      example: "ade --role cto actions run attention.putPreferences --input-json '{\"accountOwnerId\":\"user_123\",\"preferences\":{\"account\":{},\"devices\":{},\"projects\":{},\"mutedSessionIds\":[]}}' --json",
     },
   },
   project_secret: {
@@ -1709,6 +1755,73 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
         owner: args.owner,
         ...(args.limit !== undefined ? { limit: args.limit } : {}),
       });
+    },
+  };
+}
+
+function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const publisher = runtime.pushPublisherService;
+  if (!publisher) return null;
+  const requireCurrentAccountOwner = (value: unknown): string => {
+    const accountOwnerId = typeof value === "string" ? value.trim() : "";
+    const status = runtime.accountAuthService?.getStatus();
+    const currentOwnerId = status?.signedIn ? status.userId?.trim() || null : null;
+    if (!accountOwnerId || currentOwnerId !== accountOwnerId) {
+      throw new Error("The ADE account changed before Attention preferences could be used.");
+    }
+    return accountOwnerId;
+  };
+  return {
+    getSnapshot: (args?: { since?: number; streamId?: string | null }) =>
+      publisher.getAttentionSnapshot(
+        Number.isFinite(Number(args?.since))
+          ? Math.max(0, Math.trunc(Number(args?.since)))
+          : 0,
+        typeof args?.streamId === "string" && args.streamId.trim()
+          ? args.streamId.trim()
+          : null,
+      ),
+    acknowledge: (args?: {
+      itemIds?: unknown;
+      seenAt?: unknown;
+      dismissedAt?: unknown;
+    }) => {
+      const itemIds = Array.isArray(args?.itemIds)
+        ? args.itemIds
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+          .slice(0, 64)
+        : [];
+      if (itemIds.length === 0) throw new Error("itemIds must include at least one attention item.");
+      return publisher.acknowledgeAttention({
+        itemIds,
+        ...(typeof args?.seenAt === "string" ? { seenAt: args.seenAt } : {}),
+        ...(args?.dismissedAt === null || typeof args?.dismissedAt === "string"
+          ? { dismissedAt: args.dismissedAt }
+          : {}),
+      });
+    },
+    reportPresence: (args?: AttentionPresence) => {
+      if (!args || typeof args.deviceId !== "string") {
+        throw new Error("A valid Attention presence payload is required.");
+      }
+      return publisher.reportAttentionPresence(args);
+    },
+    getPreferences: (args?: { accountOwnerId?: unknown }) =>
+      publisher.getAttentionPreferences(
+        requireCurrentAccountOwner(args?.accountOwnerId),
+      ),
+    putPreferences: (args?: {
+      accountOwnerId?: unknown;
+      preferences?: AttentionPreferences;
+    }) => {
+      if (!args?.preferences || typeof args.preferences !== "object") {
+        throw new Error("A valid Attention preferences payload is required.");
+      }
+      return publisher.putAttentionPreferences(
+        requireCurrentAccountOwner(args.accountOwnerId),
+        args.preferences,
+      );
     },
   };
 }
@@ -3632,6 +3745,7 @@ export function getAdeActionDomainServices(
     account: runtime.accountAuthService
       ? toService(createAccountActionDomainService(runtime.accountAuthService))
       : null,
+    attention: toService(buildAttentionDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     git: toService(runtime.gitService),
     diff: toService(runtime.diffService),

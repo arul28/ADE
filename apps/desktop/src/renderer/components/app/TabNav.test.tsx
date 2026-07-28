@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TabNav } from "./TabNav";
 import { useAppStore } from "../../state/appStore";
@@ -10,6 +10,7 @@ import { useAppStore } from "../../state/appStore";
 function resetStore() {
   useAppStore.setState({
     project: { rootPath: "/Users/arul/ADE", name: "ADE" } as any,
+    projectBinding: null,
     projectHydrated: true,
     showWelcome: false,
     selectedLaneId: "lane-1",
@@ -47,6 +48,7 @@ describe("TabNav", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,
@@ -80,5 +82,29 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Chats" }).getAttribute("data-active")).toBe("true");
     expect(screen.getByRole("link", { name: "Work" }).getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("describes projectless Attention navigation as available", () => {
+    vi.useFakeTimers();
+    useAppStore.setState({
+      project: null,
+      projectBinding: null,
+      showWelcome: true,
+      smartTooltipsEnabled: true,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    const attention = screen.getByRole("link", { name: "Attention" });
+    fireEvent.mouseEnter(attention.parentElement as HTMLElement);
+    act(() => vi.advanceTimersByTime(321));
+
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip.textContent).toContain("Opens Attention.");
+    expect(tooltip.textContent).not.toContain("Open or create a project first.");
   });
 });

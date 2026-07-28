@@ -142,6 +142,138 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("serves account Attention from the machine scope without a project id", async () => {
+    const runtime = makeRuntime("attention") as ReturnType<typeof makeRuntime> & {
+      pushPublisherService: Record<string, ReturnType<typeof vi.fn>>;
+    };
+    runtime.pushPublisherService = {
+      getAttentionSnapshot: vi.fn(async () => ({
+        contractVersion: 1,
+        streamId: "account-stream",
+        revision: 8,
+        generatedAt: "2026-07-28T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      })),
+      acknowledgeAttention: vi.fn(async () => undefined),
+      reportAttentionPresence: vi.fn(async () => undefined),
+      getAttentionPreferences: vi.fn(async () => ({ account: { hideDetails: true } })),
+      putAttentionPreferences: vi.fn(async () => undefined),
+    };
+    const scopeRegistry = {
+      resolveActiveSyncHost: vi.fn(async () => ({ runtime })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const accountAuthService = makeAccountAuthServiceMock();
+    (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+      signedIn: true,
+      userId: "account-a",
+      email: null,
+      name: null,
+      expiresAt: null,
+    });
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "attention.call",
+        params: {
+          action: "getSnapshot",
+          args: { since: 7, streamId: "account-stream" },
+        },
+      });
+      expect(result).toMatchObject({
+        streamId: "account-stream",
+        revision: 8,
+      });
+      expect(runtime.pushPublisherService.getAttentionSnapshot)
+        .toHaveBeenCalledWith(7, "account-stream");
+      await handler({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "attention.call",
+        params: {
+          action: "getPreferences",
+          args: { accountOwnerId: "account-a" },
+        },
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "attention.call",
+        params: {
+          action: "putPreferences",
+          args: {
+            accountOwnerId: "account-a",
+            preferences: { account: { hideDetails: true } },
+          },
+        },
+      });
+      expect(runtime.pushPublisherService.getAttentionPreferences)
+        .toHaveBeenCalledWith("account-a");
+      expect(runtime.pushPublisherService.putAttentionPreferences)
+        .toHaveBeenCalledWith(
+          "account-a",
+          { account: { hideDetails: true } },
+        );
+      (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+        signedIn: true,
+        userId: "account-b",
+        email: null,
+        name: null,
+        expiresAt: null,
+      });
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "attention.call",
+        params: {
+          action: "putPreferences",
+          args: {
+            accountOwnerId: "account-a",
+            preferences: { account: { hideDetails: false } },
+          },
+        },
+      })).rejects.toThrow(/account changed/i);
+      handler.dispose();
+
+      const agentHandler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        scopeRegistry,
+        accountAuthService,
+      });
+      await agentHandler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "ade/initialize",
+        params: { identity: { role: "agent" } },
+      });
+      await expect(agentHandler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "attention.call",
+        params: { action: "getSnapshot", args: {} },
+      })).rejects.toThrow(/requires the cto role/i);
+      agentHandler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
+    }
+  });
+
   it("prewarms the production shared personal-chat scope only at creation", () => {
     const warmExisting = vi.spyOn(PersonalChatScope.prototype, "warmExisting")
       .mockResolvedValue();

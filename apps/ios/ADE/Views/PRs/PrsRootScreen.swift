@@ -1360,6 +1360,10 @@ struct PRsTabView: View {
   @MainActor
   private func handleRequestedPrNavigation() async {
     guard let request = syncService.requestedPrNavigation else { return }
+    guard await syncService.ensureAccountMachineForNavigation(
+      request.accountMachineKey
+    ),
+    syncService.requestedPrNavigation?.id == request.id else { return }
     if let createLaneId = request.createLaneId?.trimmingCharacters(in: .whitespacesAndNewlines),
        !createLaneId.isEmpty {
       await reload(refreshRemote: false)

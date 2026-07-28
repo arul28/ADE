@@ -3043,6 +3043,66 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
   });
 
+  it("exposes account-wide Attention actions only to CTO callers with discoverable contracts", async () => {
+    const fixture = createRuntime();
+    const getAttentionSnapshot = vi.fn(async (since: number, streamId: string | null) => ({
+      contractVersion: 1,
+      streamId: streamId ?? "account-stream",
+      revision: since + 1,
+      generatedAt: "2026-07-28T12:00:00.000Z",
+      machines: [],
+      items: [],
+      tombstones: [],
+    }));
+    (fixture.runtime as any).pushPublisherService = {
+      getAttentionSnapshot,
+      acknowledgeAttention: vi.fn(async () => undefined),
+      reportAttentionPresence: vi.fn(async () => undefined),
+      getAttentionPreferences: vi.fn(async () => ({})),
+      putAttentionPreferences: vi.fn(async () => undefined),
+    };
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const hidden = await callTool(agentHandler, "list_ade_actions", { domain: "attention" });
+    expect(hidden?.isError).toBeUndefined();
+    expect(hidden.structuredContent).toMatchObject({ count: 0, actions: [] });
+
+    const ctoHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(ctoHandler, { callerId: "cto-1", role: "cto" });
+    const inventory = await callTool(ctoHandler, "list_ade_actions", { domain: "attention" });
+    expect(inventory?.isError).toBeUndefined();
+    expect(inventory.structuredContent.actions.map((entry: { name: string }) => entry.name)).toEqual(
+      expect.arrayContaining([
+        "attention.getSnapshot",
+        "attention.acknowledge",
+        "attention.reportPresence",
+        "attention.getPreferences",
+        "attention.putPreferences",
+      ]),
+    );
+    const getSnapshotAction = inventory.structuredContent.actions.find(
+      (entry: { name: string }) => entry.name === "attention.getSnapshot",
+    );
+    expect(getSnapshotAction).toMatchObject({
+      description: expect.stringContaining("account-wide Attention stream"),
+      input: expect.stringContaining("streamId"),
+      example: expect.stringContaining("attention.getSnapshot"),
+    });
+
+    const snapshot = await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "getSnapshot",
+      args: { since: 7, streamId: "account-stream" },
+    });
+    expect(snapshot?.isError).toBeUndefined();
+    expect(snapshot.structuredContent.result).toMatchObject({
+      streamId: "account-stream",
+      revision: 8,
+    });
+    expect(getAttentionSnapshot).toHaveBeenCalledWith(7, "account-stream");
+  });
+
   it("invokes ADE actions dynamically and returns status hints", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

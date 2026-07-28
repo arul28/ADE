@@ -14,6 +14,8 @@ import { createProjectScaffoldService } from "../../desktop/src/main/services/pr
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type {
+  AttentionPreferences,
+  AttentionPresence,
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
@@ -157,6 +159,7 @@ const RUNTIME_METHODS = new Set([
   "runtime/info",
   "runtime.activitySummary",
   "account.call",
+  "attention.call",
   "personalChats.call",
   "personalChats.streamEvents",
   "machineInfo.get",
@@ -719,6 +722,21 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
+  const callerRole = () => {
+    const identityRecord =
+      isRecord(initializedParams) && isRecord(initializedParams.identity)
+        ? (initializedParams.identity as Record<string, unknown>)
+        : null;
+    return resolveSessionBoundRole({
+      defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+      requestedRole: normalizeAdeRuntimeRole(
+        identityRecord ? identityRecord.role : null,
+      ),
+      chatSessionId: identityRecord && typeof identityRecord.chatSessionId === "string"
+        ? identityRecord.chatSessionId.trim() || null
+        : null,
+    });
+  };
 
   const emitRuntimeEvent = (
     subscriptionId: string,
@@ -1142,21 +1160,8 @@ export function createMultiProjectRpcRequestHandler(
       // honestly asserts a non-cto role cannot reach these actions. `status`
       // stays open to any role, with identity fields removed below for non-CTO
       // callers.
-      const identityRecord =
-        isRecord(initializedParams) && isRecord(initializedParams.identity)
-          ? (initializedParams.identity as Record<string, unknown>)
-          : null;
-      const requestedRole = normalizeAdeRuntimeRole(
-        identityRecord ? identityRecord.role : null,
-      );
-      const callerRole = resolveSessionBoundRole({
-        defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
-        requestedRole,
-        chatSessionId: identityRecord && typeof identityRecord.chatSessionId === "string"
-          ? identityRecord.chatSessionId.trim() || null
-          : null,
-      });
-      if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(callerRole, "cto")) {
+      const role = callerRole();
+      if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
           `account.${action} requires the cto role.`,
@@ -1213,8 +1218,104 @@ export function createMultiProjectRpcRequestHandler(
         reconcileAccountOwnership(accountOwnerUserIdFromStatus(status));
       }
       return action === "status"
-        ? { ...response, result: scopeAccountStatusForRole(response.result, callerRole) }
+        ? { ...response, result: scopeAccountStatusForRole(response.result, role) }
         : response;
+    }
+
+    if (method === "attention.call") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "attention.call requires the cto role.",
+        );
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      const args = isRecord(params.args) ? params.args : {};
+      const activeScope = await scopeRegistry.resolveActiveSyncHost();
+      const publisher = activeScope?.runtime.pushPublisherService;
+      if (!publisher) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Account Attention is unavailable until the ADE brain is ready.",
+        );
+      }
+      if (action === "getSnapshot") {
+        const since = Number.isFinite(Number(args.since))
+          ? Math.max(0, Math.trunc(Number(args.since)))
+          : 0;
+        const streamId =
+          typeof args.streamId === "string" && args.streamId.trim()
+            ? args.streamId.trim()
+            : null;
+        return await publisher.getAttentionSnapshot(since, streamId);
+      }
+      if (action === "acknowledge") {
+        const itemIds = Array.isArray(args.itemIds)
+          ? args.itemIds
+            .filter((value): value is string =>
+              typeof value === "string" && value.trim().length > 0)
+            .map((value) => value.trim())
+            .slice(0, 64)
+          : [];
+        if (itemIds.length === 0) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "attention.acknowledge requires at least one item id.",
+          );
+        }
+        await publisher.acknowledgeAttention({
+          itemIds,
+          ...(typeof args.seenAt === "string" ? { seenAt: args.seenAt } : {}),
+          ...(args.dismissedAt === null || typeof args.dismissedAt === "string"
+            ? { dismissedAt: args.dismissedAt }
+            : {}),
+        });
+        return null;
+      }
+      if (action === "reportPresence") {
+        if (typeof args.deviceId !== "string" || !args.deviceId.trim()) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "attention.reportPresence requires a device id.",
+          );
+        }
+        await publisher.reportAttentionPresence(args as AttentionPresence);
+        return null;
+      }
+      if (action === "getPreferences") {
+        const accountOwnerId =
+          typeof args.accountOwnerId === "string" ? args.accountOwnerId.trim() : "";
+        if (!accountOwnerId || currentAccountOwnerUserId() !== accountOwnerId) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            "The ADE account changed before Attention preferences could be read.",
+          );
+        }
+        return await publisher.getAttentionPreferences(accountOwnerId);
+      }
+      if (action === "putPreferences") {
+        const accountOwnerId =
+          typeof args.accountOwnerId === "string" ? args.accountOwnerId.trim() : "";
+        if (
+          !accountOwnerId
+          || currentAccountOwnerUserId() !== accountOwnerId
+          || !isRecord(args.preferences)
+        ) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            "The ADE account changed before Attention preferences could be saved.",
+          );
+        }
+        await publisher.putAttentionPreferences(
+          accountOwnerId,
+          args.preferences as AttentionPreferences,
+        );
+        return null;
+      }
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Unknown Attention action: ${action || "(empty)"}`,
+      );
     }
 
     if (method === "personalChats.call") {

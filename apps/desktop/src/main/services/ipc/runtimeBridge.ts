@@ -300,6 +300,12 @@ export type RuntimeBridgeRegistration = {
     currentOwnerUserId: string | null,
   ): AccountMachineReconciliationResult;
   getLocalMachineIdentity(): AdeAccountLocalMachineIdentity;
+  resolveTargetIdForMachineKey(machineKey: string): string | null;
+  openRemoteProjectForWindow(args: {
+    targetId: string;
+    projectId: string;
+    windowId: number | null;
+  }): Promise<OpenProjectBinding & { kind: "remote" }>;
 };
 
 export function getOrCreateLocalAccountMachineIdentity(args: {
@@ -436,7 +442,58 @@ export function registerRuntimeBridge({
       remoteConnectionService.reconcileAccountOwnership(currentOwnerUserId),
     getLocalMachineIdentity: () =>
       getLocalMachineIdentity?.() ?? getOrCreateLocalAccountMachineIdentity(),
+    resolveTargetIdForMachineKey: (machineKey) => {
+      const normalized = machineKey.trim();
+      if (!normalized) return null;
+      return remoteConnectionService.listTargets().find(
+        (target) => target.pairedMachine?.machineKey?.trim() === normalized,
+      )?.id ?? null;
+    },
+    openRemoteProjectForWindow: async ({ targetId, projectId, windowId }) => {
+      const binding = await resolveRemoteProjectBinding(targetId, projectId);
+      bindRemoteProject?.(windowId, binding);
+      return binding;
+    },
   };
+
+  async function resolveRemoteProjectBinding(
+    rawTargetId: string,
+    rawProjectId: string,
+  ): Promise<OpenProjectBinding & { kind: "remote" }> {
+    const targetId = rawTargetId.trim();
+    const projectId = rawProjectId.trim();
+    const target = targetId ? remoteConnectionService.getTarget(targetId) : null;
+    if (!target) throw new Error("Remote target was not found.");
+    if (!projectId) throw new Error("Remote project is required.");
+
+    const connection = await remoteConnectionService.connect(target.id, {
+      explicit: true,
+    });
+    let project =
+      connection.projects.find(
+        (candidate) => candidate.projectId === projectId,
+      ) ?? null;
+    if (!project) {
+      const projects = await remoteConnectionService.projects(target.id);
+      project =
+        projects.find((candidate) => candidate.projectId === projectId) ??
+        null;
+    }
+    if (!project) throw new Error("Remote project was not found on this runtime.");
+
+    return {
+      kind: "remote",
+      key: remoteProjectBindingKey(target.id, project.projectId),
+      targetId: target.id,
+      runtimeName: target.name,
+      hostname: target.hostname,
+      projectId: project.projectId,
+      rootPath: project.rootPath,
+      displayName: project.displayName || path.basename(project.rootPath),
+      gitOriginUrl: project.gitOriginUrl,
+      iconDataUrl: project.icon?.dataUrl ?? null,
+    };
+  }
 
   const cleanupRuntimeEventSubscription = (senderId: number): void => {
     const existing = runtimeEventSubscriptions.get(senderId);
@@ -931,38 +988,7 @@ export function registerRuntimeBridge({
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       try {
-        const target = id ? remoteConnectionService.getTarget(id) : null;
-        if (!target) throw new Error("Remote target was not found.");
-        if (!projectId) throw new Error("Remote project is required.");
-
-        const connection = await remoteConnectionService.connect(target.id, {
-          explicit: true,
-        });
-        let project =
-          connection.projects.find(
-            (candidate) => candidate.projectId === projectId,
-          ) ?? null;
-        if (!project) {
-          const projects = await remoteConnectionService.projects(target.id);
-          project =
-            projects.find((candidate) => candidate.projectId === projectId) ??
-            null;
-        }
-        if (!project)
-          throw new Error("Remote project was not found on this runtime.");
-
-        const binding: OpenProjectBinding & { kind: "remote" } = {
-          kind: "remote",
-          key: remoteProjectBindingKey(target.id, project.projectId),
-          targetId: target.id,
-          runtimeName: target.name,
-          hostname: target.hostname,
-          projectId: project.projectId,
-          rootPath: project.rootPath,
-          displayName: project.displayName || path.basename(project.rootPath),
-          gitOriginUrl: project.gitOriginUrl,
-          iconDataUrl: project.icon?.dataUrl ?? null,
-        };
+        const binding = await resolveRemoteProjectBinding(id, projectId);
         if (
           isLatestOpenRequest() &&
           canBindRemoteProjectToSender(windowId, event.sender)
