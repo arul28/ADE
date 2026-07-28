@@ -542,6 +542,7 @@ extension WorkChatSessionView {
     olderHistoryLoadInFlight = false
     olderHistoryLoadError = nil
     olderHistoryTriggerArmed = true
+    olderHistoryAutomaticContinuationPending = false
     pendingInitialBottomPinSessionId = session.id
     cancelLatestPinTask()
     timelineIncrementalCache.reset()
@@ -757,6 +758,7 @@ extension WorkChatSessionView {
     olderHistoryLoadInFlight = false
     olderHistoryLoadError = nil
     olderHistoryTriggerArmed = true
+    olderHistoryAutomaticContinuationPending = false
     pendingInitialBottomPinSessionId = session.id
     cancelLatestPinTask()
     timelineRebuildTask?.cancel()
@@ -810,9 +812,11 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func requestEarlierTimelineEntries() {
+  func requestEarlierTimelineEntries(automatically: Bool = false) {
     guard !olderHistoryLoadInFlight else { return }
+    olderHistoryAutomaticContinuationPending = false
     olderHistoryLoadError = nil
+    let revealedBufferedEntries = hiddenTimelineCount > 0
     if hiddenTimelineCount > 0 {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
         visibleTimelineCount += workTimelinePageSize
@@ -828,15 +832,47 @@ extension WorkChatSessionView {
       olderHistoryLoadInFlight = true
       let requestedSessionId = session.id
       olderHistoryLoadTask = Task {
-        let loaded = await onLoadOlderTranscript()
+        let result = await onLoadOlderTranscript()
         guard !Task.isCancelled, session.id == requestedSessionId else { return }
         olderHistoryLoadTask = nil
         olderHistoryLoadInFlight = false
-        if !loaded {
+        if !result.succeeded {
+          olderHistoryAutomaticContinuationPending = automatically
           olderHistoryLoadError = "The connected machine did not return this history page. Your cursor was preserved."
+          return
+        }
+        guard automatically,
+              hiddenTimelineCount > 0 || result.hasMoreHistory
+        else { return }
+        olderHistoryAutomaticContinuationPending = true
+        if !revealedBufferedEntries, !result.addedTimelineEntries {
+          continueAutomaticOlderHistoryIfNeeded()
         }
       }
+    } else if automatically, hiddenTimelineCount > 0 {
+      olderHistoryAutomaticContinuationPending = true
     }
+  }
+
+  @MainActor
+  func continueAutomaticOlderHistoryIfNeeded() {
+    guard olderHistoryAutomaticContinuationPending,
+          !olderHistoryLoadInFlight,
+          olderHistoryLoadError == nil
+    else { return }
+    guard workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: scrollMetrics.distanceFromBottom,
+      loading: olderHistoryLoadInFlight,
+      hasError: olderHistoryLoadError != nil,
+      hasBufferedEntries: hiddenTimelineCount > 0,
+      hasHostHistory: canRequestOlderTranscriptHistory
+    ) else {
+      olderHistoryAutomaticContinuationPending = false
+      return
+    }
+    olderHistoryAutomaticContinuationPending = false
+    olderHistoryTriggerArmed = false
+    requestEarlierTimelineEntries(automatically: true)
   }
 
   @MainActor

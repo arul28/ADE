@@ -9,7 +9,7 @@ enum WorkSessionNavigationChrome {
 
 private enum WorkOlderHistoryPageResult {
   case unsupported
-  case loaded
+  case loaded(addedTimelineEntries: Bool)
   case failed
 }
 
@@ -1413,7 +1413,7 @@ struct WorkSessionDestinationView: View {
       dispatchSteerInterruptAction = nil
     }
     let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
-    let loadOlderTranscriptAction: (@MainActor () async -> Bool)?
+    let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
     if viewingSubagent {
       loadOlderTranscriptAction = nil
     } else if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
@@ -2153,15 +2153,20 @@ struct WorkSessionDestinationView: View {
   /// Fetch the next strictly-older transcript page from the host and prepend
   /// it to the fallback entries that feed the chat timeline.
   @MainActor
-  func loadOlderTranscriptEntries() async -> Bool {
-    guard !olderTranscriptLoading else { return true }
+  func loadOlderTranscriptEntries() async -> WorkChatOlderHistoryLoadResult {
+    guard !olderTranscriptLoading else {
+      return .loaded(hasMoreHistory: hasOlderTranscriptHistory, addedTimelineEntries: false)
+    }
     olderTranscriptLoading = true
     defer { olderTranscriptLoading = false }
     switch await loadOlderChatEventHistoryPageIfPossible() {
-    case .loaded:
-      return true
+    case .loaded(let addedTimelineEntries):
+      return .loaded(
+        hasMoreHistory: hasOlderTranscriptHistory,
+        addedTimelineEntries: addedTimelineEntries
+      )
     case .failed:
-      return false
+      return .failed
     case .unsupported:
       break
     }
@@ -2169,14 +2174,16 @@ struct WorkSessionDestinationView: View {
     // command path: that route activates the foreign runtime just to read
     // history. A modern subscribe cursor will re-enable the scoped event-page
     // path as soon as its ack arrives.
-    guard !isCrossProject else { return false }
-    guard let cursor = olderTranscriptCursor, cursor > 0 else { return true }
+    guard !isCrossProject else { return .failed }
+    guard let cursor = olderTranscriptCursor, cursor > 0 else {
+      return .loaded(hasMoreHistory: false, addedTimelineEntries: false)
+    }
     var loadedPage: SyncService.AgentChatTranscriptPage?
     for retry in 0..<3 {
       if retry > 0 {
         try? await Task.sleep(nanoseconds: retry == 1 ? 250_000_000 : 750_000_000)
       }
-      guard !Task.isCancelled else { return false }
+      guard !Task.isCancelled else { return .failed }
       if let page = try? await syncService.fetchChatTranscriptPage(
         sessionId: sessionId,
         cursor: cursor
@@ -2185,14 +2192,15 @@ struct WorkSessionDestinationView: View {
         break
       }
     }
-    guard let page = loadedPage else { return false }
+    guard let page = loadedPage else { return .failed }
     guard workChatOlderTranscriptPageAdvances(
       beforeOffset: cursor,
       nextCursor: page.nextCursor
-    ) else { return false }
+    ) else { return .failed }
     recordTranscriptPage(page, before: cursor)
     let combined = combinedTranscriptEntries()
-    if !combined.isEmpty, combined != fallbackEntries {
+    let fallbackChanged = !combined.isEmpty && combined != fallbackEntries
+    if fallbackChanged {
       setFallbackEntries(combined)
     }
     // fallbackEntries only feed the timeline while `transcript` is empty
@@ -2203,10 +2211,14 @@ struct WorkSessionDestinationView: View {
     // events are not duplicated.
     let olderTranscript = makeWorkChatTranscript(from: combined, sessionId: sessionId)
     let merged = preferredWorkTranscript(current: [], fallback: olderTranscript, eventTranscript: transcript)
-    if !merged.isEmpty, merged != transcript {
+    let transcriptChanged = !merged.isEmpty && merged != transcript
+    if transcriptChanged {
       setTranscript(merged)
     }
-    return true
+    return .loaded(
+      hasMoreHistory: hasOlderTranscriptHistory,
+      addedTimelineEntries: fallbackChanged || transcriptChanged
+    )
   }
 
   @MainActor
@@ -2244,7 +2256,7 @@ struct WorkSessionDestinationView: View {
       }
       guard page.sessionFound else {
         olderChatEventHistoryCursor = 0
-        return .loaded
+        return .loaded(addedTimelineEntries: false)
       }
       guard
             workChatOlderTranscriptPageAdvances(
@@ -2264,13 +2276,14 @@ struct WorkSessionDestinationView: View {
       let merged = pruneResolvedQueuedSteerEnvelopes(
         mergeWorkChatTranscripts(base: olderTranscript, live: transcript)
       )
-      if !merged.isEmpty, merged != transcript {
+      let transcriptChanged = !merged.isEmpty && merged != transcript
+      if transcriptChanged {
         setTranscript(merged)
       }
-      return .loaded
+      return .loaded(addedTimelineEntries: transcriptChanged)
     }
 
-    return .loaded
+    return .loaded(addedTimelineEntries: false)
   }
 
   /// Re-read this session's row from the phone's local replicated DB. Cheap

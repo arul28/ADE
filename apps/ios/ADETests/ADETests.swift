@@ -13748,6 +13748,42 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
 
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 80,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: false,
+      hasHostHistory: false
+    ))
+
     XCTAssertEqual(
       workTimelineVisibleCountAfterHistoryPrepend(
         currentVisibleCount: workTimelinePageSize,

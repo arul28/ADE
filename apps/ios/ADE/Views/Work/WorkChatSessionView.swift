@@ -11,6 +11,27 @@ let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
+let workChatOlderHistoryScrollableDistance: CGFloat = 1
+
+struct WorkChatOlderHistoryLoadResult {
+  let succeeded: Bool
+  let hasMoreHistory: Bool
+  let addedTimelineEntries: Bool
+
+  static let failed = WorkChatOlderHistoryLoadResult(
+    succeeded: false,
+    hasMoreHistory: false,
+    addedTimelineEntries: false
+  )
+
+  static func loaded(hasMoreHistory: Bool, addedTimelineEntries: Bool) -> Self {
+    WorkChatOlderHistoryLoadResult(
+      succeeded: true,
+      hasMoreHistory: hasMoreHistory,
+      addedTimelineEntries: addedTimelineEntries
+    )
+  }
+}
 
 func workChatShouldRequestOlderHistory(
   topY: CGFloat,
@@ -22,6 +43,19 @@ func workChatShouldRequestOlderHistory(
 ) -> Bool {
   topY >= -workChatOlderHistoryTriggerDistance
     && triggerArmed
+    && !loading
+    && !hasError
+    && (hasBufferedEntries || hasHostHistory)
+}
+
+func workChatShouldContinueAutomaticOlderHistory(
+  distanceFromBottom: CGFloat,
+  loading: Bool,
+  hasError: Bool,
+  hasBufferedEntries: Bool,
+  hasHostHistory: Bool
+) -> Bool {
+  distanceFromBottom <= workChatOlderHistoryScrollableDistance
     && !loading
     && !hasError
     && (hasBufferedEntries || hasHostHistory)
@@ -183,6 +217,7 @@ struct WorkChatSessionView: View {
   @State var olderHistoryLoadInFlight = false
   @State var olderHistoryLoadError: String?
   @State var olderHistoryTriggerArmed = true
+  @State var olderHistoryAutomaticContinuationPending = false
   @State var olderHistoryLoadTask: Task<Void, Never>?
   let isLive: Bool
   let hostUnreachable: Bool
@@ -225,7 +260,7 @@ struct WorkChatSessionView: View {
   // Host-side scroll-back: true while older transcript pages remain on the
   // host beyond what the phone has fetched; the callback pulls the next page.
   var hasOlderTranscriptHistory: Bool = false
-  var onLoadOlderTranscript: (@MainActor () async -> Bool)? = nil
+  var onLoadOlderTranscript: (@MainActor () async -> WorkChatOlderHistoryLoadResult)? = nil
   var subagentSnapshots: [WorkSubagentSnapshot] = []
   var subagentSnapshotsRenderSignature: Int = 0
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
@@ -667,7 +702,9 @@ struct WorkChatSessionView: View {
           .frame(maxWidth: .infinity, minHeight: 28)
         } else if let olderHistoryLoadError {
           Button {
-            requestEarlierTimelineEntries()
+            requestEarlierTimelineEntries(
+              automatically: olderHistoryAutomaticContinuationPending
+            )
           } label: {
             Label("Couldn’t load earlier messages · Retry", systemImage: "arrow.clockwise")
               .frame(maxWidth: .infinity, minHeight: 44)
@@ -1037,6 +1074,7 @@ struct WorkChatSessionView: View {
             distanceFromBottom: max(0, bottomY - scrollViewportHeight),
             proxy: proxy
           )
+          continueAutomaticOlderHistoryIfNeeded()
           resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-bottom")
         }
         .onPreferenceChange(WorkChatContentTopPreferenceKey.self) { topY in
@@ -1052,7 +1090,7 @@ struct WorkChatSessionView: View {
             hasHostHistory: canRequestOlderTranscriptHistory
           ) else { return }
           olderHistoryTriggerArmed = false
-          requestEarlierTimelineEntries()
+          requestEarlierTimelineEntries(automatically: true)
         }
         .onChange(of: timeline.count) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
@@ -1120,6 +1158,8 @@ struct WorkChatSessionView: View {
           olderHistoryLoadTask = nil
           olderHistoryLoadInFlight = false
           olderHistoryLoadError = nil
+          olderHistoryAutomaticContinuationPending = false
+          olderHistoryTriggerArmed = true
           cancelScheduledTimelineSnapshotRebuild()
         }
         .onChange(of: chatSummaryTimelineKey) { _, _ in
