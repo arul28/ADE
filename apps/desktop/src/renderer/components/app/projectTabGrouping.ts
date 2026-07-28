@@ -1,12 +1,18 @@
 // Origin normalization is a URL/regex parse and the tab list re-derives on
 // every connection-snapshot tick, so it goes through the shared per-URL cache.
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
-import type { OpenProjectBinding, RecentProjectSummary } from "../../../shared/types";
+import type {
+  OpenProjectBinding,
+  RecentProjectSummary,
+  RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeConnectionState,
+} from "../../../shared/types";
 
 import {
   THIS_MACHINE_ID as LOCAL_MACHINE_ID,
   THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
 } from "../../../shared/machineIdentity";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 export { LOCAL_MACHINE_ID, LOCAL_MACHINE_NAME };
 
 export type RemoteProjectTabBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
@@ -23,6 +29,8 @@ export type ProjectTabMachine = {
   displayName: string;
   laneCount?: number;
   iconDataUrl?: string | null;
+  /** Full binding when the location can be opened without first becoming a tab. */
+  binding?: OpenProjectBinding;
 };
 
 /** One repo — the thing that gets a tab. */
@@ -43,6 +51,13 @@ function localMachine(tab: RecentProjectSummary): ProjectTabMachine {
     rootPath: tab.rootPath,
     displayName: tab.displayName,
     laneCount: tab.laneCount,
+    binding: {
+      kind: "local",
+      key: `local:${tab.rootPath}`,
+      rootPath: tab.rootPath,
+      displayName: tab.displayName,
+      gitOriginUrl: tab.gitOriginUrl,
+    },
   };
 }
 
@@ -55,6 +70,7 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
     rootPath: binding.rootPath,
     displayName: binding.displayName,
     iconDataUrl: binding.iconDataUrl,
+    binding,
   };
 }
 
@@ -75,21 +91,48 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
   remoteTabs: readonly RemoteProjectTabBinding[];
+  /** Known-but-not-open locations. They are attached to an existing logical
+   *  tab, but never create a tab by themselves. */
+  knownLocalTabs?: readonly RecentProjectSummary[];
+  knownRemoteTabs?: readonly RemoteProjectTabBinding[];
   /** Normalized origin per remote binding key, from the live connection
    *  snapshots the renderer already holds. */
   remoteOriginByKey?: Readonly<Record<string, string | null | undefined>>;
   activeBindingKey?: string | null;
+  preferredBindingKeyByGroup?: Readonly<Record<string, string | null | undefined>>;
 }): ProjectTabGroup[] {
-  const { localTabs, remoteTabs, remoteOriginByKey = {}, activeBindingKey = null } = args;
+  const {
+    localTabs,
+    remoteTabs,
+    knownLocalTabs = [],
+    knownRemoteTabs = [],
+    remoteOriginByKey = {},
+    activeBindingKey = null,
+    preferredBindingKeyByGroup = {},
+  } = args;
 
-  const entries: { machine: ProjectTabMachine; origin: string | null }[] = [
+  const openEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
     ...localTabs.map((tab) => ({
       machine: localMachine(tab),
       origin: cachedGitRemoteIdentity(tab.gitOriginUrl),
     })),
     ...remoteTabs.map((binding) => ({
       machine: remoteMachine(binding),
-      origin: cachedGitRemoteIdentity(remoteOriginByKey[binding.key] ?? null),
+      origin: cachedGitRemoteIdentity(
+        remoteOriginByKey[binding.key] ?? binding.gitOriginUrl ?? null,
+      ),
+    })),
+  ];
+  const knownEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
+    ...knownLocalTabs.map((tab) => ({
+      machine: localMachine(tab),
+      origin: cachedGitRemoteIdentity(tab.gitOriginUrl),
+    })),
+    ...knownRemoteTabs.map((binding) => ({
+      machine: remoteMachine(binding),
+      origin: cachedGitRemoteIdentity(
+        remoteOriginByKey[binding.key] ?? binding.gitOriginUrl ?? null,
+      ),
     })),
   ];
 
@@ -104,7 +147,7 @@ export function groupProjectTabs(args: {
     activeBindingKey: machine.bindingKey === activeBindingKey ? machine.bindingKey : null,
   });
 
-  for (const { machine, origin } of entries) {
+  for (const { machine, origin } of openEntries) {
     if (!origin) {
       groups.push(standalone(machine));
       continue;
@@ -131,6 +174,33 @@ export function groupProjectTabs(args: {
     }
   }
 
+  // Attach discovered counterparts only after open entries establish the tab
+  // set. This is what lets an unopened local checkout appear in the machine
+  // switcher without turning every recent project into an open tab.
+  for (const { machine, origin } of knownEntries) {
+    if (!origin) continue;
+    const existing = groupByOrigin.get(origin);
+    if (!existing) continue;
+    if (existing.machines.some((candidate) => candidate.bindingKey === machine.bindingKey)) {
+      continue;
+    }
+    const claimed = claimedMachines.get(origin)!;
+    if (claimed.has(machine.machineId)) continue;
+    claimed.add(machine.machineId);
+    existing.machines.push(machine);
+    if (machine.bindingKey === activeBindingKey) {
+      existing.activeBindingKey = machine.bindingKey;
+    }
+  }
+
+  for (const group of groups) {
+    if (group.activeBindingKey) continue;
+    const preferred = preferredBindingKeyByGroup[group.id] ?? null;
+    if (preferred && group.machines.some((machine) => machine.bindingKey === preferred)) {
+      group.activeBindingKey = preferred;
+    }
+  }
+
   return groups;
 }
 
@@ -146,4 +216,193 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
 /** True when a group spans more than one machine and therefore needs a picker. */
 export function isMultiMachine(group: ProjectTabGroup): boolean {
   return group.machines.length > 1;
+}
+
+export type RecentProjectLocation = {
+  summary: RecentProjectSummary;
+  recentKey: string | null;
+  machineId: string;
+  machineName: string;
+  connectionState: RemoteRuntimeConnectionState | null;
+  reachable: boolean;
+};
+
+export type RecentProjectGroup = {
+  id: string;
+  displayName: string;
+  locations: RecentProjectLocation[];
+  primary: RecentProjectLocation;
+  recentKeys: string[];
+  pinned: boolean;
+  lastOpenedAt: string;
+};
+
+export function recentProjectLocationKey(project: RecentProjectSummary): string {
+  return project.kind === "remote" && project.remote
+    ? remoteProjectBindingKey(project.remote.targetId, project.remote.projectId)
+    : project.rootPath;
+}
+
+function isoTimestamp(value: string | null | undefined): number {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function recentTimestamp(project: RecentProjectSummary): number {
+  return isoTimestamp(project.lastOpenedAt);
+}
+
+/**
+ * One recent card per repository, enriched with matching machine-catalog
+ * locations. Pure live catalog entries attach to a recent group but never
+ * create a card on their own.
+ */
+export function groupRecentProjects(args: {
+  recentProjects: readonly RecentProjectSummary[];
+  remoteSnapshot?: RemoteRuntimeConnectionSnapshot | null;
+}): RecentProjectGroup[] {
+  const { recentProjects, remoteSnapshot = null } = args;
+  const connections = remoteSnapshot?.connections ?? [];
+  const liveProjectByKey = new Map<string, {
+    connection: (typeof connections)[number];
+    project: (typeof connections)[number]["projects"][number];
+  }>();
+  for (const connection of connections) {
+    for (const project of connection.projects ?? []) {
+      liveProjectByKey.set(
+        remoteProjectBindingKey(connection.target.id, project.projectId),
+        { connection, project },
+      );
+    }
+  }
+
+  type MutableGroup = {
+    id: string;
+    displayName: string;
+    locations: RecentProjectLocation[];
+    recentKeys: string[];
+    pinned: boolean;
+    lastOpenedAt: string;
+    claimedMachines: Set<string>;
+  };
+  const groups: MutableGroup[] = [];
+  const byOrigin = new Map<string, MutableGroup>();
+
+  const toLocation = (
+    summary: RecentProjectSummary,
+    recentKey: string | null,
+  ): RecentProjectLocation => {
+    if (summary.kind === "remote" && summary.remote) {
+      const connection = connections.find(
+        (candidate) => candidate.target.id === summary.remote?.targetId,
+      );
+      const connectionState = connection?.state ?? "idle";
+      return {
+        summary,
+        recentKey,
+        machineId: summary.remote.targetId,
+        machineName: summary.remote.runtimeName,
+        connectionState,
+        reachable: connectionState === "connected",
+      };
+    }
+    return {
+      summary,
+      recentKey,
+      machineId: LOCAL_MACHINE_ID,
+      machineName: LOCAL_MACHINE_NAME,
+      connectionState: null,
+      reachable: summary.exists !== false,
+    };
+  };
+
+  for (const summary of recentProjects) {
+    const key = recentProjectLocationKey(summary);
+    const live = summary.kind === "remote" ? liveProjectByKey.get(key) : null;
+    const origin = cachedGitRemoteIdentity(
+      summary.gitOriginUrl ?? live?.project.gitOriginUrl ?? null,
+    );
+    const location = toLocation(
+      live && !summary.gitOriginUrl
+        ? { ...summary, gitOriginUrl: live.project.gitOriginUrl }
+        : summary,
+      key,
+    );
+    let group = origin ? byOrigin.get(origin) : undefined;
+    if (!group || group.claimedMachines.has(location.machineId)) {
+      group = {
+        id: origin && !byOrigin.has(origin) ? origin : key,
+        displayName: summary.displayName,
+        locations: [],
+        recentKeys: [],
+        pinned: false,
+        lastOpenedAt: summary.lastOpenedAt,
+        claimedMachines: new Set(),
+      };
+      groups.push(group);
+      if (origin && !byOrigin.has(origin)) byOrigin.set(origin, group);
+    }
+    group.locations.push(location);
+    group.claimedMachines.add(location.machineId);
+    group.recentKeys.push(key);
+    group.pinned ||= Boolean(summary.pinned);
+    if (recentTimestamp(summary) > isoTimestamp(group.lastOpenedAt)) {
+      group.lastOpenedAt = summary.lastOpenedAt;
+      group.displayName = summary.displayName;
+    }
+  }
+
+  // A connected machine may know a checkout that has never been opened from
+  // this desktop. Attach it by strict origin identity so the card can say
+  // "Also on …" and the tab switcher can open it immediately.
+  for (const connection of connections) {
+    for (const project of connection.projects ?? []) {
+      const origin = cachedGitRemoteIdentity(project.gitOriginUrl);
+      if (!origin) continue;
+      const group = byOrigin.get(origin);
+      if (!group || group.claimedMachines.has(connection.target.id)) continue;
+      const summary: RecentProjectSummary = {
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+        lastOpenedAt: project.lastOpenedAt
+          ? new Date(project.lastOpenedAt).toISOString()
+          : "",
+        exists: true,
+        kind: "remote",
+        gitOriginUrl: project.gitOriginUrl,
+        remote: {
+          targetId: connection.target.id,
+          projectId: project.projectId,
+          runtimeName: connection.target.name,
+          hostname: connection.target.hostname,
+          gitOriginUrl: project.gitOriginUrl,
+          iconDataUrl: project.icon?.dataUrl ?? null,
+        },
+      };
+      group.locations.push(toLocation(summary, null));
+      group.claimedMachines.add(connection.target.id);
+    }
+  }
+
+  return groups
+    .map((group): RecentProjectGroup => {
+      const locations = [...group.locations].sort(
+        (left, right) => recentTimestamp(right.summary) - recentTimestamp(left.summary),
+      );
+      const primary = locations.find((location) => location.reachable) ?? locations[0]!;
+      return {
+        id: group.id,
+        displayName: group.displayName,
+        locations,
+        primary,
+        recentKeys: group.recentKeys,
+        pinned: group.pinned,
+        lastOpenedAt: group.lastOpenedAt,
+      };
+    })
+    .sort((left, right) => {
+      const pinDelta = Number(right.pinned) - Number(left.pinned);
+      if (pinDelta !== 0) return pinDelta;
+      return isoTimestamp(right.lastOpenedAt) - isoTimestamp(left.lastOpenedAt);
+    });
 }

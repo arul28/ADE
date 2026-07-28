@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  persistableRemoteProjectBinding,
   persistableRemoteProjectIconDataUrl,
   readGlobalState,
   recentProjectKey,
@@ -80,6 +81,7 @@ describe("upsertRecentProject", () => {
       runtimeName: "mac-mini",
       hostname: "mac-mini.local",
       iconDataUrl: "data:image/png;base64,remote-icon",
+      gitOriginUrl: "https://token:secret@github.com/arul28/ADE.git?token=secret#fragment",
     };
     const next = upsertRecentProject(
       {},
@@ -87,7 +89,10 @@ describe("upsertRecentProject", () => {
     );
 
     expect(next.recentProjects).toHaveLength(1);
-    expect(next.recentProjects?.[0]?.remote).toEqual(remote);
+    expect(next.recentProjects?.[0]?.remote).toEqual({
+      ...remote,
+      gitOriginUrl: "https://github.com/arul28/ADE.git",
+    });
     expect(recentProjectKey(next.recentProjects![0]!)).toBe("remote:t1:p1");
   });
 
@@ -181,6 +186,26 @@ describe("persistableRemoteProjectIconDataUrl", () => {
     expect(
       persistableRemoteProjectIconDataUrl(`data:image/png;base64,${"a".repeat(129 * 1024)}`),
     ).toBeNull();
+  });
+});
+
+describe("persistableRemoteProjectBinding", () => {
+  it("removes HTTP credentials and transient URL data before persistence", () => {
+    const binding = persistableRemoteProjectBinding({
+      kind: "remote" as const,
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/arul/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+      gitOriginUrl: "https://token:secret@github.com/arul28/ADE.git?token=secret#fragment",
+    });
+
+    expect(binding.gitOriginUrl).toBe("https://github.com/arul28/ADE.git");
+    expect(JSON.stringify(binding)).not.toContain("secret");
+    expect(JSON.stringify(binding)).not.toContain("token");
   });
 });
 

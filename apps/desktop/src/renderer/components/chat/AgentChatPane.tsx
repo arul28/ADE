@@ -48,7 +48,6 @@ import {
   type LaneLinearIssue,
   type AiSettingsStatus,
   type OpenProjectBinding,
-  type RemoteRuntimeConnectionSnapshot,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -186,17 +185,13 @@ import {
 } from "../lanes/newLaneBaseSource";
 import {
   LaneCombobox,
-  AUTO_CREATE_LANE_OPTION_ID,
   isAutoCreateLaneOptionId,
-  machineIdFromAutoCreateLaneOptionId,
-  type LaneComboboxMachine,
 } from "../terminals/LaneCombobox";
 import {
-  canCreateLaneOnMachine,
-  deriveLaneMachineOptions,
-  type LaneMachineOption,
-  type LaneMachineProjectRef,
-} from "../lanes/laneMachines";
+  AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION,
+  useDraftMachineRouting,
+  type RoutedDraftLane,
+} from "./useDraftMachineRouting";
 import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
@@ -272,13 +267,6 @@ const chatToolbarActionBase =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 const chatToolbarActionIdle =
   "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
-
-const AUTO_CREATE_LANE_OPTION = {
-  id: AUTO_CREATE_LANE_OPTION_ID,
-  name: "Auto-create lane",
-  color: null,
-  branchRef: null,
-};
 
 function handoffProviderDisplayName(provider: string | null | undefined): string {
   return providerDisplayLabel(provider, "this provider");
@@ -3265,6 +3253,8 @@ export function AgentChatPane({
   onOpenExistingImportedSession,
   availableLanes,
   onLaneChange,
+  initialDraftMachineId = null,
+  onDraftMachineChange,
   onToggleSessionsPane,
   sessionsPaneCollapsed,
   sessionsPaneCount,
@@ -3321,7 +3311,10 @@ export function AgentChatPane({
    */
   orchestratorEnabled?: boolean;
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
-  onOpenShellSession?: (laneId: string) => void | Promise<void>;
+  onOpenShellSession?: (
+    laneId: string,
+    pin?: OpenProjectBinding | null,
+  ) => void | Promise<void>;
   /**
    * Work draft surface: route the result of importing an external CLI session.
    * Presence of this callback is what enables the "Import session" affordance.
@@ -3336,6 +3329,10 @@ export function AgentChatPane({
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
+  /** Machine owning the persisted Work draft lane; null means the bound machine. */
+  initialDraftMachineId?: string | null;
+  /** Persists machine selection independently from the raw lane id. */
+  onDraftMachineChange?: (machineId: string | null) => void;
   /** Work tab: far-left session-list expander rendered in this chat's header. */
   onToggleSessionsPane?: () => void;
   sessionsPaneCollapsed?: boolean;
@@ -3356,12 +3353,11 @@ export function AgentChatPane({
   // work can keep targeting the project that started it after the user switches
   // to another project.
   const projectBinding = useAppStore((s) => s.projectBinding);
-  // Lane creation is routed by the tab's binding, so the lane picker's machine
-  // groups need both the machine list and the way to switch between them.
+  // Draft launches are routed independently from the global project tab. The
+  // lane picker needs the known checkout set, but choosing a machine here must
+  // never rebind the rest of ADE.
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots) ?? EMPTY_PROJECT_TAB_ROOTS;
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs) ?? EMPTY_REMOTE_PROJECT_TABS;
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
   const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
@@ -3939,6 +3935,9 @@ export function AgentChatPane({
   const fastModeUpdateCounterRef = useRef(0);
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
+  const draftExecutionLanesRef = useRef<RoutedDraftLane[]>([]);
+  const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
+  const draftMachineUnavailableRef = useRef(false);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const turnActiveBySessionRef = useRef<Record<string, boolean>>({});
   const detachedHistorySessionsRef = useRef<Set<string>>(new Set());
@@ -3960,7 +3959,6 @@ export function AgentChatPane({
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
-  const preserveDraftAcrossMachineSwitchRef = useRef(false);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
   const selectedSession = useMemo(
@@ -7995,12 +7993,6 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, composerDraftTextRef.current);
     }
     prevDraftKeyRef.current = companionStateKey;
-    if (preserveDraftAcrossMachineSwitchRef.current) {
-      preserveDraftAcrossMachineSwitchRef.current = false;
-      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
-      draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:machine-switch`;
-      return;
-    }
     const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
     composerDraftHydratingTextRef.current = saved?.text ?? null;
@@ -8198,10 +8190,14 @@ export function AgentChatPane({
   const draftLaunchTargetIsAutoCreate = isAutoCreateLaneOptionId(draftLaunchTargetId);
   const launchShellForDraftLane = useCallback(async () => {
     if (!laneId || draftLaunchTargetIsAutoCreate || !onOpenShellSession || shellLaunchBusy) return;
+    if (draftMachineUnavailableRef.current) {
+      setError("The selected machine is not currently available.");
+      return;
+    }
     setShellLaunchBusy(true);
     setError(null);
     try {
-      await onOpenShellSession(laneId);
+      await onOpenShellSession(laneId, draftExecutionBindingRef.current);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -8709,8 +8705,9 @@ export function AgentChatPane({
   ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
-      const primaryLane = availableLanes?.find((candidate) => candidate.laneType === "primary")
-        ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
+      const executionLanes = draftExecutionLanesRef.current;
+      const primaryLane = executionLanes.find((candidate) => candidate.laneType === "primary")
+        ?? executionLanes.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
         ?? null;
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
       const namingSeed = buildDraftLaunchNamingSeed(snapshot);
@@ -8736,8 +8733,8 @@ export function AgentChatPane({
           ? window.ade.git.listBranches({ laneId: primaryLane.id }, pin)
           : window.ade.git.listBranches({ laneId: primaryLane.id }),
       });
-      const primaryLaneSummary = lanes.find((candidate) => candidate.id === primaryLane.id) ?? null;
-      const primaryBaseRef = primaryLaneSummary?.baseRef ?? (branchNameFromRef(primaryLane.branchRef) || "main");
+      const primaryBaseRef = primaryLane.baseRef
+        ?? (branchNameFromRef(primaryLane.branchRef) || "main");
       const selectedBaseBranch = selectDefaultNewLaneBaseRef({
         branches,
         source: baseSource,
@@ -8789,15 +8786,25 @@ export function AgentChatPane({
       };
     }
     if (!laneId) throw new Error("Select a lane before launching.");
-    const launchLane = lanes.find((lane) => lane.id === laneId);
-    const laneName = availableLanes?.find((lane) => lane.id === laneId)?.name ?? launchLane?.name ?? laneDisplayLabel ?? laneId;
+    const launchLane = draftExecutionLanesRef.current.find((candidate) => candidate.id === laneId)
+      ?? lanes.find((candidate) => candidate.id === laneId);
+    const laneName = launchLane?.name ?? laneDisplayLabel ?? laneId;
     return {
       laneId,
       laneName,
       worktreePath: launchLane?.worktreePath ?? projectRoot ?? null,
       autoCreated: false,
     };
-  }, [availableLanes, canRefreshPinnedProject, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, lanes, projectRoot, refreshLanesStore, startBackgroundLaneNaming]);
+  }, [
+    canRefreshPinnedProject,
+    draftLaunchTargetIsAutoCreate,
+    laneDisplayLabel,
+    laneId,
+    lanes,
+    projectRoot,
+    refreshLanesStore,
+    startBackgroundLaneNaming,
+  ]);
 
   const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
     setDraft((current) => {
@@ -9006,6 +9013,10 @@ export function AgentChatPane({
     ) {
       return;
     }
+    if (draftMachineUnavailableRef.current) {
+      setError("The selected machine is not currently available.");
+      return;
+    }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
     if (!modelId) {
@@ -9041,9 +9052,9 @@ export function AgentChatPane({
     // `launchTimedOut` is the normal abort source: withDraftLaunchTimeout rejects
     // the renderer wait but cannot cancel the underlying IPC, so a timed-out
     // step that keeps running must be stopped before its next mutation.
-    const launchBinding = draftLaunchTargetIsAutoCreate
-      ? rootAppStoreApi.getState().projectBinding ?? projectBinding
-      : projectBinding;
+    const launchBinding = draftExecutionBindingRef.current
+      ?? rootAppStoreApi.getState().projectBinding
+      ?? projectBinding;
     const launchProjectRoot = projectRoot;
     let launchTimedOut = false;
     const assertLaunchActive = () => {
@@ -10656,152 +10667,37 @@ export function AgentChatPane({
     && !lockSessionId
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
-  /* -------------------------------------------------------------------------
-   * Machine groups for the draft lane picker.
-   *
-   * A lane owns its machine, so the lane picker is where a machine gets chosen
-   * for a chat that has no lane yet. The list is a pure derivation over the
-   * remote-runtime connection snapshot — the same one the create-lane dialog
-   * uses — and it is only read when a second machine could exist at all, so
-   * single-machine setups make no extra IPC call and render the flat list they
-   * always did.
-   * ---------------------------------------------------------------------- */
-  const multiMachinePossible =
-    showDraftLaunchControls
-    && (openRemoteProjectTabs.length > 0 || projectBinding?.kind === "remote");
-  const [laneMachineSnapshot, setLaneMachineSnapshot] =
-    useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  useEffect(() => {
-    if (!multiMachinePossible) return;
-    const remoteRuntime = window.ade?.remoteRuntime;
-    if (!remoteRuntime?.getConnectionSnapshot) return;
-    let cancelled = false;
-    const apply = (snapshot: RemoteRuntimeConnectionSnapshot) => {
-      if (cancelled) return;
-      setLaneMachineSnapshot((current) =>
-        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
-      );
-    };
-    void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {});
-    const unsubscribe = remoteRuntime.onConnectionSnapshotChanged?.(apply) ?? (() => {});
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [multiMachinePossible]);
-
-  const laneMachineOptions = useMemo<LaneMachineOption[]>(() => {
-    if (!multiMachinePossible) return [];
-    const boundProject: LaneMachineProjectRef | null = projectBinding
-      ? {
-          // The active binding IS this repo — nothing is inferred here.
-          matchedBy: "origin" as const,
-          projectId: projectBinding.kind === "remote" ? projectBinding.projectId : null,
-          rootPath: projectBinding.rootPath,
-          displayName: projectBinding.displayName,
-        }
-      : null;
-    const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
-    const boundConnection = boundTargetId
-      ? laneMachineSnapshot?.connections.find((candidate) => candidate.target.id === boundTargetId)
-      : null;
-    const repoOriginUrl = projectBinding?.kind === "remote"
-      ? (boundConnection?.projects.find(
-          (candidate) => candidate.projectId === projectBinding.projectId,
-        )?.gitOriginUrl ?? null)
-      : null;
-    const options = deriveLaneMachineOptions({
-      connections: laneMachineSnapshot?.connections ?? [],
-      boundTargetId,
-      boundProject,
-      repoOriginUrl,
-      repoDisplayName: boundProject?.displayName ?? null,
-      localProjectRoots: openProjectTabRoots,
-    }).filter(canCreateLaneOnMachine);
-    // Bound machine first. `LaneCombobox` treats the first machine as the
-    // default — the one that owns lanes with no `machineId` and the bare
-    // auto-create id — and the bare id must keep meaning "create where this tab
-    // already is", which is exactly today's behavior.
-    return [
-      ...options.filter((option) => option.isBound),
-      ...options.filter((option) => !option.isBound),
-    ];
-  }, [laneMachineSnapshot, multiMachinePossible, openProjectTabRoots, projectBinding]);
-
-  /** Empty below two machines, which renders the list exactly as it does today. */
-  const draftLaneSelectorMachines = useMemo<LaneComboboxMachine[]>(
-    () => laneMachineOptions.length < 2
-      ? []
-      : laneMachineOptions.map((option) => ({ id: option.id, name: option.name })),
-    [laneMachineOptions],
-  );
-
-  /**
-   * Every create-lane call is routed by the tab's binding, so creating a lane on
-   * another machine means binding this tab to that machine's checkout of this
-   * repo first. A machine we can't prove holds this repo is not switched to.
-   */
-  const switchToLaneMachine = useCallback((machineId: string) => {
-    const machine = laneMachineOptions.find((candidate) => candidate.id === machineId);
-    if (!machine || machine.isBound) return;
-    preserveDraftAcrossMachineSwitchRef.current = true;
-    const switching = machine.targetId
-      ? machine.project?.projectId
-        ? switchRemoteProject(machine.targetId, machine.project.projectId).then(() => {})
-        : null
-      : machine.project?.rootPath
-        ? switchProjectToPath(machine.project.rootPath)
-        : null;
-    if (!switching) {
-      preserveDraftAcrossMachineSwitchRef.current = false;
-      setError(`Open this repository on ${machine.name} first, then create the lane there.`);
-      return;
-    }
-    setError(null);
-    void switching
-      .then(() => {
-        // A different machine can expose the same absolute root path. In that
-        // case the composer storage scope never changes, so there is no
-        // hydration effect to consume this one-shot preservation marker.
-        if (selectActiveProjectRoot(rootAppStoreApi.getState()) === projectRoot) {
-          preserveDraftAcrossMachineSwitchRef.current = false;
-        }
-      })
-      .catch((err: unknown) => {
-        preserveDraftAcrossMachineSwitchRef.current = false;
-        setError(err instanceof Error ? err.message : String(err));
-      });
-  }, [laneMachineOptions, projectRoot, switchProjectToPath, switchRemoteProject]);
-
-  const draftLaneSelectorLanes = useMemo(
-    () => showDraftLaunchControls && availableLanes
-      ? [AUTO_CREATE_LANE_OPTION, ...availableLanes]
-      : (availableLanes ?? []),
-    [availableLanes, showDraftLaunchControls],
-  );
-  const primaryDraftLane = useMemo(() => (
-    availableLanes?.find((candidate) => candidate.laneType === "primary")
-      ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
-      ?? null
-  ), [availableLanes]);
-  const autoCreateToolsLane = primaryDraftLane ?? availableLanes?.[0] ?? null;
-  const draftLaneSelectorValue = draftLaunchTargetIsAutoCreate ? AUTO_CREATE_LANE_OPTION_ID : (laneId ?? "");
-  const handleDraftLaneSelectionChange = useCallback((nextLaneId: string) => {
-    if (isAutoCreateLaneOptionId(nextLaneId)) {
-      // Stored bare: after a machine switch the chosen machine is the bound one,
-      // and the bare id is always "auto-create on the machine this tab is on".
-      setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
-      const machineId = machineIdFromAutoCreateLaneOptionId(nextLaneId);
-      if (machineId) {
-        switchToLaneMachine(machineId);
-        return;
-      }
-      if (autoCreateToolsLane) onLaneChange?.(autoCreateToolsLane.id);
-      return;
-    }
-    setDraftLaunchTargetId(null);
-    onLaneChange?.(nextLaneId);
-  }, [autoCreateToolsLane, onLaneChange, switchToLaneMachine]);
+  const {
+    machineOptions: laneMachineOptions,
+    selectorMachines: draftLaneSelectorMachines,
+    selectorLanes: draftLaneSelectorLanes,
+    boundMachineId: boundLaneMachineId,
+    executionLanes: draftExecutionLanes,
+    executionBinding: draftExecutionBinding,
+    selectedMachine: selectedDraftMachine,
+    selectedLaneIsPrimary: selectedDraftLaneIsPrimary,
+    machineUnavailable: draftMachineUnavailable,
+    selectorValue: draftLaneSelectorValue,
+    handleMachineChange: handleDraftMachineChange,
+    handleLaneSelectionChange: handleDraftLaneSelectionChange,
+  } = useDraftMachineRouting({
+    enabled: showDraftLaunchControls,
+    projectBinding,
+    openProjectTabRoots,
+    crossMachineLanesByMachineId,
+    lanes,
+    availableLanes,
+    laneId,
+    initialDraftMachineId,
+    draftLaunchTargetIsAutoCreate,
+    onDraftMachineChange,
+    onLaneChange,
+    setDraftLaunchTargetId,
+    setError,
+  });
+  draftExecutionLanesRef.current = draftExecutionLanes;
+  draftExecutionBindingRef.current = draftExecutionBinding;
+  draftMachineUnavailableRef.current = draftMachineUnavailable;
 
   useEffect(() => {
     if (!showDraftLaunchControls && draftLaunchTargetId) {
@@ -11744,6 +11640,19 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
+  const composerMachineBinding = selectedSessionId
+    ? (chatRuntimePin ?? projectBinding)
+    : (draftExecutionBinding ?? projectBinding);
+  const composerMachineId = selectedSessionId
+    ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.targetId : "this-mac")
+    : (selectedDraftMachine?.id ?? boundLaneMachineId);
+  const composerMachineName = selectedSessionId
+    ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.runtimeName : "This Mac")
+    : (selectedDraftMachine?.name ?? "This Mac");
+  const composerMachineSelectable = Boolean(
+    showDraftLaunchControls
+    && (draftLaunchTargetIsAutoCreate || selectedDraftLaneIsPrimary),
+  );
 
   const composerElement = (
       <AgentChatComposer
@@ -11753,6 +11662,14 @@ export function AgentChatPane({
             // still "auto-create" — that is the one moment no machine is settled
             // yet. Any other value keeps it read-only.
             laneSelectionId={draftLaneSelectorValue}
+            machineSelectable={composerMachineSelectable}
+            machineId={composerMachineId}
+            machineName={composerMachineName}
+            machineOptions={laneMachineOptions.map((machine) => ({
+              id: machine.id,
+              name: machine.name,
+            }))}
+            onMachineChange={handleDraftMachineChange}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
             isActive={isTileActive}

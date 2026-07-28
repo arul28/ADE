@@ -8,26 +8,26 @@ type WorkViewStateUpdater = (
 ) => void;
 
 export function useStartChatInLane({
-  projectRoot,
+  projectStateKey,
   setWorkViewState,
   selectLane,
   navigate,
 }: {
-  projectRoot: string | null;
+  projectStateKey: string | null;
   setWorkViewState: WorkViewStateUpdater;
   selectLane: (laneId: string) => void;
   navigate: (path: string) => void | Promise<void>;
 }) {
   return useCallback(
     (laneId: string) => {
-      if (!projectRoot) return;
-      setWorkViewState(projectRoot, (prev) => ({
+      if (!projectStateKey) return;
+      setWorkViewState(projectStateKey, (prev) => ({
         ...prev,
         ...startChatDraftPatch(laneId),
       }));
       selectLane(laneId);
       void navigate("/work");
     },
-    [navigate, projectRoot, selectLane, setWorkViewState],
+    [navigate, projectStateKey, selectLane, setWorkViewState],
   );
 }

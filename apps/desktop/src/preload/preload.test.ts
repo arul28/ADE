@@ -6443,6 +6443,50 @@ describe("per-chat runtime routing", () => {
     });
   });
 
+  it("routes pinned session-card mutations to the owning machine", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.sessions.updateMeta(
+      { sessionId: "session-b", title: "Renamed", manuallyNamed: true },
+      machineB,
+    );
+    await bridge.sessions.snoozeSession(
+      "session-b",
+      "2026-07-28T20:00:00.000Z",
+      machineB,
+    );
+    await bridge.sessions.wakeSession("session-b", "manual", machineB);
+    await bridge.sessions.settle("session-b", undefined, machineB);
+    await bridge.sessions.unsettle("session-b", machineB);
+    await bridge.sessions.setSettleOverride("session-b", "active", machineB);
+    await bridge.sessions.clearWokeMarker("session-b", machineB);
+    await bridge.sessions.delete({ sessionId: "session-b" }, machineB);
+
+    const remoteActions = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => (
+        payload as { request: { action: string } }
+      ).request.action);
+    expect(remoteActions).toEqual([
+      "updateMeta",
+      "snoozeSession",
+      "wakeSession",
+      "settleSession",
+      "unsettleSelfSession",
+      "setSettleOverride",
+      "clearWokeMarker",
+      "deleteSession",
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.objectContaining({
+        request: expect.objectContaining({
+          args: expect.objectContaining({ sessionId: "session-b" }),
+        }),
+      }),
+    );
+  });
+
   it("streams a pinned This Mac chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
     try {

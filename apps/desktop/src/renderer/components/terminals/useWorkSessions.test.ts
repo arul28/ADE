@@ -1039,6 +1039,18 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(selectLaneSpy).toHaveBeenCalledWith("lane-2");
   });
 
+  it("setDraftMachineId remembers the draft owner independently from its lane id", () => {
+    const { result } = renderHook(() => useWorkSessions());
+
+    act(() => {
+      result.current.setDraftMachineId("studio");
+    });
+
+    expect(setWorkViewStateSpy).toHaveBeenCalledWith("/fake/project", {
+      draftMachineId: "studio",
+    });
+  });
+
   it("setActiveItemId selects the active tab lane in tab mode", async () => {
     const sessionA = makeSession("session-a", "lane-a");
     const sessionB = makeSession("session-b", "lane-b");

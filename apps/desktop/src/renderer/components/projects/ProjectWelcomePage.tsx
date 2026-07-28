@@ -19,6 +19,12 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
+import {
+  groupRecentProjects,
+  recentProjectLocationKey,
+  type RecentProjectGroup,
+  type RecentProjectLocation,
+} from "../app/projectTabGrouping";
 import { MergeWorktreeProjectDialog } from "./MergeWorktreeProjectDialog";
 import { WorktreeBadge } from "./WorktreeBadge";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
@@ -124,9 +130,7 @@ function RecentProjectIcon({
 const REMOTE_ACCENT = "#F59E0B";
 
 function recentKey(rp: RecentProjectSummary): string {
-  return rp.kind === "remote" && rp.remote
-    ? `remote:${rp.remote.targetId}:${rp.remote.projectId}`
-    : rp.rootPath;
+  return recentProjectLocationKey(rp);
 }
 
 // A single recents row. Local rows resolve a project icon (and tint their tile
@@ -142,6 +146,7 @@ function RecentProjectRow({
   onTogglePin,
   onForget,
   onMerge,
+  alsoOn = [],
 }: {
   rp: RecentProjectSummary;
   connectionState: RemoteRuntimeConnectionState | null;
@@ -151,6 +156,7 @@ function RecentProjectRow({
   onTogglePin: () => void;
   onForget: () => void;
   onMerge?: () => void;
+  alsoOn?: RecentProjectLocation[];
 }) {
   const [accentColor, setAccentColor] = useState<string | null>(null);
   const isRemote = rp.kind === "remote" && Boolean(rp.remote);
@@ -324,6 +330,24 @@ function RecentProjectRow({
           >
             {isRemote ? rp.rootPath : abbreviateHome(rp.rootPath)}
           </div>
+          {alsoOn.length > 0 ? (
+            <div
+              style={{
+                marginTop: 3,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                minWidth: 0,
+                fontSize: 9,
+                color: COLORS.textMuted,
+              }}
+            >
+              <DesktopTower size={10} weight="duotone" color={REMOTE_ACCENT} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Also on {alsoOn.map((location) => location.machineName).join(", ")}
+              </span>
+            </div>
+          ) : null}
         </div>
         <div
           style={{
@@ -533,6 +557,7 @@ export function ProjectWelcomePage() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
@@ -556,6 +581,7 @@ export function ProjectWelcomePage() {
   const [forgetToast, setForgetToast] = useState<{
     key: string;
     name: string;
+    recentKeys: string[];
   } | null>(null);
   const [connectingKeys, setConnectingKeys] = useState<Set<string>>(
     () => new Set(),
@@ -614,23 +640,16 @@ export function ProjectWelcomePage() {
     return map;
   }, [remoteSnapshot]);
 
-  const visibleProjects = useMemo(() => {
+  const visibleProjectGroups = useMemo(() => {
     const kept = recentProjects.filter((rp) => {
-      if (pendingForgetKeys.has(recentKey(rp))) return false;
       if (rp.kind === "remote") return true;
       return rp.exists && !rp.rootPath.includes("ade-project");
     });
-    // Pinned rows float to the top while preserving the recency order within
-    // each group (stable sort).
-    return kept
-      .map((rp, index) => ({ rp, index }))
-      .sort((a, b) => {
-        const pinnedDelta =
-          (b.rp.pinned ? 1 : 0) - (a.rp.pinned ? 1 : 0);
-        return pinnedDelta !== 0 ? pinnedDelta : a.index - b.index;
-      })
-      .map((entry) => entry.rp);
-  }, [recentProjects, pendingForgetKeys]);
+    return groupRecentProjects({
+      recentProjects: kept,
+      remoteSnapshot,
+    }).filter((group) => !pendingForgetKeys.has(group.id));
+  }, [pendingForgetKeys, recentProjects, remoteSnapshot]);
 
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
@@ -685,57 +704,64 @@ export function ProjectWelcomePage() {
     ],
   );
 
-  const handleTogglePin = useCallback(async (rp: RecentProjectSummary) => {
+  const handleTogglePin = useCallback(async (group: RecentProjectGroup) => {
     try {
-      const next = await window.ade.project.setRecentPinned(
-        recentKey(rp),
-        !rp.pinned,
-      );
+      let next = recentProjects;
+      for (const key of group.recentKeys) {
+        next = await window.ade.project.setRecentPinned(key, !group.pinned);
+      }
       setRecentProjects(next);
     } catch (error) {
       setRowError(error instanceof Error ? error.message : String(error));
     }
-  }, []);
+  }, [recentProjects]);
 
   // Deferred-commit forget: hide the row immediately and show an undo toast.
   // Only after the window elapses do we call the backend forget. Undo cancels
   // the timer and unhides the row, with no backend call.
-  const commitForget = useCallback((key: string) => {
+  const commitForget = useCallback((key: string, recentKeys: string[]) => {
     if (forgetTimerRef.current != null) {
       window.clearTimeout(forgetTimerRef.current);
       forgetTimerRef.current = null;
     }
-    window.ade.project
-      .forgetRecent(key)
-      .then((next) => setRecentProjects(next))
-      .catch(() => {});
+    void (async () => {
+      let next = recentProjects;
+      for (const recentKey of recentKeys) {
+        next = await window.ade.project.forgetRecent(recentKey);
+      }
+      setRecentProjects(next);
+    })().catch(() => {});
     setPendingForgetKeys((prev) => {
       const next = new Set(prev);
       next.delete(key);
       return next;
     });
     setForgetToast(null);
-  }, []);
+  }, [recentProjects]);
 
   const handleForget = useCallback(
-    (rp: RecentProjectSummary) => {
-      const key = recentKey(rp);
+    (group: RecentProjectGroup) => {
+      const key = group.id;
       // Flush any prior pending forget so we never stack timers.
       const previousKey = forgetToast?.key ?? null;
       if (previousKey && previousKey !== key) {
-        commitForget(previousKey);
+        commitForget(previousKey, forgetToast?.recentKeys ?? []);
       } else if (forgetTimerRef.current != null) {
         window.clearTimeout(forgetTimerRef.current);
         forgetTimerRef.current = null;
       }
-      setForgetToast({ key, name: rp.displayName });
+      setForgetToast({
+        key,
+        name: group.displayName,
+        recentKeys: group.recentKeys,
+      });
       setPendingForgetKeys((prev) => new Set(prev).add(key));
       forgetTimerRef.current = window.setTimeout(() => {
         forgetTimerRef.current = null;
-        commitForget(key);
+        commitForget(key, group.recentKeys);
       }, FORGET_UNDO_WINDOW_MS);
     },
-    [commitForget, forgetToast?.key],
+    [commitForget, forgetToast],
   );
 
   const handleUndoForget = useCallback(() => {
@@ -952,7 +978,7 @@ export function ProjectWelcomePage() {
       </div>
 
       {/* Scrollable recent projects list (takes ~2/3 of the free space) */}
-      {visibleProjects.length > 0 ? (
+      {visibleProjectGroups.length > 0 ? (
         <div style={{ flex: "2 1 0%", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
           <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 48 }}>
             <div
@@ -986,7 +1012,12 @@ export function ProjectWelcomePage() {
               </div>
             ) : null}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {visibleProjects.map((rp) => {
+              {visibleProjectGroups.map((group) => {
+                const primary = group.primary;
+                const rp = {
+                  ...primary.summary,
+                  pinned: group.pinned,
+                };
                 const key = recentKey(rp);
                 const isRemote = rp.kind === "remote" && Boolean(rp.remote);
                 const targetId = rp.remote?.targetId;
@@ -997,18 +1028,26 @@ export function ProjectWelcomePage() {
                   connectingKeys.has(key) ? "connecting" : baseState;
                 const isOpenLocal =
                   !isRemote && project?.rootPath === rp.rootPath;
+                const isOpenRemote =
+                  isRemote
+                  && projectBinding?.kind === "remote"
+                  && projectBinding.targetId === rp.remote?.targetId
+                  && projectBinding.projectId === rp.remote?.projectId;
                 const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
                 return (
                   <RecentProjectRow
-                    key={key}
+                    key={group.id}
                     rp={rp}
                     connectionState={connectionState}
-                    isOpen={isOpenLocal}
-                    isForgetting={pendingForgetKeys.has(key)}
+                    isOpen={isOpenLocal || isOpenRemote}
+                    isForgetting={pendingForgetKeys.has(group.id)}
                     onOpen={() => handleOpen(rp)}
-                    onTogglePin={() => void handleTogglePin(rp)}
-                    onForget={() => handleForget(rp)}
+                    onTogglePin={() => void handleTogglePin(group)}
+                    onForget={() => handleForget(group)}
                     onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
+                    alsoOn={group.locations.filter(
+                      (location) => location !== primary,
+                    )}
                   />
                 );
               })}

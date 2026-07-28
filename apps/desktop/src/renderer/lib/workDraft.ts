@@ -2,7 +2,12 @@ import type { WorkProjectViewState } from "../state/appStore";
 
 export type StartChatDraftPatch = Pick<
   WorkProjectViewState,
-  "draftKind" | "orchestratorEnabled" | "draftLaneId" | "activeItemId" | "selectedItemId"
+  | "draftKind"
+  | "orchestratorEnabled"
+  | "draftLaneId"
+  | "draftMachineId"
+  | "activeItemId"
+  | "selectedItemId"
 >;
 
 export function startChatDraftPatch(laneId: string): StartChatDraftPatch {
@@ -10,6 +15,7 @@ export function startChatDraftPatch(laneId: string): StartChatDraftPatch {
     draftKind: "chat",
     orchestratorEnabled: false,
     draftLaneId: laneId,
+    draftMachineId: null,
     activeItemId: null,
     selectedItemId: null,
   };

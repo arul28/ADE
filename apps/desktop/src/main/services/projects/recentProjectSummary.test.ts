@@ -256,7 +256,7 @@ describe("toShallowRecentProjectSummary", () => {
     expect(summary.gitOriginUrl).toBeUndefined();
   });
 
-  it("leaves remote recents alone", () => {
+  it("carries a persisted remote origin without touching the remote filesystem", () => {
     const summary = toShallowRecentProjectSummary({
       rootPath: "/srv/ade/app",
       displayName: "App",
@@ -266,10 +266,11 @@ describe("toShallowRecentProjectSummary", () => {
         projectId: "project-1",
         runtimeName: "Mac Studio",
         hostname: "studio.local",
+        gitOriginUrl: "git@github.com:arul28/ADE.git",
       },
     });
 
     expect(summary.kind).toBe("remote");
-    expect(summary.gitOriginUrl).toBeUndefined();
+    expect(summary.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
   });
 });

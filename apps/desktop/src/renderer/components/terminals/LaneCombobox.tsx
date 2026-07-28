@@ -18,6 +18,7 @@ import { COLORS, laneSurfaceTint } from "../lanes/laneDesignTokens";
 export const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
 
 const AUTO_CREATE_LANE_OPTION_PREFIX = `${AUTO_CREATE_LANE_OPTION_ID}:`;
+const MACHINE_LANE_OPTION_PREFIX = "__ade_machine_lane__:";
 
 /** Label used for the per-machine auto-create rows inside grouped lists. */
 const AUTO_CREATE_LANE_GROUPED_LABEL = "Auto-create lane here";
@@ -37,6 +38,26 @@ export function isAutoCreateLaneOptionId(laneId: string | null | undefined): boo
 export function machineIdFromAutoCreateLaneOptionId(laneId: string | null | undefined): string | null {
   if (!laneId || !laneId.startsWith(AUTO_CREATE_LANE_OPTION_PREFIX)) return null;
   return laneId.slice(AUTO_CREATE_LANE_OPTION_PREFIX.length) || null;
+}
+
+export function machineLaneOptionId(machineId: string, laneId: string): string {
+  return `${MACHINE_LANE_OPTION_PREFIX}${encodeURIComponent(machineId)}:${encodeURIComponent(laneId)}`;
+}
+
+export function machineLaneFromOptionId(
+  optionId: string | null | undefined,
+): { machineId: string; laneId: string } | null {
+  if (!optionId?.startsWith(MACHINE_LANE_OPTION_PREFIX)) return null;
+  const encoded = optionId.slice(MACHINE_LANE_OPTION_PREFIX.length);
+  const separatorIndex = encoded.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === encoded.length - 1) return null;
+  try {
+    const machineId = decodeURIComponent(encoded.slice(0, separatorIndex)).trim();
+    const laneId = decodeURIComponent(encoded.slice(separatorIndex + 1)).trim();
+    return machineId && laneId ? { machineId, laneId } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** `LaneSummary` is assignable; callers may also pass a minimal `{ id, name, color? }` without `branchRef`. */
@@ -87,9 +108,12 @@ function laneListIcon(item: LaneListItem) {
   );
 }
 
-function laneListItemFromLane(lane: LaneComboboxLane): LaneListItem {
+function laneListItemFromLane(
+  lane: LaneComboboxLane,
+  optionId = lane.id,
+): LaneListItem {
   return {
-    id: lane.id,
+    id: optionId,
     name: lane.name,
     color: lane.color ?? null,
     branchLabel: resolveBranchLabel(lane.branchRef),
@@ -143,9 +167,6 @@ function buildLaneListEntries(input: {
     });
     const headerIndex = entries.length;
     entries.push({ kind: "header", key: `machine:${machine.id}`, label: machine.name });
-    for (const lane of machineLanes) {
-      pushItem(`${machine.id}:${lane.id}`, laneListItemFromLane(lane));
-    }
     if (autoCreateLane) {
       pushItem(`${machine.id}:auto-create`, {
         id: machine.id === defaultMachineId
@@ -155,6 +176,12 @@ function buildLaneListEntries(input: {
         color: null,
         branchLabel: null,
       });
+    }
+    for (const lane of machineLanes) {
+      pushItem(
+        `${machine.id}:${lane.id}`,
+        laneListItemFromLane(lane, machineLaneOptionId(machine.id, lane.id)),
+      );
     }
     // A header with nothing under it (everything filtered out) is noise.
     if (entries.length === headerIndex + 1) entries.pop();
@@ -205,10 +232,15 @@ export function LaneCombobox({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const selectedLane = useMemo(
-    () => lanes.find((l) => l.id === value),
-    [lanes, value],
-  );
+  const selectedLane = useMemo(() => {
+    const routed = machineLaneFromOptionId(value);
+    if (!routed) return lanes.find((lane) => lane.id === value);
+    const defaultMachineId = machines?.[0]?.id ?? null;
+    return lanes.find((lane) => {
+      if (lane.id !== routed.laneId) return false;
+      return (lane.machineId?.trim() || defaultMachineId) === routed.machineId;
+    });
+  }, [lanes, machines, value]);
 
   const selectedBranchLabel = useMemo(() => {
     if (value === "all" || !selectedLane) return null;

@@ -36,6 +36,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   draftKind: "chat",
   orchestratorEnabled: false,
   draftLaneId: null,
+  draftMachineId: null,
   laneFilter: "all",
   search: "",
   sessionListOrganization: "by-lane",

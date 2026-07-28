@@ -160,6 +160,8 @@ export type WorkProjectViewState = {
    */
   orchestratorEnabled: boolean;
   draftLaneId: string | null;
+  /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
+  draftMachineId: string | null;
   laneFilter: string;
   search: string;
   /** Session list grouping mode. */
@@ -218,6 +220,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftKind: "chat",
     orchestratorEnabled: false,
     draftLaneId: null,
+    draftMachineId: null,
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
@@ -283,6 +286,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
       && (candidate.orchestratorEnabled === true
         || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator"),
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
+    draftMachineId: normalizeOptionalString(candidate.draftMachineId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:

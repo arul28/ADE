@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AppWelcomeVideoState, OpenProjectBinding, RecentProjectRemoteRef, RecentlyInstalledUpdate } from "../../../shared/types";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
+import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 
 export type RecentProjectRemote = RecentProjectRemoteRef;
 
@@ -145,15 +146,34 @@ export function withPersistableRemoteProjectIcon<T extends { iconDataUrl?: strin
   return next;
 }
 
+export function persistableRemoteProjectBinding<
+  T extends Extract<OpenProjectBinding, { kind: "remote" }>,
+>(value: T): T {
+  const next = withPersistableRemoteProjectIcon(value);
+  const gitOriginUrl = typeof value.gitOriginUrl === "string" && value.gitOriginUrl.trim()
+    ? sanitizePortableGitRemote(value.gitOriginUrl)
+    : null;
+  if (gitOriginUrl) {
+    next.gitOriginUrl = gitOriginUrl;
+  } else {
+    delete next.gitOriginUrl;
+  }
+  return next;
+}
+
 export function persistableRecentProjectRemote(
   remote: RecentProjectRemote,
 ): RecentProjectRemote {
   const iconDataUrl = persistableRemoteProjectIconDataUrl(remote.iconDataUrl);
+  const gitOriginUrl = typeof remote.gitOriginUrl === "string" && remote.gitOriginUrl.trim()
+    ? sanitizePortableGitRemote(remote.gitOriginUrl)
+    : null;
   return {
     targetId: remote.targetId,
     projectId: remote.projectId,
     runtimeName: remote.runtimeName,
     hostname: remote.hostname,
+    ...(gitOriginUrl ? { gitOriginUrl } : {}),
     ...(iconDataUrl ? { iconDataUrl } : {}),
   };
 }

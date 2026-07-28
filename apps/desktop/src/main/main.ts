@@ -49,10 +49,10 @@ import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactio
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
   persistableRemoteProjectIconDataUrl,
+  persistableRemoteProjectBinding,
   readGlobalState,
   type RecentProject,
   upsertRecentProject,
-  withPersistableRemoteProjectIcon,
   writeGlobalState,
 } from "./services/state/globalState";
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
@@ -113,13 +113,18 @@ import {
   toProjectInfo,
   upsertProjectRow,
 } from "./services/projects/projectService";
-import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
+import {
+  inspectRecentProject,
+  readGitOriginUrl,
+  type RecentProjectInspection,
+} from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
+import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
@@ -1178,13 +1183,16 @@ app.whenReady().then(async () => {
     }
     return {
       kind: "remote",
-      key: readString(record, "key") ?? `remote:${targetId}:${projectId}`,
+      key: readString(record, "key") ?? remoteProjectBindingKey(targetId, projectId),
       targetId,
       runtimeName: readString(record, "runtimeName") ?? "Remote",
       ...(hostname ? { hostname } : {}),
       projectId,
       rootPath,
       displayName: readString(record, "displayName") ?? path.basename(rootPath),
+      ...(readString(record, "gitOriginUrl")
+        ? { gitOriginUrl: readString(record, "gitOriginUrl") }
+        : {}),
       // Restore the cached project logo so the tab shows it immediately on a
       // cold start, before the remote reconnects and refreshes the icon.
       iconDataUrl: remoteProjectIconDataUrlForPersistence(
@@ -1576,6 +1584,7 @@ app.whenReady().then(async () => {
         key: `local:${project.rootPath}`,
         rootPath: project.rootPath,
         displayName: project.displayName,
+        gitOriginUrl: readGitOriginUrl(project.rootPath),
       }
       : null;
 
@@ -1791,7 +1800,7 @@ app.whenReady().then(async () => {
   ): void => {
     const state = readGlobalState(globalStatePath);
     const iconDataUrl = remoteProjectIconDataUrlForPersistence(binding.iconDataUrl);
-    const persistedBinding = withPersistableRemoteProjectIcon({
+    const persistedBinding = persistableRemoteProjectBinding({
       ...binding,
       iconDataUrl,
     });
@@ -1808,6 +1817,9 @@ app.whenReady().then(async () => {
           projectId: binding.projectId,
           runtimeName: binding.runtimeName,
           hostname: binding.hostname || binding.runtimeName,
+          ...(binding.gitOriginUrl
+            ? { gitOriginUrl: binding.gitOriginUrl }
+            : {}),
           ...(iconDataUrl ? { iconDataUrl } : {}),
         },
       },

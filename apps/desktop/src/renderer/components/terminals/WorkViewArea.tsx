@@ -1092,6 +1092,7 @@ export function WorkViewArea({
   draftKind,
   orchestratorEnabled = false,
   draftLaneId = null,
+  draftMachineId = null,
   draftContextTargetId = null,
   onContinueCliSession,
   onResumeCliSession,
@@ -1102,6 +1103,7 @@ export function WorkViewArea({
   onImportedSession,
   onOpenExistingImportedSession,
   onDraftLaneChange,
+  onDraftMachineChange,
   onShowDraftKind,
   closingPtyIds,
   onContextMenu,
@@ -1135,6 +1137,7 @@ export function WorkViewArea({
   /** Orthogonal orchestrator flag for the chat draft (forwarded to the composer). */
   orchestratorEnabled?: boolean;
   draftLaneId?: string | null;
+  draftMachineId?: string | null;
   draftContextTargetId?: string | null;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
@@ -1143,6 +1146,7 @@ export function WorkViewArea({
   onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
   onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
   onDraftLaneChange?: (laneId: string) => void;
+  onDraftMachineChange?: (machineId: string | null) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
@@ -1289,6 +1293,7 @@ export function WorkViewArea({
             draftKind={draftKind}
             orchestratorEnabled={orchestratorEnabled}
             draftLaneId={draftLaneId}
+            draftMachineId={draftMachineId}
             draftContextTargetId={draftContextTargetId}
             lanes={lanes}
             onOpenChatSession={onOpenChatSession}
@@ -1296,6 +1301,7 @@ export function WorkViewArea({
             onImportedSession={onImportedSession}
             onOpenExistingImportedSession={onOpenExistingImportedSession}
             onDraftLaneChange={onDraftLaneChange}
+            onDraftMachineChange={onDraftMachineChange}
             initialLinearIssueContext={initialLinearIssueContext}
             initialLinearIssueContextSource={initialLinearIssueContextSource}
             initialModelId={initialModelId}

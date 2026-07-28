@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -186,7 +186,12 @@ type MockSessionListPaneProps = {
   ) => void;
   onBulkDelete?: () => void;
   onBulkStopAndDelete?: () => void;
-  onContextMenu: (session: TerminalSessionSummary, event: React.MouseEvent) => void;
+  onContextMenu: (
+    session: TerminalSessionSummary,
+    event: React.MouseEvent,
+    binding?: OpenProjectBinding | null,
+    machineName?: string | null,
+  ) => void;
 };
 
 const sessionListPaneProps = vi.hoisted(() => ({
@@ -305,18 +310,37 @@ vi.mock("./WorkSidebar", () => ({
 
 vi.mock("./SessionContextMenu", () => ({
   SessionContextMenu: (props: {
-    menu: { session: TerminalSessionSummary } | null;
-    onStopAndDelete: (session: TerminalSessionSummary) => void;
-    onSettle: (session: TerminalSessionSummary) => void;
+    menu: {
+      session: TerminalSessionSummary;
+      binding?: OpenProjectBinding | null;
+    } | null;
+    onStopAndDelete: (
+      session: TerminalSessionSummary,
+      binding?: OpenProjectBinding | null,
+    ) => void;
+    onSettle: (
+      session: TerminalSessionSummary,
+      binding?: OpenProjectBinding | null,
+    ) => void;
+    onClose: () => void;
   }) => {
     if (!props.menu) return null;
     const session = props.menu.session;
     return (
       <>
-        <button type="button" onClick={() => props.onStopAndDelete(session)}>
+        <button
+          type="button"
+          onClick={() => {
+            props.onStopAndDelete(session, props.menu?.binding);
+            props.onClose();
+          }}
+        >
           context stop and delete {session.id}
         </button>
-        <button type="button" onClick={() => props.onSettle(session)}>
+        <button
+          type="button"
+          onClick={() => props.onSettle(session, props.menu?.binding)}
+        >
           context settle {session.id}
         </button>
       </>
@@ -817,6 +841,60 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
     expect(agentChatDelete).not.toHaveBeenCalled();
+  });
+
+  it("keeps a foreign runtime pin after the context menu closes for confirmation", async () => {
+    const runningCli = workMocks.makeTerminalSession("cli-studio", "lane-primary", "codex");
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: vi.fn() },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [runningCli],
+      visibleSessions: [runningCli],
+      runningFiltered: [runningCli],
+      runningSessions: [runningCli],
+      filtered: [runningCli],
+      sessionsGroupedByLane: new Map([["lane-primary", [runningCli]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+    act(() => {
+      sessionListPaneProps.latest?.onContextMenu(
+        runningCli,
+        { clientX: 10, clientY: 20 } as React.MouseEvent,
+        binding,
+        "Studio",
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", {
+      name: "context stop and delete cli-studio",
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
+
+    await waitFor(() => {
+      expect(sessionDelete).toHaveBeenCalledWith(
+        { sessionId: "cli-studio" },
+        binding,
+      );
+    });
   });
 
   it("delegates pending-input dismissal and settlement to one backend operation", async () => {

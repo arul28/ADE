@@ -1,4 +1,8 @@
-import type { SessionSettleOverride, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  OpenProjectBinding,
+  SessionSettleOverride,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import {
   snoozeConfirmationLabel,
@@ -32,10 +36,13 @@ export async function snoozeSessionForDuration(
   session: Pick<TerminalSessionSummary, "id">,
   key: SnoozeDurationKey,
   nowMs: number = Date.now(),
+  pin?: OpenProjectBinding | null,
 ): Promise<void> {
   const untilIso = snoozeDeadlineIso(key, nowMs);
   try {
-    await window.ade.sessions.snoozeSession(session.id, untilIso);
+    await (pin
+      ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
+      : window.ade.sessions.snoozeSession(session.id, untilIso));
   } catch (error) {
     reportFailure("Snooze", session.id, error);
     return;
@@ -47,8 +54,10 @@ export async function snoozeSessionForDuration(
     action: {
       label: "Undo",
       onClick: () => {
-        void window.ade.sessions
-          .wakeSession(session.id, "manual")
+        const wake = pin
+          ? window.ade.sessions.wakeSession(session.id, "manual", pin)
+          : window.ade.sessions.wakeSession(session.id, "manual");
+        void wake
           .catch((error: unknown) => reportFailure("Undo snooze", session.id, error));
       },
     },
@@ -56,9 +65,14 @@ export async function snoozeSessionForDuration(
 }
 
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
-export async function wakeSessionNow(session: Pick<TerminalSessionSummary, "id">): Promise<void> {
+export async function wakeSessionNow(
+  session: Pick<TerminalSessionSummary, "id">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
   try {
-    await window.ade.sessions.wakeSession(session.id, "manual");
+    await (pin
+      ? window.ade.sessions.wakeSession(session.id, "manual", pin)
+      : window.ade.sessions.wakeSession(session.id, "manual"));
   } catch (error) {
     reportFailure("Wake", session.id, error);
   }
@@ -72,9 +86,12 @@ export async function wakeSessionNow(session: Pick<TerminalSessionSummary, "id">
 export async function setSessionSettleOverride(
   session: Pick<TerminalSessionSummary, "id">,
   override: SessionSettleOverride,
+  pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await window.ade.sessions.setSettleOverride(session.id, override);
+    await (pin
+      ? window.ade.sessions.setSettleOverride(session.id, override, pin)
+      : window.ade.sessions.setSettleOverride(session.id, override));
   } catch (error) {
     reportFailure(override === "active" ? "Keep active" : "Settle", session.id, error);
   }
@@ -89,22 +106,29 @@ export async function setSessionSettleOverride(
  */
 export async function unsettleSession(
   session: Pick<TerminalSessionSummary, "id" | "settledAt">,
+  pin?: OpenProjectBinding | null,
 ): Promise<void> {
   if (!session.settledAt) {
-    await setSessionSettleOverride(session, "active");
+    await setSessionSettleOverride(session, "active", pin);
     return;
   }
   try {
-    await window.ade.sessions.unsettle(session.id);
+    await (pin
+      ? window.ade.sessions.unsettle(session.id, pin)
+      : window.ade.sessions.unsettle(session.id));
   } catch (error) {
     reportFailure("Unsettle", session.id, error);
   }
 }
 
 /** Drop a row's "woke" marker once the user has actually looked at it. */
-export function clearSessionWokeMarker(sessionId: string): void {
-  void window.ade.sessions
-    ?.clearWokeMarker?.(sessionId)
+export function clearSessionWokeMarker(
+  sessionId: string,
+  pin?: OpenProjectBinding | null,
+): void {
+  const clear = window.ade.sessions?.clearWokeMarker;
+  if (!clear) return;
+  void (pin ? clear(sessionId, pin) : clear(sessionId))
     .catch((error: unknown) => {
       console.error("[sessionLifecycle] clearWokeMarker failed", { sessionId, error });
     });

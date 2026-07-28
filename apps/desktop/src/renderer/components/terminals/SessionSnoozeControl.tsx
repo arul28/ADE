@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Moon } from "@phosphor-icons/react";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { SNOOZE_DURATION_OPTIONS, type SnoozeDurationKey } from "../../lib/sessionSnooze";
 import { snoozeSessionForDuration, wakeSessionNow } from "./sessionLifecycleActions";
@@ -21,11 +21,13 @@ export function SessionSnoozeControl({
   session,
   snoozed,
   compact = false,
+  runtimePin = null,
 }: {
   session: Pick<TerminalSessionSummary, "id">;
   /** Already snoozed rows offer "Wake now" instead of a duration menu. */
   snoozed: boolean;
   compact?: boolean;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -43,9 +45,9 @@ export function SessionSnoozeControl({
   const choose = useCallback(
     (key: SnoozeDurationKey) => {
       close();
-      void snoozeSessionForDuration(session, key);
+      void snoozeSessionForDuration(session, key, Date.now(), runtimePin);
     },
-    [close, session],
+    [close, runtimePin, session],
   );
 
   const label = snoozed ? "Wake session now" : "Snooze session";
@@ -71,7 +73,7 @@ export function SessionSnoozeControl({
           if (snoozed) {
             event.preventDefault();
             event.stopPropagation();
-            void wakeSessionNow(session);
+            void wakeSessionNow(session, runtimePin);
             return;
           }
           openMenu(event);

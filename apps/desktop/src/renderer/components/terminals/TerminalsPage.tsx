@@ -201,7 +201,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [selectableSessions]);
 
   const handleSelectSession = useCallback(
-    (id: string, event?: React.MouseEvent, visibleSessionIds?: string[]) => {
+    (
+      id: string,
+      event?: React.MouseEvent,
+      visibleSessionIds?: string[],
+      binding?: OpenProjectBinding | null,
+    ) => {
       const useRange = event?.shiftKey === true;
       const useToggle = event?.metaKey === true || event?.ctrlKey === true;
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
@@ -239,7 +244,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
       const opened = selectableSessions.find((session) => session.id === id);
-      if (opened?.wokeAt) clearSessionWokeMarker(id);
+      if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
     },
     [selectableSessions, selectionAnchorId, work],
   );
@@ -316,12 +321,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleContextMenu = useCallback(
-    (session: TerminalSessionSummary, e: React.MouseEvent) => {
-      setContextMenu({ session, x: e.clientX, y: e.clientY });
+    (
+      session: TerminalSessionSummary,
+      e: React.MouseEvent,
+      binding?: OpenProjectBinding | null,
+      machineName?: string | null,
+    ) => {
+      setContextMenu({
+        session,
+        x: e.clientX,
+        y: e.clientY,
+        ...(binding ? { binding } : {}),
+        ...(machineName ? { machineName } : {}),
+      });
     },
     [],
   );
-
   const handleOpenChatSession = useCallback(
     (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
@@ -367,17 +382,38 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [work]);
 
   const handleGoToLane = useCallback(
-    (session: TerminalSessionSummary) => {
-      work.selectLane(session.laneId);
-      work.focusSession(session.id);
-      const params = new URLSearchParams({
-        laneId: session.laneId,
-        focus: "single",
-        sessionId: session.id,
+    (
+      session: TerminalSessionSummary,
+      binding?: OpenProjectBinding | null,
+    ) => {
+      const open = () => {
+        work.selectLane(session.laneId);
+        work.focusSession(session.id);
+        const params = new URLSearchParams({
+          laneId: session.laneId,
+          focus: "single",
+          sessionId: session.id,
+        });
+        work.navigate(`/lanes?${params.toString()}`);
+      };
+      if (!binding) {
+        open();
+        return;
+      }
+      const switching = binding.kind === "remote"
+        ? switchRemoteProject(binding.targetId, binding.projectId)
+        : switchProjectToPath(binding.rootPath);
+      void switching.then(open).catch((error: unknown) => {
+        setSessionActionError(
+          error instanceof Error ? error.message : String(error),
+        );
       });
-      work.navigate(`/lanes?${params.toString()}`);
     },
-    [work],
+    [
+      switchProjectToPath,
+      switchRemoteProject,
+      work,
+    ],
   );
 
   const handleGoToLaneById = useCallback(
@@ -389,7 +425,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteChat = useCallback(
-    (session: TerminalSessionSummary) => {
+    (
+      session: TerminalSessionSummary,
+      runtimePin?: OpenProjectBinding | null,
+    ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
       const confirmed = window.confirm(
         `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
@@ -398,7 +437,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       setSessionActionError(null);
       setDeletingSessionId(session.id);
-      void window.ade.agentChat.delete({ sessionId: session.id })
+      const deletion = runtimePin
+        ? window.ade.agentChat.delete({ sessionId: session.id }, runtimePin)
+        : window.ade.agentChat.delete({ sessionId: session.id });
+      void deletion
         .then(async () => {
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
@@ -425,7 +467,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteSession = useCallback(
-    (session: TerminalSessionSummary) => {
+    (
+      session: TerminalSessionSummary,
+      runtimePin?: OpenProjectBinding | null,
+    ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
       const confirmed = window.confirm(
         `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
@@ -434,7 +479,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       setSessionActionError(null);
       setDeletingSessionId(session.id);
-      void window.ade.sessions.delete({ sessionId: session.id })
+      const deletion = runtimePin
+        ? window.ade.sessions.delete({ sessionId: session.id }, runtimePin)
+        : window.ade.sessions.delete({ sessionId: session.id });
+      void deletion
         .then(async () => {
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
@@ -458,15 +506,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work],
   );
 
-  const handleSettleSession = useCallback((session: TerminalSessionSummary) => {
+  const handleSettleSession = useCallback((
+    session: TerminalSessionSummary,
+    runtimePin?: OpenProjectBinding | null,
+  ) => {
     setSessionActionError(null);
     void (async () => {
       try {
         const dismissPendingInput = sessionNeedsYou(canonicalInputFromSummary(session));
-        await window.ade.sessions.settle(
-          session.id,
-          dismissPendingInput ? { dismissPendingInput: true } : undefined,
-        );
+        const opts = dismissPendingInput ? { dismissPendingInput: true } : undefined;
+        await (runtimePin
+          ? window.ade.sessions.settle(session.id, opts, runtimePin)
+          : window.ade.sessions.settle(session.id, opts));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setSessionActionError(`Settle failed: ${message}`);
@@ -476,7 +527,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const handleStopAndDeleteSession = useCallback(
-    (session: TerminalSessionSummary) => {
+    (
+      session: TerminalSessionSummary,
+      runtimePin?: OpenProjectBinding | null,
+    ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
         const confirmed = await stopAndDeleteConfirm.confirmAsync({
@@ -492,7 +546,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // The session-delete service stops a running runtime before removing the
         // record, so a single call covers both steps for CLI and shell sessions.
         try {
-          await window.ade.sessions.delete({ sessionId: session.id });
+          await (runtimePin
+            ? window.ade.sessions.delete({ sessionId: session.id }, runtimePin)
+            : window.ade.sessions.delete({ sessionId: session.id }));
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
@@ -1005,6 +1061,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         draftKind={work.draftKind}
         orchestratorEnabled={work.orchestratorEnabled}
         draftLaneId={work.draftLaneId}
+        draftMachineId={work.draftMachineId}
         draftContextTargetId={draftContextTargetId}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
@@ -1013,6 +1070,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onImportedSession={work.adoptImportedSession}
         onOpenExistingImportedSession={work.openExistingImportedSession}
         onDraftLaneChange={work.setDraftLaneId}
+        onDraftMachineChange={work.setDraftMachineId}
         onShowDraftKind={work.showDraftKind}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
@@ -1048,8 +1106,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.draftKind,
       work.orchestratorEnabled,
       work.draftLaneId,
+      work.draftMachineId,
       draftContextTargetId,
       work.setDraftLaneId,
+      work.setDraftMachineId,
       work.showDraftKind,
       work.setActiveItemId,
       work.closeTab,
@@ -1264,7 +1324,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <SessionContextMenu
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
-        onStopRuntime={({ ptyId, sessionId }) => work.stopRuntime(ptyId, sessionId).catch(() => {})}
+        onStopRuntime={({ ptyId, sessionId }, runtimePin) => {
+          const stop = runtimePin
+            ? window.ade.pty.dispose({ ptyId, sessionId }, runtimePin)
+            : work.stopRuntime(ptyId, sessionId);
+          void stop.catch(() => {});
+        }}
         onStopAndDelete={handleStopAndDeleteSession}
         onDeleteChat={handleDeleteChat}
         onDeleteSession={handleDeleteSession}
@@ -1307,9 +1372,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         pinnedSessionIds={work.pinnedSessionIds}
         gridSessionIds={gridSessionIds}
         onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
-        onSetChatTag={(session, tag) => {
+        onSetChatTag={(session, tag, runtimePin) => {
           setSessionActionError(null);
-          window.ade.agentChat.updateSession({ sessionId: session.id, tag })
+          const update = runtimePin
+            ? window.ade.agentChat.updateSession({ sessionId: session.id, tag }, runtimePin)
+            : window.ade.agentChat.updateSession({ sessionId: session.id, tag });
+          update
             .then(() => {
               invalidateSessionListCache();
               work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
@@ -1323,11 +1391,28 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               window.setTimeout(() => setSessionActionError(null), 6000);
             });
         }}
-        onRename={(session, newTitle) => {
+        onRename={(session, newTitle, runtimePin) => {
           setSessionActionError(null);
-          const renamePromise = isChatToolType(session.toolType)
-            ? window.ade.agentChat.updateSession({ sessionId: session.id, title: newTitle, manuallyNamed: true })
-            : window.ade.sessions.updateMeta({ sessionId: session.id, title: newTitle, manuallyNamed: true });
+          let renamePromise: Promise<unknown>;
+          if (isChatToolType(session.toolType)) {
+            renamePromise = runtimePin
+              ? window.ade.agentChat.updateSession(
+                { sessionId: session.id, title: newTitle, manuallyNamed: true },
+                runtimePin,
+              )
+              : window.ade.agentChat.updateSession(
+                { sessionId: session.id, title: newTitle, manuallyNamed: true },
+              );
+          } else {
+            renamePromise = runtimePin
+              ? window.ade.sessions.updateMeta(
+                { sessionId: session.id, title: newTitle, manuallyNamed: true },
+                runtimePin,
+              )
+              : window.ade.sessions.updateMeta(
+                { sessionId: session.id, title: newTitle, manuallyNamed: true },
+              );
+          }
           renamePromise
             .then(() => {
               invalidateSessionListCache();

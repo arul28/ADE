@@ -27,6 +27,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useAppStore } from "../../state/appStore";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -1015,6 +1016,13 @@ export function TopBar({
   const evictProjectState = useAppStore((s) => s.evictProjectState);
   const openProjectTabRootsRef = useRef(openProjectTabRoots);
   const openRemoteProjectTabsRef = useRef(openRemoteProjectTabs);
+  // A logical repo tab remembers its chosen checkout even while another repo
+  // is active. This is deliberately per TopBar/window instance: opening a
+  // local counterpart must not make an inactive remote tab fall back to the
+  // first (local) machine in its group.
+  const [preferredBindingKeyByGroup, setPreferredBindingKeyByGroup] = useState<
+    Record<string, string>
+  >({});
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
@@ -1219,12 +1227,50 @@ export function TopBar({
         ) ?? null;
       byKey[tab.key] =
         connection?.projects.find((entry) => entry.projectId === tab.projectId)
-          ?.gitOriginUrl ?? null;
+          ?.gitOriginUrl ?? tab.gitOriginUrl ?? null;
     }
     return byKey;
   }, [openRemoteProjectTabs, remoteSnapshot]);
 
   const activeTabBindingKey = remoteBinding?.key ?? project?.rootPath ?? null;
+  const knownRemoteProjectTabs = useMemo<RemoteProjectTab[]>(() => {
+    const byKey = new Map<string, RemoteProjectTab>();
+    const add = (binding: RemoteProjectTab) => {
+      byKey.set(binding.key, binding);
+    };
+    for (const recent of recentProjects) {
+      if (recent.kind !== "remote" || !recent.remote) continue;
+      add({
+        kind: "remote",
+        key: remoteProjectBindingKey(recent.remote.targetId, recent.remote.projectId),
+        targetId: recent.remote.targetId,
+        runtimeName: recent.remote.runtimeName,
+        hostname: recent.remote.hostname,
+        projectId: recent.remote.projectId,
+        rootPath: recent.rootPath,
+        displayName: recent.displayName,
+        gitOriginUrl: recent.gitOriginUrl ?? recent.remote.gitOriginUrl ?? null,
+        iconDataUrl: recent.remote.iconDataUrl ?? null,
+      });
+    }
+    for (const connection of remoteSnapshot?.connections ?? []) {
+      for (const remoteProject of connection.projects ?? []) {
+        add({
+          kind: "remote",
+          key: remoteProjectBindingKey(connection.target.id, remoteProject.projectId),
+          targetId: connection.target.id,
+          runtimeName: connection.target.name,
+          hostname: connection.target.hostname,
+          projectId: remoteProject.projectId,
+          rootPath: remoteProject.rootPath,
+          displayName: remoteProject.displayName,
+          gitOriginUrl: remoteProject.gitOriginUrl,
+          iconDataUrl: remoteProject.icon?.dataUrl ?? null,
+        });
+      }
+    }
+    return [...byKey.values()];
+  }, [recentProjects, remoteSnapshot]);
 
   // One tab per repository. Local and remote checkouts of the same repo collapse
   // into a single group whose machines are switchable from the tab's menu.
@@ -1233,11 +1279,33 @@ export function TopBar({
       groupProjectTabs({
         localTabs: projectTabs,
         remoteTabs: openRemoteProjectTabs,
+        knownLocalTabs: localRecentProjects,
+        knownRemoteTabs: knownRemoteProjectTabs,
         remoteOriginByKey,
         activeBindingKey: activeTabBindingKey,
+        preferredBindingKeyByGroup,
       }),
-    [activeTabBindingKey, openRemoteProjectTabs, projectTabs, remoteOriginByKey],
+    [
+      activeTabBindingKey,
+      knownRemoteProjectTabs,
+      localRecentProjects,
+      openRemoteProjectTabs,
+      preferredBindingKeyByGroup,
+      projectTabs,
+      remoteOriginByKey,
+    ],
   );
+
+  useEffect(() => {
+    if (!activeTabBindingKey) return;
+    const activeGroup = tabGroups.find((group) =>
+      group.machines.some((machine) => machine.bindingKey === activeTabBindingKey));
+    if (!activeGroup) return;
+    setPreferredBindingKeyByGroup((current) =>
+      current[activeGroup.id] === activeTabBindingKey
+        ? current
+        : { ...current, [activeGroup.id]: activeTabBindingKey });
+  }, [activeTabBindingKey, tabGroups]);
 
   const [machineMenu, setMachineMenu] = useState<{
     groupId: string;
@@ -1255,9 +1323,9 @@ export function TopBar({
   const machineStatusLabel = useCallback(
     (machine: ProjectTabMachine): string | null => {
       if (!machine.isLocal) {
-        const binding = openRemoteProjectTabs.find(
-          (entry) => entry.key === machine.bindingKey,
-        );
+        const binding = machine.binding?.kind === "remote"
+          ? machine.binding
+          : openRemoteProjectTabs.find((entry) => entry.key === machine.bindingKey);
         const state = binding ? remoteConnectionState(binding.targetId) : "idle";
         if (state === "connecting") return "Reconnecting";
         if (state !== "connected") return "Offline";
@@ -1544,16 +1612,26 @@ export function TopBar({
   // reach the others. Both branches go through the existing switch paths.
   const handleSelectGroupMachine = useCallback(
     (machine: ProjectTabMachine) => {
+      const group = tabGroups.find((candidate) =>
+        candidate.machines.some((entry) => entry.bindingKey === machine.bindingKey));
+      if (group) {
+        setPreferredBindingKeyByGroup((current) => ({
+          ...current,
+          [group.id]: machine.bindingKey,
+        }));
+      }
       if (machine.isLocal) {
         handleSwitchProject(machine.rootPath);
         return;
       }
-      const binding = openRemoteProjectTabsRef.current.find(
-        (entry) => entry.key === machine.bindingKey,
-      );
+      const binding = machine.binding?.kind === "remote"
+        ? machine.binding
+        : openRemoteProjectTabsRef.current.find(
+          (entry) => entry.key === machine.bindingKey,
+        );
       if (binding) handleSwitchRemoteProject(binding);
     },
-    [handleSwitchProject, handleSwitchRemoteProject],
+    [handleSwitchProject, handleSwitchRemoteProject, tabGroups],
   );
 
   const handleRemoveTab = useCallback(
@@ -2152,7 +2230,8 @@ export function TopBar({
                 const remoteTab =
                   openRemoteProjectTabs.find(
                     (entry) => entry.key === machine.bindingKey,
-                  ) ?? null;
+                  )
+                  ?? (machine.binding?.kind === "remote" ? machine.binding : null);
                 if (!remoteTab) return null;
                 const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);

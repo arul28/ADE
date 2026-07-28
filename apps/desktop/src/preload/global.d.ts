@@ -1427,24 +1427,34 @@ declare global {
           sessionId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<TerminalSessionDetail | null>;
-        delete: (args: DeleteSessionArgs) => Promise<void>;
+        delete: (
+          args: DeleteSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         updateMeta: (
           args: UpdateSessionMetaArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<TerminalSessionSummary | null>;
         settle: (
           sessionId: string,
           opts?: { outcome?: string; dismissPendingInput?: boolean },
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
-        unsettle: (sessionId: string) => Promise<void>;
+        unsettle: (
+          sessionId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
          settleMany: (sessionIds: string[]) => Promise<string[]>;
          unsettleMany: (sessionIds: string[]) => Promise<void>;
-         snoozeSession: (
+        snoozeSession: (
           sessionId: string,
           untilIso: string,
+          pin?: OpenProjectBinding | null,
         ) => Promise<boolean>;
         wakeSession: (
           sessionId: string,
           reason?: SessionWakeReason,
+          pin?: OpenProjectBinding | null,
         ) => Promise<boolean>;
         snoozeSessions: (
           sessionIds: string[],
@@ -1457,8 +1467,12 @@ declare global {
         setSettleOverride: (
           sessionId: string,
           override: SessionSettleOverride | null,
+          pin?: OpenProjectBinding | null,
         ) => Promise<boolean>;
-        clearWokeMarker: (sessionId: string) => Promise<boolean>;
+        clearWokeMarker: (
+          sessionId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<boolean>;
         getLifecycleSettings: () => Promise<SessionLifecycleSettings>;
         updateLifecycleSettings: (
           settings: SessionLifecycleSettings,

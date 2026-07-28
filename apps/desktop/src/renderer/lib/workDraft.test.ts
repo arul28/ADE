@@ -7,6 +7,7 @@ describe("startChatDraftPatch", () => {
       draftKind: "chat",
       orchestratorEnabled: false,
       draftLaneId: "lane-42",
+      draftMachineId: null,
       activeItemId: null,
       selectedItemId: null,
     });

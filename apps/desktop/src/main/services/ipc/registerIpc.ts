@@ -85,7 +85,11 @@ import type {
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../../../shared/types";
-import { toShallowRecentProjectSummary } from "../projects/recentProjectSummary";
+import {
+  readGitOriginUrl,
+  toShallowRecentProjectSummary,
+} from "../projects/recentProjectSummary";
+import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -4109,6 +4113,19 @@ export function registerIpc({
 
   const runtimeBridge = registerRuntimeBridge({
     appVersion: app.getVersion(),
+    authorizeLocalRuntimeRoot: (session, requestedRootPath) => {
+      const binding = session?.binding;
+      const activeOrigin = binding?.gitOriginUrl
+        ?? (binding?.kind === "local" ? readGitOriginUrl(binding.rootPath) : null)
+        ?? (session?.project?.rootPath
+          ? readGitOriginUrl(session.project.rootPath)
+          : null);
+      return authorizeRecentProjectRuntimeRoot({
+        requestedRootPath,
+        activeGitOriginUrl: activeOrigin,
+        localRecentProjects: listLocalRecentProjectSummaries(),
+      });
+    },
     bindRemoteProject,
     getGitHubTokenForRemoteClone: async () => {
       try {

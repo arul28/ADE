@@ -262,6 +262,9 @@ function remoteRecentSummary(entry: RecentProjectEntry): RecentProjectSummary {
     exists: true,
     kind: "remote",
     remote: entry.remote,
+    ...(entry.remote?.gitOriginUrl
+      ? { gitOriginUrl: entry.remote.gitOriginUrl }
+      : {}),
     ...(entry.pinned ? { pinned: true } : {}),
   };
 }

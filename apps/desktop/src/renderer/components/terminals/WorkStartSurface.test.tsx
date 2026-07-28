@@ -6,32 +6,43 @@ import type { AppState } from "../../state/appStore";
 import { WorkStartSurface } from "./WorkStartSurface";
 
 const selectLane = vi.fn();
+const crossMachineState = vi.hoisted(() => ({
+  lanesByMachine: {} as AppState["crossMachineLanesByMachineId"],
+}));
 const agentChatPaneProps = vi.hoisted(() => ({
   latest: null as null | {
     laneId: string | null;
+    laneLabel?: string;
     workDraftKind?: "chat" | "cli";
     orchestratorEnabled?: boolean;
     draftContextTargetId?: string | null;
-    onOpenShellSession?: (laneId: string) => void | Promise<void>;
+    onOpenShellSession?: (laneId: string, pin?: unknown) => void | Promise<void>;
     onLaunchCliSession?: unknown;
     suppressDraftLaunchNavigation?: boolean;
+    initialDraftMachineId?: string | null;
   },
 }));
 
 vi.mock("../../state/appStore", () => ({
   useAppStore: <T,>(selector: (state: AppState) => T): T =>
     selector({ selectedLaneId: null, selectLane, lanesLoading: false } as unknown as AppState),
+  useRootAppStore: <T,>(selector: (state: AppState) => T): T =>
+    selector({
+      crossMachineLanesByMachineId: crossMachineState.lanesByMachine,
+    } as unknown as AppState),
 }));
 
 vi.mock("../chat/AgentChatPane", () => ({
   AgentChatPane: (props: {
     laneId: string | null;
+    laneLabel?: string;
     workDraftKind?: "chat" | "cli";
     orchestratorEnabled?: boolean;
     draftContextTargetId?: string | null;
-    onOpenShellSession?: (laneId: string) => void | Promise<void>;
+    onOpenShellSession?: (laneId: string, pin?: unknown) => void | Promise<void>;
     onLaunchCliSession?: unknown;
     suppressDraftLaunchNavigation?: boolean;
+    initialDraftMachineId?: string | null;
   }) => {
     agentChatPaneProps.latest = props;
     return (
@@ -49,6 +60,7 @@ describe("WorkStartSurface", () => {
     cleanup();
     vi.clearAllMocks();
     agentChatPaneProps.latest = null;
+    crossMachineState.lanesByMachine = {};
   });
 
   it("renders the no-lanes state", () => {
@@ -112,5 +124,58 @@ describe("WorkStartSurface", () => {
     expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
     expect(agentChatPaneProps.latest?.draftContextTargetId).toBe("work:draft:lane-local:chat");
     expect(agentChatPaneProps.latest?.suppressDraftLaunchNavigation).toBe(true);
+  });
+
+  it("keeps a foreign draft lane selected instead of falling back locally", async () => {
+    crossMachineState.lanesByMachine = {
+      studio: {
+        machineId: "studio",
+        machineName: "Mac Studio",
+        targetId: "studio",
+        projectId: "project-a",
+        binding: null,
+        online: true,
+        lanes: [{ id: "lane-studio", name: "Studio lane" } as any],
+        sessions: [],
+        lastSyncedAtMs: 1,
+        error: null,
+      },
+    };
+
+    render(
+      <WorkStartSurface
+        draftKind="chat"
+        draftLaneId="lane-studio"
+        draftMachineId="studio"
+        lanes={[{ id: "lane-local", name: "Local lane" } as any]}
+        onOpenChatSession={vi.fn()}
+        onLaunchPtySession={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
+    expect(agentChatPaneProps.latest?.laneId).toBe("lane-studio");
+    expect(agentChatPaneProps.latest?.laneLabel).toBe("Studio lane");
+    expect(agentChatPaneProps.latest?.initialDraftMachineId).toBe("studio");
+  });
+
+  it("does not overwrite a foreign draft while its machine catalog is still loading", async () => {
+    const onDraftLaneChange = vi.fn();
+    render(
+      <WorkStartSurface
+        draftKind="chat"
+        draftLaneId="lane-studio"
+        draftMachineId="studio"
+        lanes={[{ id: "lane-local", name: "Local lane" } as any]}
+        onOpenChatSession={vi.fn()}
+        onLaunchPtySession={vi.fn()}
+        onDraftLaneChange={onDraftLaneChange}
+      />,
+    );
+
+    expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
+    expect(agentChatPaneProps.latest?.laneId).toBe("lane-studio");
+    expect(agentChatPaneProps.latest?.laneLabel).toBe("lane-studio");
+    expect(onDraftLaneChange).not.toHaveBeenCalled();
   });
 });

@@ -178,6 +178,64 @@ describe("deriveLaneMachineOptions", () => {
     expect(options[0]?.project?.matchedBy).toBe("name");
   });
 
+  it("resolves an unopened local recent by git origin", () => {
+    const options = deriveLaneMachineOptions({
+      connections: [connection({ id: "studio" })],
+      boundTargetId: "studio",
+      boundProject: {
+        projectId: "ade",
+        rootPath: "/Users/studio/ADE",
+        displayName: "ADE",
+        matchedBy: "origin",
+      },
+      repoOriginUrl: "git@github.com:acme/ADE.git",
+      repoDisplayName: "ADE",
+      localProjects: [{
+        rootPath: "/Users/me/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T12:00:00.000Z",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: "https://github.com/acme/ade",
+      }],
+    });
+
+    expect(options[0]?.repoMatch).toBe("matched");
+    expect(options[0]?.project).toEqual({
+      projectId: null,
+      rootPath: "/Users/me/ADE",
+      displayName: "ADE",
+      matchedBy: "origin",
+    });
+  });
+
+  it("does not fall back to a same-named local root when the origin catalog disproves it", () => {
+    const options = deriveLaneMachineOptions({
+      connections: [connection({ id: "studio" })],
+      boundTargetId: "studio",
+      boundProject: {
+        projectId: "ade",
+        rootPath: "/Users/studio/ADE",
+        displayName: "ADE",
+        matchedBy: "origin",
+      },
+      repoOriginUrl: "git@github.com:acme/ADE.git",
+      repoDisplayName: "ADE",
+      localProjectRoots: ["/Users/me/ADE"],
+      localProjects: [{
+        rootPath: "/Users/me/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T12:00:00.000Z",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: "git@github.com:other/ADE.git",
+      }],
+    });
+
+    expect(options[0]?.project).toBeNull();
+    expect(options[0]?.repoMatch).toBe("missing");
+  });
+
   it("does not offer a same-named checkout whose origin proves it is a different repo", () => {
     const options = deriveLaneMachineOptions({
       connections: [

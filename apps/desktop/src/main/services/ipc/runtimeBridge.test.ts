@@ -420,6 +420,70 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("allows a caller-authorized unopened checkout without expanding path authority", async () => {
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        ok: true,
+        domain: "lane",
+        action: "list",
+        result: [],
+        statusHints: {},
+      })),
+    };
+    const authorizeLocalRuntimeRoot = vi.fn((_session, requestedRootPath: string) =>
+      requestedRootPath === "/same-repo" ? requestedRootPath : null
+    );
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      authorizeLocalRuntimeRoot,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: {
+          kind: "remote",
+          key: "remote:studio:ade",
+          targetId: "studio",
+          projectId: "ade",
+          rootPath: "/Users/arul/ADE",
+          displayName: "ADE",
+          runtimeName: "Studio",
+          hostname: "studio.local",
+        },
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/same-repo",
+          request: { domain: "lane", action: "list", args: {} },
+        },
+      ),
+    ).resolves.toMatchObject({ result: [] });
+
+    expect(authorizeLocalRuntimeRoot).toHaveBeenCalledWith(
+      expect.objectContaining({ windowId: 7 }),
+      "/same-repo",
+    );
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/same-repo",
+      expect.objectContaining({ domain: "lane", action: "list" }),
+    );
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/different-repo",
+          request: { domain: "lane", action: "list", args: {} },
+        },
+      ),
+    ).rejects.toThrow(/not available/i);
+  });
+
   it("rejects explicit local runtime roots that are not bound to the window session", async () => {
     const localRuntimeConnectionPool = {
       callActionForRoot: vi.fn(),
@@ -978,6 +1042,7 @@ describe("registerRuntimeBridge", () => {
       projectId: "project-1",
       rootPath: "/srv/ade",
       displayName: "ADE",
+      gitOriginUrl: "git@github.com:example/ade.git",
       iconDataUrl: null,
     });
 
@@ -994,6 +1059,7 @@ describe("registerRuntimeBridge", () => {
       projectId: "project-1",
       rootPath: "/srv/ade",
       displayName: "ADE",
+      gitOriginUrl: "git@github.com:example/ade.git",
       iconDataUrl: null,
     });
   });

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -579,12 +579,14 @@ const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
  * only the affordance changes.
  */
 function ComposerMachineChip({
+  machineId,
   machineName,
   selectable,
   options,
   onChange,
   disabled = false,
 }: {
+  machineId: string;
   machineName: string;
   selectable: boolean;
   options: ComposerMachineOption[];
@@ -614,19 +616,19 @@ function ComposerMachineChip({
       <SmartTooltip
         forceEnabled
         content={{
-          label: `Runs on ${machineName}`,
-          description: "This chat's lane already lives on this machine, so it can't move.",
+          label: machineName,
+          description: "This chat stays on the machine that owns its lane.",
         }}
       >
         <span
           data-chat-composer-machine-chip="readonly"
           className={cn(
-            "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-dashed border-white/[0.12] px-1.5",
-            "font-sans text-[9px] font-medium text-muted-fg/55",
+            "inline-flex h-6 shrink-0 items-center gap-1 px-1",
+            "font-sans text-[9px] font-medium text-muted-fg/60",
           )}
           style={{ whiteSpace: "nowrap" }}
         >
-          <Desktop size={10} weight="regular" aria-hidden />
+          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
           {machineName}
         </span>
       </SmartTooltip>
@@ -640,19 +642,19 @@ function ComposerMachineChip({
         data-chat-composer-machine-chip="picker"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        aria-label={`Run on ${machineName}`}
+        aria-label={`Choose machine, currently ${machineName}`}
         disabled={disabled}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={() => setMenuOpen((current) => !current)}
         className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-accent/45 bg-accent/[0.08] px-1.5",
-          "font-sans text-[9px] font-medium text-accent transition-colors",
-          "hover:bg-accent/[0.14] disabled:cursor-not-allowed disabled:opacity-45",
+          "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1",
+          "font-sans text-[9px] font-medium text-muted-fg/70 transition-colors",
+          "hover:bg-amber-400/[0.08] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45",
         )}
         style={{ whiteSpace: "nowrap" }}
       >
-        <Desktop size={10} weight="regular" aria-hidden />
-        Run on: {machineName}
+        <DesktopTower size={11} weight="duotone" className="text-amber-400/90" aria-hidden />
+        {machineName}
         <CaretDown size={8} weight="bold" aria-hidden />
       </button>
       {menuOpen ? (
@@ -673,13 +675,13 @@ function ComposerMachineChip({
               }}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[10px] transition-colors",
-                option.name === machineName ? "text-fg" : "text-fg/65 hover:bg-white/[0.06]",
+                option.id === machineId ? "text-fg" : "text-fg/65 hover:bg-white/[0.06]",
               )}
               style={{ whiteSpace: "nowrap" }}
             >
-              <Desktop size={11} weight="regular" aria-hidden />
+              <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
               {option.name}
-              {option.name === machineName ? <Check size={10} weight="bold" className="ml-auto" aria-hidden /> : null}
+              {option.id === machineId ? <Check size={10} weight="bold" className="ml-auto" aria-hidden /> : null}
             </button>
           ))}
         </span>
@@ -1310,6 +1312,8 @@ export function AgentChatComposer({
   appControlOpen = false,
   onToggleAppControl,
   laneSelectionId = null,
+  machineSelectable,
+  machineId: machineIdOverride,
   machineName: machineNameOverride,
   machineOptions: machineOptionsOverride,
   onMachineChange,
@@ -1508,6 +1512,10 @@ export function AgentChatComposer({
    * degrades to a read-only statement of fact.
    */
   laneSelectionId?: string | null;
+  /** Explicitly controls the draft-only picker affordance. */
+  machineSelectable?: boolean;
+  /** Current machine id, used to mark the selected menu row. */
+  machineId?: string;
   /** Overrides the machine name derived from the active project binding. */
   machineName?: string;
   /** Overrides the machine list derived from the open project tabs. */
@@ -1642,6 +1650,8 @@ export function AgentChatComposer({
 
   const machineName = machineNameOverride
     ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : COMPOSER_LOCAL_MACHINE_NAME);
+  const machineId = machineIdOverride
+    ?? (projectBinding?.kind === "remote" ? projectBinding.targetId : COMPOSER_LOCAL_MACHINE_ID);
   const machineOptions = useMemo<ComposerMachineOption[]>(() => {
     if (machineOptionsOverride) return machineOptionsOverride;
     const options: ComposerMachineOption[] = [
@@ -1655,7 +1665,7 @@ export function AgentChatComposer({
   }, [machineOptionsOverride, openRemoteProjectTabs]);
   // Opt-in: an unknown lane selection is treated as settled, so the chip only
   // claims to be a control when the host says the lane is still auto-create.
-  const machineChipSelectable = isAutoCreateLaneOptionId(laneSelectionId);
+  const machineChipSelectable = machineSelectable ?? isAutoCreateLaneOptionId(laneSelectionId);
   const [machineSwitchError, setMachineSwitchError] = useState<string | null>(null);
   const handleMachineChange = useCallback(
     (machineId: string) => {
@@ -4601,6 +4611,7 @@ export function AgentChatComposer({
             ) : null}
             {!hideModelControls ? (
               <ComposerMachineChip
+                machineId={machineId}
                 machineName={machineName}
                 selectable={machineChipSelectable}
                 options={machineOptions}
