@@ -1698,9 +1698,17 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatFileSearchResult[]>;
         promptStashes: {
-          list: () => Promise<PromptStashEntry[]>;
-          create: (args: PromptStashCreateArgs) => Promise<PromptStashEntry>;
-          delete: (args: PromptStashDeleteArgs) => Promise<boolean>;
+          list: (
+            pin?: OpenProjectBinding | null,
+          ) => Promise<PromptStashEntry[]>;
+          create: (
+            args: PromptStashCreateArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<PromptStashEntry>;
+          delete: (
+            args: PromptStashDeleteArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<boolean>;
         };
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
@@ -1725,7 +1733,10 @@ declare global {
           },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ path: string }>;
-        getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
+        getImageDataUrl: (
+          path: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
         getEventHistory: (
           args: {

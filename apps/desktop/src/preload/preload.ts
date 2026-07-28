@@ -6323,22 +6323,33 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.agentChatFileSearch, args),
       ),
     promptStashes: {
-      list: async (): Promise<PromptStashEntry[]> =>
-        callProjectRuntimeActionOr(
+      list: async (
+        pin?: OpenProjectBinding | null,
+      ): Promise<PromptStashEntry[]> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
           "chat",
           "listPromptStashes",
           {},
           () => ipcRenderer.invoke(IPC.agentChatPromptStashesList),
         ),
-      create: async (args: PromptStashCreateArgs): Promise<PromptStashEntry> =>
-        callProjectRuntimeActionOr(
+      create: async (
+        args: PromptStashCreateArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<PromptStashEntry> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
           "chat",
           "createPromptStash",
           { args },
           () => ipcRenderer.invoke(IPC.agentChatPromptStashesCreate, args),
         ),
-      delete: async (args: PromptStashDeleteArgs): Promise<boolean> =>
-        callProjectRuntimeActionOr(
+      delete: async (
+        args: PromptStashDeleteArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<boolean> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
           "chat",
           "deletePromptStash",
           { args },
@@ -6387,8 +6398,11 @@ contextBridge.exposeInMainWorld("ade", {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
-    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
-      callProjectRuntimeActionOr("chat", "getImageDataUrl", { args: { path } }, () =>
+    getImageDataUrl: async (
+      path: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ dataUrl: string }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getImageDataUrl", { args: { path } }, () =>
         ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
       ),
     resolveSmartLinkPreview: async (args: { url: string }): Promise<SmartLinkPreview | null> =>

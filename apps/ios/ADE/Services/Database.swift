@@ -3242,7 +3242,9 @@ final class DatabaseService {
     }
 
     do {
-      try run(sql)
+      // Keep bootstrap ADD COLUMN migrations on existing CRRs inside the same
+      // begin/commit alter path used by the rest of the database adapter.
+      try exec(sql)
     } catch {
       let lowered = sql.lowercased()
       let message = (error as NSError).localizedDescription.lowercased()
@@ -3878,13 +3880,28 @@ final class DatabaseService {
   private func exec(_ sql: String) throws {
     let alterTable = parseAlterTableTarget(sql)
     if let alterTable, hasTable(named: "\(alterTable)__crsql_clock") {
-      try beginCrrAlter(tableName: alterTable)
+      var alterError: Error?
       do {
+        try beginCrrAlter(tableName: alterTable)
         try run(sql)
       } catch {
+        alterError = error
+      }
+
+      do {
+        try commitCrrAlter(tableName: alterTable)
+      } catch {
+        // If the ALTER already failed, preserve that original failure instead
+        // of replacing it with a secondary trigger-restoration error.
+        if let alterError {
+          throw alterError
+        }
         throw error
       }
-      try commitCrrAlter(tableName: alterTable)
+
+      if let alterError {
+        throw alterError
+      }
       return
     }
     try run(sql)

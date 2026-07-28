@@ -17122,6 +17122,32 @@ describe("createAgentChatService", () => {
       expect(fs.existsSync(oldFile)).toBe(false);
       expect(fs.existsSync(recentFile)).toBe(true);
     });
+
+    it("preserves old image files still referenced by a prompt stash", () => {
+      const attachDir = path.join(tmpRoot, ".ade", "attachments");
+      fs.mkdirSync(attachDir, { recursive: true });
+      const stashedImage = path.join(attachDir, "stashed-image.png");
+      fs.writeFileSync(stashedImage, "image data");
+      const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+      fs.utimesSync(stashedImage, eightDaysAgo, eightDaysAgo);
+
+      const { service } = createService({
+        db: {
+          getJson: vi.fn(),
+          setJson: vi.fn(),
+          run: vi.fn(),
+          get: vi.fn().mockReturnValue({ site_id: "site-a" }),
+          all: vi.fn().mockReturnValue([{
+            attachments_json: JSON.stringify([{ path: stashedImage, type: "image" }]),
+            attachment_origin_site_id: "site-a",
+          }]),
+        },
+      });
+
+      service.cleanupStaleAttachments();
+
+      expect(fs.existsSync(stashedImage)).toBe(true);
+    });
   });
 
   // --------------------------------------------------------------------------

@@ -1575,15 +1575,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     listPromptStashes: () => listPromptStashes(runtime.db),
     createPromptStash: (args?: PromptStashCreateArgs) => {
       const record = readObjectActionArg(args, "chat.createPromptStash");
-      const text = typeof record.text === "string" ? record.text : "";
-      if (!text.trim()) {
-        throw new Error("Expected 'text' to be a non-empty string.");
-      }
-      return createPromptStash(runtime.db, {
-        text,
-        provider: typeof record.provider === "string" ? record.provider : null,
-        modelId: typeof record.modelId === "string" ? record.modelId : null,
-      });
+      // The service owns validation for both text and attachment-only stashes.
+      // Keeping the full object intact is essential on the daemon path: this is
+      // the path every runtime-backed desktop uses.
+      return createPromptStash(runtime.db, record);
     },
     deletePromptStash: (args?: PromptStashDeleteArgs) => {
       const record = readObjectActionArg(args, "chat.deletePromptStash");

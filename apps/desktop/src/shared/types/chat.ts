@@ -2708,15 +2708,23 @@ export type AgentChatFileSearchResult = {
 export type PromptStashEntry = {
   id: string;
   text: string;
+  /** Absent when talking to a pre-attachment ADE runtime. */
+  attachments?: AgentChatFileRef[];
+  /** Includes images that exist only on the originating ADE runtime. */
+  attachmentCount?: number;
+  /** False when this synced runtime does not own the stash's image files. */
+  attachmentsAvailable?: boolean;
   provider: string | null;
   modelId: string | null;
   createdAt: string;
 };
 
 export const MAX_PROMPT_STASHES = 20;
+export const MAX_PROMPT_STASH_ATTACHMENTS = 10;
 
 export type PromptStashCreateArgs = {
   text: string;
+  attachments?: AgentChatFileRef[];
   provider?: string | null;
   modelId?: string | null;
 };

@@ -2889,11 +2889,15 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     create table if not exists prompt_stashes (
       id text primary key,
       text text not null,
+      attachments_json text not null default '[]',
+      attachment_origin_site_id text,
       provider text,
       model_id text,
       created_at text not null
     )
   `);
+  safeAddColumn(db, "alter table prompt_stashes add column attachments_json text not null default '[]'");
+  safeAddColumn(db, "alter table prompt_stashes add column attachment_origin_site_id text");
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
 
 

@@ -833,10 +833,15 @@ create index if not exists idx_computer_use_artifact_links_artifact on computer_
 create table if not exists prompt_stashes (
       id text primary key,
       text text not null,
+      attachments_json text not null default '[]',
+      attachment_origin_site_id text,
       provider text,
       model_id text,
       created_at text not null
     );
+
+alter table prompt_stashes add column attachments_json text not null default '[]';
+alter table prompt_stashes add column attachment_origin_site_id text;
 
 create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at);
 

@@ -686,6 +686,17 @@ function installAdeMocks(options?: {
         setGoalStatus: setCodexGoalStatus,
       },
       fileSearch: vi.fn().mockResolvedValue([]),
+      promptStashes: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn().mockResolvedValue({
+          id: "stash-1",
+          text: "saved",
+          provider: "codex",
+          modelId: "openai/gpt-5.4",
+          createdAt: "2026-07-28T12:00:00.000Z",
+        }),
+        delete: vi.fn().mockResolvedValue(true),
+      },
       create,
       delete: deleteChat,
       dispose: vi.fn().mockResolvedValue(undefined),
@@ -9209,6 +9220,19 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.objectContaining({ sessionId: "chat-on-a" }),
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("passes the effective remote project binding to prompt stashes when the chat pin is null", async () => {
+    bindWindowToMachineB();
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Remote-bound chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+
+    renderPane(session);
+
+    await waitFor(() => expect(window.ade.agentChat.promptStashes.list).toHaveBeenCalledWith(
+      machineB,
+    ));
+    expect(useAppStore.getState().projectBinding).toEqual(machineB);
   });
 
   it("routes a prop-driven incoming local chat independently of the outgoing remote selection", async () => {

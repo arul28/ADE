@@ -384,6 +384,36 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("chat", "deletePromptStash")).toBe(true);
   });
 
+  it("preserves prompt stash images through the runtime-backed action path", async () => {
+    const run = vi.fn();
+    const runtime = {
+      agentChatService: {},
+      db: {
+        get: vi.fn().mockReturnValue(undefined),
+        run,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      createPromptStash?: (args: unknown) => Promise<unknown> | unknown;
+    };
+    const attachment = {
+      path: "/project/.ade/attachments/design.png",
+      type: "image",
+    };
+
+    await expect(Promise.resolve(chat.createPromptStash?.({
+      text: "",
+      attachments: [attachment],
+    }))).resolves.toMatchObject({
+      text: "",
+      attachments: [attachment],
+    });
+    expect(run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into prompt_stashes"),
+      expect.arrayContaining([JSON.stringify([attachment])]),
+    );
+  });
+
   it("exposes Linear issue tracker composite reads for runtime-backed CTO views", () => {
     const actions = ADE_ACTION_ALLOWLIST.linear_issue_tracker ?? [];
     expect(actions).toContain("getWorkflowCatalog");

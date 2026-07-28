@@ -865,7 +865,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPathInEditor, expect.anything());
   });
 
-  it("routes chat image preview reads through the remote runtime for remote project paths", async () => {
+  it("routes chat image preview reads through the bound or explicitly pinned runtime", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",
@@ -874,6 +874,15 @@ describe("preload OAuth bridge", () => {
       projectId: "project-1",
       rootPath: "/remote/project",
       displayName: "Project",
+    };
+    const chatRuntimePin = {
+      kind: "remote",
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      runtimeName: "Remote chat",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Chat project",
     };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
@@ -911,9 +920,9 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.getImageDataUrl("/remote/project/.ade/attachments/image.png"))
-      .resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
-
+    await expect(bridge.agentChat.getImageDataUrl(
+      "/remote/project/.ade/attachments/image.png",
+    )).resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
       projectId: "project-1",
@@ -921,6 +930,23 @@ describe("preload OAuth bridge", () => {
         domain: "chat",
         action: "getImageDataUrl",
         args: { path: "/remote/project/.ade/attachments/image.png" },
+      },
+    });
+    invoke.mockClear();
+
+    await expect(bridge.agentChat.getImageDataUrl(
+      "/remote/chat-project/.ade/attachments/image.png",
+      chatRuntimePin,
+    ))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-2",
+      projectId: "project-2",
+      request: {
+        domain: "chat",
+        action: "getImageDataUrl",
+        args: { path: "/remote/chat-project/.ade/attachments/image.png" },
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
@@ -2553,6 +2579,24 @@ describe("preload OAuth bridge", () => {
             statusHints: {},
           };
         }
+        if (request?.domain === "chat" && request.action === "createPromptStash") {
+          return {
+            ok: true,
+            domain: "chat",
+            action: "createPromptStash",
+            result: promptStashes[0],
+            statusHints: {},
+          };
+        }
+        if (request?.domain === "chat" && request.action === "deletePromptStash") {
+          return {
+            ok: true,
+            domain: "chat",
+            action: "deletePromptStash",
+            result: true,
+            statusHints: {},
+          };
+        }
       }
       return undefined;
     });
@@ -2579,6 +2623,12 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.sessions.getDelta("session-1")).resolves.toEqual(delta);
     await expect(bridge.computerUse.readArtifactPreview({ uri: ".ade/artifacts/proof.png" })).resolves.toBe(preview);
     await expect(bridge.agentChat.promptStashes.list()).resolves.toEqual(promptStashes);
+    await expect(bridge.agentChat.promptStashes.create({
+      text: "Fix the parser",
+    })).resolves.toEqual(promptStashes[0]);
+    await expect(bridge.agentChat.promptStashes.delete({
+      id: "stash-1",
+    })).resolves.toBe(true);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -2601,6 +2651,24 @@ describe("preload OAuth bridge", () => {
       id: "target-1",
       projectId: "project-1",
       request: {
+        domain: "chat",
+        action: "createPromptStash",
+        args: { text: "Fix the parser" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "chat",
+        action: "deletePromptStash",
+        args: { id: "stash-1" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
         domain: "computer_use_artifacts",
         action: "readArtifactPreview",
         args: { uri: ".ade/artifacts/proof.png" },
@@ -2609,6 +2677,108 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.computerUseReadArtifactPreview, { uri: ".ade/artifacts/proof.png" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
+  });
+
+  it("routes prompt-stash list, create, and delete through their explicit captured binding", async () => {
+    const activeBinding = {
+      kind: "local",
+      key: "local:/active",
+      rootPath: "/active",
+      displayName: "Active",
+    };
+    const capturedBinding = {
+      kind: "remote",
+      key: "remote:stash-owner:stash-project",
+      targetId: "stash-owner",
+      runtimeName: "Stash owner",
+      projectId: "stash-project",
+      rootPath: "/remote/stash-project",
+      displayName: "Stash project",
+    };
+    const created = {
+      id: "stash-1",
+      text: "Keep this owner",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-07-28T12:00:00.000Z",
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: activeBinding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as {
+          request?: { domain?: string; action?: string };
+        } | undefined)?.request;
+        if (request?.action === "listPromptStashes") return { result: [created] };
+        if (request?.action === "createPromptStash") return { result: created };
+        if (request?.action === "deletePromptStash") return { result: true };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: {
+        invoke,
+        on: vi.fn(),
+        removeListener: vi.fn(),
+      },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.promptStashes.list(capturedBinding)).resolves.toEqual([created]);
+    await expect(bridge.agentChat.promptStashes.create(
+      { text: "Keep this owner" },
+      capturedBinding,
+    )).resolves.toEqual(created);
+    await expect(bridge.agentChat.promptStashes.delete(
+      { id: created.id },
+      capturedBinding,
+    )).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: capturedBinding.targetId,
+      projectId: capturedBinding.projectId,
+      request: {
+        domain: "chat",
+        action: "listPromptStashes",
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: capturedBinding.targetId,
+      projectId: capturedBinding.projectId,
+      request: {
+        domain: "chat",
+        action: "createPromptStash",
+        args: { text: "Keep this owner" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: capturedBinding.targetId,
+      projectId: capturedBinding.projectId,
+      request: {
+        domain: "chat",
+        action: "deletePromptStash",
+        args: { id: created.id },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesCreate, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesDelete, expect.anything());
   });
 
   // The action registry answers lifecycle mutations with an `{ ok, sessionId,

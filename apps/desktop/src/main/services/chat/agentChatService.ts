@@ -47,6 +47,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
   createClaudeStructuredActivityState,
@@ -6576,7 +6577,10 @@ export function createAgentChatService(args: {
   sessionService: ReturnType<typeof createSessionService>;
   processRegistry?: ProcessRegistryService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
-  db?: Pick<AdeDb, "getJson" | "setJson"> | null;
+  db?: (
+    Pick<AdeDb, "getJson" | "setJson">
+    & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
+  ) | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   appVersion: string;
@@ -42313,12 +42317,22 @@ export function createAgentChatService(args: {
       try {
         const projectRoot = args.projectRoot;
         if (!projectRoot) return;
+        const promptStashDb = args.db;
+        const protectedAttachmentPaths = promptStashDb
+          && typeof promptStashDb.get === "function"
+          && typeof promptStashDb.all === "function"
+          && typeof promptStashDb.run === "function"
+          ? new Set(Array.from(listPromptStashAttachmentPaths(
+            promptStashDb as Pick<AdeDb, "get" | "all" | "run"> & Partial<Pick<AdeDb, "sync">>,
+          ), (filePath) => path.resolve(filePath)))
+          : new Set<string>();
         const cleanupDir = (dirPath: string) => {
           if (!fs.existsSync(dirPath)) return;
           const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
           for (const entry of fs.readdirSync(dirPath)) {
             try {
               const filePath = path.join(dirPath, entry);
+              if (protectedAttachmentPaths.has(path.resolve(filePath))) continue;
               const stat = fs.statSync(filePath);
               if (stat.mtimeMs < cutoff) {
                 fs.rmSync(filePath, { recursive: true, force: true });

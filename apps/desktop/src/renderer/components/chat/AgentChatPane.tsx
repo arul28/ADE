@@ -11630,6 +11630,7 @@ export function AgentChatPane({
             draft={draft}
             lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}
+            composerMachineBinding={composerMachineBinding}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}
