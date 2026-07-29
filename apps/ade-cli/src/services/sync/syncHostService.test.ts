@@ -67,6 +67,7 @@ import { createSharedSyncListener, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./shar
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
+import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
@@ -1463,7 +1464,7 @@ describe("brain project actions fallback handler", () => {
         };
       };
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let attempt = 0; attempt < PAIR_FAILURE_THRESHOLD; attempt += 1) {
         const failed = await sendPairingRequest(`bad-pin-${attempt}`, "000000", `ios-bad-${attempt}`);
         expect(failed.payload.ok).toBe(false);
         expect(failed.payload.error?.code).toBe("invalid_pin");
@@ -2350,7 +2351,7 @@ describe("sync host account authentication", () => {
           payload: { v: 1, nonce: "not-32-bytes", clientEphemeralPublicKey: "bad" },
         }));
       };
-      for (let index = 0; index < 5; index += 1) {
+      for (let index = 0; index < PAIR_FAILURE_THRESHOLD; index += 1) {
         const badClient = await openAccountClient(port);
         clients.push(badClient);
         sendMalformedChallenge(badClient, `malformed-${index}`);
@@ -2694,6 +2695,7 @@ describe("sync host account authentication", () => {
       );
       expect(bootstrapRejected.payload).toMatchObject({
         code: "relay_account_required",
+        message: "Sign in with the same ADE account on both machines.",
       });
     } finally {
       for (const client of clients) client.ws.close();
@@ -3107,10 +3109,14 @@ describe("sync host account authentication", () => {
           accountToken,
         }),
       });
-      await waitForValue(
+      const directAccountRejected = await waitForValue(
         () => directAccountClient.envelopes.find((envelope) => envelope.type === "hello_error"),
         "direct stored-key account rejection",
       );
+      expect(directAccountRejected.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/Connect through ADE Relay, or pair this device with a PIN/),
+      });
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
 
       const relayAttackerClient = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -3126,10 +3132,14 @@ describe("sync host account authentication", () => {
           accountToken,
         }),
       });
-      await waitForValue(
+      const relayAttackerRejected = await waitForValue(
         () => relayAttackerClient.envelopes.find((envelope) => envelope.type === "hello_error"),
         "relay stored-key account hijack rejection",
       );
+      expect(relayAttackerRejected.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/could not prove it holds the security key.*Pair it again/i),
+      });
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
 
       const relayAccountClient = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -3206,6 +3216,7 @@ describe("sync host account authentication", () => {
       );
       expect(missingRelayProof.payload).toMatchObject({
         code: "relay_account_required",
+        message: "Sign in with the same ADE account on both machines.",
       });
 
       const relayWrongAccount = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -3228,6 +3239,7 @@ describe("sync host account authentication", () => {
       );
       expect(wrongRelayProof.payload).toMatchObject({
         code: "relay_account_required",
+        message: "Sign in with the same ADE account on both machines.",
       });
 
       const relayPairedClient = await openAccountClient(port, listener.getRelayBridgeProof());
@@ -3527,10 +3539,14 @@ describe("sync host account authentication", () => {
       const missing = await openAccountClient(port, listener.getRelayBridgeProof());
       clients.push(missing);
       sendAccountHello({ ws: missing.ws, peer: missingPeer, accountToken, dpop: null });
-      await waitForValue(
+      const missingDpopRejected = await waitForValue(
         () => missing.envelopes.find((envelope) => envelope.type === "hello_error"),
         "missing DPoP hello_error",
       );
+      expect(missingDpopRejected.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/did not present its security key.*pair it again/i),
+      });
 
       const invalidPeer = {
         ...missingPeer,
@@ -3553,10 +3569,14 @@ describe("sync host account authentication", () => {
           signedDeviceId: "different-account-device",
         }),
       });
-      await waitForValue(
+      const invalidDpopRejected = await waitForValue(
         () => invalid.envelopes.find((envelope) => envelope.type === "hello_error"),
         "invalid DPoP hello_error",
       );
+      expect(invalidDpopRejected.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/could not prove it holds the security key.*Pair it again/i),
+      });
 
       expect(pairingStore.getPairingRecord(missingPeer.deviceId)).toBeNull();
       expect(pairingStore.getPairingRecord(invalidPeer.deviceId)).toBeNull();
@@ -3614,10 +3634,14 @@ describe("sync host account authentication", () => {
           accountToken,
         }),
       });
-      await waitForValue(
+      const signedOutRejected = await waitForValue(
         () => accountClient.envelopes.find((envelope) => envelope.type === "hello_error"),
         "signed-out account hello_error",
       );
+      expect(signedOutRejected.payload).toMatchObject({
+        code: "auth_failed",
+        message: expect.stringMatching(/not signed in.*Sign in on the Mac/i),
+      });
 
       const pinClient = await openAccountClient(port);
       clients.push(pinClient);
@@ -3640,6 +3664,149 @@ describe("sync host account authentication", () => {
       for (const client of clients) client.ws.close();
       await host.dispose();
       await listener.close();
+      cleanup();
+    }
+  });
+
+  // A re-pair used to overwrite the device's working secret the instant the
+  // host answered, two round trips before the device could persist the reply.
+  // Dropping the socket in that gap — the ordinary outcome on a flaky network —
+  // left the host holding credentials the phone never saw, and the only way
+  // back was walking to the Mac for another PIN. Retrying was what broke you.
+  it("survives a re-pair that drops before the device ever uses the new secret", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    pinStore.setPin("428193");
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const peer = {
+      deviceId: "flaky-repair-phone",
+      deviceName: "Flaky iPhone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "flaky-repair-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const dpopKey = makeDpopKeyPair();
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+
+    const requestPairing = async (requestId: string, pairingCommitVersion?: 1) => {
+      const port = await host.waitUntilListening();
+      const client = await openAccountClient(port);
+      clients.push(client);
+      client.ws.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId,
+        payload: {
+          code: "428193",
+          peer,
+          dpopPublicKey: dpopKey.publicKeyX963,
+          ...(pairingCommitVersion ? { pairingCommitVersion } : {}),
+        },
+      }));
+      const result = await waitForValue(
+        () => client.envelopes.find((envelope) =>
+          envelope.type === "pairing_result" && envelope.requestId === requestId),
+        `pairing_result ${requestId}`,
+      );
+      return {
+        client,
+        payload: result.payload as { secret: string; rotation?: unknown },
+      };
+    };
+
+    const helloWith = async (secret: string) => {
+      const port = await host.waitUntilListening();
+      const client = await openAccountClient(port);
+      clients.push(client);
+      sendPairedHello({
+        ws: client.ws,
+        peer,
+        secret,
+        dpop: signPairedDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret,
+        }),
+      });
+      const envelope = await waitForValue(
+        () => client.envelopes.find((candidate) =>
+          candidate.type === "hello_ok" || candidate.type === "hello_error"),
+        `hello outcome for ${secret.slice(0, 6)}`,
+      );
+      return envelope.type;
+    };
+
+    try {
+      const first = await requestPairing("pair-initial");
+      // Nothing to protect on a first pair, so nothing is staged.
+      expect(first.payload.rotation).toBeUndefined();
+      expect(await helloWith(first.payload.secret)).toBe("hello_ok");
+
+      const rotated = await requestPairing("pair-retry", 1);
+      expect(rotated.payload.secret).not.toBe(first.payload.secret);
+      // The drop: the device never gets to send its hello.
+      rotated.client.ws.close();
+
+      // Both ends still agree on the secret the device is actually holding.
+      expect(await helloWith(first.payload.secret)).toBe("hello_ok");
+      expect(rotated.payload.rotation).toMatchObject({ pendingCommit: true });
+
+      const committed = await requestPairing("pair-commit", 1);
+      // A commit-capable client uses the same socket for its staged hello. Even
+      // after hello_ok, the old secret remains live until the client explicitly
+      // proves it received that response.
+      sendPairedHello({
+        ws: committed.client.ws,
+        peer,
+        secret: committed.payload.secret,
+        dpop: signPairedDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: committed.payload.secret,
+        }),
+      });
+      await waitForValue(
+        () => committed.client.envelopes.find((candidate) => candidate.type === "hello_ok"),
+        "staged hello_ok",
+      );
+      expect(pairingStore.verifySecret(peer.deviceId, first.payload.secret)).toBe("committed");
+      expect(pairingStore.verifySecret(peer.deviceId, committed.payload.secret)).toBe("pending");
+
+      committed.client.ws.send(encodeSyncEnvelope({
+        type: "pairing_commit",
+        requestId: "pairing-commit",
+        payload: { deviceId: peer.deviceId },
+      }));
+      await expect(waitForValue(
+        () => committed.client.envelopes.find((candidate) =>
+          candidate.type === "pairing_commit_result"
+          && candidate.requestId === "pairing-commit"),
+        "pairing_commit_result",
+      )).resolves.toMatchObject({ payload: { ok: true } });
+
+      // The explicit acknowledgement retires the previous credential.
+      expect(await helloWith(first.payload.secret)).toBe("hello_error");
+      expect(await helloWith(committed.payload.secret)).toBe("hello_ok");
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
       cleanup();
     }
   });

@@ -20,6 +20,7 @@ import type {
   SyncHelloPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
+  SyncPairingResultPayload,
   SyncPeerMetadata,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
@@ -37,6 +38,10 @@ import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createPairFailureTracker,
+  type PairFailureSubject,
+} from "./syncPairFailureTracker";
 import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
@@ -110,16 +115,7 @@ type BrainPeerState = {
 
 const WS_OPEN = 1;
 const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
-const PAIR_FAILURE_THRESHOLD = 5;
-const PAIR_COOLDOWN_MS = 10 * 60_000;
-const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
 const BRAIN_SYNC_AUTH_TIMEOUT_MS = 15_000;
-
-type PairFailureEntry = {
-  count: number;
-  cooldownUntilMs: number;
-  updatedAtMs: number;
-};
 
 function ensureSecretFile(filePath: string, bytes: number): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -364,73 +360,6 @@ function projectActionsEnabled(provider: SyncProjectCatalogProvider): boolean {
       && provider.cloneProject
       && provider.listMyGitHubRepos,
   );
-}
-
-function createPairFailureTracker() {
-  const pairFailures = new Map<string, PairFailureEntry>();
-  const globalPairFailures: PairFailureEntry = {
-    count: 0,
-    cooldownUntilMs: 0,
-    updatedAtMs: 0,
-  };
-
-  const reset = (entry: PairFailureEntry): void => {
-    entry.count = 0;
-    entry.cooldownUntilMs = 0;
-    entry.updatedAtMs = 0;
-  };
-  const expired = (entry: PairFailureEntry, now: number): boolean => {
-    if (entry.updatedAtMs <= 0) return false;
-    return (entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now)
-      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
-  };
-  const prune = (now = Date.now()): void => {
-    for (const [ip, entry] of pairFailures) {
-      if (expired(entry, now)) {
-        pairFailures.delete(ip);
-      }
-    }
-    if (expired(globalPairFailures, now)) {
-      reset(globalPairFailures);
-    }
-  };
-  const increment = (entry: PairFailureEntry, now: number): void => {
-    entry.count += 1;
-    entry.updatedAtMs = now;
-    if (entry.count >= PAIR_FAILURE_THRESHOLD) {
-      entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
-      entry.count = 0;
-    }
-  };
-
-  return {
-    cooldownMsRemaining(ip: string | null): number {
-      const now = Date.now();
-      prune(now);
-      const globalRemaining = Math.max(0, globalPairFailures.cooldownUntilMs - now);
-      const ipEntry = ip ? pairFailures.get(ip) ?? null : null;
-      const ipRemaining = ipEntry ? Math.max(0, ipEntry.cooldownUntilMs - now) : 0;
-      return Math.max(globalRemaining, ipRemaining);
-    },
-    registerFailure(ip: string | null): void {
-      const now = Date.now();
-      prune(now);
-      increment(globalPairFailures, now);
-      if (ip) {
-        const entry = pairFailures.get(ip) ?? {
-          count: 0,
-          cooldownUntilMs: 0,
-          updatedAtMs: now,
-        };
-        increment(entry, now);
-        pairFailures.set(ip, entry);
-      }
-    },
-    clearAfterSuccess(ip: string | null): void {
-      reset(globalPairFailures);
-      if (ip) pairFailures.delete(ip);
-    },
-  };
 }
 
 async function projectCatalog(provider: SyncProjectCatalogProvider, logger: Logger): Promise<SyncProjectCatalogPayload> {
@@ -1204,7 +1133,11 @@ export function createBrainProjectActionsSyncHandler(
               return;
             }
             if (!isPeerCurrent(lifecycleGeneration)) return;
-            const cooldownMs = pairFailures.cooldownMsRemaining(remoteAddress ?? null);
+            const pairFailureSubject: PairFailureSubject = {
+              ip: remoteAddress ?? null,
+              deviceId: payload.peer.deviceId,
+            };
+            const cooldownMs = pairFailures.cooldownMsRemaining(pairFailureSubject);
             if (cooldownMs > 0) {
               const minutes = Math.ceil(cooldownMs / 60_000);
               send(ws, "pairing_result", {
@@ -1226,8 +1159,20 @@ export function createBrainProjectActionsSyncHandler(
                 dpopPublicKey: payload.dpopPublicKey ?? null,
                 runtimeHostGrant: payload.runtimeHostGrant ?? null,
               });
-              pairFailures.clearAfterSuccess(remoteAddress ?? null);
-              send(ws, "pairing_result", { ok: true, deviceId: paired.deviceId, secret: paired.secret }, envelope.requestId);
+              pairFailures.clearAfterSuccess(pairFailureSubject);
+              send(ws, "pairing_result", {
+                ok: true,
+                deviceId: paired.deviceId,
+                secret: paired.secret,
+                ...(paired.pendingRotationExpiresAtMs != null
+                  ? {
+                      rotation: {
+                        pendingCommit: true,
+                        expiresInMs: Math.max(0, paired.pendingRotationExpiresAtMs - Date.now()),
+                      },
+                    }
+                  : {}),
+              } satisfies SyncPairingResultPayload, envelope.requestId);
             } catch (error) {
               const code = (error as { code?: string } | null)?.code === "pin_not_set"
                 ? "pin_not_set"
@@ -1242,7 +1187,7 @@ export function createBrainProjectActionsSyncHandler(
                 },
               }, envelope.requestId);
               if (code === "invalid_pin" || code === "pairing_failed") {
-                pairFailures.registerFailure(remoteAddress ?? null);
+                pairFailures.registerFailure(pairFailureSubject);
               }
               try {
                 ws.close(4003, "Pairing failed");

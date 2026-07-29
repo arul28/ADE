@@ -3597,6 +3597,79 @@ final class ADETests: XCTestCase {
     )
   }
 
+  // Account adoption used to walk [lan, tailnet, relay] strictly in order,
+  // paying a socket open plus a 3s identity challenge per route. On cellular,
+  // where no direct route can ever succeed, that is 10-20s of dead time before
+  // relay is even dialed.
+  func testAccountAdoptionRelayJoinsTheSameRaceAsDirectRoutes() {
+    let plan = syncConnectionRaceCandidatePlan(rankedAttempts: [
+      SyncConnectionEndpointAttempt(address: "192.168.1.40", port: 8787),
+      SyncConnectionEndpointAttempt(address: "100.94.1.5", port: 8787),
+      SyncConnectionEndpointAttempt(address: "wss://relay.ade.dev/connect/machine-key", port: 443),
+    ])
+
+    XCTAssertEqual(plan.count, 3)
+    let relay = plan.first { syncConnectionRouteKind($0.endpoint.address) == .relay }
+    XCTAssertNotNil(relay)
+    // Scheduled inside the same race, not after the direct routes exhaust it.
+    XCTAssertLessThanOrEqual(
+      relay?.delayNanoseconds ?? .max,
+      SyncConnectionRaceTiming.relayJoinDelayNanoseconds
+        + SyncConnectionRaceTiming.candidateStaggerNanoseconds
+    )
+    XCTAssertLessThan(
+      relay?.delayNanoseconds ?? .max,
+      SyncConnectionRaceTiming.overallBudgetNanoseconds
+    )
+    XCTAssertTrue(plan.allSatisfy {
+      $0.delayNanoseconds < SyncConnectionRaceTiming.overallBudgetNanoseconds
+    })
+  }
+
+  // A host naming a cipher this build does not implement is a version gap, not
+  // evidence the Mac is an impostor: it must cost that route, not the attempt.
+  func testUnsupportedAdoptionCipherFailsOneRouteRatherThanTheWholeAttempt() {
+    let compatibility = AccountAdoptionRouteCompatibilityError(machineName: "Arul's Mac")
+    XCTAssertFalse(syncAccountAdoptionFailureIsFatal(compatibility))
+    XCTAssertTrue(
+      compatibility.localizedDescription.contains("Update ADE"),
+      "the message must say what to do, not imply a security failure"
+    )
+
+    XCTAssertTrue(syncAccountAdoptionFailureIsFatal(
+      AccountAdoptionIdentityVerificationError(machineName: "Arul's Mac")
+    ))
+    XCTAssertTrue(syncAccountAdoptionFailureIsFatal(AccountPairingAuthorizationChangedError()))
+    XCTAssertTrue(syncAccountAdoptionFailureIsFatal(AccountPairingConnectionSupersededError()))
+  }
+
+  func testPairingSecretPersistsBeforeHelloAndCommitIsVersionNegotiated() async throws {
+    var order: [String] = []
+    try await syncPersistPairingBeforeHello(
+      persist: { order.append("persist") },
+      hello: { order.append("hello") }
+    )
+
+    XCTAssertEqual(order, ["persist", "hello"])
+    XCTAssertFalse(syncPairingCommitRequired([:]))
+    XCTAssertFalse(syncPairingCommitRequired([
+      "rotation": ["pendingCommit": false]
+    ]))
+    XCTAssertTrue(syncPairingCommitRequired([
+      "rotation": ["pendingCommit": true, "expiresInMs": 600_000]
+    ]))
+  }
+
+  func testAutoReconnectPauseMigrationClearsFailureFalloutButKeepsAUserPause() {
+    // Written by a build that latched on any failed attempt: no source, so it
+    // is swept.
+    XCTAssertFalse(syncAutoReconnectPausedAfterMigration(paused: true, pauseSource: nil))
+    XCTAssertFalse(syncAutoReconnectPausedAfterMigration(paused: true, pauseSource: "  "))
+    // An explicit user disconnect records its source and must survive.
+    XCTAssertTrue(syncAutoReconnectPausedAfterMigration(paused: true, pauseSource: "user"))
+    XCTAssertFalse(syncAutoReconnectPausedAfterMigration(paused: false, pauseSource: "user"))
+  }
+
   @MainActor
   func testSyncDisconnectCancelsScheduledReconnectWork() {
     let pausedKey = "ade.sync.autoReconnectPausedByUser"
