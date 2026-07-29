@@ -1110,7 +1110,7 @@ describe("appStore", () => {
           version?: number;
           workViewByProject?: Record<string, Record<string, unknown>>;
         };
-        expect(persisted.version).toBe(3);
+        expect(persisted.version).toBe(4);
         expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");
@@ -1185,6 +1185,85 @@ describe("appStore", () => {
       expect(two.lanesFilter).toBe("docs");
       expect(two.lanesPinnedLaneIds).toEqual([]);
       expect(two.lanesExpandedLaneId).toBeNull();
+    });
+
+    it("keeps Work-sidebar lane ordering and chip filters per project", () => {
+      useAppStore.getState().setWorkViewState("/proj-order", {
+        workPinnedLaneIds: ["lane-1"],
+        workLaneSortMode: "manual",
+        workLaneOrder: ["lane-2", "lane-1"],
+        workSessionFilters: {
+          status: ["awaiting-input"], tool: ["claude"], hasPr: true, dirtyLane: false,
+        },
+      });
+
+      const scoped = useAppStore.getState().getWorkViewState("/proj-order");
+      expect(scoped.workPinnedLaneIds).toEqual(["lane-1"]);
+      expect(scoped.workLaneSortMode).toBe("manual");
+      expect(scoped.workLaneOrder).toEqual(["lane-2", "lane-1"]);
+      expect(scoped.workSessionFilters.status).toEqual(["awaiting-input"]);
+
+      // A different project is untouched — the Work sidebar's ordering is not global.
+      const other = useAppStore.getState().getWorkViewState("/proj-order-other");
+      expect(other.workPinnedLaneIds).toEqual([]);
+      expect(other.workLaneSortMode).toBe("created");
+      expect(other.workSessionFilters).toEqual({
+        status: [], tool: [], hasPr: false, dirtyLane: false,
+      });
+    });
+
+    it("reads a v3 blob as today's ordering, so the version bump needs no migration", async () => {
+      // The whole no-migration claim rests on this: a blob written before the
+      // lane-ordering fields existed must come back as primary-first /
+      // created-desc with no pins and no chips — i.e. unchanged behaviour.
+      mockStorage.set("ade.workViewState.v1", JSON.stringify({
+        version: 3,
+        workViewByProject: {
+          "/project/v3": { workCollapsedLaneIds: ["lane-x"], search: "keep me" },
+        },
+        laneWorkViewByScope: {},
+      }));
+
+      vi.resetModules();
+      const mod = await import("./appStore");
+      const restored = mod.useAppStore.getState().getWorkViewState("/project/v3");
+
+      expect(restored.search).toBe("keep me");
+      expect(restored.workCollapsedLaneIds).toEqual(["lane-x"]);
+      expect(restored.workLaneSortMode).toBe("created");
+      expect(restored.workPinnedLaneIds).toEqual([]);
+      expect(restored.workLaneOrder).toEqual([]);
+      expect(restored.workSessionFilters).toEqual({
+        status: [], tool: [], hasPr: false, dirtyLane: false,
+      });
+    });
+
+    it("drops duplicate and unknown persisted ordering values", async () => {
+      mockStorage.set("ade.workViewState.v1", JSON.stringify({
+        version: 4,
+        workViewByProject: {
+          "/project/dup": {
+            workPinnedLaneIds: ["lane-1", "lane-1", "  ", "lane-2"],
+            workLaneOrder: ["lane-2", "lane-2", "lane-1"],
+            workLaneSortMode: "nonsense",
+            workSessionFilters: { status: ["running", "bogus"], tool: "not-an-array" },
+          },
+        },
+        laneWorkViewByScope: {},
+      }));
+
+      vi.resetModules();
+      const mod = await import("./appStore");
+      const restored = mod.useAppStore.getState().getWorkViewState("/project/dup");
+
+      // A duplicated id would otherwise render one lane twice and hand the
+      // comparator two positions for it.
+      expect(restored.workPinnedLaneIds).toEqual(["lane-1", "lane-2"]);
+      expect(restored.workLaneOrder).toEqual(["lane-2", "lane-1"]);
+      expect(restored.workLaneSortMode).toBe("created");
+      expect(restored.workSessionFilters).toEqual({
+        status: ["running"], tool: [], hasPr: false, dirtyLane: false,
+      });
     });
   });
 

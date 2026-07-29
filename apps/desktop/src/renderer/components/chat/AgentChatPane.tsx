@@ -941,6 +941,7 @@ const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen a
  * for the pane to fit beside the column, reserve the pane's width so the chat
  * shifts over instead of being covered. Right is preferred over left when tight.
  */
+const ZERO_PANE_RESERVE = { left: "0px", right: "0px" } as const;
 function computePaneReserve(
   width: number,
   leftOpen: boolean,
@@ -12270,7 +12271,17 @@ export function AgentChatPane({
   // The chat reserves gutter space and shifts over to make room for each open
   // floating pane (no overlap); the panes themselves fade in/out (opacity) — the
   // two are independent.
-  const paneReserve = computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating);
+  //
+  // Gate the reserve on the surface that actually renders those panes. Both the
+  // PR pane and the chat-actions pane live in the `selectedSessionId` branch
+  // below; the empty/draft surface renders neither. `prPaneOpen` is persisted
+  // per lane by `useChatPrAutoPop`, so without this gate a lane that once had
+  // the PR pane open pays a 276px left gutter on the new-chat screen — shoving
+  // the hero composer sideways to clear a pane that is not on screen.
+  const sessionSurfaceMounted = Boolean(selectedSessionId);
+  const paneReserve = sessionSurfaceMounted
+    ? computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating)
+    : ZERO_PANE_RESERVE;
   // When a pane doesn't force the chat to shift (reserve 0), center it within its
   // side margin so all three zones (left pane / chat / right pane) read as
   // centered in their quadrant. When it does shift the chat, pin it to the edge.

@@ -119,6 +119,27 @@ settled long ago) and snoozed rows rank by `snoozedUntil` ascending, because the
 group answers "what comes back first". Group headers carry an explicit
 `role="heading"` and a `"<label> (<count>)"` accessible name.
 
+The Lane organization has its own Work-scoped lane order. The primary lane is
+always first; all other rows file as pinned, active, then quiet. A pin is not a
+Lanes-tab pin: it keeps the Work row above active work and suppresses its
+compact/dimmed quiet treatment. The funnel offers Activity, Name, Created, and
+Manual sort modes inside those tiers. Dragging a non-primary lane header onto a
+row in the same tier (before or after its midpoint) switches to Manual and
+persists the displayed order; it cannot move a lane across the primary, pin, or
+quiet boundaries. Native drag-and-drop owns the drop line and rAF edge
+autoscroll, while the list uses the resulting order signature only for its
+layout animation rather than remeasuring on every session tick.
+
+The same funnel also owns the persisted session chips. Status (Your move,
+Running, Ended, Settled, Snoozed) and Tool choices are ORed within their own
+axis; the Status, Tool, Has PR, and Dirty-lane axes are ANDed together. The
+status chip uses the same `sessionFilingBucket` result as the sidebar, Has PR
+uses the coalesced PR snapshot that powers lane-header badges, and Dirty reads
+the already-loaded lane status. Chips apply before all three organization
+modes. A remote lane has no local PR snapshot, so Has PR fails closed there;
+the filtered empty state names the active chips and provides a clear action
+instead of implying that the sessions disappeared.
+
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
 run inline. **Manage lane** opens the shared `ManageLaneDialog` in a portal over
@@ -774,7 +795,8 @@ A single hook that owns a lot of state:
   would otherwise clobber the optimistic attachment, leaving the new
   `TerminalView` unable to subscribe to live PTY data
 - per-project work view state (open items, active/selected, view mode,
-  draft kind, filters, organization, collapsed IDs,
+  draft kind, text/lane filters, chip filters, lane ordering and pins,
+  organization, collapsed IDs,
   focus-hidden flag)
 - lane-scoped work view state keyed as `projectRoot::laneId`
 - persistence to `localStorage` under `ade.workViewState.v1`, written on
@@ -802,6 +824,16 @@ setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
 sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
 `chatSessionEvents.ts` uses that optimistic path for durable chats created by
 headless/batch launch, then schedules a short background refresh.
+
+It also exposes `setWorkSessionFilters`, `toggleWorkLanePinned`,
+`setWorkLaneSortMode`, and `reorderWorkLanes`. Each takes over any transient
+deeplink framing before persisting the user's view choice. A reorder starts
+from the lanes currently rendered on screen, prunes dead ids only on write, and
+sets Manual even for a no-op drop from another mode so the control truthfully
+describes the current ordering. `useLanePrsByLaneId` supplies one coalesced PR
+read plus `prs-updated` pushes for both the lane badges and the Has PR filter;
+with no active chips the filtered session list is returned by reference so the
+new controls do not add avoidable downstream re-renders.
 
 `launchPtySession` accepts `WorkPtyLaunchArgs` and returns
 `Promise<WorkPtyLaunchResult>`. The args carry `disposition?:

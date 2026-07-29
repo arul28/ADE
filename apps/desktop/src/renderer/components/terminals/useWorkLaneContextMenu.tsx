@@ -33,7 +33,11 @@ export type ForeignLaneContextTrigger = (
   e: { preventDefault: () => void; clientX: number; clientY: number },
 ) => void;
 
-export function useWorkLaneContextMenu(): {
+export function useWorkLaneContextMenu(options?: {
+  /** Work-sidebar lane pin. Omitted by callers that have no pinning surface. */
+  onToggleWorkPin?: (laneId: string) => void;
+  workPinnedLaneIds?: string[];
+}): {
   trigger: LaneContextTrigger;
   triggerForeign: ForeignLaneContextTrigger;
   menu: React.ReactNode;
@@ -183,6 +187,8 @@ export function useWorkLaneContextMenu(): {
                 goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
               }}
               onStartChatInLane={startChatInLane}
+              onToggleWorkPin={options?.onToggleWorkPin}
+              workPinnedLaneIds={options?.workPinnedLaneIds}
             />
           ) : null}
           {foreignMenuState ? (

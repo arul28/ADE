@@ -92,6 +92,8 @@ export function LaneContextMenu({
   onBatchManage,
   onAppearanceChanged,
   onStartChatInLane,
+  onToggleWorkPin,
+  workPinnedLaneIds,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -106,6 +108,9 @@ export function LaneContextMenu({
   onBatchManage: (laneIds: string[]) => void;
   onAppearanceChanged?: () => void | Promise<void>;
   onStartChatInLane?: (laneId: string) => void;
+  /** Work-sidebar pin (separate from the Lanes tab's own pins). */
+  onToggleWorkPin?: (laneId: string) => void;
+  workPinnedLaneIds?: string[];
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
@@ -290,6 +295,21 @@ export function LaneContextMenu({
             Start chat in lane
           </HoverButton>
         </>
+      ) : null}
+
+      {ctxLane && onToggleWorkPin ? (
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            const ctxLaneId = laneContextMenu.laneId;
+            onClose();
+            onToggleWorkPin(ctxLaneId);
+          }}
+        >
+          {workPinnedLaneIds?.includes(laneContextMenu.laneId)
+            ? "Unpin from Work sidebar"
+            : "Pin to Work sidebar"}
+        </HoverButton>
       ) : null}
 
       {ctxLane && !isPrimary ? (

@@ -556,7 +556,19 @@ Renderer surfaces:
   exists, env setup continues detached and failures surface as a sticky
   retry toast. It also builds parent-title and live-child indexes from the
   unfiltered session list, so a lineage tooltip can name a parent hidden by
-  the current lane/search filter.
+  the current lane/search filter. In Lane organization, the primary lane stays
+  first and the remaining rows are ordered by the Work-only tiers pinned,
+  active, and quiet; a Work pin overrides compact quiet styling without
+  changing the Lanes-tab pin set. The funnel selects Activity, Name, Created,
+  or Manual ordering inside those tiers. A non-primary header can be dragged
+  before/after a header in the same tier; the native drag controller supplies a
+  drop line plus edge autoscroll, seeds Manual from the on-screen order, and
+  never permits a cross-tier move. The funnel also has Status and Tool
+  multi-select chips (OR within a row), Has PR, and Dirty lane filters (AND
+  across rows). Their shared pure matcher files status through
+  `sessionFilingBucket`; the Has PR result reuses the coalesced PR snapshot
+  that serves lane badges, and a filtered empty state identifies and clears the
+  active chips.
 - `apps/desktop/src/renderer/state/crossMachineLanes.ts` — repository-scoped
   union loader and optimistic foreign-chat ownership bridge. A detached launch
   that targets a binding other than the active project is inserted immediately
@@ -630,7 +642,9 @@ Renderer surfaces:
   headers. Color/copy/reveal actions run inline, and **Manage lane** opens
   `WorkManageLaneDialogHost` in the same portal without changing the Work
   route or active session. Split, batch-manage, and the direct attached-lane
-  adopt action still use `/lanes?action=...` deeplinks.
+  adopt action still use `/lanes?action=...` deeplinks. The Work caller also
+  supplies its own pin toggle and pin set, so the shared menu can offer **Pin
+  to Work sidebar** without conflating it with Lanes-tab pins.
 - `apps/desktop/src/renderer/components/terminals/WorkManageLaneDialogHost.tsx`
   — single-lane Work host for the shared `ManageLaneDialog`. It coordinates
   appearance/stack refreshes, archive, the attached-lane adoption confirmation,
@@ -753,7 +767,31 @@ Renderer surfaces:
   derived: a single `setTimeout` armed at the soonest deadline (capped at
   10 minutes per tick, since `setTimeout` overflows past ~24.8 days) bumps a
   `snoozeEpoch` counter that re-derives the partition. `buildWorkTabGroupModel`
-  takes an injectable `nowMs` so that derivation stays testable.
+  takes an injectable `nowMs` so that derivation stays testable. Work-sidebar
+  chip filters, lane pins, and sort/manual-order choices are persisted in the
+  same per-project view state. Changing any of them clears a transient
+  deeplink override. `reorderWorkLanes` seeds a sparse manual order from the
+  currently rendered list, prunes dead ids only while writing, and switches to
+  Manual even when an accepted drag is a positional no-op. Its Has PR filter
+  uses `useLanePrsByLaneId`, a coalesced PR read refreshed by `prs-updated`
+  pushes; no-chip paths preserve the original filtered array reference.
+- `apps/desktop/src/renderer/components/terminals/workLaneOrder.ts` — pure
+  Work-sidebar tiering, stable sort, and manual-move helpers. Primary remains
+  first; pins outrank active and quiet rows; activity/name/created/manual sort
+  applies only within a tier. Also declares the lane-specific HTML5 drag MIME
+  type so a session-card drag cannot be mistaken for a lane reorder.
+- `apps/desktop/src/renderer/components/terminals/useWorkLaneReorder.ts` —
+  native lane-header drag lifecycle: validates the Work lane MIME type,
+  computes before/after drops from the header midpoint, and rAF-autoscrolls the
+  list near either edge. It is presentation-only; `useWorkSessions` owns the
+  persisted mutation.
+- `apps/desktop/src/renderer/components/terminals/workSessionFilters.ts` —
+  pure Work chip-filter normalization, tool-family projection, active-label
+  formatting, and matching. Status/Tool selections OR within an axis; axes
+  AND together.
+- `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` —
+  project-scoped coalesced PR read plus `prs-updated` subscription, returned as
+  a lane-id map shared by the list's PR badges and Has PR filter.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch

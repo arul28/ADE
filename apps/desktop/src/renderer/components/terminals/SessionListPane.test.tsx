@@ -9,6 +9,8 @@ import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
 import { SessionListPane } from "./SessionListPane";
+import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
+import { EMPTY_WORK_SESSION_FILTERS } from "./workSessionFilters";
 
 vi.mock("./useSessionDelta", () => ({
   useSessionDelta: () => null,
@@ -226,6 +228,28 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Handoff to GPT-5.4-Mini")).toBeTruthy();
     expect(screen.getByText("Summarizing chat & creating handoff...")).toBeTruthy();
     expect(screen.getByText("First message: Chat handoff from previous session")).toBeTruthy();
+  });
+
+  it("hides an in-flight handoff when its running status is filtered out", () => {
+    renderPane({
+      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false },
+      setWorkSessionFilters: vi.fn(),
+      handoffJobs: [
+        {
+          id: "handoff-job-filtered",
+          sourceSessionId: "source-session",
+          laneId: "lane-known",
+          laneName: "Known Lane",
+          targetModelId: "openai/gpt-5.4-mini",
+          targetModelLabel: "GPT-5.4-Mini",
+          targetToolType: "codex-chat",
+          status: "preparing-summary",
+          createdAtMs: Date.now(),
+        },
+      ],
+    });
+
+    expect(screen.queryByTestId("handoff-launch-placeholder")).toBeNull();
   });
 
   // ADE-122 regression: while a handoff RPC was in flight, the placeholder and
@@ -1010,6 +1034,18 @@ describe("SessionListPane", () => {
       );
     });
 
+    it("applies tool chips to foreign sessions", () => {
+      seedForeignMachine();
+
+      renderPane({
+        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false },
+        setWorkSessionFilters: vi.fn(),
+      });
+
+      expect(screen.queryByText("Elsewhere Lane")).toBeNull();
+      expect(screen.queryByText("Chat on the other machine")).toBeNull();
+    });
+
     it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
       const active = makeSession({
         id: "session-foreign-active",
@@ -1160,5 +1196,222 @@ describe("SessionListPane", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Settle all" })).toBeNull();
+  });
+});
+
+describe("SessionListPane lane ordering, pins, chips and drag", () => {
+  afterEach(() => {
+    cleanup();
+    Reflect.deleteProperty(window, "ade");
+  });
+
+  const activeLane = makeLane({ id: "lane-active", name: "Active lane" });
+  const quietLane = makeLane({ id: "lane-quiet", name: "Quiet lane" });
+  const activeSession = makeSession({
+    id: "s-active", laneId: "lane-active", laneName: "Active lane", title: "Working chat",
+  });
+  const settledSession = makeSession({
+    id: "s-settled",
+    laneId: "lane-quiet",
+    laneName: "Quiet lane",
+    title: "Finished chat",
+    status: "completed",
+    runtimeState: "idle",
+    settledAt: "2026-04-22T22:20:00.000Z",
+  });
+  const secondActiveLane = makeLane({ id: "lane-active-two", name: "Second active lane" });
+  const secondActiveSession = makeSession({
+    id: "s-active-two", laneId: "lane-active-two", laneName: "Second active lane", title: "Second working chat",
+  });
+
+  function renderTwoLanes(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
+    const sessions = [activeSession, settledSession];
+    return renderPane({
+      lanes: [activeLane, quietLane],
+      runningFiltered: [activeSession],
+      settledFiltered: [settledSession],
+      allSessionsUnfiltered: sessions,
+      sessionsGroupedByLane: new Map([
+        ["lane-active", [activeSession]],
+        ["lane-quiet", [settledSession]],
+      ]),
+      ...props,
+    });
+  }
+
+  function renderTwoActiveLanes(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
+    const sessions = [activeSession, secondActiveSession];
+    return renderPane({
+      lanes: [activeLane, secondActiveLane],
+      runningFiltered: sessions,
+      allSessionsUnfiltered: sessions,
+      sessionsGroupedByLane: new Map([
+        ["lane-active", [activeSession]],
+        ["lane-active-two", [secondActiveSession]],
+      ]),
+      ...props,
+    });
+  }
+
+  /**
+   * jsdom returns an all-zero rect for every element, which would make the
+   * midpoint 0 and every drop read as "after". Give lane headers a real box.
+   */
+  function stubLaneHeaderRect(): () => void {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function stub(this: HTMLElement) {
+      if (this.hasAttribute("data-section-id")) {
+        return { top: 100, bottom: 140, height: 40, left: 0, right: 200, width: 200, x: 0, y: 100, toJSON: () => ({}) } as DOMRect;
+      }
+      return original.call(this);
+    };
+    return () => { HTMLElement.prototype.getBoundingClientRect = original; };
+  }
+
+  /**
+   * jsdom implements no DragEvent, so fireEvent's init drops `clientY` and the
+   * handler sees undefined. Dispatch a real MouseEvent with the drag type and
+   * hang `dataTransfer` off it, which is what a browser delivers.
+   */
+  function fireLaneDrag(
+    el: HTMLElement,
+    type: "dragstart" | "dragover" | "drop" | "dragend",
+    init: { clientY?: number; dataTransfer: unknown },
+  ) {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientY: init.clientY ?? 0,
+    });
+    Object.defineProperty(event, "dataTransfer", { value: init.dataTransfer });
+    fireEvent(el, event);
+  }
+
+  function laneOrder(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll("[data-section-id]"))
+      .map((el) => el.getAttribute("data-section-id") ?? "")
+      .filter((id) => id.startsWith("lane-"));
+  }
+
+  it("sinks a fully settled lane below an active one", () => {
+    const { container } = renderTwoLanes();
+    expect(laneOrder(container)).toEqual(["lane-active", "lane-quiet"]);
+  });
+
+  it("pinning the settled lane lifts it back to the top at full height", () => {
+    const { container } = renderTwoLanes({ workPinnedLaneIds: ["lane-quiet"] });
+    expect(laneOrder(container)).toEqual(["lane-quiet", "lane-active"]);
+    // A pinned lane opts out of the compact quiet treatment entirely, or it
+    // would render as a shrunken dimmed row above full-height ones.
+    const pinnedHeader = container.querySelector('[data-section-id="lane-quiet"]');
+    expect(pinnedHeader?.getAttribute("data-lane-quiet")).toBeNull();
+    expect(pinnedHeader?.className).toContain("h-8");
+    expect(screen.getByLabelText("Pinned lane")).toBeTruthy();
+  });
+
+  it("shows a drop indicator on the half of the lane the pointer is over", () => {
+    const { container } = renderTwoActiveLanes({ reorderWorkLanes: vi.fn() });
+    const target = container.querySelector('[data-section-id="lane-active-two"]') as HTMLElement;
+    const source = container.querySelector('[data-section-id="lane-active"]') as HTMLElement;
+    // jsdom zeroes every rect, so the midpoint has to be supplied.
+    const restoreRect = stubLaneHeaderRect();
+
+    const dataTransfer = {
+      types: [ADE_WORK_LANE_DND_MIME],
+      effectAllowed: "",
+      dropEffect: "",
+      setData: vi.fn(),
+      getData: vi.fn(() => "lane-active"),
+    };
+    fireLaneDrag(source, "dragstart", { dataTransfer });
+    fireLaneDrag(target, "dragover", { dataTransfer, clientY: 105 });
+    expect(container.querySelector('[data-testid="lane-drop-indicator-before"]')).toBeTruthy();
+    fireLaneDrag(target, "dragover", { dataTransfer, clientY: 135 });
+    expect(container.querySelector('[data-testid="lane-drop-indicator-after"]')).toBeTruthy();
+    restoreRect();
+  });
+
+  it("reorders on drop and ignores a drag that is not a lane", () => {
+    const reorderWorkLanes = vi.fn();
+    const { container } = renderTwoActiveLanes({ reorderWorkLanes });
+    const target = container.querySelector('[data-section-id="lane-active-two"]') as HTMLElement;
+    const source = container.querySelector('[data-section-id="lane-active"]') as HTMLElement;
+    const restoreRect = stubLaneHeaderRect();
+
+    // A session-card drag carries a different MIME and must light nothing up.
+    const foreignTransfer = {
+      types: ["application/x-ade-grid-session"],
+      effectAllowed: "", dropEffect: "", setData: vi.fn(), getData: vi.fn(),
+    };
+    fireLaneDrag(target, "dragover", { dataTransfer: foreignTransfer, clientY: 105 });
+    expect(container.querySelector('[data-testid^="lane-drop-indicator"]')).toBeNull();
+
+    const dataTransfer = {
+      types: [ADE_WORK_LANE_DND_MIME],
+      effectAllowed: "", dropEffect: "", setData: vi.fn(), getData: vi.fn(() => "lane-active"),
+    };
+    fireLaneDrag(source, "dragstart", { dataTransfer });
+    fireLaneDrag(target, "dragover", { dataTransfer, clientY: 135 });
+    fireLaneDrag(target, "drop", { dataTransfer });
+
+    expect(reorderWorkLanes).toHaveBeenCalledWith({
+      movedLaneId: "lane-active",
+      targetLaneId: "lane-active-two",
+      edge: "after",
+      renderedLaneIds: ["lane-active", "lane-active-two"],
+    });
+    restoreRect();
+  });
+
+  it("rejects a drop across pinned, active, and quiet filing tiers", () => {
+    const reorderWorkLanes = vi.fn();
+    const { container } = renderTwoLanes({ reorderWorkLanes });
+    const target = container.querySelector('[data-section-id="lane-quiet"]') as HTMLElement;
+    const source = container.querySelector('[data-section-id="lane-active"]') as HTMLElement;
+    const restoreRect = stubLaneHeaderRect();
+    const dataTransfer = {
+      types: [ADE_WORK_LANE_DND_MIME],
+      effectAllowed: "", dropEffect: "", setData: vi.fn(), getData: vi.fn(() => "lane-active"),
+    };
+
+    fireLaneDrag(source, "dragstart", { dataTransfer });
+    fireLaneDrag(target, "dragover", { dataTransfer, clientY: 135 });
+    expect(container.querySelector('[data-testid^="lane-drop-indicator"]')).toBeNull();
+    fireLaneDrag(target, "drop", { dataTransfer });
+    expect(reorderWorkLanes).not.toHaveBeenCalled();
+    restoreRect();
+  });
+
+  it("keeps the collapse toggle working on a now-draggable lane header", () => {
+    const toggleWorkLaneCollapsed = vi.fn();
+    renderTwoLanes({ reorderWorkLanes: vi.fn(), toggleWorkLaneCollapsed });
+    fireEvent.click(screen.getByText("Active lane"));
+    expect(toggleWorkLaneCollapsed).toHaveBeenCalledWith("lane-active");
+  });
+
+  it("names the active chips and clears them from the filtered empty state", () => {
+    const setWorkSessionFilters = vi.fn();
+    renderPane({
+      lanes: [activeLane],
+      runningFiltered: [],
+      settledFiltered: [],
+      allSessionsUnfiltered: [],
+      sessionsGroupedByLane: new Map(),
+      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false },
+      setWorkSessionFilters,
+    });
+
+    expect(screen.getByText("No sessions match")).toBeTruthy();
+    expect(screen.getByText("Your move · Claude")).toBeTruthy();
+    fireEvent.click(screen.getByText("Clear filters"));
+    expect(setWorkSessionFilters).toHaveBeenCalledWith(EMPTY_WORK_SESSION_FILTERS);
+  });
+
+  it("marks the funnel as active when only chips are set", () => {
+    renderTwoLanes({
+      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false },
+      setWorkSessionFilters: vi.fn(),
+    });
+    expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 });
