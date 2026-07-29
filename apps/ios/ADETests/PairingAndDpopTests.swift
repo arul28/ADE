@@ -109,6 +109,27 @@ private actor AccountDirectoryRefreshRecorder {
 /// and the DPoP challenge/signature contract (parity with
 /// `apps/ade-cli/src/services/sync/syncDpop.ts`).
 final class PairingAndDpopTests: XCTestCase {
+  func testBackgroundPresenceHidesVisibleAttentionUntilForegrounded() {
+    var state = AccountAttentionPresenceState()
+    state.updateSurface(
+      centerVisible: true,
+      visibleItemIds: ["approval-1", "question-2"]
+    )
+
+    XCTAssertTrue(state.appForeground)
+    XCTAssertTrue(state.reportedCenterVisible)
+    XCTAssertEqual(state.reportedVisibleItemIds, ["approval-1", "question-2"])
+
+    state.updateAppForeground(false)
+    XCTAssertFalse(state.appForeground)
+    XCTAssertFalse(state.reportedCenterVisible)
+    XCTAssertEqual(state.reportedVisibleItemIds, [])
+
+    state.updateAppForeground(true)
+    XCTAssertTrue(state.reportedCenterVisible)
+    XCTAssertEqual(state.reportedVisibleItemIds, ["approval-1", "question-2"])
+  }
+
   // A canonical smart URL produced by the TS `encodePairingQrUrl` (includes an
   // unknown extra field to prove lenient forward-compat parsing).
   private let canonicalPairingUrl = "https://ade-app.dev/pair#eyJ2ZXJzaW9uIjozLCJob3N0SWRlbnRpdHkiOnsiZGV2aWNlSWQiOiJkZXYtYWJjMTIzIiwic2l0ZUlkIjoic2l0ZS14eXoiLCJuYW1lIjoiQXJ1bCBNYWNCb29rIiwicGxhdGZvcm0iOiJtYWNPUyIsImRldmljZVR5cGUiOiJkZXNrdG9wIn0sInBvcnQiOjg3ODcsImFkZHJlc3NDYW5kaWRhdGVzIjpbeyJob3N0IjoiMTkyLjE2OC4xLjQyIiwia2luZCI6ImxhbiJ9LHsiaG9zdCI6IjEwMC4xMDEuMTAyLjEwMyIsImtpbmQiOiJ0YWlsc2NhbGUifSx7Imhvc3QiOiJ3c3M6Ly9yZWxheS5hZGUtYXBwLmRldi9jb25uZWN0L21hY2hpbmVrZXkxMjMiLCJraW5kIjoicmVsYXkifV0sInJlbGF5VXJsIjoid3NzOi8vcmVsYXkuYWRlLWFwcC5kZXYvY29ubmVjdC9tYWNoaW5la2V5MTIzIiwiZXh0cmFGdXR1cmVGaWVsZCI6Imlnbm9yZWQifQ"

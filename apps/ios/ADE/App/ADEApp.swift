@@ -51,6 +51,7 @@ struct ADEApp: App {
           if newPhase == .background {
             didEnterBackground = true
             ProductAnalytics.shared.flush()
+            Task { await accountService.updateAttentionAppForeground(false) }
             return
           }
           guard newPhase == .active else { return }
@@ -61,6 +62,7 @@ struct ADEApp: App {
           // Clear the badge on every foreground, independent of the sync
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }
+          Task { await accountService.updateAttentionAppForeground(true) }
           // Defense-in-depth: drain intent commands queued by an extension
           // process while the bridge wasn't reachable (cold launch drains via
           // register(); this covers warm foregrounds).
