@@ -48,6 +48,7 @@ const appMock = {
 
 const accountMock = {
   pairMachine: vi.fn(),
+  renameMachine: vi.fn(),
   getLocalMachineIdentity: vi.fn(),
   onPairMachineProgress: vi.fn(),
 };
@@ -64,6 +65,10 @@ function installAdeMock(): void {
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   accountMock.onPairMachineProgress.mockReturnValue(() => {});
+  accountMock.renameMachine.mockImplementation(async (machineKey: string, customName: string | null) => ({
+    ...accountMachine({ machineKey, name: customName ?? "Studio" }),
+    customName,
+  }));
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -1573,5 +1578,32 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.getByText("Finish setup on the other Mac")).toBeTruthy();
     expect(screen.getByText(/it appears here automatically/i)).toBeTruthy();
+  });
+
+  it("renames an account machine inline and refreshes the directory", async () => {
+    installAdeMock();
+    const machine = accountMachine({ machineKey: "studio", name: "Studio" });
+    const onRenamed = vi.fn();
+    render(
+      <AccountMachineRow
+        row={{ kind: "account", id: "account:studio", machine, matchedTargetId: null }}
+        section="available"
+        busy={false}
+        connecting={false}
+        detailOpen={false}
+        onToggleDetail={vi.fn()}
+        onConnect={vi.fn()}
+        onRenamed={onRenamed}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Studio" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), {
+      target: { value: "Build Mac" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save machine name" }));
+
+    await waitFor(() => expect(accountMock.renameMachine).toHaveBeenCalledWith("studio", "Build Mac"));
+    expect(onRenamed).toHaveBeenCalledOnce();
   });
 });

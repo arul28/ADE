@@ -53,6 +53,8 @@ export type AdeAccountMachine = {
   machineKey: string;
   deviceId: string | null;
   name: string | null;
+  /** User-authored account-wide display name. Wins over the reported hostname. */
+  customName?: string | null;
   platform: string | null;
   deviceType: string | null;
   /** Long-lived machine identity key used to verify sealed account adoption. */

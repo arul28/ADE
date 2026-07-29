@@ -253,6 +253,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountLocalMachineIdentity,
+  AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -8733,6 +8734,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountSignOut),
     listMachines: (): Promise<AdeAccountMachinesResult> =>
       ipcRenderer.invoke(IPC.accountListMachines),
+    renameMachine: (machineKey: string, customName: string | null): Promise<AdeAccountMachine> =>
+      ipcRenderer.invoke(IPC.accountRenameMachine, { machineKey, customName }),
     getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>
       ipcRenderer.invoke(IPC.accountGetLocalMachineIdentity),
     pairMachine: (machineKey: string): Promise<AdeAccountMachinePairResult> =>

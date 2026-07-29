@@ -66,6 +66,7 @@ type RemoteTargetListProps = {
   accountMachinesState?: AdeAccountMachinesResult["state"];
   accountSignedIn?: boolean;
   onAccountRequested?: () => void;
+  onAccountMachinesChanged?: () => void;
 };
 
 type ConnectTargetOptions = {
@@ -91,6 +92,7 @@ function accountMachineMatchesNearby(
   if (accountDeviceId && discoveredDeviceId) {
     return accountDeviceId === discoveredDeviceId;
   }
+  // Nearby discovery advertises the reported hostname, never the account label.
   const accountName = accountMachine.name?.trim().toLowerCase() ?? "";
   const discoveredName = discoveredMachine.machineName.trim().toLowerCase();
   return Boolean(accountName && discoveredName && accountName === discoveredName);
@@ -142,6 +144,7 @@ export function RemoteTargetList({
   accountMachinesState,
   accountSignedIn = false,
   onAccountRequested,
+  onAccountMachinesChanged,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -985,6 +988,7 @@ export function RemoteTargetList({
                 detailOpen={testingId === row.id}
                 onToggleDetail={toggleTest}
                 onConnect={(machine) => void connectAccountMachine(machine)}
+                onRenamed={onAccountMachinesChanged}
               />
             );
           }

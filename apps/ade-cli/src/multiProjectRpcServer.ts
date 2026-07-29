@@ -1163,7 +1163,9 @@ export function createMultiProjectRpcRequestHandler(
       // stays open to any role, with identity fields removed below for non-CTO
       // callers.
       const role = callerRole();
-      if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(role, "cto")) {
+      const ctoOnlyAccountAction = isCtoOnlyAdeAction("account", action)
+        || action === "renameMachine";
+      if (ctoOnlyAccountAction && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
           `account.${action} requires the cto role.`,
@@ -1186,7 +1188,11 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
-      if (action === "listMachines" || action === "pairMachine") {
+      if (
+        action === "listMachines"
+        || action === "pairMachine"
+        || action === "renameMachine"
+      ) {
         reconcileAccountOwnership(currentAccountOwnerUserId());
         const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
           appVersion: options.serverVersion,
@@ -1198,6 +1204,22 @@ export function createMultiProjectRpcRequestHandler(
         if (action === "listMachines") {
           const result = await machineDirectory.listMachines();
           if (result.state === "auth_expired") reconcileAccountOwnership(null);
+          return { domain: "account", action, result, statusHints: {} };
+        }
+        if (action === "renameMachine") {
+          if (
+            actionArgs.customName !== null
+            && typeof actionArgs.customName !== "string"
+          ) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.invalidParams,
+              "account.renameMachine requires customName to be a string or null.",
+            );
+          }
+          const result = await machineDirectory.renameMachine(
+            typeof actionArgs.machine === "string" ? actionArgs.machine : "",
+            actionArgs.customName,
+          );
           return { domain: "account", action, result, statusHints: {} };
         }
         const result = await machineDirectory.pairMachine(

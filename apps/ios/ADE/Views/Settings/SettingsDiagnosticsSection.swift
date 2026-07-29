@@ -1,5 +1,9 @@
 import SwiftUI
 
+func settingsVersionLabel(marketingVersion: String, build: String) -> String {
+  "v\(marketingVersion) (\(build))"
+}
+
 struct SettingsDiagnosticsSection: View {
   let snapshot: SettingsDiagnosticsSnapshot
 
@@ -71,7 +75,7 @@ struct SettingsDiagnosticsSection: View {
     let info = Bundle.main.infoDictionary
     let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "–"
     let build = info?["CFBundleVersion"] as? String ?? "–"
-    return "\(shortVersion) (\(build))"
+    return settingsVersionLabel(marketingVersion: shortVersion, build: build)
   }
 }
 

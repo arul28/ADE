@@ -283,6 +283,14 @@ struct AccountMachineRow: View {
   let machine: AccountMachine
   let onConnect: (AccountMachine) -> Void
 
+  private var reachabilityText: String {
+    machineReachabilityText(
+      isConnected: false,
+      directoryOnline: machine.online,
+      lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+    )
+  }
+
   var body: some View {
     Button {
       onConnect(machine)
@@ -292,7 +300,7 @@ struct AccountMachineRow: View {
         title: machine.displayName,
         // Keep the route kind (lan/tailnet/relay) out of the primary row —
         // presence is only a hint and route detail lives in Connection details.
-        routeHint: machineStatusHint(online: machine.online),
+        routeHint: reachabilityText,
         online: machine.online,
         statusPill: nil,
         affordance: .connect,
@@ -300,6 +308,7 @@ struct AccountMachineRow: View {
       )
     }
     .buttonStyle(ADEScaleButtonStyle())
-    .accessibilityLabel("\(machine.displayName), saved connection. Connect.")
+    .accessibilityLabel("\(machine.displayName), \(reachabilityText)")
+    .accessibilityHint("Connect.")
   }
 }

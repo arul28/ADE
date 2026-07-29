@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 enum MachineRowVisualState: Equatable {
@@ -194,6 +195,39 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
 /// The unified status hint for a saved machine. Directory presence is only a
 /// routing hint; absence never claims the Mac is powered off. Callers with a
 /// richer route label show that instead and fall back to this.
-func machineStatusHint(online: Bool) -> String {
-  online ? "Recently reachable" : "Saved connection"
+func machineReachabilityText(
+  isConnected: Bool,
+  directoryOnline: Bool,
+  lastSeenAt: Date?,
+  now: Date = Date()
+) -> String {
+  if isConnected { return "Connected" }
+  if directoryOnline { return "Online" }
+  guard let lastSeenAt else { return "Last seen unknown" }
+  let seconds = max(0, Int(now.timeIntervalSince(lastSeenAt)))
+  if seconds < 60 { return "Last seen just now" }
+  if seconds < 3_600 {
+    let minutes = seconds / 60
+    return "Last seen \(minutes)m ago"
+  }
+  if seconds < 86_400 {
+    let hours = seconds / 3_600
+    return "Last seen \(hours)h ago"
+  }
+  let days = seconds / 86_400
+  return "Last seen \(days)d ago"
+}
+
+func machineLastSeenDate(epochMilliseconds: Double?) -> Date? {
+  guard let epochMilliseconds, epochMilliseconds.isFinite, epochMilliseconds >= 0 else {
+    return nil
+  }
+  return Date(timeIntervalSince1970: epochMilliseconds / 1_000)
+}
+
+func machineLastSeenDate(iso8601: String?) -> Date? {
+  guard let iso8601 else { return nil }
+  let fractional = ISO8601DateFormatter()
+  fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return fractional.date(from: iso8601) ?? ISO8601DateFormatter().date(from: iso8601)
 }

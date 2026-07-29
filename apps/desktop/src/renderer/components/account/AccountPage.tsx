@@ -20,6 +20,7 @@ import type {
   AdeAccountMachineRemovalResult,
   GitHubStatus,
 } from "../../../shared/types";
+import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import {
   COLORS,
   RADII,
@@ -604,7 +605,7 @@ function YourMacsCard() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {machine.name ?? "Unnamed Mac"}
+                  {accountMachineDisplayName(machine) ?? "Unnamed Mac"}
                 </span>
                 {thisMac ? (
                   <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
@@ -630,7 +631,7 @@ function YourMacsCard() {
                 ) : (
                   <button
                     type="button"
-                    aria-label={`Options for ${machine.name ?? "this Mac"}`}
+                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "this Mac"}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) =>
@@ -764,7 +765,7 @@ function YourMacsCard() {
       {pendingRemoval ? (
         <ConfirmSheet
           title="Remove this Mac from your account?"
-          body={`${pendingRemoval.name ?? "This Mac"} will no longer connect through your account. You can add it back by signing in to ADE on that Mac.`}
+          body={`${accountMachineDisplayName(pendingRemoval) ?? "This Mac"} will no longer connect through your account. You can add it back by signing in to ADE on that Mac.`}
           confirmLabel="Remove"
           danger
           busy={removing}

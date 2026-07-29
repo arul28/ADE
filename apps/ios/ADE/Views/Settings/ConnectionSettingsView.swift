@@ -251,6 +251,7 @@ struct ConnectionSettingsView: View {
 struct SettingsConnectionSnapshot: Equatable {
   var health: SyncConnectionHealth
   var connectionState: RemoteConnectionState
+  var routeKind: SyncConnectionRouteKind?
   var hostDisplayName: String?
   var pendingHostName: String?
   var canReconnectToSavedHost: Bool
@@ -283,6 +284,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
       lastError: nil
     ),
     connectionState: .disconnected,
+    routeKind: nil,
     hostDisplayName: nil,
     pendingHostName: nil,
     canReconnectToSavedHost: false,
@@ -323,14 +325,25 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     accountCancellable = AccountService.shared.objectWillChange
       .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
       .sink { [weak self] _ in
-        Task { @MainActor in self?.refreshPushSnapshot() }
+        Task { @MainActor in
+          guard let self else { return }
+          if let syncService = self.boundService {
+            self.refresh(from: syncService)
+          } else {
+            self.refreshPushSnapshot()
+          }
+        }
       }
   }
 
   private func refresh(from syncService: SyncService) {
     let activeProfile = syncService.activeHostProfile
     let health = syncService.connectionHealth
-    let hostDisplayName = Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName)
+    let hostDisplayName = accountMachinePresentationName(
+      hostIdentity: activeProfile?.hostIdentity,
+      fallback: Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName),
+      machines: AccountService.shared.machines
+    )
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
     let displayedDiscovery = syncDiscoveredHostsForDisplay(
       savedHosts: syncService.savedReconnectHosts,
@@ -342,6 +355,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
       to: SettingsConnectionSnapshot(
         health: health,
         connectionState: syncService.connectionState,
+        routeKind: health.transport.isConnected ? syncService.lastConnectedRouteKind : nil,
         hostDisplayName: hostDisplayName,
         pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
@@ -683,6 +697,7 @@ struct SettingsMachinesSection: View {
   @ObservedObject private var account = AccountService.shared
 
   @State private var seeAllPresented = false
+  @State private var renamingMachine: AccountMachine?
   @State private var connectingId: String?
   @State private var rowErrors: [String: String] = [:]
 
@@ -730,7 +745,11 @@ struct SettingsMachinesSection: View {
           name: machine.displayName,
           // Route-neutral to match the saved rows below; the route kind stays
           // in the Connection details section, never on the primary list.
-          routeHint: machineStatusHint(online: machine.online),
+          routeHint: machineReachabilityText(
+            isConnected: current,
+            directoryOnline: machine.online,
+            lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+          ),
           online: machine.online,
           isCurrent: current,
           kind: .account(machine)
@@ -764,7 +783,11 @@ struct SettingsMachinesSection: View {
       result.append(Entry(
         id: "saved-\(host.id)",
         name: host.hostName,
-        routeHint: machineStatusHint(online: online),
+        routeHint: machineReachabilityText(
+          isConnected: current,
+          directoryOnline: online,
+          lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
+        ),
         online: online,
         isCurrent: current,
         kind: .saved(host)
@@ -824,6 +847,10 @@ struct SettingsMachinesSection: View {
     .sheet(isPresented: $seeAllPresented) {
       allMachinesSheet
     }
+    .sheet(item: $renamingMachine) { machine in
+      SettingsMachineRenameSheet(machine: machine)
+        .presentationDetents([.medium, .large])
+    }
   }
 
   private var allMachinesSheet: some View {
@@ -855,25 +882,42 @@ struct SettingsMachinesSection: View {
     let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
-      Button {
-        connect(entry)
-      } label: {
-        MachineRowView(
-          deviceSymbol: deviceSymbol(entry),
-          title: entry.name,
-          routeHint: entry.routeHint,
-          online: entry.online,
-          isAuthenticatedCurrent: entry.isCurrent,
-          statusPill: entry.isCurrent ? .connected : nil,
-          affordance: rowAffordance(entry, isConnecting: isConnecting),
-          surface: .row
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+      ZStack(alignment: .trailing) {
+        Button {
+          connect(entry)
+        } label: {
+          MachineRowView(
+            deviceSymbol: deviceSymbol(entry),
+            title: entry.name,
+            routeHint: entry.routeHint,
+            online: entry.online,
+            isAuthenticatedCurrent: entry.isCurrent,
+            statusPill: entry.isCurrent ? .connected : nil,
+            affordance: rowAffordance(entry, isConnecting: isConnecting),
+            surface: .row
+          )
+        }
+        .buttonStyle(ADEScaleButtonStyle())
+        .disabled(!tappable)
+        .accessibilityLabel("\(entry.name), \(entry.routeHint)")
+        .accessibilityHint(tappable ? "Connect." : "")
+
+        if let machine = accountMachine(from: entry) {
+          Button {
+            renamingMachine = machine
+          } label: {
+            Image(systemName: "pencil")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 44, height: 44)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .padding(.trailing, 58)
+          .accessibilityLabel("Rename \(entry.name)")
+        }
       }
-      .buttonStyle(ADEScaleButtonStyle())
-      .disabled(!tappable)
-      .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : "saved connection")")
-      .accessibilityHint(tappable ? "Connect." : "")
+      .opacity(tappable || entry.isCurrent ? 1 : 0.72)
 
       if let error = rowErrors[entry.id] {
         VStack(alignment: .leading, spacing: 7) {
@@ -902,6 +946,11 @@ struct SettingsMachinesSection: View {
           .padding(.top, 6)
       }
     }
+  }
+
+  private func accountMachine(from entry: Entry) -> AccountMachine? {
+    guard case .account(let machine) = entry.kind else { return nil }
+    return machine
   }
 
   private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {

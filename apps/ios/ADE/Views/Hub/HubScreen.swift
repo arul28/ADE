@@ -1,5 +1,11 @@
 import SwiftUI
 
+func hubProjectIdsCollapsedByDefault(
+  _ projects: [(id: String, isActive: Bool)]
+) -> Set<String> {
+  Set(projects.compactMap { $0.isActive ? nil : $0.id })
+}
+
 // The all-projects hub — the mobile app's main surface once a machine is
 // connected. Lists every project on the machine, each expandable to its chats
 // grouped by lane (sourced from the live roster feed). Tapping a project card
@@ -495,7 +501,15 @@ struct HubScreen: View {
     let projectIds = Set(presentations.map { $0.project.id })
     let unseededProjectIds = projectIds.subtracting(collapsedDefaultsSeededProjectIds)
     if !unseededProjectIds.isEmpty {
-      collapsedProjectIds.formUnion(unseededProjectIds)
+      let collapsedByDefault = hubProjectIdsCollapsedByDefault(
+        presentations
+          .filter { unseededProjectIds.contains($0.project.id) }
+          .map { (id: $0.project.id, isActive: $0.isActive) }
+      )
+      collapsedProjectIds.formUnion(collapsedByDefault)
+      for active in presentations where active.isActive && unseededProjectIds.contains(active.project.id) {
+        collapsedProjectIds.remove(active.project.id)
+      }
       collapsedDefaultsSeededProjectIds.formUnion(unseededProjectIds)
       changed = true
     }

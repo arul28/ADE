@@ -1,6 +1,9 @@
 import React from "react";
 import { browserAccountIsSignedIn, type BrowserAccountSnapshot } from "../account/client";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
+import {
+  accountMachineConnectionState,
+  accountMachineDisplayName,
+} from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
   canUseRelayForEnvironment,
@@ -221,7 +224,7 @@ export function MachinePicker({
               >
                 <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-                    {machine.name ?? machine.machineKey}
+                    {accountMachineDisplayName(machine) ?? machine.machineKey}
                   </span>
                   <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
                     {connecting ? "Reconnecting" : available ? "Connect" : "Can't reach this Mac"}

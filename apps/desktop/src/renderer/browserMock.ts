@@ -3121,6 +3121,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             ],
           };
         },
+        renameMachine: async (machineKey: string, customName: string | null) => ({
+          machineKey,
+          deviceId: `device-${machineKey}`,
+          name: customName?.trim() || "Studio",
+          customName: customName?.trim() || null,
+          platform: "darwin",
+          deviceType: "desktop",
+          reachableEndpoints: [],
+          lastSeenAt: Date.now(),
+          online: true,
+        }),
         pairMachine: async (machineKey: string) => ({
           targetId: `paired-${machineKey}`,
           machineKey,

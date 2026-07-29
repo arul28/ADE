@@ -14,9 +14,10 @@ the repo's `docs/final-plan/`.
 
 ## Connect Your Phone
 
-ADE Mobile connects to a **machine**, not to a desktop window. The
-machine is shown by its computer name, with LAN and Tailscale routes
-kept as connection details behind the row.
+ADE Mobile connects to a **machine**, not to a desktop window. The machine is
+shown by its account-wide custom name when one exists, then by the computer name
+reported by its publisher. LAN, Tailscale, and Relay remain connection details
+rather than being inferred from the name.
 
 1. Sign in to the same ADE account on the phone and computer. This is the
    primary path: the computer appears through the account directory and the
@@ -206,8 +207,8 @@ apps/ios/
 │   │   ├── AccountEmailAuthFlow.swift # identifier-first email sign-in-or-up:
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
-│   │   ├── AccountDirectory.swift   # account machine directory + Attention
-│   │   │                            # relay clients
+│   │   ├── AccountDirectory.swift   # account machine directory list/rename +
+│   │   │                            # Attention relay clients
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -411,6 +412,8 @@ apps/ios/
 │   │   │                            #   connection status → machines list → ways
 │   │   │                            #   to add one), SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
+│   │   │                            # SettingsMachineRenameSheet (account-wide
+│   │   │                            #   custom name set/clear),
 │   │   │                            # SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
 │   │   │                            #   scanner),
@@ -531,7 +534,7 @@ Tint mapping (resolved by `SettingsConnectionPresentation.statusTint`,
 | `connected` | `strained` | warning (amber) |
 | `connecting` | (n/a) | warning (amber) |
 | `unreachable` | (n/a) | danger (red) |
-| `disconnected` | (n/a) | danger (red) on the toolbar dot, muted on the Settings dot |
+| `disconnected` | (n/a) | muted |
 
 The dot is placed in the top-leading `ToolbarItem` of every top-level
 tab (Lanes, Files, Work, PRs) and every deep screen
@@ -559,6 +562,40 @@ With a saved machine the primary action is **Reconnect** (calls
 `reconnectIfPossible(userInitiated: true)`) with a secondary
 "Connection settings" link; unpaired phones keep the single
 "Connect Machine" button into Settings.
+
+The connected Hub top bar uses the same health value. `HubConnectionPill`
+renders the account custom name when available and, only after an authenticated
+connection, a compact observed-route line: `via LAN`, `via Tailscale`, or
+`via ADE Relay`. `SettingsConnectionHeader` shows the same route text beside
+**Connected**. Both read `lastConnectedRouteKind`, which is updated when
+roaming replaces the winning socket, so the badge describes the route actually
+in use rather than the best route the directory advertised. Connecting,
+unreachable, and disconnected states never retain a stale transport badge.
+The Hub top bar gives this pill layout priority immediately after the fixed ADE
+mark; the add, Settings, and Chats controls remain fixed-size trailing buttons.
+
+### Machine naming and reachability
+
+Account directory records keep the publisher's `name` and the account-owned
+`customName` as separate fields. `AccountMachine.displayName` applies the one
+display rule everywhere: non-empty custom name, then reported hostname, then a
+platform/generic fallback. The Settings machine row exposes a 44-point pencil
+button and `SettingsMachineRenameSheet`; **Use hostname** clears `customName`
+instead of copying the hostname into it. `AccountService` updates the in-memory
+directory record after the authenticated PATCH, so the machine rows, connection
+header, and Hub pill refresh without reconnecting.
+
+Primary machine rows state only facts they can prove:
+
+- the active authenticated socket is **Connected**;
+- a current directory/discovery lease is **Online**;
+- otherwise the row says **Last seen just now**, **Last seen Nm/Nh/Nd ago**, or
+  **Last seen unknown**.
+
+The `online` heartbeat never earns connected styling, and an expired heartbeat
+never becomes a claim that the Mac is powered off. Route names stay out of these
+reachability lines; observed transport belongs in the connected badge and
+Connection details.
 
 ### Tailscale-off route hint
 
@@ -1659,7 +1696,7 @@ any non-primary-key unique index.
 | **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. Each session row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside the lane name. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop/TUI `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. This replaced the modal `WorkMentionsPickerSheet` and `WorkSlashCommandsSheet` (both deleted). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for identity/personality, live model/reasoning/Fast selection, read-only Linear status, memory via `cto.getMemory`, and re-run setup. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), account-wide machine rename/clear, scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. The About row formats the marketing and build versions together as `v<marketing> (<build>)`. |
 
 `WorkModelPickerSheet` shows the same Claude authentication affordance
 as desktop when Claude-family models are unavailable: a compact
@@ -1732,6 +1769,17 @@ The switch is engineered to feel instant rather than blanking to a spinner:
   most-recently-used project scopes in the background after startup (see the
   sync README's `prewarmRecentScopes`), so the scope the phone switches into is
   frequently already open on the host.
+
+Hub layout state is local to the phone and keyed by stable machine connection
+identity in `HubLayoutStore`; it is not CRDT state and does not sync to another
+phone. On the first catalog for a machine, the active project is expanded while
+every other project and every lane starts collapsed. Seed markers distinguish
+that one-time default from user intent: later refreshes preserve explicit
+expand/collapse choices, and newly discovered projects receive the same
+active-expanded/other-collapsed default without resetting existing rows. Manual
+project order is persisted in the same per-machine record. The top bar keeps the
+ADE mark, connection pill, and fixed circular actions in one compact row rather
+than inserting spacer-owned dead width.
 
 A successful quick-connect from the no-machine home fires a brief success beat
 (`ConnectSuccessBeat` + haptic) via `HubScreen.triggerConnectBeat`.

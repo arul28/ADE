@@ -33,6 +33,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import {
+  accountMachineDisplayName,
   accountMachineConnectionState,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
@@ -212,6 +213,7 @@ type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "account-machine-rename"
   | "projects-list"
   | "linear-quick-view"
   | "lanes"
@@ -1126,6 +1128,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines rename <machine-key> "Build Mac"
+    $ ade machines rename <machine-key> --clear
     $ ade machines connect <machine-key>
     $ ade machines connect <device-id> --project <project-id|name|path>
     $ ade machines hop <unambiguous-name> --session <session-id|title>
@@ -14109,6 +14113,40 @@ function buildMachinesPlan(args: string[]): CliPlan {
       steps: [accountActionStep("result", "listMachines")],
     };
   }
+  if (sub === "rename") {
+    const machine = readValue(args, ["--machine", "--target"])
+      ?? firstStandalonePositional(args);
+    if (!machine?.trim()) {
+      throw new CliUsageError("machines rename requires a stable machine key.");
+    }
+    const clear = readFlag(args, ["--clear"]);
+    const customName = readValue(args, ["--name"])
+      ?? firstStandalonePositional(args);
+    if (clear && customName != null) {
+      throw new CliUsageError("machines rename accepts either a name or --clear, not both.");
+    }
+    if (!clear && !customName?.trim()) {
+      throw new CliUsageError("machines rename requires a non-empty name or --clear.");
+    }
+    if (customName && customName.trim().length > 80) {
+      throw new CliUsageError("Machine name must be 80 characters or fewer.");
+    }
+    if (firstStandalonePositional(args)) {
+      throw new CliUsageError("machines rename accepts one machine key and one name.");
+    }
+    return {
+      kind: "execute",
+      label: "account machine rename",
+      formatter: "account-machine-rename",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [accountActionStep("result", "renameMachine", {
+        machine: machine.trim(),
+        customName: clear ? null : customName!.trim(),
+      })],
+    };
+  }
   if (sub === "connect" || sub === "hop" || sub === "code") {
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
@@ -14123,7 +14161,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       remoteArgs: args,
     };
   }
-  throw new CliUsageError("machines supports list, connect, or hop.");
+  throw new CliUsageError("machines supports list, rename, connect, or hop.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -18836,7 +18874,7 @@ function formatAccountMachines(value: unknown): string {
       : "never";
     return [
       asString(machine.machineKey) ?? "—",
-      asString(machine.name) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
       lastSeenAt,
     ];
@@ -18991,6 +19029,16 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "account-machine-rename": {
+      const machine = parseAccountMachine(value);
+      if (!machine) return "Machine renamed.";
+      const displayName = accountMachineDisplayName(machine)
+        ?? machine.deviceId
+        ?? machine.machineKey;
+      return machine.customName
+        ? `Renamed ${machine.machineKey} to ${displayName}.`
+        : `Cleared the custom name for ${machine.machineKey}; using ${displayName}.`;
+    }
     case "projects-list":
       return formatProjectsList(value);
     case "linear-quick-view":

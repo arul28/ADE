@@ -273,6 +273,10 @@ ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the optional shared machine account
 ade machines list --text          # list account machines, including offline state
+ade machines rename <machine-key> "Build Mac"
+                                   # set the account-wide display name
+ade machines rename <machine-key> --clear
+                                   # clear it and use the reported hostname
 ade machines connect <machine-key> --project ADE
                                    # pair if needed, then open ADE Code on that machine
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint

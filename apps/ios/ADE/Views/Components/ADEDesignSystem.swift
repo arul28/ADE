@@ -608,8 +608,10 @@ struct ConnectionHealthPresentation {
       return health.load == .strained ? ADEColor.warning : ADEColor.success
     case .connecting:
       return ADEColor.warning
-    case .unreachable, .disconnected:
+    case .unreachable:
       return ADEColor.danger
+    case .disconnected:
+      return ADEColor.textMuted
     }
   }
 

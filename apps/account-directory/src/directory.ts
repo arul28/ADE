@@ -18,6 +18,7 @@ type MachineRow = {
   machine_key: string;
   device_id: string | null;
   name: string | null;
+  custom_name: string | null;
   platform: string | null;
   device_type: string | null;
   pubkey: string | null;
@@ -48,6 +49,7 @@ type MachineRecord = {
   machineKey: string;
   deviceId: string | null;
   name: string | null;
+  customName: string | null;
   platform: string | null;
   deviceType: string | null;
   pubkey: string | null;
@@ -59,10 +61,11 @@ type MachineRecord = {
 type AccountRoute =
   | { kind: "register" }
   | { kind: "list" }
-  | { kind: "delete"; machineKey: string };
+  | { kind: "machine"; machineKey: string };
 
 export const DEFAULT_ONLINE_WINDOW_MS = 90_000;
 const MAX_PUBKEY_CHARS = 128;
+const MAX_CUSTOM_NAME_CHARS = 80;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const CORRELATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -296,7 +299,7 @@ function routeAccount(pathname: string): AccountRoute | null {
   if (parts.length !== 3) return null;
   try {
     const machineKey = decodeURIComponent(parts[2] ?? "").trim();
-    return machineKey ? { kind: "delete", machineKey } : null;
+    return machineKey ? { kind: "machine", machineKey } : null;
   } catch {
     return null;
   }
@@ -316,6 +319,7 @@ function machineRecord(row: MachineRow): MachineRecord {
     machineKey: row.machine_key,
     deviceId: row.device_id,
     name: row.name,
+    customName: row.custom_name,
     platform: row.platform,
     deviceType: row.device_type,
     pubkey: row.pubkey,
@@ -397,7 +401,7 @@ async function handleRegister(request: Request, env: Env, userId: string): Promi
   ).run();
 
   const row = await env.DB.prepare(`
-    select user_id, machine_key, device_id, name, platform, device_type, pubkey,
+    select user_id, machine_key, device_id, name, custom_name, platform, device_type, pubkey,
            reachable_endpoints, last_seen_at, created_at
       from machines
      where user_id = ? and machine_key = ?
@@ -415,7 +419,7 @@ async function handleList(
   if (request.method !== "GET") return text("method not allowed", 405);
   const dbStartedAt = performance.now();
   const rows = (await env.DB.prepare(`
-    select user_id, machine_key, device_id, name, platform, device_type, pubkey,
+    select user_id, machine_key, device_id, name, custom_name, platform, device_type, pubkey,
            reachable_endpoints, last_seen_at, created_at
       from machines
      where user_id = ?
@@ -447,6 +451,50 @@ async function handleDelete(
     .bind(userId, machineKey)
     .run();
   return json({ ok: true, machineKey });
+}
+
+async function handleRename(
+  request: Request,
+  env: Env,
+  userId: string,
+  machineKey: string,
+): Promise<Response> {
+  if (request.method !== "PATCH") return text("method not allowed", 405);
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return json({ error: "invalid request body" }, { status: 400 });
+  }
+  if (!isRecord(raw) || !Object.hasOwn(raw, "customName")) {
+    return json({ error: "invalid request body" }, { status: 400 });
+  }
+  const customName = optionalString(raw, "customName");
+  if (customName === undefined || (customName?.length ?? 0) > MAX_CUSTOM_NAME_CHARS) {
+    return json({ error: "invalid request body" }, { status: 400 });
+  }
+
+  const result = await env.DB.prepare(`
+    update machines
+       set custom_name = ?
+     where user_id = ? and machine_key = ?
+  `).bind(customName, userId, machineKey).run();
+  if ((result.meta.changes ?? 0) === 0) {
+    return json({ error: "machine not found" }, { status: 404 });
+  }
+
+  const row = await env.DB.prepare(`
+    select user_id, machine_key, device_id, name, custom_name, platform, device_type, pubkey,
+           reachable_endpoints, last_seen_at, created_at
+      from machines
+     where user_id = ? and machine_key = ?
+  `).bind(userId, machineKey).first<MachineRow>();
+  if (!row) return json({ error: "machine not found" }, { status: 404 });
+  return json({
+    ...machineRecord(row),
+    online: typeof row.last_seen_at === "number"
+      && Date.now() - row.last_seen_at <= onlineWindowMs(env),
+  });
 }
 
 function trustedWebClientOrigin(env: Env): string | null {
@@ -550,6 +598,9 @@ async function handleRequestCore(
 
   if (route.kind === "register") return await handleRegister(request, env, userId);
   if (route.kind === "list") return await handleList(request, env, userId, authDurationMs);
+  if (request.method === "PATCH") {
+    return await handleRename(request, env, userId, route.machineKey);
+  }
   return await handleDelete(request, env, userId, route.machineKey);
 }
 
@@ -583,20 +634,25 @@ export async function handleRequest(
   if (request.method === "OPTIONS") {
     const allowedMethod = route?.kind === "list"
       ? "GET"
-      : route?.kind === "delete"
-        ? "DELETE"
+      : route?.kind === "machine"
+        ? request.headers.get("access-control-request-method")?.toUpperCase() === "PATCH"
+          ? "PATCH"
+          : "DELETE"
         : null;
     if (!allowedMethod) return finish(text("not found", 404));
     if (!corsOrigin) return finish(text("origin not allowed", 403));
     if (request.headers.get("access-control-request-method")?.toUpperCase() !== allowedMethod) {
       return finish(text("method not allowed", 405));
     }
+    const allowsJsonBody = allowedMethod === "PATCH";
     const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
       .split(",")
       .map((header) => header.trim().toLowerCase())
       .filter(Boolean);
     if (requestedHeaders.some((header) =>
-      header !== "authorization" && header !== "x-ade-correlation-id"
+      header !== "authorization"
+        && !(allowsJsonBody && header === "content-type")
+        && header !== "x-ade-correlation-id"
     )) {
       return finish(text("headers not allowed", 403));
     }
@@ -604,7 +660,9 @@ export async function handleRequest(
       status: 204,
       headers: {
         "access-control-allow-origin": corsOrigin,
-        "access-control-allow-headers": "authorization, x-ade-correlation-id",
+        "access-control-allow-headers": allowsJsonBody
+          ? "authorization, content-type, x-ade-correlation-id"
+          : "authorization, x-ade-correlation-id",
         "access-control-expose-headers": "X-ADE-Correlation-ID",
         "access-control-allow-methods": `${allowedMethod}, OPTIONS`,
         "access-control-max-age": "600",

@@ -68,6 +68,8 @@ export function createAccountNamespace(
     cancelLogin: async () => browserAccountStatus(accountClient.getSnapshot()),
     signOut: async () => browserAccountStatus(await accountClient.signOut()),
     listMachines: async () => machinesResult(await accountClient.loadMachines()),
+    renameMachine: async (machineKey: string, customName: string | null) =>
+      await accountClient.renameMachine(machineKey, customName),
     // A hosted browser is a controller, not an account-directory machine.
     getLocalMachineIdentity: async () => ({ machineKey: "", deviceId: "" }),
     pairMachine: async () => {

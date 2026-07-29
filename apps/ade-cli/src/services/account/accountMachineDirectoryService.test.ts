@@ -231,6 +231,47 @@ describe("AccountMachineDirectoryService", () => {
       .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   });
 
+  it("renames a machine through the authenticated account directory route", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(machine({
+        name: "Build Mac",
+        customName: "Build Mac",
+      })), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: true,
+        userId: "user",
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken: async () => "account-token",
+    }, {
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await expect(service.renameMachine(" mk-studio ", " Build Mac ")).resolves.toMatchObject({
+      machineKey: "mk-studio",
+      name: "Build Mac",
+      customName: "Build Mac",
+    });
+    const [input, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(input).toBe("https://directory.example/account/machines/mk-studio");
+    expect(init).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({ customName: "Build Mac" }),
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      redirect: "error",
+    });
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer account-token");
+    expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+  });
+
   it("uses the hosted directory when the machine override is blank", async () => {
     const prior = process.env.ADE_ACCOUNT_DIRECTORY_URL;
     process.env.ADE_ACCOUNT_DIRECTORY_URL = "   ";

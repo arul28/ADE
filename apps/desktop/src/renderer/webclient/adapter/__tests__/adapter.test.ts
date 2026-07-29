@@ -198,6 +198,7 @@ describe("createAdeWebAdapter", () => {
       "pairMachine",
       "pollLogin",
       "removeMachine",
+      "renameMachine",
       "signOut",
       "startLogin",
       "status",

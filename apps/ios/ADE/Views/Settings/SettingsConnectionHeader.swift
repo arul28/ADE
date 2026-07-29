@@ -1,6 +1,15 @@
 import Foundation
 import SwiftUI
 
+func syncTransportBadgeText(routeKind: SyncConnectionRouteKind?) -> String? {
+  switch routeKind {
+  case .lan: return "via LAN"
+  case .tailnet: return "via Tailscale"
+  case .relay: return "via ADE Relay"
+  case nil: return nil
+  }
+}
+
 func settingsConnectedRouteChipText(
   durationMs: Int?,
   routeKind: SyncConnectionRouteKind?
@@ -45,12 +54,24 @@ struct SettingsConnectionHeader: View {
           reduceMotion: reduceMotion
         )
         VStack(alignment: .leading, spacing: 1) {
-          Text(SettingsConnectionPresentation.statusLabel(
-            for: health,
-            canReconnectToSavedHost: snapshot.canReconnectToSavedHost
-          ))
-            .font(.system(.body, design: .rounded).weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+          HStack(spacing: 7) {
+            Text(SettingsConnectionPresentation.statusLabel(
+              for: health,
+              canReconnectToSavedHost: snapshot.canReconnectToSavedHost
+            ))
+              .font(.system(.body, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            if health.transport.isConnected,
+               let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
+              Text(routeLabel)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(ADEColor.recessedBackground, in: Capsule())
+                .overlay(Capsule().stroke(ADEColor.border.opacity(0.7), lineWidth: 0.7))
+            }
+          }
           if let detail = stateDetailLine {
             Text(detail)
               .font(.caption)

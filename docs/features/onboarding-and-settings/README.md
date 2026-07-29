@@ -168,7 +168,11 @@ Renderer — onboarding:
   receives an explicit in-app return route from the sidebar or Connections and
   falls back safely to `/work` when opened directly. It routes pairing work
   back to the beginner-facing Connections panel rather than owning a second
-  machine-connection flow.
+  machine-connection flow. Signed-in machine menus can rename an account
+  machine or clear its custom name. The custom name is account-wide and wins
+  for display without replacing the hostname that the machine continues to
+  report; list refreshes propagate the new display name through Connections,
+  desktop pairing, ADE Code, hosted web, and iOS.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
