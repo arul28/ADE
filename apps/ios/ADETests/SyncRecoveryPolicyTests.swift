@@ -185,7 +185,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   func testPathHandoffSkipsStaleResetOfNewHealthySocket() {
     XCTAssertEqual(
       syncNetworkPathRecoveryAction(
-        shouldRoamToTailnet: true,
+        roamTrigger: .pathChange,
         isPathSatisfied: true,
         hasLiveConnection: true
       ),
@@ -193,7 +193,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     )
     XCTAssertEqual(
       syncNetworkPathRecoveryAction(
-        shouldRoamToTailnet: false,
+        roamTrigger: nil,
         isPathSatisfied: true,
         hasLiveConnection: true
       ),
@@ -201,7 +201,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     )
     XCTAssertEqual(
       syncNetworkPathRecoveryAction(
-        shouldRoamToTailnet: false,
+        roamTrigger: nil,
         isPathSatisfied: true,
         hasLiveConnection: false
       ),

@@ -3151,41 +3151,29 @@ final class ADETests: XCTestCase {
   }
 
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
-    XCTAssertTrue(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: false,
-        usesWiredEthernet: false
-      )
+    // Wi-Fi drops under a LAN connection: the interface set changed, so the
+    // full failover race runs immediately regardless of connection age.
+    XCTAssertEqual(
+      syncRoamTrigger(SyncRoamInputs(
+        hasLiveConnection: true,
+        isPathSatisfied: true,
+        interfacesChanged: true,
+        currentRouteKind: .lan,
+        bestAvailableRouteKind: .tailnet,
+        connectionAgeSeconds: 2
+      )),
+      .pathChange
     )
-    XCTAssertTrue(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
-    )
-    XCTAssertFalse(
-      syncShouldRoamToTailnet(
-        currentAddress: "100.75.20.63",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
-    )
-    XCTAssertFalse(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: false,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
+    // Already on the best class available with nothing changed: no roam.
+    XCTAssertNil(
+      syncRoamTrigger(SyncRoamInputs(
+        hasLiveConnection: true,
+        isPathSatisfied: true,
+        interfacesChanged: false,
+        currentRouteKind: .tailnet,
+        bestAvailableRouteKind: .tailnet,
+        connectionAgeSeconds: 600
+      ))
     )
   }
 
