@@ -226,6 +226,16 @@ import {
 export { selectChangesetBatchChunk } from "./changesetPump";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
+
+/**
+ * Sunset this compatibility path once ADE's supported-client floor guarantees
+ * every account adopter advertises `supportedAeads`. There is no
+ * minSupportedVersion gate in the sync handshake today; removal belongs in the
+ * `account_challenge` handler below, where a missing list can then be rejected
+ * and the conditional AEAD transcript fields can become unconditional.
+ */
+export const ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD = true;
+
 // db_version window per pump poll. Large enough to cross sparse version
 // ranges quickly (a few polls per million versions), small enough that the
 // windowed crsql_changes scan completes in milliseconds.
@@ -610,6 +620,7 @@ type PeerState = {
     hostDeviceId: string;
     expiresAtMs: number;
     aead: AdoptChannelAead;
+    aeadBoundToSignature: boolean;
   } | null;
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
@@ -6555,6 +6566,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           return;
         }
         const hostSupportedAeads = supportedAdoptChannelAeads();
+        if (
+          challenge.supportedAeads === null
+          && !ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD
+        ) {
+          send(peer.ws, "account_challenge_error", {
+            message:
+              "This ADE version must advertise account adoption ciphers. Update ADE on this device.",
+          }, envelope.requestId);
+          return;
+        }
         const adoptAead = negotiateAdoptChannelAead(
           challenge.supportedAeads,
           hostSupportedAeads,
@@ -6611,6 +6632,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             hostDeviceId,
             expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
             aead: adoptAead,
+            aeadBoundToSignature: challenge.supportedAeads !== null,
           };
           send(peer.ws, "account_challenge_ok", {
             v: 1,
@@ -6806,6 +6828,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         hostDeviceId: string;
         clientDeviceId: string;
         aead: AdoptChannelAead;
+        aeadBoundToSignature: boolean;
       } | null = null;
       if (hello.auth?.kind === "account_sealed") {
         const sealedAuth = hello.auth;
@@ -6864,6 +6887,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             hostDeviceId: challenge.hostDeviceId,
             clientDeviceId: sealedAuth.deviceId,
             aead: challenge.aead,
+            aeadBoundToSignature: challenge.aeadBoundToSignature,
           };
         } catch (error) {
           const errorCode =
@@ -7402,6 +7426,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sealedAdoption.aead,
           ),
         }, envelope.requestId);
+        if (!sealedAdoption.aeadBoundToSignature) {
+          args.logger.warn("sync_host.legacy_adoption_aead_unbound", {
+            deviceId: hello.peer.deviceId,
+            clientVersion: hello.peer.appVersion ?? null,
+            aead: sealedAdoption.aead,
+            transportOrigin: peer.transportOrigin,
+          });
+        }
       } else {
         send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
       }

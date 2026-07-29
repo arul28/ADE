@@ -2026,6 +2026,7 @@ describe("sync host account authentication", () => {
         deviceType: "desktop",
         siteId: "sealed-direct-site",
         dbVersion: 0,
+        appVersion: "1.8.0",
       } satisfies SyncPeerMetadata;
       const accountAuth = {
         deviceId: peer.deviceId,
@@ -2085,6 +2086,15 @@ describe("sync host account authentication", () => {
         peer.deviceId,
         openedHelloOk.accountPairing.secret,
       )).toBe(true);
+      expect(baseArgs.logger.warn).toHaveBeenCalledWith(
+        "sync_host.legacy_adoption_aead_unbound",
+        {
+          deviceId: peer.deviceId,
+          clientVersion: "1.8.0",
+          aead: "chacha20-poly1305",
+          transportOrigin: "direct",
+        },
+      );
       expect(baseArgs.logger.warn.mock.calls.some(
         ([message]) => message === "sync_host.account_auth_requires_relay",
       )).toBe(false);
@@ -2163,6 +2173,9 @@ describe("sync host account authentication", () => {
         aesPeer.deviceId,
         aesOpenedHelloOk.accountPairing.secret,
       )).toBe(true);
+      expect(baseArgs.logger.warn.mock.calls.filter(
+        ([message]) => message === "sync_host.legacy_adoption_aead_unbound",
+      )).toHaveLength(1);
 
       const plainClient = await openAccountClient(port);
       clients.push(plainClient);
