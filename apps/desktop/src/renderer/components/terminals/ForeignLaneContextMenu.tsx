@@ -13,6 +13,8 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 type ForeignLaneContextMenuProps = {
   lane: LaneSummary;
   machineName: string;
+  /** Live, not captured: every action below runs on the owning machine. */
+  online: boolean;
   x: number;
   y: number;
   onClose: () => void;
@@ -28,6 +30,7 @@ function branchNameFromRef(ref: string | null | undefined): string {
 export function ForeignLaneContextMenu({
   lane,
   machineName,
+  online,
   x,
   y,
   onClose,
@@ -98,17 +101,17 @@ export function ForeignLaneContextMenu({
           {lane.name}
         </div>
         <div style={{ marginTop: 2, fontSize: 9.5, color: COLORS.textDim }}>
-          {machineName}
+          {machineName}{online ? "" : " · offline"}
         </div>
       </div>
       {separator}
-      <HoverButton style={menuItemStyle} onClick={onStartChat}>
+      <HoverButton style={menuItemStyle} disabled={!online} onClick={onStartChat}>
         Start chat in lane
       </HoverButton>
-      <HoverButton style={menuItemStyle} onClick={onManage}>
+      <HoverButton style={menuItemStyle} disabled={!online} onClick={onManage}>
         Manage lane
       </HoverButton>
-      <HoverButton style={menuItemStyle} onClick={onOpenInLanes}>
+      <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenInLanes}>
         Open in Lanes
       </HoverButton>
       {lane.worktreePath ? (

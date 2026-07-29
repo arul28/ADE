@@ -546,12 +546,14 @@ Renderer surfaces:
   CLI rows switch the tab to the owning project first because a PTY has no
   per-session runtime pin. Row/lane context actions pass the same binding so
   mutations cannot fall through to the active machine. A machine that goes
-  offline leaves the sidebar entirely — `useCrossMachineLaneUnion` drops its
-  lanes, chats, and markers, and its branches stop counting toward
-  "same branch elsewhere" — because a retained row reads as live work you can
-  act on and every action on it fails. The slice stays in the store for the
-  push-divergence guard, which needs the last-known branch state of an
-  unreachable machine. A lane with shared delete progress is dimmed and
+  offline keeps its rows, dimmed and folded shut: every card is inert and reads
+  "<machine> is offline", the lane context menu's machine-bound actions are
+  disabled from live store state rather than a flag captured at right-click time,
+  and the group sorts below the reachable machines. Its branches still count
+  toward "same branch elsewhere", because commits stranded on a machine you
+  cannot reach are the ones most worth naming — the same reason the
+  push-divergence guard reads the retained slice. A lane with shared delete
+  progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
   organization modes. The bottom Add Lane button opens
@@ -582,17 +584,25 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
-  It also owns visibility: `applyReachability` marks a machine reachable purely
-  from the connection snapshot (never from the narrower read-target list, which
-  would give the two sources contradictory opinions), and
-  `selectReachableCrossMachineRows` is the single place offline machines are
-  dropped from what the sidebar sees. A drop only counts once it has persisted
-  for `RECONNECT_GRACE_MS` (6 s), measured from the first non-connected snapshot
-  rather than the latest, because every redial publishes `connecting` and a
-  single failed liveness ping flips a target to `error`; reconnecting is applied
-  immediately. A timer re-runs the check when the oldest grace window lapses,
-  since a machine held through its window produces no further snapshot on its
-  own, and the deadlines are cleared on teardown and on scope change.
+  It also owns presence: `applyReachability` decides, from the connection
+  snapshot alone, which machines are live, which are dimmed, and which are
+  forgotten. A drop is believed only once a reconnect attempt has completed and
+  failed — `connecting` seen while dropped, then a non-connected state — with a
+  45 s floor, a 120 s ceiling for a dial that never finishes, and an immediate
+  verdict for an `idle` target that will not redial. `lastAttemptedAt` cannot
+  answer this alone: a failed RPC over an established connection stamps it too,
+  and that is the event most drops start with. Removal is reserved for a target
+  missing from the snapshot, a connected machine that positively reports the
+  repository missing, and 24 hours unreachable (`dropCrossMachineLanes`). A timer
+  re-runs the check at the next deadline, since a machine held through its floor
+  produces no further snapshot on its own, and the records are cleared on
+  teardown and on scope change.
+  Reads are visibility-gated: the loop stops entirely while the window is hidden
+  and refreshes once on the way back. Chats are re-read every 10 s; the lane list
+  has its own 30 s cadence because `lane.list` with `includeStatus` resolves a
+  git status per lane and writes a state-snapshot row per lane on the other
+  machine — a chat referencing a lane that machine has never reported forces the
+  lane read immediately, so nothing is invisible while it waits.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Any session with `orchestrationParentSessionId` renders a

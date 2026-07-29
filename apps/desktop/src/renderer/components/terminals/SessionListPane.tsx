@@ -306,6 +306,7 @@ function StickyGroupHeader({
   variant = "default",
   busyLabel = null,
   heading = false,
+  dimmed = false,
   quietCounts = null,
   pinned = false,
   dragProps = null,
@@ -336,6 +337,8 @@ function StickyGroupHeader({
    * on this machine, so local-only setups never render one.
    */
   machineMarker?: React.ReactNode;
+  /** Dims the whole group — used for lanes on a machine that has gone offline. */
+  dimmed?: boolean;
   /** Compact action shown next to the count for non-lane headers. */
   headerAction?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
@@ -393,7 +396,7 @@ function StickyGroupHeader({
       transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
       onLayoutAnimationStart={() => setSliding(true)}
       onLayoutAnimationComplete={() => setSliding(false)}
-      className={cn("relative", !isLane && "mt-0.5 first:mt-0")}
+      className={cn("relative", !isLane && "mt-0.5 first:mt-0", dimmed && "opacity-55")}
     >
       {dropIndicatorEdge ? (
         <div
@@ -621,12 +624,12 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
  * Rendered ONLY for lanes that are not on the machine you're sitting at — the
  * common single-machine case pays nothing. Default form is a bare monochrome
  * glyph; the name is promoted into the row when a glyph alone would be
- * ambiguous (two or more foreign machines on screen, or the branch also exists
- * elsewhere). The lane accent owns the color channel, so this stays monochrome:
- * a tint here would read as a second lane color.
+ * ambiguous (the machine is offline, two or more foreign machines on screen, or
+ * the branch also exists elsewhere). The lane accent owns the color channel, so
+ * this stays monochrome: a tint here would read as a second lane color.
  *
- * Every marked machine is reachable — offline machines leave the sidebar — so
- * there is no dimmed variant here.
+ * An unreachable machine keeps its rows, so this has a dimmed form — and it is
+ * the only thing on the row that says why the group has gone quiet.
  */
 function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
   return (
@@ -634,18 +637,30 @@ function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
       forceEnabled
       content={{
         label: marker.machineName,
-        description: "This lane lives on another connected machine.",
+        description: marker.online
+          ? "This lane lives on another connected machine."
+          : "This machine is offline. Its lanes and chats are shown as last reported and cannot be acted on.",
       }}
     >
       <span
         role="img"
         tabIndex={0}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
-        aria-label={marker.machineName}
+        className={cn(
+          "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px text-[10px] font-medium leading-none",
+          marker.online
+            ? "border-amber-400/20 bg-amber-400/[0.06] text-muted-fg/70"
+            : "border-white/[0.08] bg-white/[0.03] text-muted-fg/45",
+        )}
+        aria-label={marker.online ? marker.machineName : `${marker.machineName}, offline`}
         data-machine-id={marker.machineId}
         data-machine-marker-mode={marker.mode}
+        data-machine-online={marker.online ? "true" : "false"}
       >
-        <DesktopTower size={10} weight="duotone" className="shrink-0 text-amber-400/85" />
+        <DesktopTower
+          size={10}
+          weight="duotone"
+          className={cn("shrink-0", marker.online ? "text-amber-400/85" : "text-muted-fg/45")}
+        />
         {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
       </span>
     </SmartTooltip>
@@ -1264,13 +1279,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
     const foreignRow = options?.foreignRow;
-    // Offline machines never reach this point — their rows are filtered out of
-    // the union — so the only foreign block left is a reachable machine whose
-    // call-routing binding hasn't resolved yet.
+    // A card on an unreachable machine is shown as last reported and every
+    // action on it would fail, so it is inert and says which machine is gone.
     const disabledReason = foreignRow
-      ? !foreignRow.binding
-        ? `${foreignRow.machineName} is unavailable`
-        : null
+      ? !foreignRow.online
+        ? `${foreignRow.machineName} is offline`
+        : !foreignRow.binding
+          ? `${foreignRow.machineName} is unavailable`
+          : null
       : deleteProgressByLaneId[session.laneId]
         ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
         : null;
@@ -1474,7 +1490,13 @@ export const SessionListPane = React.memo(function SessionListPane({
       const foreignRow = foreignRows.find(
         (row) => `${row.machineId}:${row.lane.id}` === laneId,
       );
-      if (foreignRow && partitionQuietSessions(foreignRow.sessions).active.length > 0) {
+      // An offline machine's chats can look "active" — that is just the last
+      // thing it reported. Discarding the expansion on that evidence would slam
+      // the group shut the moment the user opened it to read them.
+      if (
+        foreignRow?.online
+        && partitionQuietSessions(foreignRow.sessions).active.length > 0
+      ) {
         toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
       }
     }
@@ -1757,7 +1779,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         const compositeLaneId = `${row.machineId}:${row.lane.id}`;
         const marker = markersByLaneId.get(compositeLaneId) ?? null;
         const quiet = partitionQuietSessions(row.sessions);
-        const laneQuiet = quiet.active.length === 0;
+        // An offline machine's chats cannot be running, whatever they last
+        // reported, so the group folds shut like a quiet one: retained and
+        // inspectable, not presented as live work.
+        const laneQuiet = !row.online || quiet.active.length === 0;
         const laneOpenMarker = `lane-open:${compositeLaneId}`;
         const collapsed = laneQuiet
           ? !workCollapsedSectionIds.includes(laneOpenMarker)
@@ -1784,6 +1809,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   settled: quiet.settled.length,
                 }
               : null}
+            dimmed={!row.online}
             onToggleCollapsed={() => {
               if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
               else toggleWorkLaneCollapsed(compositeLaneId);
@@ -1793,6 +1819,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 row.lane,
                 row.binding!,
                 row.machineName,
+                row.machineId,
                 event,
               )
               : undefined}

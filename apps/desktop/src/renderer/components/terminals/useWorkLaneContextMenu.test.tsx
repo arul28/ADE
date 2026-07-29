@@ -13,6 +13,9 @@ const setWorkViewState = vi.fn();
 const switchRemoteProject = vi.fn().mockResolvedValue(undefined);
 const switchProjectToPath = vi.fn().mockResolvedValue(undefined);
 
+/** Machine liveness the foreign menu reads live from the root store. */
+let studioOnline = true;
+
 let capturedLaneContextMenuProps: Record<string, unknown> | null = null;
 let capturedManageLaneHostProps: Record<string, unknown> | null = null;
 
@@ -61,6 +64,18 @@ vi.mock("../../state/appStore", async () => {
         switchRemoteProject,
         switchProjectToPath,
       }),
+    useRootAppStore: (selector: (state: Record<string, unknown>) => unknown) =>
+      selector({
+        crossMachineLanesByMachineId: {
+          studio: {
+            machineId: "studio",
+            machineName: "Studio",
+            online: studioOnline,
+            lanes: [],
+            sessions: [],
+          },
+        },
+      }),
   };
 });
 
@@ -90,6 +105,7 @@ vi.mock("./WorkManageLaneDialogHost", () => ({
 
 afterEach(() => {
   cleanup();
+  studioOnline = true;
   capturedLaneContextMenuProps = null;
   capturedManageLaneHostProps = null;
   navigate.mockReset();
@@ -164,7 +180,7 @@ describe("useWorkLaneContextMenu", () => {
     });
 
     act(() => {
-      result.current.triggerForeign(lane, binding, "Studio", {
+      result.current.triggerForeign(lane, binding, "Studio", "studio", {
         preventDefault: vi.fn(),
         clientX: 12,
         clientY: 34,
@@ -213,7 +229,7 @@ describe("useWorkLaneContextMenu", () => {
     });
 
     act(() => {
-      result.current.triggerForeign(lane, binding, "Studio", {
+      result.current.triggerForeign(lane, binding, "Studio", "studio", {
         preventDefault: vi.fn(),
         clientX: 12,
         clientY: 34,
@@ -232,6 +248,54 @@ describe("useWorkLaneContextMenu", () => {
     expect(switchRemoteProject).not.toHaveBeenCalled();
     expect(switchProjectToPath).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("disables every action on a machine that is offline", () => {
+    studioOnline = false;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { app: { writeClipboardText: vi.fn().mockResolvedValue(undefined) } },
+    });
+    const lane = {
+      id: "lane-studio",
+      name: "Studio Lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/studio-lane",
+      worktreePath: "/Users/studio/ADE/.ade/worktrees/studio-lane",
+    } as LaneSummary;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    const { result } = renderHook(() => useWorkLaneContextMenu(), {
+      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
+    });
+
+    act(() => {
+      result.current.triggerForeign(lane, binding, "Studio", "studio", {
+        preventDefault: vi.fn(),
+        clientX: 12,
+        clientY: 34,
+      });
+    });
+    render(<>{result.current.menu}</>);
+
+    // Every one of these runs on the machine that is gone, so offering them
+    // would only produce a failure the user cannot do anything about.
+    for (const name of ["Start chat in lane", "Manage lane", "Open in Lanes"]) {
+      const item = screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+      expect(item.disabled).toBe(true);
+      fireEvent.click(item);
+    }
+    expect(setWorkViewState).not.toHaveBeenCalled();
+    expect(capturedManageLaneHostProps?.laneId ?? null).toBeNull();
+    expect(switchRemoteProject).not.toHaveBeenCalled();
   });
 
   it("opens lane management in Work without navigating to the Lanes tab", () => {
