@@ -176,11 +176,14 @@ cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
 lane starts as the same minimal header with inline counts and uses
 `lane-open:<machineId>:<laneId>` for explicit expansion. When active work
 returns, `SessionListPane` clears that marker so the next all-quiet state starts
-collapsed. Card selection and context actions still carry the owning runtime
-binding. **Manage lane** opens the shared dialog with every read and mutation
-pinned to that machine. Offline machines have no rows here at all — the union
-filters them out — so the only disabled foreign row left is one whose reachable
-machine has not resolved a project binding yet.
+collapsed — except on an offline machine, whose chats only look active because
+that is the last thing it reported. Card selection and context actions still
+carry the owning runtime binding. **Manage lane** opens the shared dialog with
+every read and mutation pinned to that machine. An offline machine's lane group
+is dimmed and folds shut like a quiet one; expanding it is allowed, but every
+card in it is disabled and reads "<machine> is offline". The other disabled
+foreign row is one whose reachable machine has not resolved a project binding
+yet.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`

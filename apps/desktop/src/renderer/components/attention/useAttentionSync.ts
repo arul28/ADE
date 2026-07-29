@@ -23,6 +23,10 @@ export { attentionNotchSettingsFromPreferences } from "./attentionNotchLocalSett
 
 const POLL_INTERVAL_MS = 15_000;
 const PRESENCE_INTERVAL_MS = 30_000;
+const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
+// This backstop must clear a 15s relay request, one 401 retry, and the 30s
+// local-runtime fallback so legitimate host failures retain their real error.
+const ATTENTION_SNAPSHOT_TIMEOUT_MS = 75_000;
 const NOTCH_SETTINGS_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
 
@@ -141,11 +145,19 @@ export async function refreshAttentionSnapshot(): Promise<void> {
   }
 
   attentionStore.getState().setSyncStatus("syncing");
-  const promise = api
-    .getSnapshot(
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const snapshotPromise = Promise.resolve().then(() => api.getSnapshot(
       attentionStore.getState().revision,
       attentionStore.getState().streamId,
-    )
+    ));
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(
+        "Attention took too long to respond. Retry to restore live updates.",
+      ));
+    }, ATTENTION_SNAPSHOT_TIMEOUT_MS);
+  });
+  const promise = Promise.race([snapshotPromise, timeoutPromise])
     .then((snapshot) => {
       if (
         generation !== attentionAccountGeneration
@@ -162,6 +174,10 @@ export async function refreshAttentionSnapshot(): Promise<void> {
       attentionStore.getState().setSyncStatus("error", errorMessage(error));
     })
     .finally(() => {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       if (refreshPromise?.promise === promise) refreshPromise = null;
     });
   refreshPromise = { generation, promise };
@@ -436,11 +452,6 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
     const onVisibilityChange = () => {
       foregroundRef.current = document.visibilityState === "visible" && document.hasFocus();
       if (foregroundRef.current) void refreshAttentionSnapshot();
-      void reportPresence(
-        ambientSurfaceVisibleRef.current,
-        visibleItemIdsRef.current,
-        foregroundRef.current,
-      ).catch(() => {});
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
@@ -463,8 +474,28 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
         foregroundRef.current,
       ).catch(() => {});
     };
+    let timer: number | null = null;
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      const delay = document.visibilityState === "visible"
+        ? PRESENCE_INTERVAL_MS
+        : HIDDEN_PRESENCE_INTERVAL_MS;
+      timer = window.setTimeout(() => {
+        timer = null;
+        send();
+        schedule();
+      }, delay);
+    };
     send();
-    const interval = window.setInterval(send, PRESENCE_INTERVAL_MS);
+    schedule();
+    const onVisibilityChange = () => {
+      // Coming back reports at once: presence is how other devices learn this
+      // machine is being watched, and a 120s-stale "hidden" claim right as the
+      // user returns is the one case that misleads. Going hidden waits — `blur`
+      // has already reported the foreground change.
+      if (document.visibilityState === "visible") send();
+      schedule();
+    };
     const onFocus = () => {
       foregroundRef.current = true;
       send();
@@ -473,10 +504,12 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
       foregroundRef.current = false;
       send();
     };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
     return () => {
-      window.clearInterval(interval);
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
     };

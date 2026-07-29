@@ -264,9 +264,26 @@ The full route provides:
 - account delivery/privacy controls.
 
 Presence reports include foreground state, whether an ambient Attention surface
-is visible, and the currently visible item ids. An item is marked seen only
-after its exact destination opens successfully. Account changes and stale
-machine revisions fail closed and require a refresh.
+is visible, and the currently visible item ids. They are posted every 30 s while
+the ADE window is visible and every 120 s while it is hidden, plus immediately
+on focus, on blur, and on becoming visible again: a hidden window still has to
+hold its claim, but it does not need to hold it at foreground rates, and a
+120 s-stale "hidden" claim right as the user returns is the one case that
+misleads other devices. Going hidden does not force an extra report, because
+`blur` has already reported the foreground change.
+
+An item is marked seen only after its exact destination opens successfully.
+Account changes and stale machine revisions fail closed and require a refresh.
+
+Every snapshot read is bounded twice. The local-brain fallback is issued as a
+sync call carrying the 30 s sync-domain timeout rather than the connection
+pool's ten-minute action budget, so an Attention poll cannot outlive the account
+stream it is standing in for. Above it, the renderer races a 75 s backstop,
+sized to clear a 15 s relay request, one forced 401 retry, and that 30 s
+fallback in sequence — a shorter race would discard a slow-but-successful
+snapshot and replace a real host error with a generic timeout. When the backstop
+wins, Attention reports that it took too long and offers a retry instead of
+leaving the header pinned on syncing.
 
 ## Hosted web Attention
 
@@ -305,11 +322,23 @@ Electron renderer supplies the already-synced Attention snapshot and settings;
 the helper does not create a second account poller.
 
 While ADE is hidden or minimized, the running helper asks the existing
-renderer/runtime Attention path to refresh on a narrow cadence. Visible windows
-keep their normal renderer-owned poll, so the helper does not duplicate
-foreground work or talk to the relay independently. If a connected host is too
-old to expose `attention.call`, ADE surfaces update-and-restart guidance instead
-of presenting an empty notch as if no work existed.
+renderer/runtime Attention path to refresh. A visible window ignores that
+request and keeps its own 15 s renderer-owned poll, so the helper never
+duplicates foreground work or talks to the relay independently.
+
+The helper's cadence follows what is actually on screen: 15 s while it has a
+live surface and the display is awake, 60 s otherwise — before the child has
+reported a surface at all, and whenever the screen is locked or the system is
+suspended, because nobody is reading a notch on a sleeping display. Lock and
+suspend are tracked as two independent facts, since sleeping does not always
+lock the machine and a resume must not declare the screen awake while it is
+still locked. Changing the interval rebuilds the timer rather than leaving the
+old one running, and a respawned helper starts with no surface again instead of
+inheriting the dead child's.
+
+If a connected host is too old to expose `attention.call`, ADE surfaces
+update-and-restart guidance instead of presenting an empty notch as if no work
+existed.
 
 The helper uses a borderless non-activating `NSPanel` above the status bar,
 joins Spaces/full-screen, and keeps the outer window fixed while the inner

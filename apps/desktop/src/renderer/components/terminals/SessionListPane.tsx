@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, DesktopTower, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -15,9 +15,9 @@ import {
 import { useAppStore } from "../../state/appStore";
 import {
   useCrossMachineLaneUnion,
-  type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
+import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
@@ -106,6 +106,19 @@ function bucketHandoffJobsByTime(jobs: HandoffLaunchJob[]) {
     else older.push(job);
   }
   return { today, yesterday, older };
+}
+
+/**
+ * Whether a foreign lane has work actually in flight. An offline machine's chats
+ * can still read as running — that is only the last thing it reported — so both
+ * the collapse default and the auto-collapse effect must ask this, not the
+ * partition alone, or expanding a dropped machine's group slams it shut again.
+ */
+function foreignRowHasLiveWork(
+  row: CrossMachineLaneRow,
+  active: readonly TerminalSessionSummary[],
+): boolean {
+  return row.online && active.length > 0;
 }
 
 function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
@@ -306,6 +319,7 @@ function StickyGroupHeader({
   variant = "default",
   busyLabel = null,
   heading = false,
+  dimmed = false,
   quietCounts = null,
   pinned = false,
   dragProps = null,
@@ -336,6 +350,8 @@ function StickyGroupHeader({
    * on this machine, so local-only setups never render one.
    */
   machineMarker?: React.ReactNode;
+  /** Dims the whole group — used for lanes on a machine that has gone offline. */
+  dimmed?: boolean;
   /** Compact action shown next to the count for non-lane headers. */
   headerAction?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
@@ -393,7 +409,8 @@ function StickyGroupHeader({
       transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
       onLayoutAnimationStart={() => setSliding(true)}
       onLayoutAnimationComplete={() => setSliding(false)}
-      className={cn("relative", !isLane && "mt-0.5 first:mt-0")}
+      className={cn("relative", !isLane && "mt-0.5 first:mt-0", dimmed && "opacity-55")}
+      data-dimmed={dimmed ? "true" : undefined}
     >
       {dropIndicatorEdge ? (
         <div
@@ -612,43 +629,6 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
       <span className="tabular-nums">#{pr.githubPrNumber}</span>
       <span style={{ color }}>{label}</span>
     </span>
-  );
-}
-
-/**
- * Adaptive machine marker on a lane header.
- *
- * Rendered ONLY for lanes that are not on the machine you're sitting at — the
- * common single-machine case pays nothing. Default form is a bare monochrome
- * glyph; the name is promoted into the row when a glyph alone would be
- * ambiguous (two or more foreign machines on screen, or the branch also exists
- * elsewhere). The lane accent owns the color channel, so this stays monochrome:
- * a tint here would read as a second lane color.
- *
- * Every marked machine is reachable — offline machines leave the sidebar — so
- * there is no dimmed variant here.
- */
-function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
-  return (
-    <SmartTooltip
-      forceEnabled
-      content={{
-        label: marker.machineName,
-        description: "This lane lives on another connected machine.",
-      }}
-    >
-      <span
-        role="img"
-        tabIndex={0}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
-        aria-label={marker.machineName}
-        data-machine-id={marker.machineId}
-        data-machine-marker-mode={marker.mode}
-      >
-        <DesktopTower size={10} weight="duotone" className="shrink-0 text-amber-400/85" />
-        {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
-      </span>
-    </SmartTooltip>
   );
 }
 
@@ -1264,13 +1244,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
     const foreignRow = options?.foreignRow;
-    // Offline machines never reach this point — their rows are filtered out of
-    // the union — so the only foreign block left is a reachable machine whose
-    // call-routing binding hasn't resolved yet.
+    // A card on an unreachable machine is shown as last reported and every
+    // action on it would fail, so it is inert and says which machine is gone.
     const disabledReason = foreignRow
-      ? !foreignRow.binding
-        ? `${foreignRow.machineName} is unavailable`
-        : null
+      ? !foreignRow.online
+        ? `${foreignRow.machineName} is offline`
+        : !foreignRow.binding
+          ? `${foreignRow.machineName} is unavailable`
+          : null
       : deleteProgressByLaneId[session.laneId]
         ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
         : null;
@@ -1474,7 +1455,10 @@ export const SessionListPane = React.memo(function SessionListPane({
       const foreignRow = foreignRows.find(
         (row) => `${row.machineId}:${row.lane.id}` === laneId,
       );
-      if (foreignRow && partitionQuietSessions(foreignRow.sessions).active.length > 0) {
+      if (
+        foreignRow
+        && foreignRowHasLiveWork(foreignRow, partitionQuietSessions(foreignRow.sessions).active)
+      ) {
         toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
       }
     }
@@ -1757,7 +1741,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         const compositeLaneId = `${row.machineId}:${row.lane.id}`;
         const marker = markersByLaneId.get(compositeLaneId) ?? null;
         const quiet = partitionQuietSessions(row.sessions);
-        const laneQuiet = quiet.active.length === 0;
+        // An offline machine's group folds shut like a quiet one: retained and
+        // inspectable, not presented as live work.
+        const laneQuiet = !foreignRowHasLiveWork(row, quiet.active);
         const laneOpenMarker = `lane-open:${compositeLaneId}`;
         const collapsed = laneQuiet
           ? !workCollapsedSectionIds.includes(laneOpenMarker)
@@ -1784,6 +1770,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   settled: quiet.settled.length,
                 }
               : null}
+            dimmed={!row.online}
             onToggleCollapsed={() => {
               if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
               else toggleWorkLaneCollapsed(compositeLaneId);
@@ -1793,6 +1780,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 row.lane,
                 row.binding!,
                 row.machineName,
+                row.machineId,
                 event,
               )
               : undefined}

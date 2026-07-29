@@ -101,6 +101,14 @@ function Harness({ surfaceVisible = true }: { surfaceVisible?: boolean }) {
   return null;
 }
 
+function setDocumentVisibility(state: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -361,6 +369,131 @@ describe("useAttentionSync", () => {
       }),
     ));
     expect(attentionStore.getState().syncStatus).toBe("error");
+  });
+
+  it("times out a wedged snapshot as retryable degradation and allows a later refresh", async () => {
+    vi.useFakeTimers();
+    const getSnapshot = vi.fn()
+      .mockImplementationOnce(() => new Promise<AttentionSnapshot>(() => {}))
+      .mockResolvedValueOnce({
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        scope: "machine",
+        revision: 1,
+        generatedAt: "2026-07-28T14:01:00.000Z",
+        items: [],
+        tombstones: [],
+      } satisfies AttentionSnapshot);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot,
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+      },
+    });
+
+    const timedOutRefresh = refreshAttentionSnapshot();
+    expect(attentionStore.getState().syncStatus).toBe("syncing");
+
+    await vi.advanceTimersByTimeAsync(75_000);
+    await timedOutRefresh;
+
+    expect(attentionStore.getState()).toMatchObject({
+      syncStatus: "error",
+      syncError: "Attention took too long to respond. Retry to restore live updates.",
+      availability: {
+        state: "degraded",
+        recovery: "retry",
+      },
+    });
+
+    await refreshAttentionSnapshot();
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
+    expect(attentionStore.getState()).toMatchObject({
+      syncStatus: "ready",
+      syncError: null,
+      revision: 1,
+    });
+  });
+
+  it("uses relaxed hidden presence cadence and sends immediately when visible again", async () => {
+    vi.useFakeTimers();
+    setDocumentVisibility("visible");
+    const signedInStatus = {
+      signedIn: true,
+      userId: "user-presence-cadence",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    } satisfies Parameters<typeof publishAccountStatus>[0];
+    const reportPresence = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async (): Promise<AttentionSnapshot> => ({
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "account",
+            revision: 0,
+            generatedAt: "2026-07-28T14:01:00.000Z",
+            items: [],
+            tombstones: [],
+          })),
+          acknowledge: vi.fn(),
+          reportPresence,
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        account: {
+          ...(originalAde?.account ?? {}),
+          status: vi.fn(async () => signedInStatus),
+        },
+      },
+    });
+    publishAccountStatus(signedInStatus);
+
+    // A presence send resolves the device identity before it POSTs, so the
+    // clock has to advance with microtasks flushed between timers.
+    const advancePresenceTimers = async (durationMs: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(durationMs);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      });
+    };
+    render(<Harness />);
+    await advancePresenceTimers(0);
+    const mountPresenceCount = reportPresence.mock.calls.length;
+    expect(mountPresenceCount).toBeGreaterThan(0);
+
+    await advancePresenceTimers(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 1);
+    await advancePresenceTimers(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 2);
+
+    act(() => {
+      setDocumentVisibility("hidden");
+    });
+    await advancePresenceTimers(30_000);
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 2);
+    await advancePresenceTimers(90_000);
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 3);
+
+    act(() => {
+      setDocumentVisibility("visible");
+    });
+    await advancePresenceTimers(0);
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 4);
   });
 
   it("keeps an in-flight account A preference fetch out of account B's notch stream", async () => {

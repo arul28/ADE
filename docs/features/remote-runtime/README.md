@@ -176,18 +176,41 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   inherit theirs through `laneId`, so the union is keyed by machine and holds
   lanes; there is deliberately no per-chat machine field. Refreshes are driven
   by the connection-snapshot subscription and existing lane-lifecycle /
-  session-changed events (coalesced, no polling); foreign reads are bounded,
+  session-changed events (coalesced), plus a fallback loop for machines that
+  publish no renderer change feed. That loop is visibility-gated: it stops
+  entirely while the window is hidden and refreshes once on the way back, re-reads
+  chats every 10 s, and gives the lane list its own 30 s cadence because
+  `lane.list` with `includeStatus` resolves a git status per lane on the other
+  machine. A chat naming a lane that machine has never reported forces the lane
+  read immediately, but only once — ids a completed read did not explain are
+  remembered, since `session.list` does not filter on lane status while
+  `lane.list` excludes archived lanes, and a chat on an archived lane is
+  permanently unresolvable. Foreign reads are bounded,
   timed out, capped at four machines in parallel, and never gate the local list.
-  A machine that drops **leaves the Work sidebar entirely**:
-  `selectReachableCrossMachineRows` narrows the union inside
-  `useCrossMachineLaneUnion`, so its lanes, chats, and machine markers stop
-  rendering and its branches stop counting toward "same branch elsewhere". Its
-  store slice is retained rather than deleted, because the push-divergence guard
-  needs a dropped machine's last-known branch state. Reachability is derived from
-  connection state alone and only after a `RECONNECT_GRACE_MS` (6 s) window, so
-  the `connecting` / `error` states a redial or a sleep/wake publishes cannot
-  reflow half the sidebar away and animate it back a second later; coming back is
-  applied instantly. The union is
+  A machine that drops is **dimmed, not deleted**: its lanes and chats stay on
+  screen, collapsed and inert, with the offline form of the machine marker naming
+  it. Believing a drop takes a completed, failed reconnect attempt (`connecting`
+  observed, then a non-connected state) plus a 45 s floor, with a 120 s ceiling
+  for a dial that never finishes: every redial publishes `connecting` and a
+  single failed liveness ping flips a target to `error`, so a shorter rule dims
+  the sidebar on every wifi blip. Two states skip the wait for an attempt that is
+  never coming and dim on the floor alone — an `idle` target, which will not
+  redial at all, and a machine that is connected but cannot re-prove this
+  repository, which answers but is never read for it. The second is dimmed and
+  not removed: absence of proof is not proof of absence, and a project list that
+  has not caught up after a reconnect must not read as "the repo is gone". Coming
+  back is applied instantly, and the verdict survives a Work-tab remount — a
+  dimmed machine brightens only by becoming eligible again, never because the
+  runtime that held its drop record was torn down.
+  Rows leave for three reasons: the machine is gone from the connection snapshot
+  (unpaired or removed), it positively reports the repository missing *and* there
+  is a resolvable origin to prove that by, or it has been unreachable for 24
+  hours. The origin requirement is what keeps a healthy machine's rows alive
+  while the bound machine blips — `repoMatchFor` will answer "missing" off a
+  folder-name mismatch alone, and the scope's origin URL is re-resolved from the
+  bound machine, so it can be transiently null. Deleting rows on that evidence is
+  not recoverable.
+  The union is
   scoped per repository, so switching project tabs invalidates it wholesale.
   `selectOtherMachineBranchStates` is the derived-state seam the push guard
   reads at click time.
@@ -370,11 +393,11 @@ Run all follow it. Two things are deliberately wider than that:
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
   machine for this repository, regardless of which machine the tab is bound to.
   Lanes not on This Mac carry a small monochrome machine marker that promotes to
-  the machine's name when a glyph alone would be ambiguous (two or more foreign
-  machines are on screen, or the same branch exists elsewhere). Foreign lanes
-  appear only when they have chats — the union is about work in flight, not an
-  inventory. A machine that goes offline leaves the sidebar entirely: its lanes,
-  chats, and markers are hidden until it reconnects.
+  the machine's name when a glyph alone would be ambiguous (the machine is
+  offline, two or more foreign machines are on screen, or the same branch exists
+  elsewhere). Foreign lanes appear only when they have chats — the union is about
+  work in flight, not an inventory. A machine that goes offline keeps its rows,
+  dimmed, folded shut, and inert, and sinks below the reachable machines.
 - **A chat runs on its own lane's machine.** Opening a chat from the union
   streams it from the machine that owns its lane, with its calls pinned to that
   machine's runtime; the tab stays bound where it was. Clicking a foreign

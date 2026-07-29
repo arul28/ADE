@@ -14,6 +14,7 @@ const MAX_HELPER_LINE_BYTES = 256 * 1024;
 const MAX_RESTART_ATTEMPTS = 3;
 const GRACEFUL_SHUTDOWN_MS = 500;
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000;
+const IDLE_REFRESH_INTERVAL_MS = 60_000;
 const MAX_PENDING_WRITES = 8;
 
 export type AttentionNotchOutput =
@@ -63,6 +64,7 @@ type AttentionNotchHelperOptions = {
   onOutput: (output: AttentionNotchOutput) => void;
   onRefreshRequested?: () => void;
   refreshIntervalMs?: number;
+  idleRefreshIntervalMs?: number;
   restartDelayMs?: number;
   platform?: NodeJS.Platform;
 };
@@ -85,11 +87,13 @@ export class AttentionNotchHelper {
   private restartTimer: NodeJS.Timeout | null = null;
   private stableTimer: NodeJS.Timeout | null = null;
   private refreshTimer: NodeJS.Timeout | null = null;
+  private refreshTimerIntervalMs: number | null = null;
   private stdoutBuffer = "";
   private latestSnapshot: AttentionSnapshot | null = null;
   private latestSettings: AttentionNotchSettings | null = null;
   private lastProtocolError: string | null = null;
   private lastSurface: AttentionNotchHealth["surface"] = null;
+  private screenAwake = true;
   private stdinBackpressured = false;
   private pendingWrites: AttentionNotchInput[] = [];
 
@@ -156,6 +160,7 @@ export class AttentionNotchHelper {
       });
       child.once("close", (code, signal) => {
         this.childReady = false;
+        this.lastSurface = null;
         this.stopRefreshTimer();
         if (this.stableTimer) {
           clearTimeout(this.stableTimer);
@@ -289,6 +294,12 @@ export class AttentionNotchHelper {
     this.write({ type: "visibility", visible });
   }
 
+  setScreenAwake(awake: boolean): void {
+    if (this.screenAwake === awake) return;
+    this.screenAwake = awake;
+    this.ensureRefreshTimer();
+  }
+
   reanchor(): void {
     this.write({ type: "reanchor" });
   }
@@ -388,7 +399,10 @@ export class AttentionNotchHelper {
       try {
         const parsed = JSON.parse(line) as unknown;
         if (isAttentionNotchOutput(parsed)) {
-          if (parsed.type === "surface") this.lastSurface = parsed.surface;
+          if (parsed.type === "surface") {
+            this.lastSurface = parsed.surface;
+            this.ensureRefreshTimer();
+          }
           if (parsed.type === "protocol_error") this.lastProtocolError = parsed.message;
           this.options.onOutput(parsed);
         } else {
@@ -413,10 +427,15 @@ export class AttentionNotchHelper {
     this.restartTimer.unref();
   }
 
+  private activeRefreshIntervalMs(): number {
+    return (this.lastSurface != null && this.screenAwake)
+      ? (this.options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS)
+      : (this.options.idleRefreshIntervalMs ?? IDLE_REFRESH_INTERVAL_MS);
+  }
+
   private ensureRefreshTimer(): void {
     if (
-      this.refreshTimer
-      || this.disposed
+      this.disposed
       || this.latestSettings?.enabled !== true
       || !this.child
       || !this.childReady
@@ -424,6 +443,9 @@ export class AttentionNotchHelper {
     ) {
       return;
     }
+    const intervalMs = this.activeRefreshIntervalMs();
+    if (this.refreshTimer && this.refreshTimerIntervalMs === intervalMs) return;
+    this.stopRefreshTimer();
     this.refreshTimer = setInterval(() => {
       try {
         this.options.onRefreshRequested?.();
@@ -432,14 +454,15 @@ export class AttentionNotchHelper {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }, this.options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS);
+    }, intervalMs);
+    this.refreshTimerIntervalMs = intervalMs;
     this.refreshTimer.unref();
   }
 
   private stopRefreshTimer(): void {
-    if (!this.refreshTimer) return;
-    clearInterval(this.refreshTimer);
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = null;
+    this.refreshTimerIntervalMs = null;
   }
 }
 

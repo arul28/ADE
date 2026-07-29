@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -6984,6 +6984,29 @@ app.whenReady().then(async () => {
     logger: getActiveContext().logger,
     onOutput: handleAttentionNotchOutput,
     onRefreshRequested: requestAttentionNotchRefresh,
+  });
+  // Sleep does not always lock the machine, so resume must clear suspension
+  // without overriding the independent lock state.
+  let notchScreenLocked = false;
+  let notchSystemSuspended = false;
+  const syncNotchScreenState = () => {
+    attentionNotchHelper?.setScreenAwake(!notchScreenLocked && !notchSystemSuspended);
+  };
+  powerMonitor?.on?.("lock-screen", () => {
+    notchScreenLocked = true;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("unlock-screen", () => {
+    notchScreenLocked = false;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("suspend", () => {
+    notchSystemSuspended = true;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("resume", () => {
+    notchSystemSuspended = false;
+    syncNotchScreenState();
   });
 
   attentionIpcBridge = registerIpc({

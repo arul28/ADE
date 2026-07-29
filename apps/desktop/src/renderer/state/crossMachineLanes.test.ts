@@ -11,8 +11,8 @@ import {
   decodeForeignLanes,
   decodeForeignSessions,
   reconcileCrossMachineOptimisticSessions,
+  orderCrossMachineRows,
   resolveCrossMachineLaneMarkers,
-  selectReachableCrossMachineRows,
   resolveThisMachineBindingForOrigin,
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticChatSession,
@@ -72,7 +72,17 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   } as TerminalSessionSummary;
 }
 
+/** jsdom reports `visible` and has no API to change it. */
+function setDocumentVisibility(state: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 beforeEach(() => {
+  setDocumentVisibility("visible");
   useAppStore.setState({
     lanes: [],
     projectBinding: null,
@@ -92,8 +102,8 @@ afterEach(() => {
   }
 });
 
-describe("offline machines leave the sidebar but stay in the store", () => {
-  it("retains a dropped machine's slice while hiding it from the union", () => {
+describe("offline machines stay in the sidebar, dimmed", () => {
+  it("keeps a dropped machine's lanes and chats, flagged offline", () => {
     const store = useAppStore.getState();
     store.mergeCrossMachineLanes({
       machineId: "target-studio",
@@ -117,13 +127,59 @@ describe("offline machines leave the sidebar but stay in the store", () => {
       localLanes: [],
       machines: useAppStore.getState().crossMachineLanesByMachineId,
     });
-    // Retained for the push-divergence guard, which needs the last-known branch
-    // state of a machine that is currently unreachable...
+    // The machine is unreachable, not gone: the sidebar still renders the row,
+    // dimmed, and the push-divergence guard still has its last-known branch state.
     expect(rows).toHaveLength(1);
     expect(rows[0].online).toBe(false);
     expect(rows[0].sessions).toHaveLength(1);
-    // ...but nothing the Work sidebar renders sees it.
-    expect(selectReachableCrossMachineRows(rows)).toEqual([]);
+    expect(orderCrossMachineRows(rows)).toHaveLength(1);
+  });
+
+  it("sinks offline rows below reachable ones", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          online: false,
+          // Newer activity than the reachable machine, and still ranked below it.
+          lanes: [makeLane({ id: "lane-offline", createdAt: "2026-07-28T10:00:00.000Z" })],
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        "target-laptop": {
+          machineId: "target-laptop",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-laptop",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "lane-online", createdAt: "2026-07-20T10:00:00.000Z" })],
+          sessions: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    expect(orderCrossMachineRows(rows).map((row) => row.lane.id))
+      .toEqual(["lane-online", "lane-offline"]);
+  });
+
+  it("forgets a machine outright only when asked to", () => {
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      online: true,
+      lanes: [makeLane({ id: "lane-foreign" })],
+    });
+    useAppStore.getState().dropCrossMachineLanes(["target-studio"]);
+    expect(useAppStore.getState().crossMachineLanesByMachineId["target-studio"]).toBeUndefined();
+    const empty = useAppStore.getState().crossMachineLanesByMachineId;
+    useAppStore.getState().dropCrossMachineLanes(["target-studio"]);
+    expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(empty);
   });
 
   it("keeps the last known lanes when a read fails", () => {
@@ -336,7 +392,7 @@ describe("adaptive machine marker", () => {
     expect(resolveCrossMachineLaneMarkers(rows).has("lane-active")).toBe(true);
   });
 
-  it("marks nothing for an offline machine, and does not let it name a reachable one", () => {
+  it("marks an offline machine by name, and still counts its branch as elsewhere", () => {
     const rows = buildCrossMachineLaneRows({
       localLanes: [],
       machines: {
@@ -365,13 +421,18 @@ describe("adaptive machine marker", () => {
       },
     });
 
-    const markers = resolveCrossMachineLaneMarkers(selectReachableCrossMachineRows(rows));
-    expect(markers.has("target-studio:lane-offline")).toBe(false);
-    // The offline machine holds the same branch, but it is invisible — so it must
-    // not promote the reachable lane to the "also elsewhere" name form.
+    const markers = resolveCrossMachineLaneMarkers(rows);
+    // A glyph alone cannot say "offline", so the name is always promoted there.
+    expect(markers.get("target-studio:lane-offline")).toMatchObject({
+      online: false,
+      mode: "name",
+    });
+    // Commits stranded on a machine you cannot reach are exactly the ones worth
+    // naming, so its branch still counts toward "same branch elsewhere".
     expect(markers.get("target-laptop:lane-online")).toMatchObject({
-      mode: "glyph",
-      sameBranchElsewhere: false,
+      online: true,
+      mode: "name",
+      sameBranchElsewhere: true,
     });
   });
 
@@ -825,10 +886,10 @@ describe("cross-machine refresh scheduling", () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(callAction).toHaveBeenCalledTimes(2);
 
-    // The old setInterval path started another generation after five seconds,
-    // invalidating this still-live eight-second read. A settled-chain poll must
-    // leave it alone no matter how much wall time passes while it is in flight.
-    await vi.advanceTimersByTimeAsync(5_500);
+    // The old setInterval path started another generation on its own cadence,
+    // invalidating this still-live read. A settled-chain poll must leave it alone
+    // for as long as the read's own timeout allows it to run.
+    await vi.advanceTimersByTimeAsync(7_500);
     expect(callAction).toHaveBeenCalledTimes(2);
 
     pending.splice(0).forEach((resolve, index) => resolve({
@@ -836,16 +897,210 @@ describe("cross-machine refresh scheduling", () => {
     }));
     await Promise.resolve();
     await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(4_999);
+    await vi.advanceTimersByTimeAsync(9_000);
     expect(callAction).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(401);
-    expect(callAction).toHaveBeenCalledTimes(4);
+    // The next tick reads chats only: the lane list has its own 30s cadence, and
+    // no chat referenced a lane this machine has not already reported.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(callAction).toHaveBeenLastCalledWith(
+      "target-studio",
+      "project-a",
+      expect.objectContaining({ domain: "session", action: "list" }),
+    );
+
+    stop();
+  });
+
+  it("re-reads lanes on their own slow cadence, and immediately for an unseen lane", async () => {
+    vi.useFakeTimers();
+    const requests: Array<{ domain: string; action: string }> = [];
+    let sessionLaneId = "lane-known";
+    const callAction = vi.fn(async (
+      _targetId: string,
+      _projectId: string,
+      request: { domain: string; action: string },
+    ) => {
+      requests.push({ domain: request.domain, action: request.action });
+      return request.domain === "lane"
+        ? { result: { lanes: [{ id: "lane-known", name: "Known", branchRef: "feature/known" }] } }
+        : { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+    });
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(1);
+
+    // Two more ticks inside the lane window: chats only.
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(1);
+    expect(requests.filter((entry) => entry.domain === "session").length).toBeGreaterThan(1);
+
+    // A chat on a lane we have never seen cannot be rendered without its lane
+    // row, so it forces the read the slow cadence would have deferred.
+    sessionLaneId = "lane-brand-new";
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(2);
+
+    // That lane read did not explain it — `session.list` does not filter on lane
+    // status while `lane.list` excludes archived lanes, so a chat on an archived
+    // lane is permanently unresolvable. Asking again every tick would cost more
+    // than the cadence this test exists to prove.
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(2);
+
+    stop();
+  });
+
+  it("does not let a late catch-up read suppress a new scope's first lane read", async () => {
+    vi.useFakeTimers();
+    const requests: Array<{ domain: string; action: string }> = [];
+    const pendingLaneReads: Array<(value: { result: unknown }) => void> = [];
+    let holdLaneReads = false;
+    let sessionLaneId = "lane-one";
+    const callAction = vi.fn((
+      _targetId: string,
+      _projectId: string,
+      request: { domain: string; action: string },
+    ) => {
+      requests.push({ domain: request.domain, action: request.action });
+      if (request.domain === "lane") {
+        if (holdLaneReads) {
+          return new Promise<{ result: unknown }>((resolve) => pendingLaneReads.push(resolve));
+        }
+        return Promise.resolve({ result: { lanes: [] } });
+      }
+      return Promise.resolve({ result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } });
+    });
+    const connections = [{
+      state: "connected",
+      target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+      projects: [{
+        projectId: "project-a",
+        rootPath: "/repo-a",
+        displayName: "Repo A",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      }],
+    }];
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({ connections, connectedCount: 1 })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const scope = {
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    };
+    const first = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a" });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    const laneReadsBefore = requests.filter((entry) => entry.domain === "lane").length;
+    expect(laneReadsBefore).toBeGreaterThan(0);
+
+    // A chat appears on a lane the machine has never listed, which forces the
+    // catch-up read — and that read is still in flight when the user switches to
+    // another checkout of the same repository.
+    holdLaneReads = true;
+    sessionLaneId = "lane-unlisted";
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(pendingLaneReads).toHaveLength(1);
+
+    const second = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a-copy" });
+    first();
+    holdLaneReads = false;
+    pendingLaneReads.splice(0).forEach((resolve) => resolve({ result: { lanes: [] } }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Stamping the cadence from that stale read would leave the new scope
+    // without a lane list — and so without a single row — for a full cadence.
+    const laneReadsAfterSwitch = requests.filter((entry) => entry.domain === "lane").length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(requests.filter((entry) => entry.domain === "lane").length)
+      .toBeGreaterThan(laneReadsAfterSwitch);
+
+    second();
+  });
+
+  it("stops polling while the window is hidden and refreshes on the way back", async () => {
+    vi.useFakeTimers();
+    const callAction = vi.fn(async () => ({ result: { sessions: [] } }));
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    const whileVisible = callAction.mock.calls.length;
+    expect(whileVisible).toBeGreaterThan(0);
+
+    setDocumentVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(callAction).toHaveBeenCalledTimes(whileVisible);
+
+    setDocumentVisibility("visible");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(callAction.mock.calls.length).toBeGreaterThan(whileVisible);
 
     stop();
   });
 });
 
-describe("reconnect grace before a machine leaves the sidebar", () => {
+describe("believing a drop before a machine dims", () => {
   const CONNECTED_TARGET = {
     id: "target-studio",
     name: "Mac Studio (12)",
@@ -882,16 +1137,25 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     };
   }
 
+  /** The target itself is gone — unpaired, or removed from the registry. */
+  function emptySnapshot() {
+    return { connections: [], connectedCount: 0 };
+  }
+
   function startWithSnapshots(): {
     stop: () => void;
-    push: (state: string) => void;
+    push: (next: unknown) => void;
+    pushState: (state: string) => void;
   } {
     let emit: ((next: unknown) => void) | null = null;
+    // The snapshot read reports the machine's CURRENT state, the way the real
+    // one does — a remount must not be told the machine is back.
+    let latest: unknown = snapshot("connected");
     window.ade = {
       remoteRuntime: {
-        // Reads never resolve: this test is about reachability, not lane data.
+        // Reads never resolve: this suite is about reachability, not lane data.
         callAction: vi.fn(() => new Promise(() => {})),
-        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        getConnectionSnapshot: vi.fn(async () => latest),
         onConnectionSnapshotChanged: vi.fn((listener: (next: unknown) => void) => {
           emit = listener;
           return () => { emit = null; };
@@ -905,11 +1169,16 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
       boundTargetId: null,
       boundProjectId: null,
     });
-    return { stop, push: (state) => emit?.(snapshot(state)) };
+    return {
+      stop,
+      push: (next) => { latest = next; emit?.(next); },
+      pushState: (state) => { latest = snapshot(state); emit?.(latest); },
+    };
   }
 
-  const isOnline = () =>
-    useAppStore.getState().crossMachineLanesByMachineId["target-studio"]?.online;
+  const entry = () =>
+    useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+  const isOnline = () => entry()?.online;
 
   // Seeded AFTER the sync starts: `startCrossMachineLaneSync` applies its repo
   // scope, which clears slices carried over from another scope.
@@ -925,43 +1194,126 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     });
   }
 
-  it("keeps a reconnecting machine visible, then hides it once the drop persists", async () => {
-    vi.useFakeTimers();
-    const { stop, push } = startWithSnapshots();
+  async function startSeeded() {
+    const handle = startWithSnapshots();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
     seedMachine();
     expect(isOnline()).toBe(true);
+    return handle;
+  }
+
+  it("dims only after a reconnect attempt has completed and failed", async () => {
+    vi.useFakeTimers();
+    const { stop, pushState } = await startSeeded();
 
     // `connect()` publishes `connecting` before every automatic redial, and one
-    // failed liveness ping publishes `error`. Neither may reflow the sidebar.
-    push("connecting");
+    // failed liveness ping publishes `error`. Neither may dim the group on its own.
+    pushState("connecting");
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(3_000);
-    push("error");
+    pushState("error");
+    // The dial has now failed, but a single failed dial inside the floor is still
+    // a blip: one connect candidate alone is allowed ten seconds.
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(isOnline()).toBe(true);
 
-    // Six seconds after the FIRST drop, not after the latest snapshot.
-    await vi.advanceTimersByTimeAsync(3_100);
+    // 45s after the FIRST drop, not after the latest snapshot.
+    await vi.advanceTimersByTimeAsync(22_100);
+    expect(isOnline()).toBe(false);
+    // Dimmed, not deleted: the lanes and chats are still there to render.
+    expect(entry().lanes).toHaveLength(1);
+    expect(entry().sessions).toHaveLength(1);
+
+    stop();
+  });
+
+  it("holds a machine that never finishes a dial until the ceiling", async () => {
+    vi.useFakeTimers();
+    const { stop, pushState } = await startSeeded();
+
+    // A dial wedged past its own timeout: `connecting` forever, no verdict.
+    pushState("connecting");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(61_000);
     expect(isOnline()).toBe(false);
 
     stop();
   });
 
-  it("hides a machine that reconnects without a checkout of this repository", async () => {
+  it("dims a manually disconnected machine at the floor, with no attempt to wait for", async () => {
     vi.useFakeTimers();
-    const listener = { emit: null as ((next: unknown) => void) | null };
-    window.ade = {
-      remoteRuntime: {
-        callAction: vi.fn(() => new Promise(() => {})),
-        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
-        onConnectionSnapshotChanged: vi.fn((cb: (next: unknown) => void) => {
-          listener.emit = cb;
-          return () => { listener.emit = null; };
-        }),
-      },
-    } as unknown as typeof window.ade;
-    const stop = startCrossMachineLaneSync({
+    const { stop, pushState } = await startSeeded();
+
+    // `idle` means nothing is dialing and nothing will start on its own, so
+    // waiting for a failed attempt would wait forever.
+    pushState("idle");
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(isOnline()).toBe(false);
+
+    stop();
+  });
+
+  it("forgets a machine that has left the connection registry", async () => {
+    vi.useFakeTimers();
+    const { stop, push } = await startSeeded();
+
+    push(emptySnapshot());
+    // Nothing will ever refresh it again, so retaining rows would be a promise
+    // ADE cannot keep.
+    expect(entry()).toBeUndefined();
+
+    stop();
+  });
+
+  it("forgets a machine that reconnects without a checkout of this repository", async () => {
+    vi.useFakeTimers();
+    const { stop, push } = await startSeeded();
+
+    // Still "connected" — but the repo is provably gone from that machine, so it
+    // is no longer a read target. Left to raw connection state it would stay
+    // visible forever while never being refreshed again: permanently stale.
+    push(snapshotWithoutRepo());
+    expect(entry()).toBeUndefined();
+
+    stop();
+  });
+
+  it("forgets a machine that has been unreachable for a full day", async () => {
+    vi.useFakeTimers();
+    const { stop, pushState } = await startSeeded();
+
+    pushState("connecting");
+    pushState("error");
+    await vi.advanceTimersByTimeAsync(46_000);
+    expect(isOnline()).toBe(false);
+    expect(entry()).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(entry()).toBeUndefined();
+
+    stop();
+  });
+
+  it("keeps a dimmed machine dimmed across a remount", async () => {
+    vi.useFakeTimers();
+    const { stop, pushState } = await startSeeded();
+
+    pushState("connecting");
+    pushState("error");
+    await vi.advanceTimersByTimeAsync(46_000);
+    expect(isOnline()).toBe(false);
+
+    // Leaving Work and coming back tears the shared runtime down, taking its
+    // drop records with it while the store slice survives. Re-deriving a fresh
+    // drop would restart the floor and flash the machine back to live, with its
+    // group re-expanded and every action on it re-enabled.
+    stop();
+    const restarted = startCrossMachineLaneSync({
       scopeKey: "local:/repo-a",
       repoDisplayName: "Repo A",
       repoOriginUrl: "git@github.com:acme/repo-a.git",
@@ -969,16 +1321,77 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
       boundProjectId: null,
     });
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(isOnline()).toBe(false);
+
+    restarted();
+  });
+
+  it("dims a connected machine whose repository it can no longer prove", async () => {
+    vi.useFakeTimers();
+    const { stop, push } = await startSeeded();
+
+    // Connected, folder name still matches, but the origin is gone from its
+    // project record — so identity is `unknown`, not `missing`. It must not be
+    // deleted, and it must not stay bright either: nothing is reading it.
+    push({
+      connections: [{
+        state: "connected",
+        target: CONNECTED_TARGET,
+        projects: [{ ...PROJECTS[0], gitOriginUrl: null }],
+      }],
+      connectedCount: 1,
+    });
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(isOnline()).toBe(false);
+    expect(entry()).toBeDefined();
+
+    stop();
+  });
+
+  it("keeps a machine whose repository cannot be proven absent without an origin", async () => {
+    vi.useFakeTimers();
+    const snapshots: { emit: ((next: unknown) => void) | null } = { emit: null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(() => new Promise(() => {})),
+        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        onConnectionSnapshotChanged: vi.fn((listener: (next: unknown) => void) => {
+          snapshots.emit = listener;
+          return () => { snapshots.emit = null; };
+        }),
+      },
+    } as unknown as typeof window.ade;
+    // No origin for this scope, so a folder-name mismatch is the only evidence
+    // available — and a name is not an identity. Deleting rows on that is not
+    // recoverable, so the machine is held instead.
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: null,
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
     seedMachine();
-    expect(isOnline()).toBe(true);
 
-    // Still "connected" — but the repo is gone from that machine, so it is no
-    // longer a read target. Left to raw connection state it would stay online
-    // forever while never being refreshed again: permanently visible, stale.
-    listener.emit?.(snapshotWithoutRepo());
-    await vi.advanceTimersByTimeAsync(6_100);
-    expect(isOnline()).toBe(false);
+    snapshots.emit?.({
+      connections: [{
+        state: "connected",
+        target: CONNECTED_TARGET,
+        projects: [{
+          projectId: "project-z",
+          rootPath: "/elsewhere/some-other-name",
+          displayName: "Some Other Name",
+          gitOriginUrl: null,
+        }],
+      }],
+      connectedCount: 1,
+    });
+    expect(entry()).toBeDefined();
 
     stop();
   });
@@ -1010,14 +1423,15 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     await vi.advanceTimersByTimeAsync(400);
     seedMachine();
 
-    // Machine drops while its lane/session read is still in flight, and stays
-    // down past the grace window.
+    // Machine drops while its lane/session read is still in flight, and its
+    // reconnect attempt fails.
     snapshots.emit?.(snapshot("connecting"));
-    await vi.advanceTimersByTimeAsync(6_100);
+    snapshots.emit?.(snapshot("error"));
+    await vi.advanceTimersByTimeAsync(46_000);
     expect(isOnline()).toBe(false);
 
     // The read finally lands. It must not flip the machine back on: nothing
-    // would hide it again until an unrelated snapshot happened to fire.
+    // would dim it again until an unrelated snapshot happened to fire.
     pendingReads.splice(0).forEach((resolve, index) => resolve({
       result: index % 2 === 0 ? { lanes: [] } : { sessions: [] },
     }));
@@ -1057,12 +1471,11 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     seedMachine();
     pending.release?.();
     await vi.advanceTimersByTimeAsync(100);
-    // The snapshot survived, so its reachability verdict applies: the machine is
-    // held through the grace window and only then hidden. A discarded snapshot
-    // leaves `runtime.connections` empty and nothing ever flips it — the machine
-    // would stay visible forever, since `runRefresh` no longer sets reachability.
+    // The snapshot survived, so its verdict applies: the machine is held while
+    // the dial is outstanding and dims at the ceiling. A discarded snapshot
+    // leaves `runtime.connections` empty and nothing ever flips it.
     expect(isOnline()).toBe(true);
-    await vi.advanceTimersByTimeAsync(6_100);
+    await vi.advanceTimersByTimeAsync(121_000);
     expect(isOnline()).toBe(false);
 
     stop();
@@ -1107,32 +1520,30 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     expect(isOnline()).toBe(true);
-    await vi.advanceTimersByTimeAsync(6_100);
+    await vi.advanceTimersByTimeAsync(121_000);
     expect(isOnline()).toBe(false);
 
     second();
   });
 
-  it("restores a machine that reconnects inside the grace window without ever hiding it", async () => {
+  it("restores a machine that reconnects inside the window without ever dimming it", async () => {
     vi.useFakeTimers();
-    const { stop, push } = startWithSnapshots();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(400);
-    seedMachine();
+    const { stop, pushState } = await startSeeded();
 
-    push("connecting");
-    await vi.advanceTimersByTimeAsync(2_000);
+    pushState("connecting");
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(isOnline()).toBe(true);
-    push("connected");
-    await vi.advanceTimersByTimeAsync(10_000);
-    // The grace timer from the blip must not fire against the healed machine.
+    pushState("connected");
+    await vi.advanceTimersByTimeAsync(60_000);
+    // The deadline armed by the blip must not fire against the healed machine.
     expect(isOnline()).toBe(true);
 
     // A second drop gets a FULL window, not the remainder of the first one.
-    push("connecting");
-    await vi.advanceTimersByTimeAsync(5_000);
+    pushState("connecting");
+    pushState("error");
+    await vi.advanceTimersByTimeAsync(44_000);
     expect(isOnline()).toBe(true);
-    await vi.advanceTimersByTimeAsync(1_100);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(isOnline()).toBe(false);
 
     stop();

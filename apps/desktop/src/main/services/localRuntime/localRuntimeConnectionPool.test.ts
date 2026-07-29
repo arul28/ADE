@@ -3198,7 +3198,7 @@ describe("local runtime connection pool", () => {
     );
   });
 
-  it("routes machine sync calls without adding a project id", async () => {
+  it("routes machine sync calls without adding a project id or a timeout override", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",
       connectedPeers: [],
@@ -3222,12 +3222,15 @@ describe("local runtime connection pool", () => {
       connectedPeers: [],
     });
 
-    expect(call).toHaveBeenCalledWith("sync.getStatus", {
-      includeTransferReadiness: true,
-    });
+    // Callers that ask for no budget keep the runtime client's own default.
+    expect(call).toHaveBeenCalledWith(
+      "sync.getStatus",
+      { includeTransferReadiness: true },
+      {},
+    );
   });
 
-  it("routes Attention through the machine scope without adding a project id", async () => {
+  it("routes Attention through the machine scope with the sync-domain timeout", async () => {
     const call = vi.fn().mockResolvedValue({ revision: 4, items: [] });
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
@@ -3245,10 +3248,14 @@ describe("local runtime connection pool", () => {
       since: 3,
       streamId: "account-stream",
     })).resolves.toEqual({ revision: 4, items: [] });
-    expect(call).toHaveBeenCalledWith("attention.call", {
-      action: "getSnapshot",
-      args: { since: 3, streamId: "account-stream" },
-    });
+    expect(call).toHaveBeenCalledWith(
+      "attention.call",
+      {
+        action: "getSnapshot",
+        args: { since: 3, streamId: "account-stream" },
+      },
+      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+    );
   });
 
   it("keeps foreground catalog metadata authoritative while routing background actions", async () => {

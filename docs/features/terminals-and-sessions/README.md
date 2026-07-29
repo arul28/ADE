@@ -528,9 +528,10 @@ Renderer surfaces:
   (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
   in flight on every connected machine appear regardless of which machine the
   project tab is bound to. A lane that is not on This Mac carries a monochrome
-  `Desktop` marker on its header — the lane accent owns the color channel — that
-  promotes from a bare glyph to the machine's name when a glyph alone would be
-  ambiguous (two or more foreign machines are on screen, or the branch also
+  `Desktop` marker on its header (`LaneMachineMarker.tsx`) — the lane accent owns
+  the color channel — that promotes from a bare glyph to the machine's name when a
+  glyph alone would be ambiguous (the machine is offline, two or more foreign
+  machines are on screen, or the branch also
   exists elsewhere). Foreign lanes are listed only when they
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
@@ -546,12 +547,14 @@ Renderer surfaces:
   CLI rows switch the tab to the owning project first because a PTY has no
   per-session runtime pin. Row/lane context actions pass the same binding so
   mutations cannot fall through to the active machine. A machine that goes
-  offline leaves the sidebar entirely — `useCrossMachineLaneUnion` drops its
-  lanes, chats, and markers, and its branches stop counting toward
-  "same branch elsewhere" — because a retained row reads as live work you can
-  act on and every action on it fails. The slice stays in the store for the
-  push-divergence guard, which needs the last-known branch state of an
-  unreachable machine. A lane with shared delete progress is dimmed and
+  offline keeps its rows, dimmed and folded shut: every card is inert and reads
+  "<machine> is offline", the lane context menu's machine-bound actions are
+  disabled from live store state rather than a flag captured at right-click time,
+  and the group sorts below the reachable machines. Its branches still count
+  toward "same branch elsewhere", because commits stranded on a machine you
+  cannot reach are the ones most worth naming — the same reason the
+  push-divergence guard reads the retained slice. A lane with shared delete
+  progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
   organization modes. The bottom Add Lane button opens
@@ -573,6 +576,18 @@ Renderer surfaces:
   `sessionFilingBucket`; the Has PR result reuses the coalesced PR snapshot
   that serves lane badges, and a filtered empty state identifies and clears the
   active chips.
+- `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
+  adaptive machine marker on a foreign lane header, rendered only for lanes that
+  are not on the machine you are sitting at, so the common single-machine case
+  pays nothing. Monochrome by design: a tint here would read as a second lane
+  color. It has a dimmed form with its own tooltip and `<machine>, offline`
+  accessible name, and on an unreachable machine's row it is the only thing that
+  says why the group has gone quiet.
+- `apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx` —
+  the right-click menu for a lane owned by another machine. Its `online` prop is
+  read live from the store rather than captured at right-click time, so a machine
+  that dims while the menu is open disables every action in it — they all run on
+  the owning machine.
 - `apps/desktop/src/renderer/state/crossMachineLanes.ts` — repository-scoped
   union loader and optimistic foreign-chat ownership bridge. A detached launch
   that targets a binding other than the active project is inserted immediately
@@ -582,17 +597,46 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
-  It also owns visibility: `applyReachability` marks a machine reachable purely
-  from the connection snapshot (never from the narrower read-target list, which
-  would give the two sources contradictory opinions), and
-  `selectReachableCrossMachineRows` is the single place offline machines are
-  dropped from what the sidebar sees. A drop only counts once it has persisted
-  for `RECONNECT_GRACE_MS` (6 s), measured from the first non-connected snapshot
-  rather than the latest, because every redial publishes `connecting` and a
-  single failed liveness ping flips a target to `error`; reconnecting is applied
-  immediately. A timer re-runs the check when the oldest grace window lapses,
-  since a machine held through its window produces no further snapshot on its
-  own, and the deadlines are cleared on teardown and on scope change.
+  It also owns presence: `applyReachability` decides, from the connection
+  snapshot alone, which machines are live, which are dimmed, and which are
+  forgotten. A drop is believed only once a reconnect attempt has completed and
+  failed — `connecting` seen while dropped, then a non-connected state — with a
+  45 s floor and a 120 s ceiling for a dial that never finishes; floor and
+  ceiling are one deadline, not two rules. Two states have no attempt left to
+  wait for and dim on the floor alone: an `idle` target that will not redial, and
+  a `connected` machine whose repository cannot be re-proven, which is eligible
+  for display but ineligible for refresh — calling it live would be a lie, so it
+  dims, but it is not removed, because absence of proof is not proof of absence.
+  `lastAttemptedAt` cannot answer any of this alone: a failed RPC over an
+  established connection stamps it too, and that is the event most drops start
+  with. The verdict lives in the store, not the tick — an already-dimmed machine
+  brightens only by becoming eligible again, so leaving Work and coming back,
+  which tears down the shared runtime and its drop records while the store slice
+  survives, cannot flash the machine live for another floor; its retention
+  deadline is re-anchored to its last successful read instead. Removal is
+  reserved for a target missing from the snapshot, a connected machine that
+  positively reports the repository missing *with* a resolvable origin to prove
+  it by (`repoMatchFor` will say "missing" off a folder-name mismatch, and the
+  scope's origin is re-resolved from the bound machine and can be transiently
+  null), and 24 hours unreachable (`dropCrossMachineLanes`). A timer re-runs the
+  check at the next deadline, since a machine held through its floor produces no
+  further snapshot on its own, and the records are cleared on teardown and on
+  scope change.
+  Reads are visibility-gated: the loop stops entirely while the window is hidden
+  and refreshes once on the way back. Chats are re-read every 10 s; the lane list
+  has its own 30 s cadence because `lane.list` with `includeStatus` resolves a
+  git status per lane and writes a state-snapshot row per lane on the other
+  machine. A chat referencing a lane that machine has never reported forces the
+  lane read immediately, so nothing is invisible while it waits — but only once.
+  `resolveLaneCadence` owns that rule for both read paths and remembers the lane
+  ids a completed read did not explain, because `session.list` does not filter on
+  lane status while `lane.list` asks for `includeArchived: false`: a chat on an
+  archived lane is permanently unresolvable and would otherwise demand a fresh
+  `includeStatus` read on every tick, costing more than before the cadence
+  existed. The cadence is stamped only when lanes were actually read, and only
+  when the read resolved inside the scope that asked for it, so a response
+  landing after a project-tab switch cannot suppress the new scope's first lane
+  read.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Any session with `orchestrationParentSessionId` renders a

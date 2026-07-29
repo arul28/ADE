@@ -1207,18 +1207,43 @@ describe("SessionListPane", () => {
       expect((await screen.findByRole("tooltip")).textContent).toContain("Mac Studio (12)");
     });
 
-    it("removes an offline machine's lane, chats, and marker from the list", () => {
+    it("dims an offline machine's lane and folds its chats away instead of removing them", () => {
       seedForeignMachine({ online: false });
       renderPane();
 
-      // Nothing about an unreachable machine survives in Work: not the lane
-      // group, not its chats, not a dimmed placeholder naming the machine.
-      expect(screen.queryByText("Elsewhere Lane")).toBeNull();
-      expect(screen.queryByText("Chat on the other machine")).toBeNull();
+      // The work did not stop existing because the machine went to sleep, so the
+      // group stays — named, dimmed, and collapsed rather than presented as live.
+      const header = screen.getByText("Elsewhere Lane").closest(
+        ".ade-lane-group-header",
+      )!;
+      expect(header.closest("[data-dimmed]")).not.toBeNull();
+      const marker = document.querySelector("[data-machine-marker-mode]")!;
+      expect(marker.getAttribute("data-machine-online")).toBe("false");
+      // A glyph cannot say "offline", so the machine name is always spelled out.
+      expect(marker.getAttribute("data-machine-marker-mode")).toBe("name");
+      expect(screen.getAllByText("Mac Studio (12)").length).toBeGreaterThan(0);
       expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeNull();
-      expect(document.querySelector("[data-machine-marker-mode]")).toBeNull();
-      expect(screen.queryByText("Mac Studio (12)")).toBeNull();
-      expect(screen.queryByText(/is offline/i)).toBeNull();
+    });
+
+    it("keeps an expanded offline group open, and its chats inert", async () => {
+      seedForeignMachine({ online: false });
+      const toggleWorkSectionCollapsed = vi.fn();
+      renderPane({
+        workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
+        toggleWorkSectionCollapsed,
+      });
+
+      // Reading a dropped machine's last-known work is allowed; acting on it is
+      // not, and the card says which machine is gone rather than failing later.
+      const card = document.querySelector('[data-session-id="session-elsewhere"]')!;
+      expect(card).toBeTruthy();
+      expect(screen.getByText("Mac Studio (12) is offline")).toBeTruthy();
+      expect(card.querySelector("button")?.hasAttribute("disabled")).toBe(true);
+      // Its chats still LOOK active — that is just the last thing the machine
+      // reported — so nothing may treat that as a reason to slam the group shut.
+      await waitFor(() => {
+        expect(toggleWorkSectionCollapsed).not.toHaveBeenCalled();
+      });
     });
   });
 

@@ -1011,11 +1011,10 @@ export type ProjectTransitionError = {
  * one machine) and chats inherit their machine through `laneId`, so the union is
  * keyed by machine and holds lanes — never a per-chat machine field.
  *
- * `online: false` retains the slice in the store but hides it from Work: the
- * union hook (`useCrossMachineLaneUnion`) drops offline machines' lanes and
- * chats from the sidebar entirely. The retained data still backs the
- * push-divergence guard, which needs a dropped machine's last-known branch
- * state, so nothing here is deleted on disconnect.
+ * `online: false` means the machine is unreachable, not gone: Work keeps its
+ * lanes and chats on screen, dimmed and collapsed. The retained data also backs
+ * the push-divergence guard, which needs a dropped machine's last-known branch
+ * state. Slices are deleted only by `dropCrossMachineLanes`.
  */
 export type CrossMachineMachineLanes = {
   /**
@@ -1199,6 +1198,12 @@ export type AppState = {
    * offline. Never deletes an entry: an offline machine keeps its lanes, dimmed.
    */
   setCrossMachineMachinesOnline: (onlineMachineIds: readonly string[]) => void;
+  /**
+   * Forgets machines outright — the one operation that does delete rows. Used
+   * only for a machine that has left the connection registry or has been
+   * unreachable long enough that its last-known work is no longer worth showing.
+   */
+  dropCrossMachineLanes: (machineIds: readonly string[]) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -1778,9 +1783,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           continue;
         }
         // Flag, never drop. The lanes and sessions carry over verbatim; the
-        // union hook decides what that flag hides.
+        // union hook decides how that flag renders.
         nextRecord[machineId] = { ...entry, online: isOnline };
         changed = true;
+      }
+      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+    }),
+
+  dropCrossMachineLanes: (machineIds) =>
+    set((prev) => {
+      const dropped = new Set(machineIds);
+      const nextRecord: Record<string, CrossMachineMachineLanes> = {};
+      let changed = false;
+      for (const [machineId, entry] of Object.entries(prev.crossMachineLanesByMachineId)) {
+        if (dropped.has(machineId)) {
+          changed = true;
+          continue;
+        }
+        nextRecord[machineId] = entry;
       }
       return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
     }),
