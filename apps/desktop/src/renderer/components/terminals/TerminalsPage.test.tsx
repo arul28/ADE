@@ -13,6 +13,16 @@ import type {
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
 
+const crossMachineMocks = vi.hoisted(() => ({
+  cancelOptimistic: vi.fn(),
+  seedOptimistic: vi.fn(),
+}));
+
+vi.mock("../../state/crossMachineLanes", () => ({
+  cancelCrossMachineOptimisticChatSession: crossMachineMocks.cancelOptimistic,
+  seedCrossMachineOptimisticChatSession: crossMachineMocks.seedOptimistic,
+}));
+
 const workMocks = vi.hoisted(() => {
   const makeChatSession = (id: string, laneId: string): AgentChatSession => ({
     id,
@@ -155,10 +165,7 @@ const workMocks = vi.hoisted(() => {
     baseWork,
     currentWork: baseWork as any,
     projectRoot: null as string | null,
-    projectBinding: null as null | {
-      kind: "remote";
-      rootPath: string;
-    },
+    projectBinding: null as OpenProjectBinding | null,
     handoffLaunchJobsByScope: {} as Record<string, unknown[]>,
     fns,
     makeTerminalSession,
@@ -318,6 +325,10 @@ vi.mock("./SessionContextMenu", () => ({
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => void;
+    onDeleteChat: (
+      session: TerminalSessionSummary,
+      binding?: OpenProjectBinding | null,
+    ) => void;
     onSettle: (
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
@@ -336,6 +347,12 @@ vi.mock("./SessionContextMenu", () => ({
           }}
         >
           context stop and delete {session.id}
+        </button>
+        <button
+          type="button"
+          onClick={() => props.onDeleteChat(session, props.menu?.binding)}
+        >
+          context delete chat {session.id}
         </button>
         <button
           type="button"
@@ -374,6 +391,25 @@ vi.mock("./WorkViewArea", () => ({
         onClick={() => props.onOpenChatSession(workMocks.foregroundSession, { activate: true, source: "draft-launch" })}
       >
         create foreground chat
+      </button>
+      <button
+        type="button"
+        onClick={() => props.onOpenChatSession(workMocks.foregroundSession, {
+          activate: true,
+          source: "draft-launch",
+          laneName: "Primary",
+          runtimePin: {
+            kind: "remote",
+            key: "remote:target-other:project-other",
+            targetId: "target-other",
+            runtimeName: "Other Mac",
+            projectId: "project-other",
+            rootPath: "/repo-other",
+            displayName: "Other repo",
+          },
+        })}
+      >
+        create foreign chat
       </button>
       <button
         type="button"
@@ -439,6 +475,36 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreground");
       expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-foreground");
     });
+  });
+
+  it("does not invent an active-binding lane for a chat created on another machine", async () => {
+    workMocks.projectBinding = {
+      kind: "local",
+      key: "local:/repo-active",
+      rootPath: "/repo-active",
+      displayName: "Active repo",
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "create foreign chat" }));
+
+    await waitFor(() => {
+      expect(workMocks.fns.refresh).toHaveBeenCalledWith({ showLoading: false, force: true });
+      expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreground");
+      expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-foreground");
+    });
+    expect(workMocks.fns.upsertOptimisticChatSession).not.toHaveBeenCalled();
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
+    expect(crossMachineMocks.seedOptimistic).toHaveBeenCalledWith(
+      workMocks.foregroundSession,
+      expect.objectContaining({ key: "remote:target-other:project-other" }),
+      "Primary",
+    );
   });
 
   it("switches to a foreign shell's owning project before selecting it", async () => {
@@ -623,7 +689,12 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.projectRoot = "/repo-one";
     workMocks.projectBinding = {
       kind: "remote",
+      key: "remote:target-one:project-one",
+      targetId: "target-one",
+      runtimeName: "Remote Mac",
+      projectId: "project-one",
       rootPath: "/repo-one",
+      displayName: "Repo one",
     };
     const browserEventListener: {
       current: ((event: { type?: string; status?: unknown }) => void) | null;
@@ -894,6 +965,63 @@ describe("TerminalsPage chat session activation", () => {
         { sessionId: "cli-studio" },
         binding,
       );
+    });
+  });
+
+  it("clears a foreign optimistic chat after its pinned delete succeeds", async () => {
+    const foreignChat = workMocks.makeTerminalSession(
+      "chat-studio",
+      "lane-primary",
+      "codex-chat",
+      { ptyId: null },
+    );
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [foreignChat],
+      visibleSessions: [foreignChat],
+      runningFiltered: [foreignChat],
+      runningSessions: [foreignChat],
+      filtered: [foreignChat],
+      sessionsGroupedByLane: new Map([["lane-primary", [foreignChat]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+    act(() => {
+      sessionListPaneProps.latest?.onContextMenu(
+        foreignChat,
+        { clientX: 10, clientY: 20 } as React.MouseEvent,
+        binding,
+        "Studio",
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", {
+      name: "context delete chat chat-studio",
+    }));
+
+    await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-studio" }, binding);
+      expect(crossMachineMocks.cancelOptimistic).toHaveBeenCalledWith(binding, "chat-studio");
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-studio");
     });
   });
 

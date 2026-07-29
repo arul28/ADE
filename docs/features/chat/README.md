@@ -596,7 +596,14 @@ Controls and summaries project this runtime state rather than owning it:
   partially-created launch (the auto-created lane via `lanes.delete`,
   the created chat session via `agentChat.delete`) is also **pinned** to
   that captured binding so cleanup deletes the rows it created even
-  after a concurrent project switch. A `DRAFT_LAUNCH_TIMEOUT_MS = 90 s`
+  after a concurrent project switch. The chat-created announcement carries
+  that same runtime pin plus the resolved lane name. `TerminalsPage` uses the
+  ownership metadata to insert an active-binding chat through the normal
+  `useWorkSessions` optimistic path, but projects a chat created on another
+  machine directly into that machine's cross-machine Work slice. It never
+  fabricates the foreign session in the active binding's local list or selects
+  its raw lane id, so a detached launch cannot briefly render a duplicate
+  UUID-named lane under the wrong machine. A `DRAFT_LAUNCH_TIMEOUT_MS = 90 s`
   ceiling (via
   `withDraftLaunchTimeout`) fails the job if a runtime call neither
   resolves nor rejects — e.g. a connection dropped mid-switch — so a

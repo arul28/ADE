@@ -41,6 +41,10 @@ import { clearSessionWokeMarker } from "./sessionLifecycleActions";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
+import {
+  cancelCrossMachineOptimisticChatSession,
+  seedCrossMachineOptimisticChatSession,
+} from "../../state/crossMachineLanes";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -342,9 +346,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      work.upsertOptimisticChatSession(session);
+      const runtimePin = options?.runtimePin ?? null;
+      const belongsToActiveBinding = !runtimePin || runtimePin.key === projectBinding?.key;
+      // A draft launched on another machine is already owned by the
+      // cross-machine union. Inserting it into the active binding's optimistic
+      // list invents a UUID-named local lane until that placeholder expires.
+      if (belongsToActiveBinding) {
+        work.upsertOptimisticChatSession(session);
+      } else if (runtimePin) {
+        seedCrossMachineOptimisticChatSession(session, runtimePin, options?.laneName);
+      }
       if (options?.activate !== false) {
-        work.selectLane(session.laneId);
+        if (belongsToActiveBinding) {
+          work.selectLane(session.laneId);
+        }
         work.focusSession(session.id);
         work.openSessionTab(session.id);
       }
@@ -356,7 +371,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         });
       });
     },
-    [work],
+    [projectBinding?.key, work],
   );
 
   // Jump-to-session bridge for the orchestration panel (and the worker→lead
@@ -443,6 +458,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       void deletion
         .then(async () => {
           invalidateSessionListCache();
+          if (runtimePin) {
+            cancelCrossMachineOptimisticChatSession(runtimePin, session.id);
+          }
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
           setContextMenu((current) => (current?.session.id === session.id ? null : current));

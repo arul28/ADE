@@ -1,17 +1,20 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, TerminalSessionSummary } from "../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../shared/types";
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { useAppStore } from "./appStore";
 import {
   buildCrossMachineLaneRows,
+  cancelCrossMachineOptimisticChatSession,
   decodeForeignLanes,
   decodeForeignSessions,
+  reconcileCrossMachineOptimisticSessions,
   resolveCrossMachineLaneMarkers,
   resolveThisMachineBindingForOrigin,
   resetCrossMachineLaneSyncForTest,
+  seedCrossMachineOptimisticChatSession,
   selectOtherMachineBranchStates,
   startCrossMachineLaneSync,
 } from "./crossMachineLanes";
@@ -403,6 +406,80 @@ describe("adaptive machine marker", () => {
     expect(marker?.mode).toBe("name");
     // The name is always reachable, glyph mode included.
     expect(marker?.title).toBe("Mac Studio (12)");
+  });
+});
+
+describe("cross-machine optimistic chats", () => {
+  it("seeds the owning machine slice immediately and replaces the same session id", () => {
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    useAppStore.getState().mergeCrossMachineLanes({
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding,
+      online: true,
+      lanes: [makeLane({ id: "lane-primary", name: "Primary" })],
+      sessions: [makeSession({ id: "existing-chat", laneId: "lane-primary" })],
+    });
+    const session: AgentChatSession = {
+      id: "new-chat",
+      laneId: "lane-primary",
+      provider: "codex",
+      model: "gpt-5.4",
+      status: "idle",
+      createdAt: "2026-07-28T12:00:00.000Z",
+      lastActivityAt: "2026-07-28T12:00:00.000Z",
+    };
+
+    seedCrossMachineOptimisticChatSession(session, binding, "Primary");
+    seedCrossMachineOptimisticChatSession(
+      { ...session, status: "active", lastActivityAt: "2026-07-28T12:00:01.000Z" },
+      binding,
+      "Primary",
+    );
+
+    const entry = useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    expect(entry?.sessions.map((candidate) => candidate.id)).toEqual([
+      "new-chat",
+      "existing-chat",
+    ]);
+    expect(entry?.sessions[0]).toEqual(expect.objectContaining({
+      id: "new-chat",
+      laneId: "lane-primary",
+      laneName: "Primary",
+      runtimeState: "running",
+    }));
+
+    const afterStaleRefresh = reconcileCrossMachineOptimisticSessions(binding, []);
+    expect(afterStaleRefresh.map((candidate) => candidate.id)).toEqual(["new-chat"]);
+
+    cancelCrossMachineOptimisticChatSession(binding, "new-chat");
+    expect(reconcileCrossMachineOptimisticSessions(binding, [])).toEqual([]);
+    expect(
+      useAppStore.getState().crossMachineLanesByMachineId["target-studio"]?.sessions
+        .map((candidate) => candidate.id),
+    ).toEqual(["existing-chat"]);
+
+    seedCrossMachineOptimisticChatSession(session, binding, "Primary");
+    const authoritative = makeSession({
+      id: "new-chat",
+      laneId: "lane-primary",
+      laneName: "Primary",
+      title: "Named on the owning machine",
+    });
+    expect(reconcileCrossMachineOptimisticSessions(binding, [authoritative])).toEqual([
+      authoritative,
+    ]);
+    expect(reconcileCrossMachineOptimisticSessions(binding, [])).toEqual([]);
   });
 });
 

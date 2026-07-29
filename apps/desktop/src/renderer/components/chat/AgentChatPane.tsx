@@ -856,6 +856,10 @@ function createDeterministicAutoLaneName(prompt: string, options: { genericSuffi
 export type AgentChatSessionCreatedOptions = {
   activate?: boolean;
   source?: "chat" | "draft-launch" | "handoff";
+  /** Runtime that owns the new chat when it differs from the active project tab. */
+  runtimePin?: OpenProjectBinding | null;
+  /** Owning lane label for an immediate cross-machine optimistic row. */
+  laneName?: string | null;
 };
 
 function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
@@ -8824,6 +8828,7 @@ export function AgentChatPane({
         notifySessionCreated(createdSession, {
           activate: false,
           source: "draft-launch",
+          ...(pin ? { runtimePin: pin, laneName: targetLane.laneName } : {}),
         });
       }
       return {

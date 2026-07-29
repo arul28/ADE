@@ -109,9 +109,10 @@ because Status grouping already exposes the complete lifecycle. Every global
 section and per-lane tail starts collapsed. User-expanded state is persisted,
 and collapsed tails do not contribute ids to shift-range selection.
 
-Snoozed membership comes from `isSessionFiledAsSnoozed`, never from the
-canonical phase, and it yields to a `needs_you` phase so a snoozed row that is
-blocked on the user stays in its normal section. Ordering inside the quiet tiers
+Filing comes from `sessionFilingBucket`, which combines canonical lifecycle
+with the snooze visibility overlay in one shared answer. Snooze still yields to
+a `needs_you` phase, so a snoozed row that is blocked on the user stays in its
+normal section. Ordering inside the quiet tiers
 diverges from the default `startedAt` sort: settled rows rank by `settledAt`
 (so a session settled just now sits at the top rather than under sessions
 settled long ago) and snoozed rows rank by `snoozedUntil` ascending, because the
@@ -143,6 +144,16 @@ reuse the same `workCollapsedLaneIds` persistence, so a user who
 collapses an orphan group sees it stay collapsed on reload. This keeps
 sessions reachable when their lane has been archived, deleted, or not
 yet loaded, instead of quietly dropping them from the sidebar.
+
+Foreign-machine lane rows follow the same filing contract instead of using a
+parallel card-only renderer. `partitionQuietSessions` splits each row with
+`sessionFilingBucket`; active cards render normally, while snoozed and settled
+cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
+lane starts as the same minimal header with inline counts and uses
+`lane-open:<machineId>:<laneId>` for explicit expansion. When active work
+returns, `SessionListPane` clears that marker so the next all-quiet state starts
+collapsed. Card selection and context actions still carry the owning runtime
+binding, and offline/unavailable rows remain disabled.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
@@ -862,7 +873,8 @@ nothing when no delta is available.
   `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
-  `sessionStatusBucket`, `sessionStatusDot`, `sessionCapsuleBadge`,
+  `sessionStatusBucket`, `sessionFilingBucket`, `sessionStatusDot`,
+  `sessionCapsuleBadge`,
   `sessionNeedsYou`, `summarizeTerminalAttention`,
   `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —
@@ -897,7 +909,7 @@ nothing when no delta is available.
 - Do not derive anything from the snooze columns except *where a row is filed*.
   Snooze is a visibility overlay: `canonicalSessionState()` never reads it, the
   status dot never changes, and the counts, badges, and Dock badge stay
-  truthful. Use `isSessionFiledAsSnoozed` for grouping and the raw
+  truthful. Use `sessionFilingBucket` for renderer grouping and the raw
   `isSessionSnoozed` for row chrome.
 - Do not schedule anything for snooze expiry. Expiry is derived by comparing
   `snoozedUntil` to now. The Work hook's single timer only bumps a counter to

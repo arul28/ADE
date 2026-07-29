@@ -5135,6 +5135,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("auto-creates on This Mac from a remote-bound tab without rebinding the project", async () => {
     const { create } = installAdeMocks({ sessions: [] });
+    const onSessionCreated = vi.fn();
     const localBinding = {
       kind: "local" as const,
       key: "local:/tmp/project-under-test",
@@ -5225,7 +5226,7 @@ describe("AgentChatPane submit recovery", () => {
       onConnectionSnapshotChanged: vi.fn(() => () => {}),
     } as any;
 
-    renderAutoCreateDraftPane({ lanes: remoteLanes });
+    renderAutoCreateDraftPane({ lanes: remoteLanes, onSessionCreated });
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create this on my MacBook." } });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
@@ -5253,6 +5254,15 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({ laneId: "lane-created" }),
         localBinding,
+      );
+      expect(onSessionCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
+        {
+          activate: false,
+          laneName: "auto-created-lane",
+          source: "draft-launch",
+          runtimePin: localBinding,
+        },
       );
     });
     expect(screen.queryByText(/Open this repository on This Mac first/i)).toBeNull();
