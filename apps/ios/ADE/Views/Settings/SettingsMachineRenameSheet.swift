@@ -16,34 +16,36 @@ struct SettingsMachineRenameSheet: View {
 
   var body: some View {
     NavigationStack {
-      VStack(alignment: .leading, spacing: 14) {
-        TextField("Machine name", text: $name)
-          .textInputAutocapitalization(.words)
-          .submitLabel(.done)
-          .textFieldStyle(.roundedBorder)
-          .disabled(isSaving)
-          .onSubmit { save(trimmedName) }
-
-        if let errorText {
-          Text(errorText)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-        }
-
-        Button("Save") { save(trimmedName) }
-          .buttonStyle(.glassProminent)
-          .disabled(isSaving || !isValidName)
-          .frame(maxWidth: .infinity)
-
-        if machine.customName != nil {
-          Button("Use hostname") { save(nil) }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          TextField("Machine name", text: $name)
+            .textInputAutocapitalization(.words)
+            .submitLabel(.done)
+            .textFieldStyle(.roundedBorder)
             .disabled(isSaving)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .onSubmit { save(trimmedName) }
+
+          if let errorText {
+            Text(errorText)
+              .font(.caption)
+              .foregroundStyle(ADEColor.danger)
+          }
+
+          Button("Save") { save(trimmedName) }
+            .buttonStyle(.glassProminent)
+            .disabled(isSaving || !isValidName)
+            .frame(maxWidth: .infinity)
+
+          if machine.customName != nil {
+            Button("Use hostname") { save(nil) }
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .disabled(isSaving)
+              .frame(maxWidth: .infinity, minHeight: 44)
+          }
         }
+        .padding(20)
       }
-      .padding(20)
       .adeScreenBackground()
       .navigationTitle("Rename machine")
       .navigationBarTitleDisplayMode(.inline)

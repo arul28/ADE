@@ -122,6 +122,17 @@ struct HubConnectionPill: View {
     return syncTransportBadgeText(routeKind: syncService.lastConnectedRouteKind)
   }
 
+  private var connectionAccessibilityLabel: String {
+    let state = switch syncService.connectionHealth.transport {
+    case .connected: "connected"
+    case .connecting: "connecting"
+    case .unreachable: "unreachable"
+    case .disconnected: "offline"
+    }
+    let route = transportLabel.map { ", \($0)" } ?? ""
+    return "Machine connection: \(label), \(state)\(route)"
+  }
+
   /// Name of the project currently switching in, if any — drives the progress
   /// crossfade in the chip during a switch.
   private var switchingProjectName: String? {
@@ -173,7 +184,7 @@ struct HubConnectionPill: View {
     }
     .buttonStyle(.plain)
     .animation(.easeInOut(duration: 0.25), value: switchingProjectName)
-    .accessibilityLabel(switchingProjectName.map { "Opening \($0)" } ?? "Machine connection: \(label)")
+    .accessibilityLabel(switchingProjectName.map { "Opening \($0)" } ?? connectionAccessibilityLabel)
     .accessibilityHint("Opens connection settings.")
   }
 }

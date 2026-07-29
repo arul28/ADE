@@ -849,7 +849,7 @@ struct SettingsMachinesSection: View {
     }
     .sheet(item: $renamingMachine) { machine in
       SettingsMachineRenameSheet(machine: machine)
-        .presentationDetents([.height(machine.customName == nil ? 240 : 294)])
+        .presentationDetents([.medium, .large])
     }
   }
 
@@ -899,7 +899,7 @@ struct SettingsMachinesSection: View {
         }
         .buttonStyle(ADEScaleButtonStyle())
         .disabled(!tappable)
-        .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : "saved connection")")
+        .accessibilityLabel("\(entry.name), \(entry.routeHint)")
         .accessibilityHint(tappable ? "Connect." : "")
 
         if let machine = accountMachine(from: entry) {
