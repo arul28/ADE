@@ -72,7 +72,7 @@ vi.mock("node:fs", async () => {
   };
 });
 
-import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, LANE_STATUS_REFRESH_MS, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousReactActEnvironment: boolean | undefined;
@@ -267,8 +267,30 @@ describe("AdeCodeApp polling", () => {
     await flushAsyncEffects();
 
     expect(mocks.listChatSessions).toHaveBeenCalledTimes(2);
+    expect(mocks.listLanes).toHaveBeenLastCalledWith(
+      connection,
+      { includeStatus: false },
+    );
+    expect(connection.action).toHaveBeenCalledWith(
+      "lane",
+      "getSummary",
+      { laneId: "lane-1", includeStatus: true },
+    );
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
+    await unmountApp(instance);
+  });
+
+  it("refreshes every lane status on the slower cadence", async () => {
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LANE_STATUS_REFRESH_MS);
+    });
+    await flushAsyncEffects();
+
+    expect(mocks.listLanes.mock.calls.filter(([, options]) => options?.includeStatus === true))
+      .toHaveLength(2);
     await unmountApp(instance);
   });
 

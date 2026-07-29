@@ -337,6 +337,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getEnvStatus",
     "getOverlay",
     "getStackChain",
+    "getSummary",
     "getTemplate",
     "importBranch",
     "initEnv",
@@ -2290,6 +2291,13 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   };
   return {
     ...laneService,
+    getSummary: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "lane.getSummary");
+      const laneId = requireNonEmptyString(record.laneId, "laneId");
+      return runtime.laneService.getSummary(laneId, {
+        includeStatus: record.includeStatus !== false,
+      });
+    },
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
       const lanes = await runtime.laneService.list({
         includeArchived: Boolean(args?.includeArchived),

@@ -1636,14 +1636,15 @@ describe("runtime session actions", () => {
     expect(clearWokeMarker).toHaveBeenCalledWith("session-1");
   });
 
-  it("validates lane branch-drift args and forwards the resolution", async () => {
+  it("validates lane status and branch-drift args before forwarding them", async () => {
+    const getSummary = vi.fn(async () => ({ id: "lane-1", status: { dirty: true } }));
     const getBranchDrift = vi.fn(async () => ({
       expectedBranchRef: "ade/feature",
       headBranchRef: "hotfix-auth",
     }));
     const resolveBranchDrift = vi.fn(async () => ({ resolution: "switch-back" }));
     const runtime = {
-      laneService: { getBranchDrift, resolveBranchDrift },
+      laneService: { getSummary, getBranchDrift, resolveBranchDrift },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const laneActions = getAdeActionDomainServices(runtime).lane as Record<
       string,
@@ -1652,8 +1653,15 @@ describe("runtime session actions", () => {
 
     // `ade lane actions --text` reads this list, so drift must appear in it.
     expect(listAllowedAdeActionNames("lane", laneActions)).toEqual(
-      expect.arrayContaining(["getBranchDrift", "resolveBranchDrift"]),
+      expect.arrayContaining(["getSummary", "getBranchDrift", "resolveBranchDrift"]),
     );
+
+    await expect(laneActions.getSummary({ laneId: "lane-1", includeStatus: true })).resolves.toEqual({
+      id: "lane-1",
+      status: { dirty: true },
+    });
+    expect(getSummary).toHaveBeenCalledWith("lane-1", { includeStatus: true });
+    await expect(laneActions.getSummary({})).rejects.toThrow(/laneId/);
 
     await expect(laneActions.getBranchDrift({ laneId: "lane-1" })).resolves.toEqual({
       expectedBranchRef: "ade/feature",
