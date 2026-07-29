@@ -41,6 +41,7 @@ import {
 } from "../dpop";
 import { randomHex } from "../ids";
 import {
+  availableBrowserSyncApplicationCompressionCodecs,
   assembleProjectCatalogChunks,
   BrowserSyncProtocolVersionMismatchError,
   createEnvelopeChunkAssembler,
@@ -531,6 +532,17 @@ describe("browser sync DPoP", () => {
 });
 
 describe("browser sync envelope codec", () => {
+  it("offers only compression codecs available in the current browser", () => {
+    expect(availableBrowserSyncApplicationCompressionCodecs()).toEqual(["deflate"]);
+
+    try {
+      vi.stubGlobal("CompressionStream", undefined);
+      expect(availableBrowserSyncApplicationCompressionCodecs()).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("accepts every integer inside a supported version interval", () => {
     expect(isBrowserSyncProtocolVersionSupported(1, 1, 2)).toBe(true);
     expect(isBrowserSyncProtocolVersionSupported(2, 1, 2)).toBe(true);

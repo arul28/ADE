@@ -18,7 +18,6 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
 import {
-  SYNC_APPLICATION_COMPRESSION_CODECS,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
@@ -37,6 +36,7 @@ import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof, signRelayReauthorizationProof } from "./dpop";
 import { randomHex } from "./ids";
 import {
+  availableBrowserSyncApplicationCompressionCodecs,
   createEnvelopeChunkAssembler,
   createProjectCatalogChunkAssembler,
   decodeEnvelopeText,
@@ -784,7 +784,7 @@ export class SyncConnection {
               SYNC_CHUNKED_ENVELOPES_CAPABILITY,
             ],
           },
-          compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
+          compression: availableBrowserSyncApplicationCompressionCodecs(),
           auth: {
             kind: "account",
             deviceId: args.peer.deviceId,
@@ -956,7 +956,7 @@ export class SyncConnection {
           SYNC_CHUNKED_ENVELOPES_CAPABILITY,
         ],
       },
-      compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
+      compression: availableBrowserSyncApplicationCompressionCodecs(),
       auth: {
         kind: "paired",
         deviceId: environment.pairedDeviceId,

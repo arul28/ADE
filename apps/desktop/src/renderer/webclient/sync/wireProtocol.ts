@@ -6,6 +6,7 @@ import type {
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
+import { SYNC_APPLICATION_COMPRESSION_CODECS } from "../../../shared/types/sync";
 
 export const SYNC_PROTOCOL_VERSION = 1;
 export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
@@ -47,6 +48,24 @@ export function isBrowserSyncProtocolVersionSupported(
     && Number.isInteger(value)
     && value >= minSupportedVersion
     && value <= currentVersion;
+}
+
+export function availableBrowserSyncApplicationCompressionCodecs(): SyncApplicationCompressionCodec[] {
+  if (
+    typeof CompressionStream !== "function"
+    || typeof DecompressionStream !== "function"
+  ) {
+    return [];
+  }
+  return SYNC_APPLICATION_COMPRESSION_CODECS.filter((codec) => {
+    try {
+      new CompressionStream(codec);
+      new DecompressionStream(codec);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function normalizeOptionalString(value: string | null | undefined): string | null {
