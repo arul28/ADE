@@ -688,9 +688,22 @@ export async function createAdeRuntime(args: {
   laneServiceRef = laneService;
   await laneService.ensurePrimaryLane();
 
+  // Late-bound because the publisher is constructed after the session/PTY
+  // services. Session changes still use it once publishing is attached.
+  let pushPublisherForPtySignals: PushPublisherService | null = null;
   const sessionService = createSessionService({ db });
   sessionService.onChanged((event) => {
     pushEvent("runtime", { type: "terminal_session_changed", event });
+    const session = sessionService.get(event.sessionId);
+    if (
+      session
+      && (
+        session.settleOverride === "settled"
+        || (session.settleOverride !== "active" && Boolean(session.settledAt))
+      )
+    ) {
+      pushPublisherForPtySignals?.handleSessionSettled(projectId, event.sessionId);
+    }
   });
   const processRegistry = createProcessRegistryService({
     db,
@@ -900,10 +913,8 @@ export async function createAdeRuntime(args: {
   // pattern as desktop main. Without this bridge, paired phones only ever
   // receive terminal snapshots, never live terminal_data push.
   let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
-  // Same late-binding for the push publisher: it feeds tracked CLI runtime
-  // states (running / waiting-input from OSC 133 markers) into the phone's
-  // Live Activity, and it's constructed after ptyService.
-  let pushPublisherForPtySignals: PushPublisherService | null = null;
+  // The late-bound push publisher feeds tracked CLI runtime states into the
+  // phone's Live Activity.
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -1512,6 +1523,8 @@ export async function createAdeRuntime(args: {
               title: session.title ?? null,
               toolType: session.toolType ?? null,
               chatSessionId: session.chatSessionId ?? null,
+              settledAt: session.settledAt ?? null,
+              settleOverride: session.settleOverride ?? null,
             };
           } catch {
             return null;

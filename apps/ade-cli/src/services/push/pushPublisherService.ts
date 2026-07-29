@@ -196,6 +196,8 @@ export type PushPublisherSources = {
     title: string | null;
     toolType?: string | null;
     chatSessionId?: string | null;
+    settledAt?: string | null;
+    settleOverride?: "settled" | "active" | null;
   } | null;
 };
 
@@ -932,6 +934,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           runs.delete(run.sessionId);
           continue;
         }
+        if (record.settleOverride === "settled" || (record.settleOverride !== "active" && record.settledAt)) {
+          run.phase = "completed";
+          recentRuns.set(run.sessionId, { ...run });
+          runs.delete(run.sessionId);
+          continue;
+        }
         run.title = record.title?.trim() || run.title || null;
         run.agent = providerDisplayName(record.toolType) ?? run.agent ?? "CLI";
         run.metaResolved = true;
@@ -1555,6 +1563,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const onCliRuntimeSignal = (scopeKey: string, signal: PushCliRuntimeSignal): void => {
     if (disposed || !signal.sessionId) return;
     const existing = runs.get(signal.sessionId);
+    const session = scopes.get(scopeKey)?.resolveCliSession?.(signal.sessionId) ?? null;
+    if (
+      session?.settleOverride === "settled"
+      || (session?.settleOverride !== "active" && Boolean(session?.settledAt))
+    ) {
+      if (existing) {
+        existing.phase = "completed";
+        existing.itemId = null;
+        markRunUpdated(existing);
+        recentRuns.set(signal.sessionId, { ...existing });
+        runs.delete(signal.sessionId);
+        pendingAlerts = pendingAlerts.filter(
+          (alert) =>
+            alert.dedupeKey !== `alert:${signal.sessionId}:approval`
+            && alert.dedupeKey !== `alert:${signal.sessionId}:question`,
+        );
+        clearAlertDedupe(`alert:${signal.sessionId}:approval`);
+        clearAlertDedupe(`alert:${signal.sessionId}:question`);
+        scheduleFlush(true);
+      }
+      return;
+    }
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
     // Explicit/provider-structured attention owns this phase until the

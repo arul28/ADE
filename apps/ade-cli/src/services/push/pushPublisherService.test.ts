@@ -285,7 +285,13 @@ describe("createPushPublisherService flush", () => {
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
-    const cliSessions = new Map<string, { title: string | null; toolType?: string | null; chatSessionId?: string | null }>();
+    const cliSessions = new Map<string, {
+      title: string | null;
+      toolType?: string | null;
+      chatSessionId?: string | null;
+      settledAt?: string | null;
+      settleOverride?: "settled" | "active" | null;
+    }>();
     const detach = publisher.attachSources("scope-1", {
       agentChatService: agentChatService as never,
       projectName: "ADE",
@@ -1938,7 +1944,7 @@ describe("createPushPublisherService flush", () => {
   });
 
   it("terminates a waiting CLI run when dismiss-and-settle resolves attention", async () => {
-    const { publisher } = makeHarness();
+    const { publisher, cliSessions } = makeHarness();
     await publisher.start();
 
     publisher.handleSessionAttentionRequested("scope-1", {
@@ -1951,6 +1957,18 @@ describe("createPushPublisherService flush", () => {
     publisher.handleSessionSettled("scope-1", "cli-settle-1");
 
     expect(publisher._debug.getPendingAlerts()).toEqual([]);
+    expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
+
+    cliSessions.set("cli-settle-1", {
+      title: "Fix auth race",
+      toolType: "codex",
+      settledAt: "2026-07-29T22:00:00.000Z",
+    });
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-settle-1",
+      runtimeState: "running",
+    });
     expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
 
     publisher.dispose();
