@@ -306,7 +306,6 @@ function StickyGroupHeader({
   variant = "default",
   busyLabel = null,
   heading = false,
-  dimmed = false,
   quietCounts = null,
   pinned = false,
   dragProps = null,
@@ -337,8 +336,6 @@ function StickyGroupHeader({
    * on this machine, so local-only setups never render one.
    */
   machineMarker?: React.ReactNode;
-  /** Dims the whole group — used for lanes on a machine that has gone offline. */
-  dimmed?: boolean;
   /** Compact action shown next to the count for non-lane headers. */
   headerAction?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
@@ -396,7 +393,7 @@ function StickyGroupHeader({
       transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
       onLayoutAnimationStart={() => setSliding(true)}
       onLayoutAnimationComplete={() => setSliding(false)}
-      className={cn("relative", !isLane && "mt-0.5 first:mt-0", dimmed && "opacity-55")}
+      className={cn("relative", !isLane && "mt-0.5 first:mt-0")}
     >
       {dropIndicatorEdge ? (
         <div
@@ -624,30 +621,27 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
  * Rendered ONLY for lanes that are not on the machine you're sitting at — the
  * common single-machine case pays nothing. Default form is a bare monochrome
  * glyph; the name is promoted into the row when a glyph alone would be
- * ambiguous (machine offline, two or more foreign machines on screen, or the
- * branch also exists elsewhere). The lane accent owns the color channel, so this
- * stays monochrome: a tint here would read as a second lane color.
+ * ambiguous (two or more foreign machines on screen, or the branch also exists
+ * elsewhere). The lane accent owns the color channel, so this stays monochrome:
+ * a tint here would read as a second lane color.
+ *
+ * Every marked machine is reachable — offline machines leave the sidebar — so
+ * there is no dimmed variant here.
  */
 function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
-  const description = marker.online
-    ? "This lane lives on another connected machine."
-    : "This lane is retained here while its machine is offline.";
   return (
     <SmartTooltip
       forceEnabled
       content={{
         label: marker.machineName,
-        description,
+        description: "This lane lives on another connected machine.",
       }}
     >
       <span
         role="img"
         tabIndex={0}
-        className={cn(
-          "inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none",
-          marker.online ? "text-muted-fg/70" : "text-muted-fg/45",
-        )}
-        aria-label={`${marker.machineName}${marker.online ? "" : ", offline"}`}
+        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        aria-label={marker.machineName}
         data-machine-id={marker.machineId}
         data-machine-marker-mode={marker.mode}
       >
@@ -1270,12 +1264,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
     const foreignRow = options?.foreignRow;
+    // Offline machines never reach this point — their rows are filtered out of
+    // the union — so the only foreign block left is a reachable machine whose
+    // call-routing binding hasn't resolved yet.
     const disabledReason = foreignRow
-      ? !foreignRow.online
-        ? `${foreignRow.machineName} is offline`
-        : !foreignRow.binding
-          ? `${foreignRow.machineName} is unavailable`
-          : null
+      ? !foreignRow.binding
+        ? `${foreignRow.machineName} is unavailable`
+        : null
       : deleteProgressByLaneId[session.laneId]
         ? `${getLaneDeleteStatusLabel(deleteProgressByLaneId[session.laneId])} lane`
         : null;
@@ -1789,9 +1784,6 @@ export const SessionListPane = React.memo(function SessionListPane({
                   settled: quiet.settled.length,
                 }
               : null}
-            // Offline machines keep every lane they last reported, dimmed and
-            // read-only. A wifi blip must never reflow the sidebar.
-            dimmed={!row.online}
             onToggleCollapsed={() => {
               if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
               else toggleWorkLaneCollapsed(compositeLaneId);
@@ -1801,7 +1793,6 @@ export const SessionListPane = React.memo(function SessionListPane({
                 row.lane,
                 row.binding!,
                 row.machineName,
-                row.online,
                 event,
               )
               : undefined}

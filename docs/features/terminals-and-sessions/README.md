@@ -530,8 +530,8 @@ Renderer surfaces:
   project tab is bound to. A lane that is not on This Mac carries a monochrome
   `Desktop` marker on its header — the lane accent owns the color channel — that
   promotes from a bare glyph to the machine's name when a glyph alone would be
-  ambiguous (the machine is offline, two or more foreign machines are on screen,
-  or the branch also exists elsewhere). Foreign lanes are listed only when they
+  ambiguous (two or more foreign machines are on screen, or the branch also
+  exists elsewhere). Foreign lanes are listed only when they
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
   everywhere; the empty state accounts for them, so "No sessions" cannot claim an
@@ -546,8 +546,12 @@ Renderer surfaces:
   CLI rows switch the tab to the owning project first because a PTY has no
   per-session runtime pin. Row/lane context actions pass the same binding so
   mutations cannot fall through to the active machine. A machine that goes
-  offline keeps its rows, dimmed and inert, rather than having them reflow away
-  on a wifi blip. A lane with shared delete progress is dimmed and
+  offline leaves the sidebar entirely — `useCrossMachineLaneUnion` drops its
+  lanes, chats, and markers, and its branches stop counting toward
+  "same branch elsewhere" — because a retained row reads as live work you can
+  act on and every action on it fails. The slice stays in the store for the
+  push-divergence guard, which needs the last-known branch state of an
+  unreachable machine. A lane with shared delete progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
   organization modes. The bottom Add Lane button opens
@@ -578,6 +582,17 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
+  It also owns visibility: `applyReachability` marks a machine reachable purely
+  from the connection snapshot (never from the narrower read-target list, which
+  would give the two sources contradictory opinions), and
+  `selectReachableCrossMachineRows` is the single place offline machines are
+  dropped from what the sidebar sees. A drop only counts once it has persisted
+  for `RECONNECT_GRACE_MS` (6 s), measured from the first non-connected snapshot
+  rather than the latest, because every redial publishes `connecting` and a
+  single failed liveness ping flips a target to `error`; reconnecting is applied
+  immediately. A timer re-runs the check when the oldest grace window lapses,
+  since a machine held through its window produces no further snapshot on its
+  own, and the deadlines are cleared on teardown and on scope change.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Any session with `orchestrationParentSessionId` renders a

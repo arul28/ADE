@@ -12,11 +12,17 @@ import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
 type MenuState = { laneId: string; x: number; y: number };
+/**
+ * Foreign menus are only ever opened from rows the Work union has already
+ * narrowed to reachable machines, so there is no offline state to carry here.
+ * A captured `online` flag would have been a lie anyway: it is a snapshot from
+ * right-click time, so it still reads "online" in the one case it looked like
+ * it covered — the machine dropping while the menu is open.
+ */
 type ForeignMenuState = {
   lane: LaneSummary;
   binding: OpenProjectBinding;
   machineName: string;
-  online: boolean;
   x: number;
   y: number;
 };
@@ -34,7 +40,6 @@ export type ForeignLaneContextTrigger = (
   lane: LaneSummary,
   binding: OpenProjectBinding,
   machineName: string,
-  online: boolean,
   e: { preventDefault: () => void; clientX: number; clientY: number },
 ) => void;
 
@@ -77,7 +82,6 @@ export function useWorkLaneContextMenu(options?: {
     lane,
     binding,
     machineName,
-    online,
     event,
   ) => {
     event.preventDefault();
@@ -86,7 +90,6 @@ export function useWorkLaneContextMenu(options?: {
       lane,
       binding,
       machineName,
-      online,
       x: event.clientX,
       y: event.clientY,
     });
@@ -122,7 +125,7 @@ export function useWorkLaneContextMenu(options?: {
     navigate,
   });
   const startForeignChat = useCallback(() => {
-    if (!foreignMenuState || !projectStateKey || !foreignMenuState.online) return;
+    if (!foreignMenuState || !projectStateKey) return;
     const laneId = foreignMenuState.lane.id;
     setWorkViewState(projectStateKey, (previous) => ({
       ...previous,
@@ -144,7 +147,7 @@ export function useWorkLaneContextMenu(options?: {
     setWorkViewState,
   ]);
   const openForeignLane = useCallback(() => {
-    if (!foreignMenuState?.online) return;
+    if (!foreignMenuState) return;
     const { binding, lane } = foreignMenuState;
     close();
     const switching = binding.kind === "remote"
@@ -163,7 +166,7 @@ export function useWorkLaneContextMenu(options?: {
     switchRemoteProject,
   ]);
   const manageForeignLane = useCallback(() => {
-    if (!foreignMenuState?.online) return;
+    if (!foreignMenuState) return;
     const { binding, lane } = foreignMenuState;
     close();
     setManagedLane({
@@ -218,7 +221,6 @@ export function useWorkLaneContextMenu(options?: {
               <ForeignLaneContextMenu
                 lane={foreignMenuState.lane}
                 machineName={foreignMenuState.machineName}
-                online={foreignMenuState.online}
                 x={foreignMenuState.x}
                 y={foreignMenuState.y}
                 onClose={close}
