@@ -18,7 +18,11 @@ import React, {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import type { ComputerUseArtifactView, ComputerUseOwnerSnapshot } from "../../../shared/types";
+import type {
+  ComputerUseArtifactDeleteResult,
+  ComputerUseArtifactView,
+  ComputerUseOwnerSnapshot,
+} from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
@@ -72,17 +76,26 @@ function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
 }
 
 /**
- * We know exactly why a tile is blank, so say it. "Preview unavailable" told
- * the user nothing and offered nothing to do about it.
+ * Keep canonical storage availability separate from preview generation.
+ * A missing preview can mean unsupported media or a size cap even when the
+ * stored proof is intact.
  */
-function brokenArtifactExplanation(artifact: ComputerUseArtifactView): string {
+function artifactPreviewExplanation(artifact: ComputerUseArtifactView): string {
   const where = shortSourcePath(artifact);
   if (artifactAvailability(artifact) === "unimported") {
     return where
       ? `Never copied into ADE's storage — it was left at ${where} in the lane it was captured in.`
       : "Never copied into ADE's storage, so there are no bytes to show.";
   }
-  return "The stored file has since been deleted.";
+  if (artifactAvailability(artifact) === "missing_file") {
+    return "The stored file has since been deleted.";
+  }
+  return "A preview is unavailable, but the stored proof is still attached.";
+}
+
+function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult): void {
+  if (result.failed.length === 0) return;
+  throw new Error(result.failed.map((failure) => failure.reason).join("; "));
 }
 
 function localArtifactUrl(uri: string): string | null {
@@ -159,15 +172,14 @@ function useVisibleArtifactPreview(
       .then((dataUrl) => {
         if (cancelled) return;
         setPreview(dataUrl);
+        setLoading(false);
         setLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setPreview(null);
+        setLoading(false);
         setLoaded(true);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -314,7 +326,7 @@ export function ChatProofArtifactCard({
             <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
               {externalUrl
                 ? "This proof lives at its source. Open it to view."
-                : brokenArtifactExplanation(artifact)}
+                : artifactPreviewExplanation(artifact)}
             </div>
           </div>
         ) : preview && image ? (
@@ -556,7 +568,7 @@ function DrawerProofTile({
         </div>
         {broken ? (
           <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
-            {externalUrl ? "Stored at its source." : brokenArtifactExplanation(artifact)}
+            {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
           </div>
         ) : null}
       </div>
@@ -614,9 +626,10 @@ export function ChatComputerUsePanel({
 
   const handleDelete = useCallback(
     (artifact: ComputerUseArtifactView) => {
-      void withBusy([artifact.id], () =>
-        window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }),
-      );
+      void withBusy([artifact.id], async () => {
+        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id });
+        assertArtifactDeletionSucceeded(result);
+      });
     },
     [withBusy],
   );
@@ -633,7 +646,10 @@ export function ChatComputerUsePanel({
   const handlePruneBroken = useCallback(() => {
     const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
     if (!ids.length) return;
-    void withBusy(ids, () => window.ade.computerUse.deleteArtifacts({ artifactIds: ids }));
+    void withBusy(ids, async () => {
+      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids });
+      assertArtifactDeletionSucceeded(result);
+    });
   }, [artifacts, withBusy]);
 
   if (!snapshot || artifacts.length === 0) {

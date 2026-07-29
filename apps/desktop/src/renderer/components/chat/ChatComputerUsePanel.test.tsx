@@ -127,6 +127,24 @@ describe("proof rendering", () => {
     });
   });
 
+  it("distinguishes an unavailable preview from a deleted stored file", async () => {
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
+
+    render(<ChatProofTimeline artifacts={[artifact(5)]} />);
+
+    expect(await screen.findByText(/preview is unavailable, but the stored proof is still attached/i)).toBeTruthy();
+    expect(screen.queryByText(/stored file has since been deleted/i)).toBeNull();
+  });
+
+  it("reports a missing stored file as deleted", async () => {
+    render(<ChatComputerUsePanel
+      snapshot={snapshotOf([artifact(6, { availability: "missing_file" })])}
+      onRefresh={vi.fn()}
+    />);
+
+    expect(await screen.findByText(/stored file has since been deleted/i)).toBeTruthy();
+  });
+
   it("keeps the latest six proof items inline and links earlier proof to the drawer", async () => {
     const onOpenDrawer = vi.fn();
     render(
@@ -187,6 +205,37 @@ describe("proof rendering", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete Proof 1" }));
 
     expect(await screen.findByText("Artifact is locked")).toBeTruthy();
+  });
+
+  it("surfaces resolved delete failures and does not refresh unchanged proof", async () => {
+    const onRefresh = vi.fn();
+    (window.ade as any).computerUse.deleteArtifacts = vi.fn().mockResolvedValue({
+      deleted: [],
+      missing: [],
+      failed: [{ artifactId: "artifact-1", reason: "Permission denied" }],
+      freedBytes: 0,
+    });
+
+    render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={onRefresh} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Proof 1" }));
+
+    expect(await screen.findByText("Permission denied")).toBeTruthy();
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it("surfaces resolved bulk-prune failures", async () => {
+    const broken = artifact(7, { availability: "missing_file" });
+    (window.ade as any).computerUse.deleteArtifacts = vi.fn().mockResolvedValue({
+      deleted: [],
+      missing: [],
+      failed: [{ artifactId: broken.id, reason: "File is locked" }],
+      freedBytes: 0,
+    });
+
+    render(<ChatComputerUsePanel snapshot={snapshotOf([broken])} onRefresh={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove it" }));
+
+    expect(await screen.findByText("File is locked")).toBeTruthy();
   });
 
   it("uses a remote-safe external action only for HTTP artifacts", async () => {
