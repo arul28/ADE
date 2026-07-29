@@ -28,7 +28,26 @@ export type SyncPairingRecord = {
    * null are deliberately local/manual for backward compatibility.
    */
   accountOwnerUserId?: string | null;
+  /**
+   * A PIN re-pair that the device has not proven it received. See
+   * `writeNewPairingRecord`: the fields above stay live and authoritative until
+   * a hello authenticates with the staged secret.
+   */
+  pendingRotation?: PendingPairingRotation | null;
 };
+
+/** A pairing record as committed on disk, with no rotation staged behind it. */
+export type CommittedPairingRecord = Omit<SyncPairingRecord, "pendingRotation">;
+
+export type PendingPairingRotation = {
+  /** Wall-clock ms after which the staged record is abandoned. */
+  expiresAtMs: number;
+  /** The complete record that replaces the committed one when promoted. */
+  record: CommittedPairingRecord;
+};
+
+/** How long a staged re-pair waits for the device to prove it received it. */
+export const PAIRING_ROTATION_WINDOW_MS = 10 * 60_000;
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
 type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
@@ -143,11 +162,35 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     return granted;
   };
 
+  /**
+   * Drops a staged rotation that nobody claimed. Returns the record to use, or
+   * null when `records[deviceId]` is absent. Callers persist when it mutates.
+   */
+  const pruneExpiredRotation = (
+    record: SyncPairingRecord | undefined,
+    nowMs: number,
+  ): { record: SyncPairingRecord | null; changed: boolean } => {
+    if (!record) return { record: null, changed: false };
+    const pending = record.pendingRotation;
+    if (!pending) return { record, changed: false };
+    if (pending.expiresAtMs > nowMs) return { record, changed: false };
+    // The device never proved it received the replacement, so the committed
+    // secret it is still holding stays authoritative.
+    const { pendingRotation: _dropped, ...committed } = record;
+    return { record: { ...committed, pendingRotation: null }, changed: true };
+  };
+
+  const committedView = (record: SyncPairingRecord): SyncPairingRecord => {
+    const { pendingRotation: _pending, ...committed } = record;
+    return committed;
+  };
+
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
     options?: NewPairingRecordOptions,
     trust: PairingTrust = { kind: "pin" },
-  ): { deviceId: string; secret: string } => {
+    stageRotation = false,
+  ): { deviceId: string; secret: string; pendingRotationExpiresAtMs: number | null } => {
     // Consume every presented grant to preserve its one-time semantics. A
     // direct LAN/tailnet PIN may authorize a desktop runtime host explicitly;
     // Relay PIN pairing never gets that exception. Verified same-owner account
@@ -158,6 +201,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     // mobile allowlist even when they authenticate with the same account.
     const secret = randomBytes(24).toString("hex");
     const records = readRecords();
+    // Always decide against the COMMITTED record. A second re-pair arriving
+    // while a rotation is still staged replaces that staged record; it never
+    // chains off it, so at most one rotation is ever outstanding.
     const existing = records[peer.deviceId] ?? null;
     const existingAccountOwnerUserId = normalizeAccountOwnerUserId(existing?.accountOwnerUserId);
     let accountOwnerUserId: string | null = null;
@@ -194,7 +240,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     const dpopPublicKey = trust.kind === "account" && existing?.dpopPublicKey
       ? existing.dpopPublicKey
       : validatedOfferedDpopKey ?? existing?.dpopPublicKey ?? null;
-    records[peer.deviceId] = {
+    const replacement: CommittedPairingRecord = {
       secretHash: hashSecret(secret),
       createdAt: existing?.createdAt ?? nowIso(),
       lastUsedAt: null,
@@ -209,10 +255,30 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       // record. A legacy record with no field remains local until rewritten.
       accountOwnerUserId,
     };
+    // Re-pairing used to overwrite the record the instant the host answered,
+    // two round trips before the device could persist the reply. A drop in that
+    // gap left the host holding credentials the device never saw, and the only
+    // way out was walking back to the Mac for another PIN. So a re-pair now
+    // STAGES: the committed secret the device is still holding stays live, and
+    // the replacement is promoted by the first hello that authenticates with
+    // it. Nothing to promote means nothing was lost — the staged record simply
+    // expires. A first-time pair has no committed secret to protect and is
+    // written straight through.
+    if (stageRotation && existing) {
+      const expiresAtMs = Date.now() + PAIRING_ROTATION_WINDOW_MS;
+      records[peer.deviceId] = {
+        ...committedView(existing),
+        pendingRotation: { expiresAtMs, record: replacement },
+      };
+      writeRecords(records);
+      return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: expiresAtMs };
+    }
+    records[peer.deviceId] = replacement;
     writeRecords(records);
     return {
       deviceId: peer.deviceId,
       secret,
+      pendingRotationExpiresAtMs: null,
     };
   };
 
@@ -231,14 +297,27 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       return token;
     },
 
-    pairPeer(peer: SyncPeerMetadata, pin: string, options?: NewPairingRecordOptions): { deviceId: string; secret: string } {
+    /**
+     * PIN pairing over the wire. This is the only entry point that stages its
+     * rotation: it is the one whose credential crosses two more round trips
+     * (pairing_result, then hello) before the device can persist it, and the
+     * only one whose recovery costs the user a walk back to the Mac. Account
+     * adoption returns its secret inside `hello_ok` with no acknowledged
+     * follow-up, so staging it would strand devices that never send another
+     * hello; local OS/SSH trust hands the secret back in-process.
+     */
+    pairPeer(
+      peer: SyncPeerMetadata,
+      pin: string,
+      options?: NewPairingRecordOptions,
+    ): { deviceId: string; secret: string; pendingRotationExpiresAtMs: number | null } {
       if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
       if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
-      return writeNewPairingRecord(peer, options, { kind: "pin" });
+      return writeNewPairingRecord(peer, options, { kind: "pin" }, true);
     },
 
     pairPeerViaAccount(
@@ -287,22 +366,73 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       return true;
     },
 
+    /**
+     * Authenticates a device and, when it presents a staged re-pair's secret,
+     * promotes that rotation — the device proving possession IS the commit, so
+     * no extra wire message is needed and clients that predate staging get the
+     * protection for free.
+     */
     authenticate(deviceId: string, secret: string): boolean {
       const normalized = deviceId.trim();
       if (!normalized) return false;
       const records = readRecords();
-      const entry = records[normalized];
+      const pruned = pruneExpiredRotation(records[normalized], Date.now());
+      const entry = pruned.record;
       if (!entry) return false;
-      if (!safeHashEquals(entry.secretHash, hashSecret(secret))) return false;
-      entry.lastUsedAt = nowIso();
-      writeRecords(records);
-      return true;
+      const presented = hashSecret(secret);
+      if (safeHashEquals(entry.secretHash, presented)) {
+        records[normalized] = { ...entry, lastUsedAt: nowIso() };
+        writeRecords(records);
+        return true;
+      }
+      const pending = entry.pendingRotation;
+      if (pending && safeHashEquals(pending.record.secretHash, presented)) {
+        records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+        writeRecords(records);
+        return true;
+      }
+      if (pruned.changed) {
+        records[normalized] = entry;
+        writeRecords(records);
+      }
+      return false;
     },
 
+    /**
+     * Read-only counterpart of `authenticate` for callers that only need to
+     * confirm a secret they just minted is on record. It must not promote:
+     * writing a record is not the device receiving it.
+     */
+    verifySecret(deviceId: string, secret: string): "committed" | "pending" | null {
+      const normalized = deviceId.trim();
+      if (!normalized) return null;
+      const entry = pruneExpiredRotation(readRecords()[normalized], Date.now()).record;
+      if (!entry) return null;
+      const presented = hashSecret(secret);
+      if (safeHashEquals(entry.secretHash, presented)) return "committed";
+      const pending = entry.pendingRotation;
+      if (pending && safeHashEquals(pending.record.secretHash, presented)) return "pending";
+      return null;
+    },
+
+    /** Whether an unproven re-pair is still waiting on this device. */
+    hasPendingRotation(deviceId: string): boolean {
+      const normalized = deviceId.trim();
+      if (!normalized) return false;
+      const entry = pruneExpiredRotation(readRecords()[normalized], Date.now()).record;
+      return Boolean(entry?.pendingRotation);
+    },
+
+    /**
+     * The committed record. A staged rotation is deliberately not visible here:
+     * every authorization decision (DPoP key, account owner, runtime grant) has
+     * to read what is live right now, not what a device might promote later.
+     */
     getPairingRecord(deviceId: string): SyncPairingRecord | null {
       const normalized = deviceId.trim();
       if (!normalized) return null;
-      return readRecords()[normalized] ?? null;
+      const entry = pruneExpiredRotation(readRecords()[normalized], Date.now()).record;
+      return entry ? committedView(entry) : null;
     },
 
     hasPairingRecord(deviceId: string): boolean {

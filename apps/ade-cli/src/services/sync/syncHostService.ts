@@ -144,7 +144,15 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
-import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createPairFailureTracker,
+  type PairFailureSubject,
+} from "./syncPairFailureTracker";
+import {
+  createSyncDpopNonceCache,
+  evaluatePairedHelloDpop,
+  syncDpopFailureMessage,
+} from "./syncDpop";
 import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
@@ -2475,115 +2483,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   loadPersistedCommandLedger();
   const lanePresenceByLaneId = new Map<string, Map<string, LanePresenceEntry>>();
   let localActiveLaneIds = new Set<string>();
-  const PAIR_FAILURE_THRESHOLD = 5;
-  const PAIR_COOLDOWN_MS = 10 * 60_000;
-  const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
-  type PairFailureEntry = { count: number; cooldownUntilMs: number; updatedAtMs: number };
-  const pairFailures = new Map<string, PairFailureEntry>();
-  const globalPairFailures: PairFailureEntry = { count: 0, cooldownUntilMs: 0, updatedAtMs: 0 };
-  const adoptChallengeIssuances = new Map<string, PairFailureEntry>();
-  const globalAdoptChallengeIssuances: PairFailureEntry = {
-    count: 0,
-    cooldownUntilMs: 0,
-    updatedAtMs: 0,
+  const pairFailureTracker = createPairFailureTracker();
+  const registerPairFailure = (subject: PairFailureSubject): void => {
+    pairFailureTracker.registerFailure(subject);
   };
-  const resetPairFailureEntry = (entry: PairFailureEntry): void => {
-    entry.count = 0;
-    entry.cooldownUntilMs = 0;
-    entry.updatedAtMs = 0;
+  const pairingCooldownMsRemaining = (subject: PairFailureSubject): number =>
+    pairFailureTracker.cooldownMsRemaining(subject);
+  const clearPairFailuresAfterSuccessfulPair = (subject: PairFailureSubject): void => {
+    pairFailureTracker.clearAfterSuccess(subject);
   };
-  const isPairFailureEntryExpired = (entry: PairFailureEntry, now: number): boolean => {
-    if (entry.updatedAtMs <= 0) return false;
-    return (entry.cooldownUntilMs > 0 && entry.cooldownUntilMs <= now)
-      || entry.updatedAtMs + PAIR_FAILURE_WINDOW_MS <= now;
-  };
-  const pruneExpiredPairFailures = (now = Date.now()): boolean => {
-    let changed = false;
-    for (const [ip, entry] of pairFailures) {
-      if (isPairFailureEntryExpired(entry, now)) {
-        pairFailures.delete(ip);
-        changed = true;
-      }
-    }
-    if (isPairFailureEntryExpired(globalPairFailures, now)) {
-      resetPairFailureEntry(globalPairFailures);
-      changed = true;
-    }
-    return changed;
-  };
-  const incrementPairFailureEntry = (entry: PairFailureEntry, now: number): void => {
-    entry.count += 1;
-    entry.updatedAtMs = now;
-    if (entry.count >= PAIR_FAILURE_THRESHOLD) {
-      entry.cooldownUntilMs = now + PAIR_COOLDOWN_MS;
-      entry.count = 0;
-    }
-  };
-  const registerPairFailure = (ip: string | null): void => {
-    const now = Date.now();
-    pruneExpiredPairFailures(now);
-    incrementPairFailureEntry(globalPairFailures, now);
-    if (ip) {
-      const entry = pairFailures.get(ip) ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
-      incrementPairFailureEntry(entry, now);
-      pairFailures.set(ip, entry);
-    }
-  };
-  const pairingCooldownMsRemaining = (ip: string | null): number => {
-    const now = Date.now();
-    pruneExpiredPairFailures(now);
-    const globalRemaining = Math.max(0, globalPairFailures.cooldownUntilMs - now);
-    const ipEntry = ip ? pairFailures.get(ip) ?? null : null;
-    const ipRemaining = ipEntry ? Math.max(0, ipEntry.cooldownUntilMs - now) : 0;
-    return Math.max(globalRemaining, ipRemaining);
-  };
-  const clearPairFailuresAfterSuccessfulPair = (ip: string | null): void => {
-    resetPairFailureEntry(globalPairFailures);
-    if (ip) pairFailures.delete(ip);
-  };
-  const pruneExpiredAdoptChallengeIssuances = (now = Date.now()): void => {
-    for (const [ip, entry] of adoptChallengeIssuances) {
-      if (isPairFailureEntryExpired(entry, now)) {
-        adoptChallengeIssuances.delete(ip);
-      }
-    }
-    if (isPairFailureEntryExpired(globalAdoptChallengeIssuances, now)) {
-      resetPairFailureEntry(globalAdoptChallengeIssuances);
-    }
-  };
-  // Only called for malformed/anomalous challenges (genuine abuse signals);
-  // well-formed challenges deliberately feed no limiter. Counts both per-IP and
-  // globally so a distributed malformed flood is bounded as well as a single
-  // origin's.
+  // Only fed by malformed/anomalous challenges (genuine abuse signals);
+  // well-formed challenges deliberately feed no limiter. A separate tracker so
+  // a malformed-challenge flood cannot spend the PIN budget, or vice versa.
+  const adoptChallengeTracker = createPairFailureTracker();
   const registerAdoptChallengeIssuance = (ip: string | null): void => {
-    const now = Date.now();
-    pruneExpiredAdoptChallengeIssuances(now);
-    incrementPairFailureEntry(globalAdoptChallengeIssuances, now);
-    if (ip) {
-      const entry = adoptChallengeIssuances.get(ip)
-        ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
-      incrementPairFailureEntry(entry, now);
-      adoptChallengeIssuances.set(ip, entry);
-    }
+    adoptChallengeTracker.registerFailure({ ip });
   };
-  const adoptChallengeCooldownMsRemaining = (ip: string | null): number => {
-    const now = Date.now();
-    pruneExpiredAdoptChallengeIssuances(now);
-    const globalRemaining = Math.max(
-      0,
-      globalAdoptChallengeIssuances.cooldownUntilMs - now,
-    );
-    const ipEntry = ip ? adoptChallengeIssuances.get(ip) ?? null : null;
-    const ipRemaining = ipEntry
-      ? Math.max(0, ipEntry.cooldownUntilMs - now)
-      : 0;
-    return Math.max(globalRemaining, ipRemaining);
-  };
+  const adoptChallengeCooldownMsRemaining = (ip: string | null): number =>
+    adoptChallengeTracker.cooldownMsRemaining({ ip });
   const clearAdoptChallengeIssuancesAfterSuccessfulAuth = (
     ip: string | null,
   ): void => {
-    resetPairFailureEntry(globalAdoptChallengeIssuances);
-    if (ip) adoptChallengeIssuances.delete(ip);
+    adoptChallengeTracker.clearAfterSuccess({ ip });
   };
 
   const normalizeLaneId = (laneId: string | null | undefined): string | null => {
@@ -2943,7 +2864,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     runPollPump();
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
-    pruneExpiredPairFailures();
+    pairFailureTracker.pruneExpired();
+    adoptChallengeTracker.pruneExpired();
     const refreshedLocalPresence = refreshLocalLanePresence();
     if (refreshedLocalPresence || pruneExpiredLanePresence()) {
       args.onStateChanged?.();
@@ -6590,8 +6512,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (envelope.type === "account_challenge") {
+        // No device identity is available before a challenge, so this can only
+        // consult the address and global buckets.
         const cooldownMs = Math.max(
-          pairingCooldownMsRemaining(peer.remoteAddress),
+          pairingCooldownMsRemaining({ ip: peer.remoteAddress }),
           adoptChallengeCooldownMsRemaining(peer.remoteAddress),
         );
         if (cooldownMs > 0) {
@@ -6757,7 +6681,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             return;
           }
         }
-        const cooldownMs = pairingCooldownMsRemaining(peer.remoteAddress);
+        const pairFailureSubject: PairFailureSubject = {
+          ip: peer.remoteAddress,
+          deviceId: pairing.peer.deviceId,
+        };
+        const cooldownMs = pairingCooldownMsRemaining(pairFailureSubject);
         if (cooldownMs > 0) {
           const minutes = Math.ceil(cooldownMs / 60_000);
           send(peer.ws, "pairing_result", {
@@ -6799,7 +6727,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             allowDirectPinRuntimeHost: peer.transportOrigin !== "relay-bridge",
           });
           closeExistingPeersForDevice(pairing.peer.deviceId, peer);
-          clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
+          clearPairFailuresAfterSuccessfulPair(pairFailureSubject);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
             lastHost: peer.remoteAddress,
@@ -6809,6 +6737,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ok: true,
             deviceId: result.deviceId,
             secret: result.secret,
+            // Advisory only. Present when this re-pair was staged behind the
+            // device's existing secret, which stays valid until a hello proves
+            // the replacement arrived. Clients that ignore it stay correct.
+            ...(result.pendingRotationExpiresAtMs != null
+              ? {
+                  rotation: {
+                    pendingCommit: true,
+                    expiresInMs: Math.max(0, result.pendingRotationExpiresAtMs - Date.now()),
+                  },
+                }
+              : {}),
           }, envelope.requestId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -6828,7 +6767,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // PIN requires a new TCP+WS handshake per attempt, and track per-IP
           // failures so sustained guessers hit a cooldown.
           if (resultCode === "invalid_pin" || resultCode === "pairing_failed") {
-            registerPairFailure(peer.remoteAddress);
+            registerPairFailure(pairFailureSubject);
           }
           try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
         }
@@ -6937,19 +6876,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let connectionAttemptReserved = false;
       let connectionAttemptRejected = false;
       let authFailureCode: SyncHelloErrorPayload["code"] = "auth_failed";
+      // Every rejection below used to arrive as this one string. The client
+      // renders whatever it is handed, so a bare "authentication failed" left
+      // the user with no idea whether to re-pair, sign in, update, or give up.
+      // Each `authFail(...)` names one cause and one next step; the generic
+      // wording survives only as the unreachable default.
       let authFailureMessage = "Sync authentication failed.";
+      const authFail = (
+        message: string,
+        code?: SyncHelloErrorPayload["code"],
+      ): true => {
+        authFailureMessage = message;
+        if (code) authFailureCode = code;
+        return true;
+      };
+      const REPAIR_REQUIRED = "This device is not paired with this machine, or its saved"
+        + " pairing is no longer valid. Pair it again.";
+      const ACCOUNT_SESSION_CHANGED = "The ADE account session on this machine changed"
+        + " while connecting. Try again.";
       // Return semantics: `true` means authentication FAILED -> the caller below
-      // sends a `hello_error` (auth_failed) and closes the socket (4003).
-      // `false` means the device is authenticated.
+      // sends a `hello_error` and closes the socket (4003). `false` means the
+      // device is authenticated.
       const authFailed = await (async () => {
         if (hello.auth?.kind === "bootstrap") {
           if (peer.transportOrigin === "relay-bridge") {
-            authFailureCode = "relay_account_required";
-            authFailureMessage = "Sign in with the same ADE account on both machines.";
             args.logger.warn("sync_host.bootstrap_relay_rejected", {
               deviceId: hello.peer.deviceId,
             });
-            return true;
+            return authFail(
+              "Sign in with the same ADE account on both machines.",
+              "relay_account_required",
+            );
           }
           // The bootstrap token is a shared, plaintext, never-rotating secret.
           // Once the sync host is bound to the LAN (the new 0.0.0.0 default),
@@ -6963,13 +6920,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // which verifies the 6-digit PIN via pinStore. This preserves
           // legitimate already-paired reconnects (which use the token) while
           // forcing every new device through the PIN gate.
-          if (!safeStringEquals(bootstrapToken, hello.auth.token)) return true;
+          if (!safeStringEquals(bootstrapToken, hello.auth.token)) {
+            return authFail(
+              "This device's saved setup token does not match this machine. Pair it again.",
+            );
+          }
           const bootstrapPairingRecord = pairingStore.getPairingRecord(hello.peer.deviceId);
           // A device whose pairing record carries a DPoP key must prove key
           // possession on every connection. Letting it in via the shared
           // bootstrap token would be a downgrade path: a stolen token plus a
           // spoofed deviceId would bypass the enclave binding entirely.
-          if (bootstrapPairingRecord?.dpopPublicKey) return true;
+          if (bootstrapPairingRecord?.dpopPublicKey) {
+            return authFail(
+              "This device must reconnect with its saved pairing secret and device key,"
+                + " not the shared setup token. Pair it again.",
+            );
+          }
           if (SYNC_HOST_BIND_LOOPBACK_ONLY) {
             // Loopback-only hosts (ADE_SYNC_BIND_HOST=127.0.0.1) are already a
             // trust boundary — only local processes can connect — so retain the
@@ -6983,17 +6949,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             args.logger.warn("sync_host.dpop_required_bootstrap_rejected", {
               deviceId: hello.peer.deviceId,
             });
-            return true;
+            return authFail(
+              "This machine requires every device to pair with its own security key."
+                + " Pair this device again to create one.",
+            );
           }
           // LAN-bound default: bootstrap is reconnect-only. A device must already
           // be paired; unknown devices must pair via the PIN flow. Existing
           // paired phones from older releases may not have a host PIN configured
           // yet, and should still be able to reconnect with their stored token.
-          return bootstrapPairingRecord == null;
+          if (bootstrapPairingRecord == null) {
+            return authFail("This device is not paired with this machine. Pair it with a PIN first.");
+          }
+          return false;
         }
         if (hello.auth?.kind === "paired") {
           const pairedAuth = hello.auth;
-          if (pairedAuth.deviceId !== hello.peer.deviceId) return true;
+          if (pairedAuth.deviceId !== hello.peer.deviceId) {
+            return authFail(
+              "The pairing identity in this connection did not match the device that sent it.",
+            );
+          }
           if (peer.transportOrigin === "relay-bridge") {
             const authorization = await captureAccountAuthorization();
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
@@ -7052,16 +7028,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // is and logs it below, but telling an UNAUTHENTICATED caller
             // whether a device id exists here turns this into an existence
             // oracle, and the user's next step is the same either way.
-            authFailureMessage = "This device is not paired with this machine, or its saved"
-              + " pairing is no longer valid. Pair it again.";
             args.logger.warn("sync_host.paired_device_rejected", {
               deviceId: pairedAuth.deviceId,
               reason: knownRecord ? "secret_mismatch" : "unknown_device",
             });
-            return true;
+            return authFail(REPAIR_REQUIRED);
           }
           authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
-          if (!authenticatedPairingRecord) return true;
+          if (!authenticatedPairingRecord) {
+            return authFail("This machine could not read its pairing record for this device. Pair it again.");
+          }
           const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
           if (pairingAccountOwner) {
             const currentOwner = await refreshAccountLease();
@@ -7069,13 +7045,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             if (currentOwner !== pairingAccountOwner) {
               // A LAN client rejected here sees only "authentication"; the
               // account mismatch is the actionable part.
-              authFailureMessage = "This machine is signed in to a different ADE account than the one that paired this device.";
               args.logger.warn("sync_host.paired_account_owner_mismatch", {
                 deviceId: pairedAuth.deviceId,
                 hasCurrentOwner: Boolean(currentOwner),
                 ownerMatches: false,
               });
-              return true;
+              return authFail(
+                "This machine is signed in to a different ADE account than the one that paired this device.",
+              );
             }
           }
           const dpopFailure = evaluatePairedHelloDpop({
@@ -7095,19 +7072,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               deviceId: pairedAuth.deviceId,
               reason: dpopFailure,
             });
-            return true;
+            return authFail(syncDpopFailureMessage(dpopFailure));
           }
           // evaluatePairedHelloDpop may TOFU-pin the first DPoP key for a
           // legacy keyless record. Reload it before installing Relay refresh;
           // otherwise this first socket advertises reauthorization while its
           // peer-local record still has no usable key.
           authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
-          if (!authenticatedPairingRecord) return true;
+          if (!authenticatedPairingRecord) {
+            return authFail("This machine could not read its pairing record for this device. Pair it again.");
+          }
           return false;
         }
         if (hello.auth?.kind === "account") {
           const accountAuth = hello.auth;
-          if (accountAuth.deviceId !== hello.peer.deviceId) return true;
+          if (accountAuth.deviceId !== hello.peer.deviceId) {
+            return authFail(
+              "The account identity in this connection did not match the device that sent it.",
+            );
+          }
           // Account bearer credentials must never traverse or authenticate a
           // plaintext direct sync route. Existing devices reconnect directly
           // with their stored paired secret + DPoP key instead.
@@ -7116,7 +7099,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               deviceId: accountAuth.deviceId,
               transportOrigin: peer.transportOrigin,
             });
-            return true;
+            return authFail(
+              "Signing in cannot authenticate a direct connection to this machine."
+                + " Connect through ADE Relay, or pair this device with a PIN.",
+            );
           }
           try {
             const authorization = await captureAccountAuthorization();
@@ -7125,10 +7111,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               args.logger.warn("sync_host.account_owner_missing", {
                 deviceId: accountAuth.deviceId,
               });
-              return true;
+              return authFail(
+                "This machine is not signed in to an ADE account. Sign in on the Mac, then try again.",
+              );
             }
             const config = args.getAccountAttestationConfig?.();
-            if (!config) return true;
+            if (!config) {
+              return authFail(
+                "This machine cannot verify ADE accounts. Update ADE on the Mac, then try again.",
+              );
+            }
             const attestation = await verifyAccountAttestation({
               token: accountAuth.accountToken,
               expectedUserId: authorization.userId,
@@ -7147,7 +7139,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               args.logger.warn("sync_host.account_auth_session_changed", {
                 deviceId: accountAuth.deviceId,
               });
-              return true;
+              return authFail(ACCOUNT_SESSION_CHANGED);
             }
             return await withHelloCommitLock(accountAuth.deviceId, async () => {
               if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
@@ -7160,14 +7152,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 !lockedAuthorization
                 || lockedAuthorization.userId !== authorization.userId
                 || lockedAuthorization.generation !== authorization.generation
-              ) return true;
+              ) {
+                return authFail(ACCOUNT_SESSION_CHANGED);
+              }
 
               const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
               if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
                 args.logger.warn("sync_host.account_existing_keyless_rejected", {
                   deviceId: accountAuth.deviceId,
                 });
-                return true;
+                return authFail(
+                  "This device's saved pairing predates device-key security."
+                    + " Remove it on the Mac and pair it again.",
+                );
               }
               const dpopFailure = evaluatePairedHelloDpop({
                 storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
@@ -7182,10 +7179,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   deviceId: accountAuth.deviceId,
                   reason: dpopFailure,
                 });
-                return true;
+                return authFail(syncDpopFailureMessage(dpopFailure));
               }
               const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
-              if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
+              if (existingAccountOwner && existingAccountOwner !== authorization.userId) {
+                return authFail(
+                  "This device is already paired to this machine under a different ADE account.",
+                );
+              }
               if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
                 connectionAttemptRejected = true;
                 return false;
@@ -7203,10 +7204,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   : accountAuth.dpop?.publicKey ?? null,
                 runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
               });
-              if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+              // Read-only: this confirms the record we just wrote is readable,
+              // and must not be mistaken for the device proving it received the
+              // secret (which is what promotes a staged rotation).
+              if (!pairingStore.verifySecret(paired.deviceId, paired.secret)) {
+                return authFail("This machine could not save the new pairing for this device. Try again.");
+              }
               accountPairing = paired;
               authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
-              return authenticatedPairingRecord == null;
+              if (!authenticatedPairingRecord) {
+                return authFail("This machine could not save the new pairing for this device. Try again.");
+              }
+              return false;
             });
           } catch (error) {
             args.logger.warn("sync_host.account_auth_rejected", {
@@ -7215,10 +7224,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ? (error as { code: string }).code
                 : "verification_failed",
             });
-            return true;
+            return authFail(
+              "This machine could not verify your ADE account session."
+                + " Sign out and back in on this device, then try again.",
+            );
           }
         }
-        return true;
+        return authFail(
+          "This connection did not present any way to authenticate. Update ADE on this device.",
+        );
       })();
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       if (authFailed) {

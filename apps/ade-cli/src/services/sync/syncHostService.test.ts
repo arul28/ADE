@@ -3643,6 +3643,105 @@ describe("sync host account authentication", () => {
       cleanup();
     }
   });
+
+  // A re-pair used to overwrite the device's working secret the instant the
+  // host answered, two round trips before the device could persist the reply.
+  // Dropping the socket in that gap — the ordinary outcome on a flaky network —
+  // left the host holding credentials the phone never saw, and the only way
+  // back was walking to the Mac for another PIN. Retrying was what broke you.
+  it("survives a re-pair that drops before the device ever uses the new secret", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    pinStore.setPin("428193");
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const peer = {
+      deviceId: "flaky-repair-phone",
+      deviceName: "Flaky iPhone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "flaky-repair-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const dpopKey = makeDpopKeyPair();
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+
+    const requestPairing = async (requestId: string) => {
+      const port = await host.waitUntilListening();
+      const client = await openAccountClient(port);
+      clients.push(client);
+      client.ws.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId,
+        payload: { code: "428193", peer, dpopPublicKey: dpopKey.publicKeyX963 },
+      }));
+      const result = await waitForValue(
+        () => client.envelopes.find((envelope) =>
+          envelope.type === "pairing_result" && envelope.requestId === requestId),
+        `pairing_result ${requestId}`,
+      );
+      return { client, payload: result.payload as { secret: string; rotation?: unknown } };
+    };
+
+    const helloWith = async (secret: string) => {
+      const port = await host.waitUntilListening();
+      const client = await openAccountClient(port);
+      clients.push(client);
+      sendPairedHello({
+        ws: client.ws,
+        peer,
+        secret,
+        dpop: signPairedDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret,
+        }),
+      });
+      const envelope = await waitForValue(
+        () => client.envelopes.find((candidate) =>
+          candidate.type === "hello_ok" || candidate.type === "hello_error"),
+        `hello outcome for ${secret.slice(0, 6)}`,
+      );
+      return envelope.type;
+    };
+
+    try {
+      const first = await requestPairing("pair-initial");
+      // Nothing to protect on a first pair, so nothing is staged.
+      expect(first.payload.rotation).toBeUndefined();
+      expect(await helloWith(first.payload.secret)).toBe("hello_ok");
+
+      const rotated = await requestPairing("pair-retry");
+      expect(rotated.payload.secret).not.toBe(first.payload.secret);
+      // The drop: the device never gets to send its hello.
+      rotated.client.ws.close();
+
+      // Both ends still agree on the secret the device is actually holding.
+      expect(await helloWith(first.payload.secret)).toBe("hello_ok");
+      // And a device that DID save the replacement is not locked out either.
+      expect(await helloWith(rotated.payload.secret)).toBe("hello_ok");
+      // Using it retires the old one, so the rotation is not indefinite.
+      expect(await helloWith(first.payload.secret)).toBe("hello_error");
+      expect(rotated.payload.rotation).toMatchObject({ pendingCommit: true });
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 describe("paired runtime host authorization", () => {

@@ -164,6 +164,26 @@ export function evaluatePairedHelloDpop(input: {
   return input.requireDpop ? "dpop_required" : null;
 }
 
+/**
+ * The next step a user can actually take for each DPoP rejection reason. These
+ * are sent verbatim to the client, which used to render every one of them as
+ * "Sync authentication failed." — a clock skew and a stolen-key rejection are
+ * not the same problem and must not read the same.
+ */
+export function syncDpopFailureMessage(reason: string): string {
+  switch (reason) {
+    case "proof_required":
+    case "dpop_required":
+      return "This device did not present its security key. Update ADE on the device, then pair it again.";
+    case "stale_timestamp":
+      return "This device's clock is too far from this machine's. Fix the date and time on both, then try again.";
+    case "replayed_nonce":
+      return "This device's security proof had already been used. Try connecting again.";
+    default:
+      return "This device could not prove it holds the security key this machine has on record. Pair it again.";
+  }
+}
+
 /** Bounded nonce replay cache keyed by `deviceId:nonce`. */
 export function createSyncDpopNonceCache(args?: { ttlMs?: number; maxEntries?: number }) {
   const ttlMs = args?.ttlMs ?? SYNC_DPOP_NONCE_TTL_MS;

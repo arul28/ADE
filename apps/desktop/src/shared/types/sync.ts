@@ -1016,6 +1016,18 @@ export type SyncPairingResultPayload = {
   ok: boolean;
   deviceId?: string;
   secret?: string;
+  /**
+   * Advisory. Present only when this was a RE-pair that the host staged behind
+   * the device's existing secret: that older secret stays valid until a hello
+   * authenticates with the one returned here (or until the window lapses, at
+   * which point the host keeps the old one). Purely diagnostic — a client that
+   * ignores this field behaves correctly, and hosts predating the staged
+   * rotation never send it.
+   */
+  rotation?: {
+    pendingCommit: true;
+    expiresInMs: number;
+  };
   error?: {
     code:
       | "invalid_pin"
