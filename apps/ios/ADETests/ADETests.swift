@@ -452,6 +452,69 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(legacyEnvelope["compression"] as? String, "gzip")
   }
 
+  @MainActor
+  func testSyncHelloNegotiationPreservesLegacyAndRejectsUnsupportedSelections() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    defer { service.disconnect(clearCredentials: false) }
+    let brain = [
+      "deviceId": "wire-host",
+      "deviceName": "Mac Studio",
+    ]
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "features": [String: Any](),
+    ])
+    var wire = service.negotiatedWireTransportForTesting()
+    XCTAssertNil(wire.compressionCodec)
+    XCTAssertEqual(wire.compressionThresholdBytes, 4 * 1024)
+    XCTAssertFalse(wire.chunkedEnvelopes)
+    XCTAssertEqual(wire.maxFrameBytes, 720 * 1024)
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "compression": ["codec": "gzip", "thresholdBytes": 1],
+      "features": [
+        "chunkedEnvelopes": ["enabled": true, "maxFrameBytes": 1_024],
+      ],
+    ])
+    wire = service.negotiatedWireTransportForTesting()
+    XCTAssertNil(wire.compressionCodec, "iOS offered deflate only; a host cannot select gzip.")
+    XCTAssertEqual(wire.compressionThresholdBytes, 4 * 1024)
+    XCTAssertFalse(wire.chunkedEnvelopes, "An invalid frame budget must not enable outbound chunks.")
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "compression": ["codec": "deflate", "thresholdBytes": 512],
+      "features": [
+        "chunkedEnvelopes": ["enabled": true, "maxFrameBytes": 64 * 1024],
+      ],
+    ])
+    wire = service.negotiatedWireTransportForTesting()
+    XCTAssertEqual(wire.compressionCodec, "deflate")
+    XCTAssertEqual(wire.compressionThresholdBytes, 512)
+    XCTAssertTrue(wire.chunkedEnvelopes)
+    XCTAssertEqual(wire.maxFrameBytes, 64 * 1024)
+  }
+
+  func testSyncPreprocessRejectsMalformedOrUnsupportedCompressionMetadata() {
+    let invalidEnvelopes = [
+      """
+      {"version":1,"type":"chat_event","compression":"brotli","payloadEncoding":"base64","payload":"e30="}
+      """,
+      """
+      {"version":1,"type":"chat_event","compression":"deflate","payloadEncoding":"json","payload":{}}
+      """,
+      """
+      {"version":1,"type":"chat_event","compression":"none","payloadEncoding":"base64","payload":"e30="}
+      """,
+    ]
+
+    for envelope in invalidEnvelopes {
+      XCTAssertThrowsError(try syncPreprocessIncoming(envelope))
+    }
+  }
+
   func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 

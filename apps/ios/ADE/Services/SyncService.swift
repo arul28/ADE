@@ -1632,6 +1632,70 @@ func syncProtocolVersionIsSupported(
   version >= minSupportedVersion && version <= currentVersion
 }
 
+func syncDecodeEnvelopePayload(
+  _ envelope: [String: Any],
+  maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> Any {
+  let compression = envelope["compression"] as? String ?? "none"
+  switch compression {
+  case "gzip", "deflate":
+    guard envelope["payloadEncoding"] as? String == "base64",
+          let base64 = envelope["payload"] as? String,
+          let compressed = Data(base64Encoded: base64) else {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Compressed sync envelopes must use base64 payload encoding."]
+      )
+    }
+    let declaredBytes: Int?
+    if let rawDeclaredBytes = envelope["uncompressedBytes"] {
+      guard let parsedDeclaredBytes = syncProtocolVersionNumber(rawDeclaredBytes),
+            parsedDeclaredBytes >= 0,
+            parsedDeclaredBytes <= maxUncompressedBytes else {
+        throw NSError(
+          domain: "ADE",
+          code: 10,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid compressed sync envelope size."]
+        )
+      }
+      declaredBytes = parsedDeclaredBytes
+    } else {
+      declaredBytes = nil
+    }
+    let inflated: Data
+    if compression == "deflate" {
+      inflated = try inflateZlib(compressed, maxOutputBytes: maxUncompressedBytes)
+    } else {
+      inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
+    }
+    if let declaredBytes, declaredBytes != inflated.count {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Decoded sync envelope size does not match declared uncompressedBytes."]
+      )
+    }
+    return try JSONSerialization.jsonObject(with: inflated, options: [])
+  case "none":
+    if let payloadEncoding = envelope["payloadEncoding"] as? String,
+       payloadEncoding != "json" {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Uncompressed sync envelopes must use JSON payload encoding."]
+      )
+    }
+    return envelope["payload"] ?? NSNull()
+  default:
+    throw NSError(
+      domain: "ADE",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported sync envelope compression: \(compression)"]
+    )
+  }
+}
+
 func syncPreprocessIncoming(
   _ text: String,
   maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
@@ -1655,16 +1719,10 @@ func syncPreprocessIncoming(
   }
   let type = envelope["type"] as? String ?? ""
   let requestId = envelope["requestId"] as? String
-  let payload: Any
-  let compression = envelope["compression"] as? String ?? "none"
-  if (compression == "gzip" || compression == "deflate"),
-     let base64 = envelope["payload"] as? String,
-     let compressed = Data(base64Encoded: base64) {
-    let inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
-    payload = try JSONSerialization.jsonObject(with: inflated, options: [])
-  } else {
-    payload = envelope["payload"] ?? NSNull()
-  }
+  let payload = try syncDecodeEnvelopePayload(
+    envelope,
+    maxUncompressedBytes: maxUncompressedBytes
+  )
   return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
 }
 
@@ -15076,6 +15134,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func negotiatedWireTransportForTesting() -> (
+    compressionCodec: String?,
+    compressionThresholdBytes: Int,
+    chunkedEnvelopes: Bool,
+    maxFrameBytes: Int
+  ) {
+    (
+      negotiatedCompressionCodec?.rawValue,
+      negotiatedCompressionCodec == nil
+        ? compressionThresholdBytes
+        : negotiatedCompressionThresholdBytes,
+      supportsChunkedEnvelopes,
+      negotiatedMaxFrameBytes
+    )
+  }
+
   func applyDiscoveredHostsForTesting(_ hosts: [DiscoveredSyncHost]) {
     applyDiscoveredHosts(hosts)
   }
@@ -17104,17 +17178,6 @@ final class SyncService: ObservableObject {
       "transport_probe_failed trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
     )
     beginAutomaticTransportRecovery(recoveryError)
-  }
-
-  private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
-    let compression = envelope["compression"] as? String ?? "none"
-    if (compression == "gzip" || compression == "deflate"),
-       let base64 = envelope["payload"] as? String,
-       let compressed = Data(base64Encoded: base64) {
-      let data = try gunzip(compressed, maxOutputBytes: maxUncompressedSyncEnvelopeBytes)
-      return try JSONSerialization.jsonObject(with: data, options: [])
-    }
-    return envelope["payload"] ?? NSNull()
   }
 
   private func makeRequestId() -> String {
@@ -19426,6 +19489,21 @@ private func deflateWire(_ data: Data, windowBits: Int32) -> Data {
 }
 
 private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvelopeBytes) throws -> Data {
+  try inflateWire(data, windowBits: MAX_WBITS + 32, maxOutputBytes: maxOutputBytes)
+}
+
+private func inflateZlib(
+  _ data: Data,
+  maxOutputBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> Data {
+  try inflateWire(data, windowBits: MAX_WBITS, maxOutputBytes: maxOutputBytes)
+}
+
+private func inflateWire(
+  _ data: Data,
+  windowBits: Int32,
+  maxOutputBytes: Int
+) throws -> Data {
   guard !data.isEmpty else { return data }
 
   var stream = z_stream()
@@ -19433,9 +19511,9 @@ private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvel
   var output = Data()
   let chunkSize = 16_384
 
-  status = inflateInit2_(&stream, MAX_WBITS + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+  status = inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
   guard status == Z_OK else {
-    throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start gzip decoder."])
+    throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start compressed sync decoder."])
   }
   defer { inflateEnd(&stream) }
 
