@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
+import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import {
@@ -43,6 +44,12 @@ export const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
 
 export const SYNC_HOST_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
 export const SYNC_RELAY_BRIDGE_PROOF_HEADER = "x-ade-sync-relay-bridge";
+export const SYNC_WEBSOCKET_PATH = "/";
+export const SYNC_BROWSER_ORIGINS: ReadonlySet<string> = new Set([
+  new URL(WEB_CLIENT_BASE_URL).origin,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
 
 export type SyncTransportOrigin = "direct" | "relay-bridge";
 
@@ -61,6 +68,7 @@ const PREFERRED_PORT_BIND_ATTEMPTS = 8;
 const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 type SharedSyncListenerLogger = {
+  debug?: (message: string, fields?: Record<string, unknown>) => void;
   info?: (message: string, fields?: Record<string, unknown>) => void;
   warn?: (message: string, fields?: Record<string, unknown>) => void;
 };
@@ -513,6 +521,13 @@ export function createSharedSyncListener(options: {
       const candidateServer = new WebSocketServer({
         server: candidateHttpServer,
         maxPayload: maxPayloadBytes,
+        path: SYNC_WEBSOCKET_PATH,
+        verifyClient: (info: { origin?: string }) => {
+          const origin = info.origin?.trim();
+          if (!origin || SYNC_BROWSER_ORIGINS.has(origin)) return true;
+          logger.debug?.("sync_listener.origin_rejected", { origin });
+          return false;
+        },
       });
       candidateHttpServer.listen(attemptedPort, bindHost);
       // Install the handler before the validation RTT so a LAN peer that
