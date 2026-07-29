@@ -409,7 +409,10 @@ describe("createCtoOperatorTools", () => {
         sessionId: "chat-1",
         outcome: "CI green",
       })).resolves.toMatchObject({ success: true });
-      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", { outcome: "CI green" });
+      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", {
+        outcome: "CI green",
+        source: "operator",
+      });
 
       await (tools.unsettleSession as any).execute({ sessionId: "chat-1" });
       expect(sessionService.unsettleSession).toHaveBeenCalledWith("chat-1");

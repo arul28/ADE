@@ -1467,8 +1467,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const normalized = override == null ? null : normalizeSettleOverride(override);
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
-          "update terminal_sessions set settle_override = ?, settle_source = ? where id = ?",
-          [normalized, normalized === "settled" ? "user" : null, id],
+          `
+            update terminal_sessions
+            set settle_override = ?,
+                settle_source = case
+                  when ? = 'settled' then 'user'
+                  when settled_at is null then null
+                  else settle_source
+                end
+            where id = ?
+          `,
+          [normalized, normalized, id],
         );
       });
     },
@@ -1485,8 +1494,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (!present.length) return [];
       const updatePlaceholders = present.map(() => "?").join(", ");
       db.run(
-        `update terminal_sessions set settle_override = ?, settle_source = ? where id in (${updatePlaceholders})`,
-        [normalized, normalized === "settled" ? "user" : null, ...present],
+        `
+          update terminal_sessions
+          set settle_override = ?,
+              settle_source = case
+                when ? = 'settled' then 'user'
+                when settled_at is null then null
+                else settle_source
+              end
+          where id in (${updatePlaceholders})
+        `,
+        [normalized, normalized, ...present],
       );
       for (const id of present) {
         emitChanged({ sessionId: id, reason: "meta-updated" });

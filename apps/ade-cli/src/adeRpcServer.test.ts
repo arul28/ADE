@@ -1560,7 +1560,7 @@ describe("adeRpcServer", () => {
           args: { outcome: "Shipped" },
           assert: () => expect(runtime.sessionService.settleSession).toHaveBeenCalledWith(
             "chat-1",
-            { outcome: "Shipped" },
+            { outcome: "Shipped", source: "agent_explicit" },
           ),
         },
         {

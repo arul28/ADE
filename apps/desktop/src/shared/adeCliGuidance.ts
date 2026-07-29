@@ -15,14 +15,13 @@ export const adeBundledAgentSkills = [
 ] as const;
 
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
-  "Session status protocol (keeps the Work sidebar truthful):",
+  "ADE control protocol for truthful Work status:",
   '- Working: `ade chat note "running e2e shard 2/4"`; keep it current.',
   '- Blocked on user input without a structured ask: `ade chat ask "<the exact question>"`.',
-  "- Settlement means the original objective is fully closed, not merely that the current turn or CLI process ended. Otherwise leave it in Your move.",
-  "- Settle only when ALL are true: the task is delivered and verified; no work, check, approval, question, subagent, job, schedule, goal, plan item, or promised follow-up remains; and the next useful user message would start new scope or explicitly reopen the completed result.",
-  "- If the user could reasonably say “continue”, “verify”, “what remains?”, answer an open question, or refine the current result, do not settle.",
+  "- Settlement means the entire session is terminal, not merely the current turn or CLI process.",
+  "- Settle only when ALL are true: delivered and verified; no work, check, approval, question, subagent, job, schedule, goal, plan item, or follow-up remains; the next reply would be new scope.",
   "- Do NOT settle during discussion, planning, review, monitoring, or waiting. “let’s discuss”, “for now”, “don’t change yet”, open questions, and feedback invitations are non-terminal.",
-  '- Only then run `ade chat settle --outcome "<one-line delivered result>"`. The runtime rejects settlement while structured work remains. New user activity un-settles.',
+  '- Only then run `ade chat settle --outcome "<one-line delivered result>"`. The runtime rejects settlement while structured work remains.',
   "- If uncertain, do not settle; update `ade chat note` and leave it in Your move.",
 ].join("\n");
 

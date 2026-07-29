@@ -1798,6 +1798,24 @@ describe("sessionService settle override", () => {
     expect(service.get("session-override")?.settleOverride).toBe("active");
   });
 
+  it("preserves the declaration source while an active override temporarily hides settle", async () => {
+    const { service } = await makeService("ade-session-service-override-source-");
+
+    service.settleSession("session-override", {
+      settledAt: "2026-03-17T03:00:00.000Z",
+      source: "agent_explicit",
+    });
+    service.setSettleOverride("session-override", "active");
+    expect(service.get("session-override")?.settleSource).toBe("agent_explicit");
+
+    service.setSettleOverride("session-override", null);
+    expect(service.get("session-override")).toEqual(expect.objectContaining({
+      settledAt: "2026-03-17T03:00:00.000Z",
+      settleOverride: null,
+      settleSource: "agent_explicit",
+    }));
+  });
+
   it("supports the bulk override variant", async () => {
     const { service } = await makeService("ade-session-service-override-bulk-");
     service.create({
@@ -1814,6 +1832,9 @@ describe("sessionService settle override", () => {
     expect(service.setSettleOverrides(["session-override", "session-override-2", "missing"], "active"))
       .toEqual(["session-override", "session-override-2"]);
     expect(service.get("session-override-2")?.settleOverride).toBe("active");
+    service.settleSession("session-override", { source: "pr_merge" });
+    service.setSettleOverrides(["session-override"], "active");
+    expect(service.get("session-override")?.settleSource).toBe("pr_merge");
     service.setSettleOverrides(["session-override", "session-override-2"], null);
     expect(service.get("session-override")?.settleOverride).toBeNull();
     expect(service.setSettleOverrides([], "active")).toEqual([]);
