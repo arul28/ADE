@@ -1,0 +1,40 @@
+---
+title: "v1.2.42"
+description: "Release notes for ADE v1.2.42 - July 28, 2026"
+---
+
+v1.2.42 adds account-wide Attention across desktop, the MacBook notch, notifications, widgets, Live Activities, and iOS; introduces safe lane storage reclamation; and makes multi-machine Work sessions quieter, more stable, and correctly owned.
+
+---
+
+## Attention follows your work
+
+- **One account-wide Attention view.** See the agent, PR, and machine items that need you without hunting through projects or connected computers.
+- **Native MacBook notch status.** ADE can surface focused agent state in the physical notch, with virtual-notch and menu-bar fallbacks, privacy controls, reduced motion, and exact actions.
+- **iPhone, widgets, notifications, and Live Activities agree.** Attention state, destinations, acknowledgements, and device ownership now share one model across ADE surfaces.
+- **Delivery recovers more reliably.** Live Activity tokens register independently from alert permission, failed deliveries retry safely, and hidden or minimized desktop windows keep notch snapshots fresh.
+
+## Work stays scoped and calm
+
+- **Quiet lanes stay compact.** Settled and snoozed lanes collapse to a muted summary while sessions that need you remain visible.
+- **Project and machine state persists correctly.** Work and Lanes remember their organization per project and machine without stale cross-surface overwrites.
+- **Detached chats appear only once.** Starting a chat on another machine files it immediately under that machine instead of briefly creating a duplicate UUID-named lane.
+- **Foreign sessions render like local sessions.** Optimistic rows survive stale refreshes, disappear immediately after deletion, and use the same compact settled view as local lanes.
+
+## Lane storage can be reclaimed safely
+
+- **Archive & Reclaim removes only verified worktrees.** ADE blocks active, attached, running, dirty, unmerged, symlinked, or otherwise unsafe lanes before touching the filesystem.
+- **Storage review is understandable.** Settings shows lane size, age, ownership, reclaim estimates, and concrete blocked reasons before confirmation.
+- **Restore and retry are built in.** Archived lanes can be recreated safely, with cross-process locking and exact branch/worktree verification.
+
+## Prompt stashes handle images
+
+- **Text and attachments round-trip together.** Stashing a prompt now preserves image thumbnails and restores attachments atomically.
+- **The stash UI stays out of the way.** The control hides when empty and its menu stays within the viewport.
+- **Runtime ownership is preserved.** Image bytes remain on the owning machine, live stash files are protected from cleanup, and machine-local paths are not exposed off-origin.
+
+## Reliability fixes
+
+- Fixed runtime chat-history requests that could silently discard paging options across desktop and `ade code`.
+- Hardened account Attention D1 trigger installation so remote migrations use the supported ingestion path and fail safely before deployment.
+- Improved stable scope-denial reporting without weakening worker isolation or older-host compatibility.

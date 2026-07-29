@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.42] - 2026-07-28
+
+### Attention
+
+- Added one account-wide Attention model across desktop, the native MacBook notch helper, notifications, iOS, widgets, and Live Activities.
+- Added exact machine/project destinations, acknowledgements, privacy and motion preferences, physical-notch detection, and virtual-notch/menu-bar fallbacks.
+- Made Live Activity registration and delivery device-scoped and retry-safe, and kept notch snapshots current while Electron is hidden or minimized.
+
+### Work and sessions
+
+- Compacted settled and snoozed lanes without hiding sessions that need attention, and persisted Work/Lanes view state per project and machine.
+- Filed chats created on another machine directly under their owning machine instead of showing a transient duplicate UUID lane.
+- Reconciled foreign optimistic rows across stale refreshes and deletion, with the same quiet settled rendering used for local lanes.
+- Fixed runtime chat-history requests that could silently discard paging options across desktop and `ade code`.
+
+### Lanes and storage
+
+- Added safe Archive & Reclaim and lane restore flows with conservative active/dirty/unmerged guards, exact path and branch verification, and cross-process locking.
+- Added a Storage settings review surface with lane sizes, ages, ownership, reclaim estimates, and concrete blocked reasons.
+
+### Prompt stashes
+
+- Added atomic text-and-image stash/restore with thumbnails, viewport-safe menus, runtime-pinned image reads, and cleanup protection for live stash files.
+- Hid the stash control when both the composer and stash list are empty and withheld machine-local attachment paths off-origin.
+
+### Reliability
+
+- Hardened account Attention D1 trigger validation and installation so remote migrations use the supported SQL ingestion path.
+- Preserved stable session-scope denial reporting while retaining worker isolation and older-host compatibility.
+
 ## [1.2.41] - 2026-07-28
 
 ### Chat history
@@ -1124,7 +1154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.41...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.42...HEAD
+[1.2.42]: https://github.com/arul28/ADE/compare/v1.2.41...v1.2.42
 [1.2.41]: https://github.com/arul28/ADE/compare/v1.2.40...v1.2.41
 [1.2.40]: https://github.com/arul28/ADE/compare/v1.2.39...v1.2.40
 [1.2.39]: https://github.com/arul28/ADE/compare/v1.2.38...v1.2.39
