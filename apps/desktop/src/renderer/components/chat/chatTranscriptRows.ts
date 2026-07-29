@@ -1053,7 +1053,8 @@ type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
  * flagged `stale` so the surface can say "this is the last thing we knew"
  * rather than silently showing old numbers as current.
  *
- * The flag clears itself the moment a healthy emit brings detail back.
+ * The flag clears itself the moment a healthy detail refresh lands, including
+ * a successful refresh whose rows and totals are genuinely empty.
  */
 function mergeAdeCardEvent(
   existing: AdeCardEvent,
@@ -1068,11 +1069,11 @@ function mergeAdeCardEvent(
   const existingHadDetail = (existing.rows?.length ?? 0) > 0
     || (existing.metrics?.length ?? 0) > 0
     || adeCardProgressTotal(existing.progress) > 0;
-  const incomingHasDetail = incomingRows.length > 0
-    || incomingMetrics.length > 0
-    || incomingProgressTotal > 0;
+  const incomingIsDetailRefresh = incoming.rows !== undefined
+    || incoming.metrics !== undefined
+    || incoming.progress !== undefined;
 
-  if (existingHadDetail && (!incomingHasDetail || incoming.degradedReason)) {
+  if (existingHadDetail && incoming.degradedReason) {
     if (!incomingRows.length && existing.rows?.length) merged.rows = existing.rows;
     if (!incomingMetrics.length && existing.metrics?.length) merged.metrics = existing.metrics;
     if (incomingProgressTotal === 0 && existing.progress) merged.progress = existing.progress;
@@ -1086,7 +1087,7 @@ function mergeAdeCardEvent(
   // Healthy emit: drop every degradation-only field the previous failed fetch
   // left behind. Full healthy card payloads omit the retry action and reason,
   // so the initial spread cannot distinguish recovery from a partial patch.
-  if (incomingHasDetail) {
+  if (incomingIsDetailRefresh && !incoming.degradedReason) {
     merged.stale = incoming.stale ?? false;
     merged.degradedReason = incoming.degradedReason ?? undefined;
     merged.actions = incoming.actions ?? [];

@@ -2175,7 +2175,8 @@ async function resolveAuthorizedComputerUseIngestRoot(
 }
 
 function isProjectWideProofMaintenanceAuthorized(session: SessionState): boolean {
-  return session.identity.role === "cto" && isUserClientSession(session);
+  return (session.identity.role === "cto" && isUserClientSession(session))
+    || isUnboundAdeCliCaller(session);
 }
 
 function resolveAuthorizedProofOwners(

@@ -805,19 +805,15 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }))?.item);
     }
 
-    for (const [proofPath, label] of [
-      [path.join(layout.artifactsDir, "computer-use"), "Proof and recordings"],
-      [path.join(layout.adeDir, "attachments"), "Attachments"],
-    ] as const) {
-      add("proof_attachments", (await makeItem({
-        category: "proof_attachments",
-        base: layout.adeDir,
-        path: proofPath,
-        label,
-        safety: "review_first",
-        state,
-      }))?.item);
-    }
+    const proofPath = path.join(layout.artifactsDir, "computer-use");
+    add("proof_attachments", (await makeItem({
+      category: "proof_attachments",
+      base: layout.adeDir,
+      path: proofPath,
+      label: "Proof and recordings",
+      safety: "review_first",
+      state,
+    }))?.item);
 
     const adeNames = await readdirOrEmpty(layout.adeDir);
     for (const name of adeNames.filter((value) => RECOVERY_BACKUP_PATTERN.test(value))) {
@@ -1027,15 +1023,22 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (await hasSymlinkAncestor(projectRoot, targetPath)) {
         return { valid: null, reason: "Links cannot be used in a cleanup path." };
       }
+      const attachmentsRoot = path.join(layout.adeDir, "attachments");
+      if (isSameOrWithin(attachmentsRoot, targetPath)) {
+        // This store backs prompt stashes and renderer-owned composer drafts.
+        // Main cannot enumerate every active draft, so recursive or per-file
+        // cleanup here could delete live user input.
+        return {
+          valid: null,
+          reason: "Composer attachments are live chat data and cannot be removed from Storage.",
+        };
+      }
       // Same jail the broker and the `ade-artifact://` handler enforce.
-      const proofRoots = [
-        path.join(layout.artifactsDir, "computer-use"),
-        path.join(layout.adeDir, "attachments"),
-      ];
-      if (!proofRoots.some((root) => isSameOrWithin(root, targetPath))) {
+      const proofRoot = path.join(layout.artifactsDir, "computer-use");
+      if (!isSameOrWithin(proofRoot, targetPath)) {
         return { valid: null, reason: "This path is not proof or attachment storage." };
       }
-      label = isSameOrWithin(proofRoots[0], targetPath) ? "Proof and recordings" : "Attachments";
+      label = "Proof and recordings";
     } else {
       return { valid: null, reason: "This cleanup target is not supported." };
     }

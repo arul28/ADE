@@ -15,6 +15,7 @@ import {
   STORAGE_LEDGER,
 } from "./storageLedger";
 import { recordLastFailure } from "../runtime/lastFailureStore";
+import { createPromptStash } from "../chat/promptStashService";
 
 const logger = {
   debug: vi.fn(),
@@ -386,6 +387,41 @@ describe("storageInsightsService", () => {
     expect(fs.existsSync(path.join(logBundlesDir, "diagnostic.log"))).toBe(true);
     // Rows must never outlive the bytes.
     expect(purged).toEqual([proofDir]);
+  });
+
+  it("never offers the live composer attachment store for recursive cleanup", async () => {
+    const attachmentsDir = path.join(projectRoot, ".ade", "attachments");
+    const stashedImage = path.join(attachmentsDir, "stashed-image.png");
+    const activeDraftImage = path.join(attachmentsDir, "active-draft.png");
+    writeSized(stashedImage, 17);
+    writeSized(activeDraftImage, 19);
+    createPromptStash(db, {
+      text: "Keep this image",
+      attachments: [{ path: stashedImage, type: "image" }],
+    });
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.categories.find((category) => category.id === "proof_attachments")?.items)
+      .not.toContainEqual(expect.objectContaining({ path: attachmentsDir }));
+
+    const preview = await service.cleanupPreview([
+      { kind: "proof_attachments", path: attachmentsDir },
+      { kind: "proof_attachments", path: activeDraftImage },
+    ]);
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked).toEqual([
+      {
+        path: attachmentsDir,
+        reason: "Composer attachments are live chat data and cannot be removed from Storage.",
+      },
+      {
+        path: activeDraftImage,
+        reason: "Composer attachments are live chat data and cannot be removed from Storage.",
+      },
+    ]);
+    expect(fs.existsSync(stashedImage)).toBe(true);
+    expect(fs.existsSync(activeDraftImage)).toBe(true);
   });
 
   it("refuses proof cleanup for the shared artifacts parent", async () => {

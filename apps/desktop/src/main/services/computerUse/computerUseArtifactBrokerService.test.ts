@@ -304,6 +304,7 @@ describe("computerUseArtifactBrokerService", () => {
   it("imports proof from a server-authorized attached lane root", () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-proof-"));
     try {
+      const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       const broker = createComputerUseArtifactBrokerService({
         db,
         projectId: "project-1",
@@ -313,7 +314,7 @@ describe("computerUseArtifactBrokerService", () => {
       fs.mkdirSync(path.join(attachedLaneRoot, "shots"), { recursive: true });
       fs.writeFileSync(
         path.join(attachedLaneRoot, "shots", "proof.png"),
-        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        proofBytes,
       );
       db.run(
         `
@@ -343,6 +344,7 @@ describe("computerUseArtifactBrokerService", () => {
 
       expect(broker.listArtifacts({ artifactId: ingested.artifacts[0]!.id })[0]?.availability)
         .toBe("available");
+      expect(fs.readFileSync(path.join(projectRoot, ingested.artifacts[0]!.uri))).toEqual(proofBytes);
     } finally {
       fs.rmSync(attachedLaneRoot, { recursive: true, force: true });
     }
@@ -698,6 +700,7 @@ describe("computerUseArtifactBrokerService", () => {
   it("recovers proof from an attached lane root outside the project", () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-recovery-"));
     try {
+      const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
       const broker = createComputerUseArtifactBrokerService({
         db,
         projectId: "project-1",
@@ -707,7 +710,7 @@ describe("computerUseArtifactBrokerService", () => {
       fs.mkdirSync(path.join(attachedLaneRoot, "shots"), { recursive: true });
       fs.writeFileSync(
         path.join(attachedLaneRoot, "shots", "proof.png"),
-        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        proofBytes,
       );
       db.run(
         `
@@ -747,6 +750,7 @@ describe("computerUseArtifactBrokerService", () => {
       const recovered = broker.recoverArtifact({ artifactId: "attached-broken" });
       expect(recovered.availability).toBe("available");
       expect(fs.existsSync(path.join(projectRoot, recovered.uri))).toBe(true);
+      expect(fs.readFileSync(path.join(projectRoot, recovered.uri))).toEqual(proofBytes);
     } finally {
       fs.rmSync(attachedLaneRoot, { recursive: true, force: true });
     }

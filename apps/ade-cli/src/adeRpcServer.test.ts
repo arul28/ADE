@@ -1386,6 +1386,93 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("gives standalone ade CLI callers project-wide proof lifecycle scope without widening unbound agents", async () => {
+    const standaloneFixture = createRuntime();
+    const standaloneHandler = createAdeRpcRequestHandler({
+      runtime: standaloneFixture.runtime,
+      serverVersion: "test",
+    });
+    const artifacts = [
+      { id: "proof-1", createdAt: "2026-07-29T01:00:00.000Z", laneId: "lane-1", links: [] },
+      { id: "proof-2", createdAt: "2026-07-29T02:00:00.000Z", laneId: "lane-2", links: [] },
+    ];
+    standaloneFixture.runtime.computerUseArtifactBrokerService.listArtifacts = vi.fn((args: any) =>
+      args.artifactId ? artifacts.filter((artifact) => artifact.id === args.artifactId) : artifacts
+    );
+    standaloneFixture.runtime.computerUseArtifactBrokerService.deleteArtifacts = vi.fn(() => ({
+      deleted: [],
+      missing: [],
+      failed: [],
+      freedBytes: 0,
+    }));
+    standaloneFixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts = vi.fn((args: any) => [
+      { artifactId: "proof-1" },
+      { artifactId: "proof-2" },
+    ].slice(0, args.limit));
+    standaloneFixture.runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts = vi.fn(() => ({
+      deleted: ["proof-1", "proof-2"],
+      missing: [],
+      failed: [],
+      freedBytes: 42,
+    }));
+    standaloneFixture.runtime.computerUseArtifactBrokerService.recoverArtifact = vi.fn(() => ({
+      recovered: true,
+    }));
+    await initialize(standaloneHandler, {
+      callerId: "ade-cli:4242",
+      role: "agent",
+    });
+
+    const listed = await callTool(standaloneHandler, "list_computer_use_artifacts", {});
+    expect(listed.structuredContent.artifacts).toEqual(artifacts);
+
+    await callTool(standaloneHandler, "delete_computer_use_artifacts", {
+      artifactId: "proof-2",
+    });
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: ["proof-2"],
+    });
+
+    const broken = await callTool(standaloneHandler, "list_broken_computer_use_artifacts", {
+      limit: 1,
+    });
+    expect(broken.structuredContent.broken).toEqual([{ artifactId: "proof-1" }]);
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts).toHaveBeenCalledWith({
+      limit: 1,
+    });
+
+    await callTool(standaloneHandler, "prune_broken_computer_use_artifacts", {});
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts).toHaveBeenCalledTimes(1);
+
+    await callTool(standaloneHandler, "recover_computer_use_artifact", {
+      artifactId: "proof-2",
+    });
+    expect(standaloneFixture.runtime.computerUseArtifactBrokerService.recoverArtifact).toHaveBeenCalledWith({
+      artifactId: "proof-2",
+    });
+
+    const unboundAgentFixture = createRuntime();
+    const unboundAgentHandler = createAdeRpcRequestHandler({
+      runtime: unboundAgentFixture.runtime,
+      serverVersion: "test",
+    });
+    await initialize(unboundAgentHandler, {
+      callerId: "unbound-agent",
+      role: "agent",
+    });
+
+    for (const [name, args] of [
+      ["list_computer_use_artifacts", {}],
+      ["delete_computer_use_artifacts", { artifactId: "proof-1" }],
+      ["list_broken_computer_use_artifacts", {}],
+      ["prune_broken_computer_use_artifacts", {}],
+      ["recover_computer_use_artifact", { artifactId: "proof-1" }],
+    ] as const) {
+      const denied = await callTool(unboundAgentHandler, name, args);
+      expect(denied.isError).toBe(true);
+    }
+  });
+
   it("sorts the scoped proof union before applying its limit", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
