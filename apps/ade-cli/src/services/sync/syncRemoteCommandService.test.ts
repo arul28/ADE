@@ -1767,8 +1767,9 @@ describe("createSyncRemoteCommandService", () => {
     const enrichedSession = { ...session, runtimeState: "running" };
     const getSessionSummary = vi.fn().mockResolvedValue({
       sessionId: "session-1",
-      status: "idle",
-      idleSinceAt: "2026-01-01T00:00:00.000Z",
+      status: "active",
+      awaitingInput: true,
+      pendingInputItemId: "provider-question-1",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",
@@ -1792,8 +1793,10 @@ describe("createSyncRemoteCommandService", () => {
     expect(getSessionSummary).toHaveBeenCalledWith("session-1");
     expect(result).toEqual(expect.objectContaining({
       id: "session-1",
-      runtimeState: "idle",
-      chatIdleSinceAt: "2026-01-01T00:00:00.000Z",
+      runtimeState: "waiting-input",
+      chatIdleSinceAt: null,
+      pendingInputItemId: "provider-question-1",
+      attentionSource: "provider_structured",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",

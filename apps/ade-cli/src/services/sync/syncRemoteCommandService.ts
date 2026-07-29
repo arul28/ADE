@@ -1663,6 +1663,7 @@ function projectChatOntoSession(
       runtimeState: "waiting-input" as const,
       chatIdleSinceAt: null,
       pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+      attentionSource: "provider_structured" as const,
     };
   }
   if (chat.status === "active") {
@@ -2231,6 +2232,7 @@ async function listRemoteWorkSessions(
         runtimeState: "waiting-input" as const,
         chatIdleSinceAt: null,
         pendingInputItemId: chat.pendingInputItemId ?? null,
+        attentionSource: "provider_structured" as const,
       };
     }
     if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
