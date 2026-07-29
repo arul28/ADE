@@ -65,6 +65,24 @@ Same claim + HMAC design as `apps/push-relay`:
 - **Client** `/connect/:machineKey` — no Worker-level auth beyond `machineKey`
   unguessability. This is only transport admission; ADE authorizes the socket
   after it reaches the host.
+- **Prewarm** `GET /prewarm/:machineKey` — same stance as `/connect`. Returns
+  `{ok:true, control:<bool>}` saying whether a host control socket is currently
+  registered. Reaching the object is the point: a client that expects to connect
+  shortly pays the un-hibernation cost up front. It is inert — no storage, no
+  alarm, no attachment migration, and no signal to the host — so it can never
+  perturb a live tunnel. `/health` is answered by the Worker and never reaches a
+  DO, so it cannot be used for this.
+
+## Placement
+
+A Durable Object lives wherever the request that created it landed, for the life
+of the `machineKey`. The Worker therefore derives a `locationHint` from
+`request.cf` (continent, split on longitude for the two-region continents) and
+passes it on `claim` and `/host` only — the machine's own routes. A phone's
+location must never decide where a machine's object lives, so `/connect`,
+`/prewarm`, and `/pipe` never carry a hint. Cloudflare applies a hint only when
+it creates the object, so this steers new machines and leaves existing ones
+exactly where they are.
 
 ## Trust model — read this
 

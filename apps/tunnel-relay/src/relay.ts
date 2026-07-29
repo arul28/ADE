@@ -127,7 +127,8 @@ export type TunnelRoute =
   | { kind: "claim"; machineKey: string }
   | { kind: "host"; machineKey: string }
   | { kind: "pipe"; machineKey: string; id: string }
-  | { kind: "connect"; machineKey: string };
+  | { kind: "connect"; machineKey: string }
+  | { kind: "prewarm"; machineKey: string };
 
 /**
  * Pure path router. Returns the matched tunnel route or null; the machineKey
@@ -155,11 +156,75 @@ export function routeTunnelPath(pathname: string): TunnelRoute | null {
   if (parts.length === 2 && parts[0] === "connect") {
     return validKey(parts[1]) ? { kind: "connect", machineKey: parts[1] } : null;
   }
+  if (parts.length === 2 && parts[0] === "prewarm") {
+    return validKey(parts[1]) ? { kind: "prewarm", machineKey: parts[1] } : null;
+  }
   return null;
 }
 
 function validKey(value: string | undefined): value is string {
   return typeof value === "string" && MACHINE_KEY_PATTERN.test(value);
+}
+
+/** The regions Cloudflare accepts as a Durable Object placement hint. */
+export type RelayLocationHint =
+  | "wnam"
+  | "enam"
+  | "sam"
+  | "weur"
+  | "eeur"
+  | "apac"
+  | "oc"
+  | "afr"
+  | "me";
+
+/** The subset of `request.cf` this router reads. Absent under `wrangler dev`. */
+export type RequestPlacementGeo = {
+  continent?: string | null;
+  longitude?: string | number | null;
+};
+
+function parseLongitude(raw: unknown): number | null {
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : Number.NaN;
+  return Number.isFinite(value) && value >= -180 && value <= 180 ? value : null;
+}
+
+/**
+ * Maps the requester's coarse geography onto a Durable Object location hint.
+ * Only the machine's own routes (claim/host) supply one: a Durable Object is
+ * placed near whichever request creates it, so without a hint a phone that
+ * connects before the brain claims would pin the object next to the phone for
+ * the life of the machine key. Cloudflare ignores the hint for an object that
+ * already exists, so this only steers brand-new machines.
+ */
+export function locationHintForGeo(
+  geo: RequestPlacementGeo | null | undefined,
+): RelayLocationHint | undefined {
+  const continent = typeof geo?.continent === "string" ? geo.continent.trim().toUpperCase() : "";
+  const longitude = parseLongitude(geo?.longitude);
+  switch (continent) {
+    // Cloudflare's regions split North America and Europe in two, so fall back
+    // to the continent's larger half when the longitude is missing.
+    case "NA":
+      return longitude != null && longitude <= -100 ? "wnam" : "enam";
+    case "SA":
+      return "sam";
+    case "EU":
+      return longitude != null && longitude >= 20 ? "eeur" : "weur";
+    case "AF":
+      return "afr";
+    case "OC":
+      return "oc";
+    case "AS":
+      return longitude != null && longitude < 65 ? "me" : "apac";
+    default:
+      // Unknown or absent geography: let Cloudflare place the object itself.
+      return undefined;
+  }
+}
+
+function placementHintFor(request: Request): RelayLocationHint | undefined {
+  return locationHintForGeo((request as { cf?: RequestPlacementGeo | null }).cf);
 }
 
 export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
@@ -180,6 +245,12 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
   // Every route is scoped to a single machine → a single Durable Object
   // instance. The DO owns the claim secret, signature verification, and the
   // per-connection socket pairing; the worker is a thin, stateless router.
-  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(route.machineKey));
+  const id = env.TUNNEL.idFromName(route.machineKey);
+  // Only the machine's own routes may influence placement — a travelling phone
+  // must never drag a machine's object across the planet.
+  const locationHint = route.kind === "claim" || route.kind === "host"
+    ? placementHintFor(request)
+    : undefined;
+  const stub = locationHint ? env.TUNNEL.get(id, { locationHint }) : env.TUNNEL.get(id);
   return stub.fetch(request);
 }

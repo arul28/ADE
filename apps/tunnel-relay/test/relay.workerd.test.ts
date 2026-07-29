@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
+import worker from "../src";
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
@@ -9,6 +10,8 @@ import {
 import {
   CLOSE_BRIDGE_REJECTED,
   CLOSE_CLIENT_GONE,
+  CLOSE_FORWARD_FAILED,
+  CLOSE_IDLE,
   LEGACY_CONTROL_EPOCH,
   RELAY_READY_VERSION,
   TunnelDurableObject,
@@ -176,6 +179,29 @@ async function establishEpochV2(keyDigit: string): Promise<{
   return { stub, control, client, pipe, id: openMessage.id };
 }
 
+/** Opens one more ready-v2 tunnel over an already-registered control socket. */
+async function openTunnel(args: {
+  stub: DurableObjectStub;
+  key: string;
+  control: WebSocket;
+}): Promise<{ client: WebSocket; pipe: WebSocket; id: string }> {
+  const open = nextMessage(args.control);
+  const client = await upgrade(args.stub, `https://relay.test/connect/${args.key}?ready=${RELAY_READY_VERSION}`);
+  expect(await nextMessage(client)).toBe(JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }));
+  const { id } = JSON.parse(String(await open)) as { id: string };
+  const pipe = await openPipe({ stub: args.stub, key: args.key, id, epoch: CONTROL_EPOCH });
+  const ready = nextMessage(client);
+  args.control.send(JSON.stringify({ t: "ready", id, epoch: CONTROL_EPOCH }));
+  expect(await ready).toBe(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
+  return { client, pipe, id };
+}
+
+async function prewarm(stub: DurableObjectStub, key: string): Promise<unknown> {
+  const response = await stub.fetch(`https://relay.test/prewarm/${key}`);
+  expect(response.status).toBe(200);
+  return response.json();
+}
+
 describe("TunnelDurableObject in workerd", () => {
   it("preserves actual attachments and ordered routing for an established epoch-v2 triple", async () => {
     const { stub, client, pipe, id } = await establishEpochV2("a");
@@ -243,6 +269,10 @@ describe("TunnelDurableObject in workerd", () => {
       expect(serverControl).toBeDefined();
       serverControl!.serializeAttachment({ role: "control", ts: Date.now() });
     });
+    // A pre-epoch attachment only ever reaches this code the way it does in
+    // production: the previous Worker accepted the socket, the object
+    // hibernated, and the deployed code wakes to an attachment it never wrote.
+    await evictDurableObject(stub, { webSockets: "hibernate" });
 
     const open = nextMessage(control);
     const client = await upgrade(stub, `https://relay.test/connect/${key}?ready=${RELAY_READY_VERSION}`);
@@ -321,5 +351,121 @@ describe("TunnelDurableObject in workerd", () => {
     const close = await pipeClosed;
     expect(close.code).toBe(CLOSE_BRIDGE_REJECTED);
     expect(close.reason).toBe("relay client unavailable");
+  });
+
+  it("keeps concurrent tunnels on one machine independently paired across hibernation", async () => {
+    const key = machineKey("1");
+    const stub = stubFor(key);
+    await claim(stub, key);
+    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
+
+    const first = await openTunnel({ stub, key, control });
+    const second = await openTunnel({ stub, key, control });
+    expect(first.id).not.toBe(second.id);
+
+    const atFirstPipe = nextMessage(first.pipe);
+    const atSecondPipe = nextMessage(second.pipe);
+    first.client.send("to-first");
+    second.client.send("to-second");
+    expect(await atFirstPipe).toBe("to-first");
+    expect(await atSecondPipe).toBe("to-second");
+
+    // Hibernation wipes the instance's pairing cache; each side has to rebuild
+    // its own partner from the durable attachments, not inherit its neighbour's.
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+
+    const atFirstClient = nextMessage(first.client);
+    const atSecondClient = nextMessage(second.client);
+    first.pipe.send("from-first");
+    second.pipe.send("from-second");
+    expect(await atFirstClient).toBe("from-first");
+    expect(await atSecondClient).toBe("from-second");
+
+    // Tearing one pair down must not disturb the other pair's cached partner.
+    const firstClientClosed = nextClose(first.client);
+    first.pipe.close(4000, "done");
+    await firstClientClosed;
+
+    const stillRouting = nextMessage(second.pipe);
+    second.client.send("second-survives");
+    expect(await stillRouting).toBe("second-survives");
+  });
+
+  it("reports an unavailable partner rather than forwarding into a closing socket", async () => {
+    const { stub, client, pipe, id } = await establishEpochV2("5");
+
+    // Forward one frame first so the pair is cached in instance memory.
+    const warmed = nextMessage(pipe);
+    client.send("warm-up");
+    expect(await warmed).toBe("warm-up");
+
+    const clientClosed = nextClose(client);
+    // Close the pipe and deliver the next frame in the same synchronous turn,
+    // before the close handler can drop the pairing. A cached partner must be
+    // re-checked on every read, or this frame is forwarded into a dead socket.
+    await runInDurableObject<TunnelDurableObject, void>(stub, async (instance, state) => {
+      const paired = state.getWebSockets(`conn:${id}`);
+      const serverClient = paired.find((s) => (s.deserializeAttachment() as Attachment).role === "client");
+      const serverPipe = paired.find((s) => (s.deserializeAttachment() as Attachment).role === "pipe");
+      expect(serverClient).toBeDefined();
+      expect(serverPipe).toBeDefined();
+      serverPipe!.close(CLOSE_IDLE, "idle timeout");
+      await instance.webSocketMessage(serverClient!, "into-the-void");
+    });
+
+    const close = await clientClosed;
+    expect(close.code).toBe(CLOSE_FORWARD_FAILED);
+    expect(close.reason).toBe("relay partner unavailable");
+    expect(pipe).toBeDefined();
+  });
+
+  it("prewarms a hibernated object without disturbing its live tunnel", async () => {
+    const key = machineKey("2");
+    const stub = stubFor(key);
+    await claim(stub, key);
+    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
+    const { client, pipe, id } = await openTunnel({ stub, key, control });
+
+    await evictDurableObject(stub, { webSockets: "hibernate" });
+    expect(await prewarm(stub, key)).toEqual({ ok: true, control: true });
+
+    // The probe is inert: the pair is still established and still routes.
+    expect(await attachments(stub)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "client", id, epoch: CONTROL_EPOCH, established: true }),
+      expect.objectContaining({ role: "pipe", id, epoch: CONTROL_EPOCH, established: true }),
+    ]));
+    const routed = nextMessage(pipe);
+    client.send("after-prewarm");
+    expect(await routed).toBe("after-prewarm");
+  });
+
+  it("reports whether a host control socket is registered, and rejects writes", async () => {
+    const key = machineKey("3");
+    const stub = stubFor(key);
+    await claim(stub, key);
+    expect(await prewarm(stub, key)).toEqual({ ok: true, control: false });
+
+    await openControl({ stub, key, epoch: CONTROL_EPOCH });
+    expect(await prewarm(stub, key)).toEqual({ ok: true, control: true });
+
+    await runInDurableObject<TunnelDurableObject, void>(stub, (_instance, state) => {
+      for (const socket of state.getWebSockets("control")) socket.close(1000, "host stopped");
+    });
+    expect(await prewarm(stub, key)).toEqual({ ok: true, control: false });
+
+    const posted = await stub.fetch(`https://relay.test/prewarm/${key}`, { method: "POST" });
+    expect(posted.status).toBe(405);
+  });
+
+  it("routes prewarm for an unknown machine without creating any state", async () => {
+    const key = machineKey("4");
+    const response = await worker.fetch(new Request(`https://relay.test/prewarm/${key}`), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ ok: true, control: false });
+
+    // Nothing was persisted, so the machine key is still free to be claimed.
+    await claim(stubFor(key), key);
   });
 });
