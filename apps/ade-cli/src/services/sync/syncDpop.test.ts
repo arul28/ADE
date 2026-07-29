@@ -103,6 +103,18 @@ describe("verifySyncDpopProof", () => {
     expect(check(proof)).toEqual({ ok: true });
   });
 
+  it("fails closed when the replay cache cannot safely record another nonce", () => {
+    const { privateKey, x963 } = makeKeyPair();
+    const proof = signProof(privateKey, {});
+    expect(verifySyncDpopProof({
+      publicKeyX963Base64: x963,
+      deviceId: DEVICE_ID,
+      secret: SECRET,
+      proof,
+      checkAndRecordNonce: () => "saturated",
+    })).toEqual({ ok: false, reason: "nonce_cache_saturated" });
+  });
+
   it("fails closed on malformed keys and proofs", () => {
     const { privateKey } = makeKeyPair();
     const proof = signProof(privateKey, {});
@@ -119,6 +131,36 @@ describe("verifySyncDpopProof", () => {
       publicKeyX963Base64: "irrelevant",
       proof: { timestamp: Number.NaN, nonce: "", signature: "" },
     })).toEqual({ ok: false, reason: "invalid_proof" });
+  });
+});
+
+describe("createSyncDpopNonceCache", () => {
+  it("does not let one device's flood reopen another device's replay window", () => {
+    const cache = createSyncDpopNonceCache({
+      maxEntries: 4,
+      maxEntriesPerDevice: 2,
+    });
+    const now = Date.now();
+
+    expect(cache.checkAndRecord("victim-device", "victim-nonce", now)).toBe(false);
+    expect(cache.checkAndRecord("flooding-device", "flood-1", now)).toBe(false);
+    expect(cache.checkAndRecord("flooding-device", "flood-2", now)).toBe(false);
+    expect(cache.checkAndRecord("flooding-device", "flood-3", now)).toBe(false);
+
+    expect(cache.checkAndRecord("victim-device", "victim-nonce", now)).toBe(true);
+  });
+
+  it("fails closed instead of evicting another device at the total entry cap", () => {
+    const cache = createSyncDpopNonceCache({
+      maxEntries: 2,
+      maxEntriesPerDevice: 2,
+    });
+    const now = Date.now();
+
+    expect(cache.checkAndRecord("device-a", "nonce-a", now)).toBe(false);
+    expect(cache.checkAndRecord("device-b", "nonce-b", now)).toBe(false);
+    expect(cache.checkAndRecord("device-c", "nonce-c", now)).toBe("saturated");
+    expect(cache.checkAndRecord("device-a", "nonce-a", now)).toBe(true);
   });
 });
 
