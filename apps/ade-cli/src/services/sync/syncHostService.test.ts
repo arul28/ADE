@@ -67,6 +67,7 @@ import { createSharedSyncListener, SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./shar
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
+import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
@@ -1463,7 +1464,7 @@ describe("brain project actions fallback handler", () => {
         };
       };
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let attempt = 0; attempt < PAIR_FAILURE_THRESHOLD; attempt += 1) {
         const failed = await sendPairingRequest(`bad-pin-${attempt}`, "000000", `ios-bad-${attempt}`);
         expect(failed.payload.ok).toBe(false);
         expect(failed.payload.error?.code).toBe("invalid_pin");
@@ -2350,7 +2351,7 @@ describe("sync host account authentication", () => {
           payload: { v: 1, nonce: "not-32-bytes", clientEphemeralPublicKey: "bad" },
         }));
       };
-      for (let index = 0; index < 5; index += 1) {
+      for (let index = 0; index < PAIR_FAILURE_THRESHOLD; index += 1) {
         const badClient = await openAccountClient(port);
         clients.push(badClient);
         sendMalformedChallenge(badClient, `malformed-${index}`);

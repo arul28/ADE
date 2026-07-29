@@ -283,6 +283,13 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       const expiresAtMs = Date.now() + PAIRING_ROTATION_WINDOW_MS;
       records[peer.deviceId] = {
         ...committedView(existing),
+        // Only the secret and the privileges it carries wait for the
+        // acknowledgement. Descriptive fields are not credentials, so a phone
+        // that was renamed shows its new name immediately instead of after a
+        // handshake the user cannot see.
+        peerName: replacement.peerName,
+        peerPlatform: replacement.peerPlatform,
+        peerDeviceType: replacement.peerDeviceType,
         pendingRotation: { expiresAtMs, record: replacement },
       };
       writeRecords(records);

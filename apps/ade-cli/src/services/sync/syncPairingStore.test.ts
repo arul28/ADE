@@ -307,11 +307,14 @@ describe("PIN re-pair staged rotation", () => {
     );
 
     // The committed record is what every gate must read until the device
-    // proves it has the replacement.
+    // proves it has the replacement: the staged secret and the DPoP binding it
+    // carries stay invisible. Descriptive fields are not credentials, so a
+    // rename lands immediately rather than waiting on the acknowledgement.
     const beforeCommit = store.getPairingRecord(peer.deviceId);
-    expect(beforeCommit?.peerName).toBe(peer.deviceName);
+    expect(beforeCommit?.peerName).toBe("Renamed iPhone");
     expect(beforeCommit?.dpopPublicKey ?? null).toBeNull();
     expect(beforeCommit).not.toHaveProperty("pendingRotation");
+    expect(store.authenticate(peer.deviceId, rotated.secret)).toBe(true);
 
     store.authenticate(peer.deviceId, rotated.secret);
 
