@@ -1833,6 +1833,33 @@ func syncShouldPublishForegroundReconnectStarted(
   return !automaticAddresses.isEmpty
 }
 
+/// How long a "the user was inside this project" marker stays replayable.
+let syncProjectRouteRestoreWindow: TimeInterval = 24 * 60 * 60
+
+/// Whether launch should drop the user back into the project they were last in
+/// rather than onto the hub.
+///
+/// The hub is the intended launch surface, and that stays true for a genuinely
+/// new session. But iOS reclaims a backgrounded app within a couple of minutes,
+/// and the relaunch that follows is indistinguishable from a foreground to the
+/// user — they get bounced to the hub having done nothing but switch apps and
+/// switch back. Replaying the marker is not auto-navigation: it restores the
+/// user's own last explicit choice, and only while that choice is still recent.
+func syncShouldRestoreProjectRoute(
+  savedProjectId: String?,
+  activeProjectId: String?,
+  savedAt: Date?,
+  now: Date = Date()
+) -> Bool {
+  guard let savedProjectId, let activeProjectId, let savedAt,
+        savedProjectId == activeProjectId
+  else { return false }
+  let age = now.timeIntervalSince(savedAt)
+  // A negative age means the clock moved backwards; treat the marker as
+  // untrustworthy rather than honouring it indefinitely.
+  return age >= 0 && age < syncProjectRouteRestoreWindow
+}
+
 func syncDiscoveredHostsEqualForPresentation(
   _ left: DiscoveredSyncHost,
   _ right: DiscoveredSyncHost
@@ -2914,7 +2941,12 @@ final class SyncService: ObservableObject {
   /// Debounces persistence of the roster snapshot to the App Group cache.
   var rosterPersistTask: Task<Void, Never>?
   @Published var settingsPresented = false
-  @Published var projectHubPresented = true
+  @Published var projectHubPresented = true {
+    didSet {
+      guard projectHubPresented != oldValue else { return }
+      persistProjectRouteMarker()
+    }
+  }
   @Published var attentionDrawerPresented = false
   /// Drives the global Linear pane sheet (a full-screen issue browser + launcher
   /// bound in `ContentView`). Opened from the Work top-bar Linear button and by
@@ -3051,6 +3083,8 @@ final class SyncService: ObservableObject {
   private let profilesKey = "ade.sync.hostProfiles"
   private let legacyDeviceIdKey = "ade.sync.deviceId"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
+  private let lastProjectRouteIdKey = "ade.sync.lastProjectRoute.projectId"
+  private let lastProjectRouteSavedAtKey = "ade.sync.lastProjectRoute.savedAt"
   private let activeProjectIdKey = "ade.sync.activeProjectId"
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
@@ -3240,6 +3274,18 @@ final class SyncService: ObservableObject {
   private var recentFullChatSnapshotRequestBySession: [
     String: (uptime: TimeInterval, connectionGeneration: UInt64)
   ] = [:]
+  /// How long a `chat_subscribe` may go unacknowledged before we treat it as
+  /// lost. `sendEnvelope` reports only that a frame was handed to URLSession,
+  /// never that the host received it, so a subscribe dropped in flight left the
+  /// chat pane waiting on a snapshot that would never arrive — and rendering
+  /// "No chat messages yet" while it waited.
+  private let chatSnapshotAcknowledgementDeadline: TimeInterval = 5
+  private let chatSnapshotResendLimit = 2
+  private var chatSnapshotResendAttemptsBySession: [String: Int] = [:]
+  private var chatSnapshotWatchdogsBySession: [String: Task<Void, Never>] = [:]
+  /// Sessions whose subscribe went unanswered past every resend. Surfaced to
+  /// the chat pane so it can offer Retry instead of claiming the chat is empty.
+  private var stalledChatSnapshotSessionIds: Set<String> = []
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
@@ -3356,6 +3402,27 @@ final class SyncService: ObservableObject {
   func isSwitchingProject(_ project: MobileProjectSummary) -> Bool {
     guard let switchingRoot = projectSwitchInFlightRootPath else { return false }
     return normalizedProjectRoot(project.rootPath) == switchingRoot
+  }
+
+  /// Record (or clear) the marker that lets a forced relaunch put the user back
+  /// where they were. Driven from `projectHubPresented`'s observer so every path
+  /// that enters or leaves a project is covered, including the ones that set the
+  /// flag directly.
+  private func persistProjectRouteMarker() {
+    let defaults = UserDefaults.standard
+    guard !projectHubPresented, let activeProjectId else {
+      defaults.removeObject(forKey: lastProjectRouteIdKey)
+      defaults.removeObject(forKey: lastProjectRouteSavedAtKey)
+      return
+    }
+    defaults.set(activeProjectId, forKey: lastProjectRouteIdKey)
+    defaults.set(Date().timeIntervalSince1970, forKey: lastProjectRouteSavedAtKey)
+  }
+
+  private func loadProjectRouteMarkerSavedAt() -> Date? {
+    let stored = UserDefaults.standard.double(forKey: lastProjectRouteSavedAtKey)
+    guard stored > 0 else { return nil }
+    return Date(timeIntervalSince1970: stored)
   }
 
   func showProjectHub() {
@@ -4232,6 +4299,10 @@ final class SyncService: ObservableObject {
     if scopeChanged {
       resetOutboundCursorStateForActiveProject()
     }
+    // Switching projects without passing through the hub leaves the marker
+    // naming the project the user just left, which would fail the identity
+    // check on relaunch and silently drop them back on the hub.
+    persistProjectRouteMarker()
   }
 
   private func resetLanePayloadSignatures() {
@@ -4412,6 +4483,12 @@ final class SyncService: ObservableObject {
       deviceId = fresh
     }
     MobileTrustResetPolicy.applyIfNeeded(keychain: keychain)
+    // Read the route marker before anything below can rewrite it:
+    // `normalizeActiveProjectSelection` can call `setActiveProjectId`, which
+    // re-persists the marker against the still-default `projectHubPresented`
+    // (true) and would erase the very value we are about to check.
+    let savedProjectRouteId = UserDefaults.standard.string(forKey: lastProjectRouteIdKey)
+    let savedProjectRouteAt = loadProjectRouteMarkerSavedAt()
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
@@ -4426,11 +4503,28 @@ final class SyncService: ObservableObject {
     personalChatSessions = loadCachedPersonalChats()
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
-    // The hub (all-projects project hub) is the launch surface: always land
-    // there, even when a project was previously active. Opening a project from
-    // the hub (`selectProject`) dismisses it into that project's tabs; Back
-    // returns here. `activeProjectId` stays set so the roster's live overlay and
-    // on-tap chat opening have a synced project to work with.
+    // The hub (all-projects project hub) is the launch surface: land there by
+    // default, and always for a session that did not end inside a project.
+    // Opening a project from the hub (`selectProject`) dismisses it into that
+    // project's tabs; Back returns here. `activeProjectId` stays set either way
+    // so the roster's live overlay and on-tap chat opening have a synced project
+    // to work with.
+    //
+    // The exception is a session iOS ended for us: see
+    // `syncShouldRestoreProjectRoute`. Assigning here does not fire the property
+    // observer (Swift skips observers during initialization), which is what we
+    // want — this replays the marker rather than rewriting it.
+    if syncShouldRestoreProjectRoute(
+      savedProjectId: savedProjectRouteId,
+      activeProjectId: activeProjectId,
+      savedAt: savedProjectRouteAt
+    ) {
+      projectHubPresented = false
+      // The observer does not run during initialization, so re-stamp the marker
+      // explicitly — otherwise a device that keeps getting reclaimed would keep
+      // replaying a marker that never refreshes and expire mid-session.
+      persistProjectRouteMarker()
+    }
     pendingOperationCount = loadPendingOperations().count
     pendingChatCreations = loadPendingChatCreations()
     resetOutboundCursorStateForActiveProject()
@@ -6406,11 +6500,24 @@ final class SyncService: ObservableObject {
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       lastError = nil
-      await restoreTrackedOpenLanesAfterReconnect()
-      await refreshRemoteProjectCatalog()
-      try? await refreshLaneSnapshots()
-      try? await refreshWorkSessions()
-      try? await refreshPullRequestSnapshots()
+      // Five independent host round trips. Run serially they made a warm
+      // foreground feel slower than a cold start, because the user waited out
+      // the sum of all five. Nothing here feeds anything else — the presence
+      // re-announce sends its own commands (`refreshSnapshots: false`) and the
+      // catalog refresh does not gate the snapshot refreshes — so overlapping
+      // them costs one round trip instead of five.
+      async let lanePresence: Void = restoreTrackedOpenLanesAfterReconnect()
+      async let projectCatalog: Void = refreshRemoteProjectCatalog()
+      async let laneRefresh: Void? = try? await refreshLaneSnapshots()
+      async let workSessionRefresh: Void? = try? await refreshWorkSessions()
+      async let pullRequestRefresh: Void? = try? await refreshPullRequestSnapshots()
+      _ = await (
+        lanePresence,
+        projectCatalog,
+        laneRefresh,
+        workSessionRefresh,
+        pullRequestRefresh
+      )
       flushPendingOperationsAndScheduleRetry()
       return
     }
@@ -8897,6 +9004,11 @@ final class SyncService: ObservableObject {
           uptime: requestUptime,
           connectionGeneration: connectionGeneration
         )
+        stalledChatSnapshotSessionIds.remove(trimmedSessionId)
+        startChatSnapshotWatchdog(
+          sessionId: trimmedSessionId,
+          connectionGeneration: connectionGeneration
+        )
       }
       syncChatLog.notice(
         "chat_subscribe_send session=\(trimmedSessionId, privacy: .public) requestSnapshot=\(requestSnapshot, privacy: .public) wasSubscribed=\(wasSubscribed, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
@@ -8937,6 +9049,76 @@ final class SyncService: ObservableObject {
       return false
     }
     return recentRequest.connectionGeneration == connectionGeneration
+  }
+
+  /// True once a snapshot request has gone unanswered past every resend. The
+  /// chat pane renders an explicit failure with Retry rather than an empty
+  /// transcript, so a dropped subscribe can no longer read as "no messages".
+  func isFullChatEventSnapshotStalled(sessionId: String) -> Bool {
+    stalledChatSnapshotSessionIds.contains(
+      sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+  }
+
+  /// Re-request a snapshot after a stall, from the user tapping Retry. Clears
+  /// the coalescing latch first so the request is not swallowed by the window
+  /// that the stalled attempt itself opened.
+  func retryFullChatEventSnapshot(sessionId: String) async {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    chatSnapshotResendAttemptsBySession.removeValue(forKey: trimmedSessionId)
+    stalledChatSnapshotSessionIds.remove(trimmedSessionId)
+    recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
+    localStateRevision += 1
+    _ = try? await requestFullChatEventSnapshot(sessionId: trimmedSessionId)
+  }
+
+  private func startChatSnapshotWatchdog(sessionId: String, connectionGeneration: UInt64) {
+    chatSnapshotWatchdogsBySession.removeValue(forKey: sessionId)?.cancel()
+    let deadline = chatSnapshotAcknowledgementDeadline
+    chatSnapshotWatchdogsBySession[sessionId] = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+      guard !Task.isCancelled, let self else { return }
+      self.handleChatSnapshotDeadlineElapsed(
+        sessionId: sessionId,
+        connectionGeneration: connectionGeneration
+      )
+    }
+  }
+
+  private func handleChatSnapshotDeadlineElapsed(sessionId: String, connectionGeneration: UInt64) {
+    chatSnapshotWatchdogsBySession.removeValue(forKey: sessionId)
+    // An ack, an unsubscribe, or a reconnect all clear the latch. Any of them
+    // means this deadline is about a request nobody is waiting on any more.
+    guard let pending = recentFullChatSnapshotRequestBySession[sessionId],
+          pending.connectionGeneration == connectionGeneration,
+          isCurrentConnectionGeneration(connectionGeneration),
+          subscribedChatSessionIds.contains(sessionId)
+    else { return }
+
+    let attempts = chatSnapshotResendAttemptsBySession[sessionId] ?? 0
+    guard attempts < chatSnapshotResendLimit, canSendLiveRequests() else {
+      syncChatLog.notice(
+        "chat_subscribe_stalled session=\(sessionId, privacy: .public) attempts=\(attempts, privacy: .public)"
+      )
+      stalledChatSnapshotSessionIds.insert(sessionId)
+      localStateRevision += 1
+      return
+    }
+    chatSnapshotResendAttemptsBySession[sessionId] = attempts + 1
+    recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
+    syncChatLog.notice(
+      "chat_subscribe_resend session=\(sessionId, privacy: .public) attempt=\(attempts + 1, privacy: .public)"
+    )
+    Task { @MainActor [weak self] in
+      _ = try? await self?.requestFullChatEventSnapshot(sessionId: sessionId)
+    }
+  }
+
+  private func clearChatSnapshotWatchdogState(sessionId: String) {
+    chatSnapshotWatchdogsBySession.removeValue(forKey: sessionId)?.cancel()
+    chatSnapshotResendAttemptsBySession.removeValue(forKey: sessionId)
+    stalledChatSnapshotSessionIds.remove(sessionId)
   }
 
   func unsubscribeFromChatEvents(sessionId: String) async throws {
@@ -8988,6 +9170,7 @@ final class SyncService: ObservableObject {
     subscribedChatSessionIds.remove(sessionId)
     chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
     recentFullChatSnapshotRequestBySession.removeValue(forKey: sessionId)
+    clearChatSnapshotWatchdogState(sessionId: sessionId)
     localStateRevision += 1
     if canSendLiveRequests() && supportsChatStreaming {
       sendEnvelope(type: "chat_unsubscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
@@ -15211,6 +15394,7 @@ final class SyncService: ObservableObject {
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
          subscribedChatSessionIds.contains(snapshot.sessionId) {
         recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshot.sessionId)
+        clearChatSnapshotWatchdogState(sessionId: snapshot.sessionId)
         let resumed = (dict["resumed"] as? Bool) == true
         let previousLastSeq = chatEventLastSeqBySession[snapshot.sessionId]
         if !resumed {
@@ -17067,6 +17251,12 @@ final class SyncService: ObservableObject {
     subscribedChatSessionIds.removeAll()
     chatSubscriptionsNeedingRemoteActivation.removeAll()
     recentFullChatSnapshotRequestBySession.removeAll()
+    for watchdog in chatSnapshotWatchdogsBySession.values {
+      watchdog.cancel()
+    }
+    chatSnapshotWatchdogsBySession.removeAll()
+    chatSnapshotResendAttemptsBySession.removeAll()
+    stalledChatSnapshotSessionIds.removeAll()
     chatHistoryCursorBySession.removeAll()
     chatHistoryCursorAdvancedByPageSessionIds.removeAll()
     // Turn-active hints are scoped to the live connection's event stream —
@@ -17172,8 +17362,21 @@ final class SyncService: ObservableObject {
       }
     }
     refreshProjectCatalog()
+    // Lanes, work sessions and PRs are three independent host round trips.
+    // Awaiting them in series cost the sum of three latencies on every project
+    // switch — tolerable on LAN, punishing over relay. `async let` overlaps
+    // them: the main actor is free while each request is in flight, the same
+    // reason `schedulePostHelloWork` can interleave its two refreshes.
+    async let laneRefresh: Void = refreshLaneSnapshots()
+    async let workSessionRefresh: Void = refreshWorkSessions()
+
+    // PRs are not part of first paint — Work and Lanes render without them —
+    // so they must not hold the switch open. They arrive on their own domain
+    // status instead of gating the surfaces the user is looking at.
+    schedulePullRequestHydration(for: connectionGeneration)
+
     do {
-      try await refreshLaneSnapshots()
+      try await laneRefresh
     } catch {
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
@@ -17181,18 +17384,24 @@ final class SyncService: ObservableObject {
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     do {
-      try await refreshWorkSessions()
+      try await workSessionRefresh
     } catch {
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
     }
+  }
 
-    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
-    do {
-      try await refreshPullRequestSnapshots()
-    } catch {
-      guard isCurrentConnectionGeneration(connectionGeneration) else { return }
-      lastError = SyncUserFacingError.message(for: error)
+  /// Hydrate PR snapshots off the readiness path, guarded so a refresh that
+  /// outlives its connection cannot report a stale failure against a newer one.
+  private func schedulePullRequestHydration(for connectionGeneration: UInt64) {
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await self.refreshPullRequestSnapshots()
+      } catch {
+        guard self.isCurrentConnectionGeneration(connectionGeneration) else { return }
+        self.lastError = SyncUserFacingError.message(for: error)
+      }
     }
   }
 

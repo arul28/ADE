@@ -1556,7 +1556,14 @@ struct WorkSessionDestinationView: View {
       onEditUnprocessedMessage: !viewingSubagent ? editUnprocessedMessage : nil,
       onDismissUnprocessedMessage: !viewingSubagent && supportsUnprocessedResolution
         ? dismissUnprocessedMessage
-        : nil
+        : nil,
+      transcriptLoadState: transcriptLoadState,
+      onRetryTranscript: {
+        Task { @MainActor in
+          await syncService.retryFullChatEventSnapshot(sessionId: sessionId)
+          await loadTranscript(forceRemote: true, preferLightweight: false)
+        }
+      }
     )
   }
 
@@ -1588,7 +1595,21 @@ struct WorkSessionDestinationView: View {
   }
 
   var openingSnapshotRetryKey: String {
-    "\(sessionId)-request:\(openingTranscriptSnapshotRequestedAtUptime ?? -1)-cross:\(isCrossProject)-reachable:\(isLiveAndReachable)"
+    "\(sessionId)-request:\(openingTranscriptSnapshotRequestedAtUptime ?? -1)-reachable:\(isLiveAndReachable)"
+  }
+
+  /// What the chat pane should show when the timeline is empty. An empty
+  /// timeline is only genuinely "no messages" once nothing is in flight and
+  /// nothing has failed; the other two cases used to render the same confident
+  /// "No chat messages yet" as a real empty chat.
+  var transcriptLoadState: WorkChatTranscriptLoadState {
+    if syncService.isFullChatEventSnapshotStalled(sessionId: sessionId) {
+      return .failed("The machine didn't send this chat's transcript.")
+    }
+    if openingLoadInFlight || syncService.isFullChatEventSnapshotPending(sessionId: sessionId) {
+      return .loading
+    }
+    return .idle
   }
 
   var selectedSubagentPollingKey: String {
@@ -1766,10 +1787,16 @@ struct WorkSessionDestinationView: View {
     await loadTranscript(forceRemote: true, preferLightweight: false)
   }
 
+  /// Long-stop for an opening snapshot that never arrived. `SyncService` resends
+  /// the subscribe itself; this re-pulls the transcript outright if even that
+  /// produced nothing.
+  ///
+  /// This used to be gated on `isCrossProject`, which meant an ordinary
+  /// same-project chat whose subscribe was dropped simply stayed blank — the
+  /// most common form of the bug, with no recovery at all.
   @MainActor
   func retryUnacknowledgedOpeningSnapshotIfNeeded() async {
-    guard isCrossProject,
-          isLiveAndReachable,
+    guard isLiveAndReachable,
           transcript.isEmpty,
           fallbackEntries.isEmpty,
           let requestedAtUptime = openingTranscriptSnapshotRequestedAtUptime,
@@ -1782,7 +1809,6 @@ struct WorkSessionDestinationView: View {
       try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
     }
     guard !Task.isCancelled,
-          isCrossProject,
           isLiveAndReachable,
           transcript.isEmpty,
           fallbackEntries.isEmpty,

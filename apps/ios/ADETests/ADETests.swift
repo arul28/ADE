@@ -17850,7 +17850,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(firstPage.totalLineCount, 120)
     XCTAssertTrue(firstPage.text.contains("row 24"))
     XCTAssertFalse(firstPage.text.contains("row 25"))
-    XCTAssertEqual(workAssistantMessageMaxLineBudget(for: firstPage.text), workAssistantMessageWideMaxLineBudget)
+    XCTAssertEqual(
+      workAssistantMessageEffectiveLineBudget(
+        requestedLineBudget: workAssistantMessageInitialLineBudget,
+        usesMonospacedPreview: workAssistantMessageUsesMonospacedPreview(firstPage.text)
+      ),
+      workAssistantMessageWideInitialLineBudget
+    )
   }
 
 
@@ -23395,5 +23401,189 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     }
     XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
     XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
+  }
+}
+
+// MARK: - Hub chat activation outcome
+
+/// The hub chat cover used to leave `mode` on `.deciding` forever whenever
+/// `openProjectForHubChat` failed (it reports via `lastError`, it does not
+/// throw), stranding the user on an indefinite "Opening …" spinner. Every
+/// outcome must now resolve to something renderable, with a Retry affordance on
+/// the failures.
+final class HubChatActivationOutcomeTests: XCTestCase {
+  private func failureMessage(_ outcome: HubChatActivationOutcome) -> String? {
+    guard case .failed(let message) = outcome else { return nil }
+    return message
+  }
+
+  func testActivatedWhenProjectBecomesActive() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: true,
+      lastError: nil,
+      timedOut: false
+    )
+    XCTAssertEqual(outcome, .activated)
+  }
+
+  func testFailedActivationSurfacesSyncLastError() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "The machine could not open that project for phone sync.",
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not open that project for phone sync."
+    )
+  }
+
+  func testFailedActivationWithoutLastErrorNamesTheProjectAndTheFix() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: nil,
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not switch to ADE. Check that it is online, then try again."
+    )
+  }
+
+  /// A blank `lastError` is as useless to the user as a missing one.
+  func testBlankLastErrorFallsBackToTheSpecificMessage() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "   ",
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not switch to ADE. Check that it is online, then try again."
+    )
+  }
+
+  /// `switchToDesktopProject` flips `activeProjectId` before it tears the socket
+  /// down and reconnects, so a timed-out activation can still read as "active"
+  /// while nothing is connected or hydrated. The timeout must win, otherwise the
+  /// cover opens a chat that cannot stream.
+  func testTimeoutReportsUnresponsiveMachineEvenWhenProjectReadsActive() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: true,
+      lastError: nil,
+      timedOut: true
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine took too long to open ADE. It may be offline or still reconnecting."
+    )
+  }
+
+  func testTimeoutCopyWinsOverAStaleLastError() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "Timed out loading GitHub repositories.",
+      timedOut: true
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine took too long to open ADE. It may be offline or still reconnecting."
+    )
+  }
+}
+
+/// Launch normally lands on the hub. The one exception is a session iOS ended
+/// for us: the relaunch is indistinguishable from a foreground, so bouncing the
+/// user to the hub reads as losing their place.
+final class SyncProjectRouteRestoreTests: XCTestCase {
+  private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+  func testRestoresARecentlyOpenProject() {
+    XCTAssertTrue(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreOnceTheMarkerIsStale() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-(syncProjectRouteRestoreWindow + 1)),
+        now: now
+      )
+    )
+  }
+
+  func testRestoresRightUpToTheEdgeOfTheWindow() {
+    XCTAssertTrue(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-(syncProjectRouteRestoreWindow - 1)),
+        now: now
+      )
+    )
+  }
+
+  /// The user left the project before the app died, so the hub is where they
+  /// actually were — there is no marker to replay.
+  func testDoesNotRestoreWithoutAMarker() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: nil,
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  /// A marker for a project that is no longer the active one would drop the
+  /// user into the wrong project's tabs.
+  func testDoesNotRestoreWhenTheMarkerNamesADifferentProject() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-b",
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreWithoutAnActiveProject() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: nil,
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  /// A marker stamped in the future means the clock moved; honouring it would
+  /// keep restoring long past the window.
+  func testDoesNotRestoreAMarkerFromTheFuture() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(600),
+        now: now
+      )
+    )
   }
 }
