@@ -85,9 +85,11 @@ func syncNetworkPathRecoveryAction(
 }
 
 enum SyncRoamTiming {
-  /// Floor between two roam attempts of any kind. Also absorbs bursts of
-  /// NWPathMonitor updates around a single physical network change.
-  static let cooldownSeconds: TimeInterval = 30
+  /// Floor between two failover races. Short on purpose: a real interface
+  /// change may mean the current route is gone, and making the user wait out an
+  /// upgrade cooldown to fail over would be a regression. It exists only to
+  /// absorb the burst of NWPathMonitor updates around one physical change.
+  static let pathChangeCooldownSeconds: TimeInterval = 3
   /// A connection this young has not proven anything yet; upgrading away from
   /// it is churn. Genuine path changes ignore this — the route may be dead.
   static let minimumConnectionAgeSeconds: TimeInterval = 10
@@ -144,16 +146,17 @@ struct SyncRoamInputs: Equatable {
 /// race that replaced a working socket.
 func syncRoamTrigger(_ inputs: SyncRoamInputs) -> SyncRoamTrigger? {
   guard inputs.hasLiveConnection, inputs.isPathSatisfied else { return nil }
-  if let secondsSinceLastRoamAttempt = inputs.secondsSinceLastRoamAttempt,
-     secondsSinceLastRoamAttempt < SyncRoamTiming.cooldownSeconds {
-    return nil
+  let secondsSinceLastRoamAttempt = inputs.secondsSinceLastRoamAttempt ?? .infinity
+  if inputs.interfacesChanged {
+    return secondsSinceLastRoamAttempt >= SyncRoamTiming.pathChangeCooldownSeconds
+      ? .pathChange
+      : nil
   }
-  if inputs.interfacesChanged { return .pathChange }
   guard let currentRouteKind = inputs.currentRouteKind,
         let bestAvailableRouteKind = inputs.bestAvailableRouteKind,
-        bestAvailableRouteKind.rawValue < currentRouteKind.rawValue,
+        bestAvailableRouteKind < currentRouteKind,
         (inputs.connectionAgeSeconds ?? 0) >= SyncRoamTiming.minimumConnectionAgeSeconds,
-        (inputs.secondsSinceLastRoamAttempt ?? .infinity) >= SyncRoamTiming.upgradeProbeIntervalSeconds
+        secondsSinceLastRoamAttempt >= SyncRoamTiming.upgradeProbeIntervalSeconds
   else { return nil }
   return .upgradeProbe
 }

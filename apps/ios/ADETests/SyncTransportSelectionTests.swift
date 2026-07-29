@@ -114,9 +114,15 @@ final class SyncTransportSelectionTests: XCTestCase {
     )
   }
 
-  func testLosingTheRaceIsNotRecordedAsAnEndpointFailure() {
+  func testOnlyRouteFailuresAreRecordedAgainstAnEndpoint() {
     XCTAssertFalse(syncEndpointFailureIsMeaningful(CancellationError()))
-    XCTAssertFalse(syncEndpointFailureIsMeaningful(NSError(domain: "ADE", code: 37)))
+    XCTAssertFalse(syncEndpointFailureIsMeaningful(SyncRelayDialInFlight()))
+    XCTAssertFalse(
+      syncEndpointFailureIsMeaningful(SyncRelayAuthorizationRequirement.signInRequired),
+      "a missing account credential says nothing about the route"
+    )
+    XCTAssertFalse(syncEndpointFailureIsMeaningful(NSError(domain: "ADE", code: 31)))
+    // ADE 25 is the socket-open timeout: that IS the endpoint failing.
     XCTAssertTrue(syncEndpointFailureIsMeaningful(NSError(domain: "ADE", code: 25)))
   }
 
@@ -186,6 +192,38 @@ final class SyncTransportSelectionTests: XCTestCase {
     XCTAssertEqual(hoisted.count, ranked.count)
   }
 
+  func testNetworkMemoryOutranksTheGlobalLastGood() {
+    // Home LAN remembered for this Wi-Fi, but the last connection anywhere was
+    // the relay (from cellular). On this network the LAN route must lead.
+    let memory = syncNetworkRouteMemoryRecording(
+      nil,
+      fingerprint: "wifi:192.168.1",
+      endpoint: "192.168.1.8",
+      at: 100
+    )
+    let ranked = [attempt(relayRoute, port: 443), attempt("192.168.1.8")]
+
+    let hoisted = syncEndpointAttemptsHoisting(
+      ranked,
+      preferredAddresses: [
+        syncRememberedEndpoint(in: memory, fingerprint: "wifi:192.168.1"),
+        relayRoute,
+      ].compactMap { $0 }
+    )
+
+    XCTAssertEqual(hoisted.map(\.address), ["192.168.1.8", relayRoute])
+  }
+
+  func testAnUnknownNetworkRemembersNothing() {
+    XCTAssertNil(
+      syncNetworkFingerprint(usesWiFi: false, usesCellular: false, usesWiredEthernet: false)
+    )
+    XCTAssertNil(syncRememberedEndpoint(in: nil, fingerprint: nil))
+    XCTAssertTrue(
+      syncNetworkRouteMemoryRecording(nil, fingerprint: nil, endpoint: relayRoute, at: 1).isEmpty
+    )
+  }
+
   func testHoistingOnlyReordersTheVettedSet() {
     let vetted = [attempt("192.168.1.8")]
 
@@ -228,18 +266,37 @@ final class SyncTransportSelectionTests: XCTestCase {
 
   func testSingleFlightGuardBlocksASecondDialForTheSameMachine() {
     var registry = SyncRelayDialRegistry()
-    let key = syncRelayMachineKey(from: relayRoute + "?ready=2")
+    let key = try! XCTUnwrap(syncRelayMachineKey(from: relayRoute + "?ready=2"))
 
     XCTAssertEqual(key, "relay.ade.app/machine-key")
-    XCTAssertTrue(registry.acquire(key!))
-    XCTAssertFalse(registry.acquire(key!), "a second dial for the same machine is refused")
-    XCTAssertTrue(
-      registry.acquire(syncRelayMachineKey(from: secondRelayRoute)!),
+    let token = registry.acquire(key)
+    XCTAssertNotNil(token)
+    XCTAssertNil(registry.acquire(key), "a second dial for the same machine is refused")
+    XCTAssertNotNil(
+      registry.acquire(try! XCTUnwrap(syncRelayMachineKey(from: secondRelayRoute))),
       "a different machine on the same relay is unaffected"
     )
 
-    registry.release(key!)
-    XCTAssertTrue(registry.acquire(key!), "the key is reusable once the dial finishes")
+    registry.release(key, token: token!)
+    XCTAssertNotNil(registry.acquire(key), "the key is reusable once the dial finishes")
+  }
+
+  func testAbandonedDialCannotFreeTheKeyANewAttemptOwns() {
+    // A superseded connect attempt unwinds late. Its release must not hand the
+    // machine's dial slot away from the attempt that now owns it, and the new
+    // attempt must not be refused because the old dial had not unwound yet.
+    var registry = SyncRelayDialRegistry()
+    let key = "relay.ade.app/machine-key"
+    let abandonedToken = try! XCTUnwrap(registry.acquire(key))
+
+    registry.releaseAll()
+    let currentToken = try! XCTUnwrap(registry.acquire(key), "a new attempt is not blocked")
+
+    registry.release(key, token: abandonedToken)
+    XCTAssertEqual(registry.inFlightKeys, [key], "the stale release is ignored")
+
+    registry.release(key, token: currentToken)
+    XCTAssertTrue(registry.inFlightKeys.isEmpty)
   }
 
   func testTheReadyV2AndLegacyURLsForOneEndpointShareADialKey() {
@@ -254,13 +311,13 @@ final class SyncTransportSelectionTests: XCTestCase {
   func testAcceptedExtendsTheReadyDeadline() {
     var negotiation = SyncRelayReadyNegotiation()
     XCTAssertEqual(
-      negotiation.phaseDeadlineNanoseconds,
+      negotiation.phaseBudgetNanoseconds,
       SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds
     )
 
     XCTAssertEqual(negotiation.receive(.accepted), .interceptedWaiting)
     XCTAssertEqual(
-      negotiation.phaseDeadlineNanoseconds,
+      negotiation.phaseBudgetNanoseconds,
       SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds
     )
     XCTAssertGreaterThan(
@@ -270,6 +327,21 @@ final class SyncTransportSelectionTests: XCTestCase {
 
     XCTAssertEqual(negotiation.receive(.ready), .sendHello)
     XCTAssertTrue(negotiation.ready)
+  }
+
+  func testAHalfOpenRelayFailsInsideTheRaceBudget() {
+    // A relay that accepts and then never bridges must lose the candidate while
+    // the race is still running: that is what records the failure against the
+    // endpoint and frees its concurrency slot and dial key. If the race budget
+    // expired first, the endpoint would never accumulate a failure streak.
+    XCTAssertLessThan(
+      SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds,
+      SyncConnectionRaceTiming.overallBudgetNanoseconds
+    )
+    XCTAssertGreaterThan(
+      SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds,
+      SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds
+    )
   }
 
   func testReadyBeforeAcceptedIsNotAuthoritative() {
@@ -350,19 +422,37 @@ final class SyncTransportSelectionTests: XCTestCase {
     )
   }
 
-  func testRoamCooldownSuppressesBurstsOfPathUpdates() {
+  func testRoamCooldownSuppressesBurstsOfPathUpdatesButNotFailover() {
+    // A burst of updates around one physical change collapses to one race.
     XCTAssertNil(syncRoamTrigger(roamInputs(
       interfacesChanged: true,
       current: .relay,
       best: .lan,
-      sinceLastRoam: 5
+      sinceLastRoam: 1
     )))
+    // Failover must not have to wait out the upgrade-probe cooldown: the route
+    // it is failing away from may already be gone.
+    XCTAssertEqual(
+      syncRoamTrigger(roamInputs(
+        interfacesChanged: true,
+        current: .relay,
+        best: .lan,
+        sinceLastRoam: SyncRoamTiming.pathChangeCooldownSeconds + 1
+      )),
+      .pathChange
+    )
   }
 
   func testRoamingRequiresALiveConnection() {
     var inputs = roamInputs(interfacesChanged: true)
     inputs.hasLiveConnection = false
     XCTAssertNil(syncRoamTrigger(inputs), "reconnect owns the disconnected case")
+  }
+
+  func testALocalLinkOnlyIPv6CandidateIsAlsoDemotedOnCellular() {
+    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fe80::1"))
+    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fd12:3456:789a::1"))
+    XCTAssertFalse(syncIsLocalLinkOnlyCandidate("::1"))
   }
 
   func testInterfaceChangeIgnoresExpensiveAndConstrainedFlapping() {
@@ -396,30 +486,4 @@ final class SyncTransportSelectionTests: XCTestCase {
     XCTAssertTrue(syncNetworkPathInterfacesChanged(previous: nil, next: base))
   }
 
-  func testRecoveryActionRoutesARoamTriggerToTheReplacementRace() {
-    XCTAssertEqual(
-      syncNetworkPathRecoveryAction(
-        roamTrigger: .pathChange,
-        isPathSatisfied: true,
-        hasLiveConnection: true
-      ),
-      .attemptAuthenticatedReplacement
-    )
-    XCTAssertEqual(
-      syncNetworkPathRecoveryAction(
-        roamTrigger: nil,
-        isPathSatisfied: true,
-        hasLiveConnection: true
-      ),
-      .cancelScheduledReconnect
-    )
-    XCTAssertEqual(
-      syncNetworkPathRecoveryAction(
-        roamTrigger: nil,
-        isPathSatisfied: true,
-        hasLiveConnection: false
-      ),
-      .scheduleReconnect
-    )
-  }
 }

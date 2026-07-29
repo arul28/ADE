@@ -8,11 +8,18 @@ enum SyncConnectionRaceTiming {
   /// the moment `/connect` is served, before any host signaling, so this window
   /// only has to cover the WebSocket upgrade itself.
   static let relayAcceptedNegotiationNanoseconds: UInt64 = 350_000_000
-  /// Deadline for `ready` once `accepted` has arrived. `accepted` already
-  /// proves the relay is live and the host is registered, so the remaining wait
-  /// covers a cold Durable Object waking, dialing the host pipe and the local
-  /// port — 350ms was never realistic for that and forced a second dial.
-  static let relayReadyAfterAcceptedNanoseconds: UInt64 = 3_500_000_000
+  /// Budget for `ready` once `accepted` has arrived. `accepted` already proves
+  /// the relay is live and the host is registered, so the remaining wait covers
+  /// a cold Durable Object waking, dialing the host pipe and the local port —
+  /// far more than the 350ms `accepted` window, which is why a cold endpoint
+  /// used to be redialed on principle.
+  ///
+  /// It must stay strictly under `overallBudgetNanoseconds`: a relay that
+  /// accepts and then never bridges has to fail *inside* the race, so the
+  /// candidate is recorded as a failed endpoint and its concurrency slot and
+  /// dial key are freed. If the race budget expired first, that endpoint would
+  /// never accumulate a failure streak and would keep leading the plan.
+  static let relayReadyAfterAcceptedNanoseconds: UInt64 = 7_000_000_000
   /// How long a relay candidate holds back once a direct candidate is already
   /// dialing. Direct routes win outright on a LAN, so this is the whole cost of
   /// keeping relay in the same race; on cellular no direct candidate is
@@ -27,8 +34,37 @@ enum SyncEndpointFailureMemory {
   static let recentFailureWindowSeconds: TimeInterval = 120
 }
 
+func syncEndpointIsRecentlyFailing(
+  _ state: HostConnectionEndpointState?,
+  now: TimeInterval
+) -> Bool {
+  guard let state,
+        let lastFailedAt = state.lastFailedAt,
+        (state.consecutiveFailures ?? 0) >= SyncEndpointFailureMemory.consecutiveFailureThreshold
+  else { return false }
+  return now - lastFailedAt <= SyncEndpointFailureMemory.recentFailureWindowSeconds
+}
+
 /// Most-recently-used cap for the per-network route memory.
 let syncNetworkRouteMemoryCapacity = 8
+
+/// Lower is better: a LAN route beats a tailnet route beats the relay. The
+/// ordering is load-bearing for ranking and for deciding what counts as an
+/// upgrade, so it is expressed once here instead of via `.rawValue` at each site.
+extension SyncConnectionRouteKind: Comparable {
+  static func < (lhs: SyncConnectionRouteKind, rhs: SyncConnectionRouteKind) -> Bool {
+    lhs.rawValue < rhs.rawValue
+  }
+}
+
+/// Thrown when the single-flight guard refuses a second concurrent `/connect`
+/// dial for one machine. It describes this attempt, never the endpoint, so it
+/// must not be recorded as an endpoint failure.
+struct SyncRelayDialInFlight: Error, LocalizedError {
+  var errorDescription: String? {
+    "A connection to this machine through the ADE relay is already opening."
+  }
+}
 
 func syncObservedConnectionRouteKind(
   connectedHost: String,
@@ -129,7 +165,7 @@ struct SyncRelayReadyNegotiation: Equatable {
   /// began. `accepted` moves the socket into the long phase: it has proven the
   /// relay accepted us and the host is registered, so waiting is no longer a
   /// gamble on a dead endpoint.
-  var phaseDeadlineNanoseconds: UInt64 {
+  var phaseBudgetNanoseconds: UInt64 {
     acceptedV2
       ? SyncConnectionRaceTiming.relayReadyAfterAcceptedNanoseconds
       : SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds
@@ -169,35 +205,52 @@ func syncRelayMachineKey(from rawValue: String) -> String? {
 }
 
 /// Single-flight guard over relay `/connect` dials, keyed by machine.
+///
+/// Holders are identified by a token so that abandoning a whole connect attempt
+/// (`releaseAll`) is safe: a superseded dial unwinding afterwards releases with
+/// a stale token and is ignored, instead of freeing a key the new attempt owns.
 struct SyncRelayDialRegistry: Equatable {
-  private(set) var inFlightKeys: Set<String> = []
+  private(set) var inFlight: [String: UUID] = [:]
 
-  mutating func acquire(_ key: String) -> Bool {
-    inFlightKeys.insert(key).inserted
+  var inFlightKeys: Set<String> { Set(inFlight.keys) }
+
+  /// The token to release with, or nil when another dial already holds the key.
+  mutating func acquire(_ key: String, token: UUID = UUID()) -> UUID? {
+    guard inFlight[key] == nil else { return nil }
+    inFlight[key] = token
+    return token
   }
 
-  mutating func release(_ key: String) {
-    inFlightKeys.remove(key)
+  mutating func release(_ key: String, token: UUID) {
+    guard inFlight[key] == token else { return }
+    inFlight.removeValue(forKey: key)
+  }
+
+  /// Abandons every in-flight dial. Called when a new connect attempt
+  /// supersedes the old one, whose sockets are being cancelled anyway.
+  mutating func releaseAll() {
+    inFlight.removeAll()
   }
 }
 
-/// Coarse identity for the network the phone is on right now. Wi-Fi carries the
-/// phone's own IPv4 /24 so home, office and hotspot are distinguishable; an SSID
-/// would need an entitlement the app does not hold, and the /24 separates the
-/// same networks for the purpose of "which route worked here".
+/// Coarse identity for the network the phone is on right now, or nil when there
+/// is no usable path to remember. Wi-Fi carries the phone's own IPv4 /24 so
+/// home, office and hotspot are distinguishable; an SSID would need an
+/// entitlement the app does not hold, and the /24 separates the same networks
+/// well enough for "which route worked here".
 func syncNetworkFingerprint(
   usesWiFi: Bool,
   usesCellular: Bool,
   usesWiredEthernet: Bool,
   interfaceAddresses: [SyncNetworkInterfaceAddress] = []
-) -> String {
+) -> String? {
   if usesWiredEthernet { return "wired" }
   if usesWiFi {
     guard let prefix = syncLocalIPv4SubnetPrefix(interfaceAddresses) else { return "wifi" }
     return "wifi:\(prefix)"
   }
   if usesCellular { return "cell" }
-  return "none"
+  return nil
 }
 
 /// The `a.b.c` prefix of this device's own LAN IPv4, taken from a wired/Wi-Fi
@@ -217,21 +270,21 @@ func syncLocalIPv4SubnetPrefix(_ interfaceAddresses: [SyncNetworkInterfaceAddres
 
 func syncRememberedEndpoint(
   in memory: [HostConnectionNetworkRouteMemory]?,
-  fingerprint: String
+  fingerprint: String?
 ) -> String? {
-  guard fingerprint != "none" else { return nil }
+  guard let fingerprint else { return nil }
   return memory?.first(where: { $0.fingerprint == fingerprint })?.endpoint
 }
 
 func syncNetworkRouteMemoryRecording(
   _ memory: [HostConnectionNetworkRouteMemory]?,
-  fingerprint: String,
+  fingerprint: String?,
   endpoint: String,
   at updatedAt: TimeInterval,
   capacity: Int = syncNetworkRouteMemoryCapacity
 ) -> [HostConnectionNetworkRouteMemory] {
   let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard fingerprint != "none", !trimmedEndpoint.isEmpty else { return memory ?? [] }
+  guard let fingerprint, !trimmedEndpoint.isEmpty else { return memory ?? [] }
   let entry = HostConnectionNetworkRouteMemory(
     fingerprint: fingerprint,
     endpoint: trimmedEndpoint,

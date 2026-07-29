@@ -3150,33 +3150,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
-    // Wi-Fi drops under a LAN connection: the interface set changed, so the
-    // full failover race runs immediately regardless of connection age.
-    XCTAssertEqual(
-      syncRoamTrigger(SyncRoamInputs(
-        hasLiveConnection: true,
-        isPathSatisfied: true,
-        interfacesChanged: true,
-        currentRouteKind: .lan,
-        bestAvailableRouteKind: .tailnet,
-        connectionAgeSeconds: 2
-      )),
-      .pathChange
-    )
-    // Already on the best class available with nothing changed: no roam.
-    XCTAssertNil(
-      syncRoamTrigger(SyncRoamInputs(
-        hasLiveConnection: true,
-        isPathSatisfied: true,
-        interfacesChanged: false,
-        currentRouteKind: .tailnet,
-        bestAvailableRouteKind: .tailnet,
-        connectionAgeSeconds: 600
-      ))
-    )
-  }
-
   func testSyncReducedLoadStartsConservativeThenPromotesOnHealthySamples() {
     XCTAssertTrue(
       syncPrefersReducedNetworkLoad(
