@@ -45,7 +45,10 @@ import {
   toMachineBranchState,
   type MachineBranchState,
 } from "../../shared/laneDivergence";
-import { deriveLaneMachineOptions } from "../components/lanes/laneMachines";
+import {
+  deriveLaneMachineOptions,
+  type LaneMachineOption,
+} from "../components/lanes/laneMachines";
 import {
   rootAppStoreApi,
   selectActiveProjectStateKey,
@@ -706,12 +709,9 @@ function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null 
   return project?.gitOriginUrl ?? null;
 }
 
-/** Live connection truth, as of the newest snapshot this runtime has seen. */
-function isMachineConnectedNow(machineId: string): boolean {
-  return runtime.connections.some(
-    (connection) => connection.state === "connected"
-      && connection.target.id === machineId,
-  );
+/** Eligibility truth as of the newest snapshot this runtime has seen. */
+function isMachineEligibleNow(machineId: string): boolean {
+  return resolveEligibleMachines().some((option) => option.id === machineId);
 }
 
 async function readMachine(
@@ -760,7 +760,7 @@ async function readMachine(
       // across a disconnect must not flip a machine the window already hid back
       // on — nothing would hide it again until the next snapshot happens to
       // fire. Omitting the flag retains whatever the snapshot path decided.
-      ...(isMachineConnectedNow(machineId) ? { online: true } : {}),
+      ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
       lanes: decodeForeignLanes(laneResult.result),
       sessions: reconcileCrossMachineOptimisticSessions(
         binding,
@@ -838,25 +838,7 @@ async function runRefresh(): Promise<void> {
   const store = rootAppStoreApi.getState();
   store.applyCrossMachineLaneScope(scope.scopeKey);
 
-  const options = deriveLaneMachineOptions({
-    connections: runtime.connections,
-    boundTargetId: scope.boundTargetId,
-    repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
-    repoDisplayName: scope.repoDisplayName,
-  });
-
-  const targets = options.filter(
-    (option) =>
-      option.id !== THIS_MACHINE_ID
-      && option.id !== (
-        scope.boundTargetId ?? THIS_MACHINE_ID
-      )
-      && option.targetId
-      && option.project?.projectId
-      && option.repoMatch === "matched",
-  );
-  // Reachability is not recomputed here: `targets` is the read list, and the
-  // connection snapshot is the single source of truth for what is visible.
+  const targets = resolveEligibleMachines();
 
   // Bounded fan-out. Reads are independent, so a wedged machine costs one slot
   // for at most `MACHINE_READ_TIMEOUT_MS` and never blocks the others.
@@ -930,6 +912,34 @@ function scheduleRefresh(): void {
 }
 
 /**
+ * The machines that can contribute rows for the current scope: connected AND
+ * still hosting this repository, excluding This Mac and the tab's own binding
+ * (both of which the primary list already owns).
+ *
+ * Reachability and the read list share this one definition on purpose. When they
+ * were computed separately, a machine that reconnected after the repo had been
+ * removed there stayed `online` — connected, so never hidden — while the read
+ * list dropped it, so its rows were never refreshed either: permanently visible,
+ * permanently stale.
+ */
+function resolveEligibleMachines(): LaneMachineOption[] {
+  const scope = runtime.scope;
+  return deriveLaneMachineOptions({
+    connections: runtime.connections,
+    boundTargetId: scope.boundTargetId,
+    repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
+    repoDisplayName: scope.repoDisplayName,
+  }).filter(
+    (option) =>
+      option.id !== THIS_MACHINE_ID
+      && option.id !== (scope.boundTargetId ?? THIS_MACHINE_ID)
+      && option.targetId
+      && option.project?.projectId
+      && option.repoMatch === "matched",
+  );
+}
+
+/**
  * Marks machines reachable/unreachable from the latest connection snapshot.
  *
  * Connection state is the ONLY input. `runRefresh`'s narrower target list
@@ -947,11 +957,7 @@ function scheduleRefresh(): void {
  * than the latest snapshot; coming back is applied instantly.
  */
 function applyReachability(): void {
-  const connected = new Set(
-    runtime.connections
-      .filter((connection) => connection.state === "connected")
-      .map((connection) => connection.target.id),
-  );
+  const connected = new Set(resolveEligibleMachines().map((option) => option.id));
   const store = rootAppStoreApi.getState();
   const nowMs = Date.now();
   const reachable: string[] = [];

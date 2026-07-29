@@ -865,6 +865,23 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     };
   }
 
+  /** Connected, but the machine no longer has a checkout of this repository. */
+  function snapshotWithoutRepo() {
+    return {
+      connections: [{
+        state: "connected",
+        target: CONNECTED_TARGET,
+        projects: [{
+          projectId: "project-z",
+          rootPath: "/some-other-repo",
+          displayName: "Other Repo",
+          gitOriginUrl: "git@github.com:acme/other-repo.git",
+        }],
+      }],
+      connectedCount: 1,
+    };
+  }
+
   function startWithSnapshots(): {
     stop: () => void;
     push: (state: string) => void;
@@ -926,6 +943,41 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
 
     // Six seconds after the FIRST drop, not after the latest snapshot.
     await vi.advanceTimersByTimeAsync(3_100);
+    expect(isOnline()).toBe(false);
+
+    stop();
+  });
+
+  it("hides a machine that reconnects without a checkout of this repository", async () => {
+    vi.useFakeTimers();
+    const listener = { emit: null as ((next: unknown) => void) | null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(() => new Promise(() => {})),
+        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        onConnectionSnapshotChanged: vi.fn((cb: (next: unknown) => void) => {
+          listener.emit = cb;
+          return () => { listener.emit = null; };
+        }),
+      },
+    } as unknown as typeof window.ade;
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    seedMachine();
+    expect(isOnline()).toBe(true);
+
+    // Still "connected" — but the repo is gone from that machine, so it is no
+    // longer a read target. Left to raw connection state it would stay online
+    // forever while never being refreshed again: permanently visible, stale.
+    listener.emit?.(snapshotWithoutRepo());
+    await vi.advanceTimersByTimeAsync(6_100);
     expect(isOnline()).toBe(false);
 
     stop();
