@@ -697,6 +697,114 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.readFileSync(path.join(projectRoot, recovered.uri), "utf8")).toBe("lane-a");
   });
 
+  it("does not recover from a caller-supplied absolutePath in another lane", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const owningLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    const otherLaneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-b");
+    const originalPath = path.join(owningLaneRoot, "shots", "proof.png");
+    const substitutePath = path.join(otherLaneRoot, "shots", "substitute.png");
+    fs.mkdirSync(path.dirname(originalPath), { recursive: true });
+    fs.mkdirSync(path.dirname(substitutePath), { recursive: true });
+    fs.writeFileSync(originalPath, "original", "utf8");
+    fs.writeFileSync(substitutePath, "substitute", "utf8");
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "lane-a",
+        "project-1",
+        "Lane A",
+        "main",
+        "feature/lane-a",
+        owningLaneRoot,
+        "active",
+        "2026-03-12T14:00:00.000Z",
+      ],
+    );
+
+    const ingested = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      callerRoot: owningLaneRoot,
+      owners: [{ kind: "lane", id: "lane-a" }],
+      inputs: [{
+        kind: "screenshot",
+        title: "Lane-scoped proof",
+        path: "shots/proof.png",
+        metadata: { absolutePath: substitutePath },
+      }],
+    }).artifacts[0]!;
+    fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
+    fs.rmSync(originalPath, { force: true });
+
+    expect(broker.listBrokenArtifacts()[0]).toMatchObject({
+      artifactId: ingested.id,
+      recoverablePath: null,
+    });
+    expect(() => broker.recoverArtifact({ artifactId: ingested.id }))
+      .toThrow(/original file.*no longer exists/i);
+  });
+
+  it("recovers a local URI capture from its attached lane root", () => {
+    const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-uri-recovery-"));
+    try {
+      const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      const originalPath = path.join(attachedLaneRoot, "shots", "proof.png");
+      fs.mkdirSync(path.dirname(originalPath), { recursive: true });
+      fs.writeFileSync(originalPath, proofBytes);
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, base_ref, branch_ref, worktree_path, attached_root_path, status, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "attached-uri-lane",
+          "project-1",
+          "Attached URI lane",
+          "main",
+          "feature/attached-uri",
+          attachedLaneRoot,
+          attachedLaneRoot,
+          "active",
+          "2026-03-12T14:00:00.000Z",
+        ],
+      );
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+      });
+      const ingested = broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        callerRoot: attachedLaneRoot,
+        owners: [{ kind: "lane", id: "attached-uri-lane" }],
+        inputs: [{
+          kind: "screenshot",
+          title: "Attached URI proof",
+          uri: "shots/proof.png",
+        }],
+      }).artifacts[0]!;
+      fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
+
+      expect(broker.listBrokenArtifacts()[0]?.recoverablePath)
+        .toBe(fs.realpathSync(originalPath));
+      const recovered = broker.recoverArtifact({ artifactId: ingested.id });
+      expect(recovered.availability).toBe("available");
+      expect(fs.readFileSync(path.join(projectRoot, recovered.uri))).toEqual(proofBytes);
+    } finally {
+      fs.rmSync(attachedLaneRoot, { recursive: true, force: true });
+    }
+  });
+
   it("recovers proof from an attached lane root outside the project", () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-recovery-"));
     try {

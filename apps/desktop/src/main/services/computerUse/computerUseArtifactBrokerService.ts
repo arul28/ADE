@@ -612,8 +612,8 @@ export function createComputerUseArtifactBrokerService(args: {
 
   /**
    * Where a broken record's original bytes might still be. Ingest records the
-   * caller's path and root in metadata, so a capture that was never imported
-   * can be re-imported as long as its lane worktree still exists.
+   * validated path/URI and caller root in broker-stamped metadata, so a capture
+   * can be re-imported as long as its authorized lane worktree still exists.
    */
   const resolveLaneRoots = (laneIds: Set<string>): string[] => {
     if (!laneIds.size) return [];
@@ -682,8 +682,8 @@ export function createComputerUseArtifactBrokerService(args: {
       if (!trimmed || isHttpUrl(trimmed)) return;
       if (!candidates.includes(trimmed)) candidates.push(trimmed);
     };
-    push(toOptionalString(record.metadata?.absolutePath));
     push(toOptionalString(record.metadata?.sourcePath));
+    push(toOptionalString(record.metadata?.sourceUri));
     push(record.uri);
 
     const metadataCallerRoot = toOptionalString(record.metadata?.callerRoot);
