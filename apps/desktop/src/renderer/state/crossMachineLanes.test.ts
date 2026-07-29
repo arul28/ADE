@@ -978,6 +978,81 @@ describe("cross-machine refresh scheduling", () => {
     stop();
   });
 
+  it("does not let a late catch-up read suppress a new scope's first lane read", async () => {
+    vi.useFakeTimers();
+    const requests: Array<{ domain: string; action: string }> = [];
+    const pendingLaneReads: Array<(value: { result: unknown }) => void> = [];
+    let holdLaneReads = false;
+    let sessionLaneId = "lane-one";
+    const callAction = vi.fn((
+      _targetId: string,
+      _projectId: string,
+      request: { domain: string; action: string },
+    ) => {
+      requests.push({ domain: request.domain, action: request.action });
+      if (request.domain === "lane") {
+        if (holdLaneReads) {
+          return new Promise<{ result: unknown }>((resolve) => pendingLaneReads.push(resolve));
+        }
+        return Promise.resolve({ result: { lanes: [] } });
+      }
+      return Promise.resolve({ result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } });
+    });
+    const connections = [{
+      state: "connected",
+      target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+      projects: [{
+        projectId: "project-a",
+        rootPath: "/repo-a",
+        displayName: "Repo A",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      }],
+    }];
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({ connections, connectedCount: 1 })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const scope = {
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    };
+    const first = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a" });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    const laneReadsBefore = requests.filter((entry) => entry.domain === "lane").length;
+    expect(laneReadsBefore).toBeGreaterThan(0);
+
+    // A chat appears on a lane the machine has never listed, which forces the
+    // catch-up read — and that read is still in flight when the user switches to
+    // another checkout of the same repository.
+    holdLaneReads = true;
+    sessionLaneId = "lane-unlisted";
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(pendingLaneReads).toHaveLength(1);
+
+    const second = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a-copy" });
+    first();
+    holdLaneReads = false;
+    pendingLaneReads.splice(0).forEach((resolve) => resolve({ result: { lanes: [] } }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Stamping the cadence from that stale read would leave the new scope
+    // without a lane list — and so without a single row — for a full cadence.
+    const laneReadsAfterSwitch = requests.filter((entry) => entry.domain === "lane").length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(requests.filter((entry) => entry.domain === "lane").length)
+      .toBeGreaterThan(laneReadsAfterSwitch);
+
+    second();
+  });
+
   it("stops polling while the window is hidden and refreshes on the way back", async () => {
     vi.useFakeTimers();
     const callAction = vi.fn(async () => ({ result: { sessions: [] } }));

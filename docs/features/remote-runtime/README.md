@@ -176,20 +176,41 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   inherit theirs through `laneId`, so the union is keyed by machine and holds
   lanes; there is deliberately no per-chat machine field. Refreshes are driven
   by the connection-snapshot subscription and existing lane-lifecycle /
-  session-changed events (coalesced, no polling); foreign reads are bounded,
+  session-changed events (coalesced), plus a fallback loop for machines that
+  publish no renderer change feed. That loop is visibility-gated: it stops
+  entirely while the window is hidden and refreshes once on the way back, re-reads
+  chats every 10 s, and gives the lane list its own 30 s cadence because
+  `lane.list` with `includeStatus` resolves a git status per lane on the other
+  machine. A chat naming a lane that machine has never reported forces the lane
+  read immediately, but only once — ids a completed read did not explain are
+  remembered, since `session.list` does not filter on lane status while
+  `lane.list` excludes archived lanes, and a chat on an archived lane is
+  permanently unresolvable. Foreign reads are bounded,
   timed out, capped at four machines in parallel, and never gate the local list.
   A machine that drops is **dimmed, not deleted**: its lanes and chats stay on
   screen, collapsed and inert, with the offline form of the machine marker naming
-  it. Rows leave for two reasons only — the machine is gone from the connection
-  snapshot (unpaired or removed), or it has been unreachable for 24 hours.
-  Believing a drop takes a completed, failed reconnect attempt (`connecting`
+  it. Believing a drop takes a completed, failed reconnect attempt (`connecting`
   observed, then a non-connected state) plus a 45 s floor, with a 120 s ceiling
-  for a dial that never finishes and an immediate verdict for an `idle` target
-  that will not redial at all: every redial publishes `connecting` and a single
-  failed liveness ping flips a target to `error`, so a shorter rule dims the
-  sidebar on every wifi blip. A machine that is connected but cannot re-prove
-  this repository keeps its last verdict; only one that positively reports the
-  repository missing is dropped. Coming back is applied instantly. The union is
+  for a dial that never finishes: every redial publishes `connecting` and a
+  single failed liveness ping flips a target to `error`, so a shorter rule dims
+  the sidebar on every wifi blip. Two states skip the wait for an attempt that is
+  never coming and dim on the floor alone — an `idle` target, which will not
+  redial at all, and a machine that is connected but cannot re-prove this
+  repository, which answers but is never read for it. The second is dimmed and
+  not removed: absence of proof is not proof of absence, and a project list that
+  has not caught up after a reconnect must not read as "the repo is gone". Coming
+  back is applied instantly, and the verdict survives a Work-tab remount — a
+  dimmed machine brightens only by becoming eligible again, never because the
+  runtime that held its drop record was torn down.
+  Rows leave for three reasons: the machine is gone from the connection snapshot
+  (unpaired or removed), it positively reports the repository missing *and* there
+  is a resolvable origin to prove that by, or it has been unreachable for 24
+  hours. The origin requirement is what keeps a healthy machine's rows alive
+  while the bound machine blips — `repoMatchFor` will answer "missing" off a
+  folder-name mismatch alone, and the scope's origin URL is re-resolved from the
+  bound machine, so it can be transiently null. Deleting rows on that evidence is
+  not recoverable.
+  The union is
   scoped per repository, so switching project tabs invalidates it wholesale.
   `selectOtherMachineBranchStates` is the derived-state seam the push guard
   reads at click time.
