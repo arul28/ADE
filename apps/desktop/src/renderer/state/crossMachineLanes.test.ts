@@ -931,6 +931,45 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     stop();
   });
 
+  it("keeps a first snapshot that resolves after the coalesced refresh has already run", async () => {
+    vi.useFakeTimers();
+    const pending: { release: (() => void) | null } = { release: null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(() => new Promise(() => {})),
+        // Slower than REFRESH_COALESCE_MS, so the scheduled refresh bumps the
+        // refresh generation before this resolves. Guarding the first read on
+        // that generation would discard it, leaving `runtime.connections` empty
+        // and no foreign machine ever discovered.
+        getConnectionSnapshot: vi.fn(() => new Promise((resolve) => {
+          pending.release = () => resolve(snapshot("connecting"));
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    seedMachine();
+    pending.release?.();
+    await vi.advanceTimersByTimeAsync(100);
+    // The snapshot survived, so its reachability verdict applies: the machine is
+    // held through the grace window and only then hidden. A discarded snapshot
+    // leaves `runtime.connections` empty and nothing ever flips it — the machine
+    // would stay visible forever, since `runRefresh` no longer sets reachability.
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(isOnline()).toBe(false);
+
+    stop();
+  });
+
   it("restores a machine that reconnects inside the grace window without ever hiding it", async () => {
     vi.useFakeTimers();
     const { stop, push } = startWithSnapshots();

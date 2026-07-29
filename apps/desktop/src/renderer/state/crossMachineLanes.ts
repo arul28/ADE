@@ -584,6 +584,13 @@ type SyncRuntime = {
   scope: CrossMachineLaneScope;
   refCount: number;
   generation: number;
+  /**
+   * Bumped only by teardown and scope change — NOT by each refresh, the way
+   * `generation` is. An in-flight read is stale as soon as a newer refresh
+   * starts, but the first connection snapshot is not: it stays valid until the
+   * runtime is actually torn down or retargeted.
+   */
+  lifecycle: number;
   disposers: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
   refreshTimer: ReturnType<typeof setTimeout> | null;
@@ -607,6 +614,7 @@ const runtime: SyncRuntime = {
   },
   refCount: 0,
   generation: 0,
+  lifecycle: 0,
   disposers: [],
   timer: null,
   refreshTimer: null,
@@ -1004,13 +1012,16 @@ function attach(): void {
   if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
   const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
   if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
-  // Generation-guarded: if every consumer unmounts before this first read
-  // resolves, applying it would write reachability and arm a grace timer for a
-  // runtime nobody is subscribed to any more.
-  const generation = runtime.generation;
+  // Lifecycle-guarded, deliberately NOT generation-guarded: if every consumer
+  // unmounts before this first read resolves, applying it would write
+  // reachability and arm a grace timer for a runtime nobody is subscribed to.
+  // `generation` would be the wrong token — the 400ms coalesced refresh bumps it
+  // on its own, so a snapshot slower than that would be discarded, leaving
+  // `runtime.connections` empty and no foreign machine ever discovered.
+  const lifecycle = runtime.lifecycle;
   void remoteRuntime.getConnectionSnapshot?.()
     .then((snapshot) => {
-      if (generation !== runtime.generation) return;
+      if (lifecycle !== runtime.lifecycle) return;
       applySnapshot(snapshot);
     })
     .catch(() => {});
@@ -1021,6 +1032,7 @@ function attach(): void {
 
 function detach(): void {
   runtime.generation += 1;
+  runtime.lifecycle += 1;
   if (runtime.timer) {
     clearTimeout(runtime.timer);
     runtime.timer = null;
@@ -1051,6 +1063,7 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     // the shared runtime immediately; rejecting the new scope would leave it
     // permanently unsubscribed once the previous effect cleans up.
     runtime.generation += 1;
+    runtime.lifecycle += 1;
     // The new scope wipes every machine slice, so a deadline carried over from
     // the old one could hide a machine with no grace at all the moment it
     // reappears here.
