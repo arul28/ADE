@@ -1951,8 +1951,13 @@ export type ChatEventReplayBuffer = {
   seqByKey: Map<string, number>;
 };
 
-export function createChatEventReplayBuffer(): ChatEventReplayBuffer {
-  return { latestSeq: 0, entries: [], totalBytes: 0, seqByKey: new Map() };
+export function createChatEventReplayBuffer(initialSequence = 0): ChatEventReplayBuffer {
+  const latestSeq = typeof initialSequence === "number"
+    && Number.isFinite(initialSequence)
+    && initialSequence > 0
+    ? Math.floor(initialSequence)
+    : 0;
+  return { latestSeq, entries: [], totalBytes: 0, seqByKey: new Map() };
 }
 
 function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
@@ -1972,7 +1977,18 @@ export function recordChatEventInReplayBuffer(
   const key = chatEventDeliveryKey(event);
   const existing = buffer.seqByKey.get(key);
   if (existing != null) return existing;
-  const seq = ++buffer.latestSeq;
+  // The chat service persists its per-session eventSequence high-water mark
+  // and restores it from metadata + transcript history. Use that durable
+  // sequence as a floor, while retaining a host-local increment for legacy
+  // envelopes that omit it. Together with the handoff high-water map below,
+  // this prevents a recreated sync host from reusing `(sessionId, seq)`.
+  const eventSequence = typeof event.sequence === "number"
+    && Number.isFinite(event.sequence)
+    && event.sequence > 0
+    ? Math.floor(event.sequence)
+    : 0;
+  const seq = Math.max(buffer.latestSeq + 1, eventSequence);
+  buffer.latestSeq = seq;
   buffer.seqByKey.set(key, seq);
   while (buffer.seqByKey.size > CHAT_EVENT_REPLAY_MAX_KEYS) {
     const oldestKey = buffer.seqByKey.keys().next().value;
@@ -2854,6 +2870,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // All-projects roster (mobile hub) coalescing state. Each subscribed peer
   // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
   // any seq discontinuity.
+  // Chat replay entries are intentionally bounded, but sequence high-water
+  // marks must already exist when shared-listener peers are adopted below.
+  const chatEventSequenceHighWaterBySession = new Map<string, number>();
   let rosterFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let rosterMaxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let rosterSafetyPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -3500,6 +3519,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (!Number.isFinite(offset)) continue;
           peer.chatTranscriptOffsets.set(sessionId, Math.max(0, Math.floor(offset)));
         }
+        for (const [sessionId, eventSequence] of Object.entries(snapshot.chatEventSequences ?? {})) {
+          if (!Number.isFinite(eventSequence) || eventSequence <= 0) continue;
+          const normalized = Math.floor(eventSequence);
+          chatEventSequenceHighWaterBySession.set(
+            sessionId,
+            Math.max(chatEventSequenceHighWaterBySession.get(sessionId) ?? 0, normalized),
+          );
+        }
         const handedOffChatSubscriptions = snapshot.chatSubscriptions
           ?? (snapshot.subscribedChatSessionIds ?? []).map((sessionId) => ({
             sessionId,
@@ -3512,11 +3539,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             if (!transcriptPath) continue;
             peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
           }
-          // This host's replay buffers start a fresh seq epoch. Tell the
-          // client to drop its stored per-session seq watermark (the
-          // documented meaning of a non-resumed chat_subscribe ack) BEFORE
-          // re-enabling the subscription — otherwise the first re-streamed
-          // events (seq restarting at 1) would be discarded as already-seen.
+          // Re-acknowledge the subscription before enabling its live stream.
+          // The host sequence high-water was restored above, so subsequent
+          // events continue the same monotonic epoch. A non-resumed ack remains
+          // compatible with old clients and lets the transcript pump fill any
+          // event gap that occurred while the host owner changed.
           const turnActive = scope === "personal"
             ? await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false)
             : undefined;
@@ -5360,7 +5387,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (buffer) {
       chatEventReplayBuffers.delete(event.sessionId);
     } else {
-      buffer = createChatEventReplayBuffer();
+      buffer = createChatEventReplayBuffer(
+        chatEventSequenceHighWaterBySession.get(event.sessionId) ?? 0,
+      );
       while (chatEventReplayBuffers.size >= CHAT_EVENT_REPLAY_MAX_SESSIONS) {
         const oldestSessionId = chatEventReplayBuffers.keys().next().value;
         if (oldestSessionId == null) break;
@@ -5368,7 +5397,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     }
     chatEventReplayBuffers.set(event.sessionId, buffer);
-    return recordChatEventInReplayBuffer(buffer, event);
+    const seq = recordChatEventInReplayBuffer(buffer, event);
+    chatEventSequenceHighWaterBySession.set(event.sessionId, seq);
+    return seq;
   }
 
   function chatEventAlreadySent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
@@ -8471,6 +8502,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             chatTranscriptOffsets: Object.fromEntries(
               [...peer.chatTranscriptOffsets]
                 .filter(([sessionId]) => handedOffChatSessionIds.has(sessionId)),
+            ),
+            chatEventSequences: Object.fromEntries(
+              [...handedOffChatSessionIds].flatMap((sessionId) => {
+                const eventSequence = chatEventSequenceHighWaterBySession.get(sessionId);
+                return eventSequence == null ? [] : [[sessionId, eventSequence]];
+              }),
             ),
             rosterSubscribed: peer.rosterSubscribed,
             productAnalyticsEnabled: peer.productAnalyticsEnabled,

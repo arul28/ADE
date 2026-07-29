@@ -359,9 +359,6 @@ struct WorkChatMessageBubble: View {
     // unstyled so it doesn't reintroduce a boxed feel.
     let preview = assistantPreview
     let usesMonospacedPreview = preview.usesMonospacedRendering
-    let maxLineBudget = usesMonospacedPreview
-      ? workAssistantMessageWideMaxLineBudget
-      : workAssistantMessageMaxLineBudget
 
     return VStack(alignment: .leading, spacing: 10) {
       if preview.isTruncated {
@@ -405,21 +402,17 @@ struct WorkChatMessageBubble: View {
           .buttonStyle(.plain)
           .foregroundStyle(ADEColor.textSecondary)
 
-          if preview.isTruncated,
-             assistantLineBudget < maxLineBudget {
-            Button {
-              assistantLineBudget = min(
-                assistantLineBudget + workAssistantMessageLineBudgetStep,
-                maxLineBudget
-              )
-            } label: {
-              Label("Show more", systemImage: "chevron.down")
-                .labelStyle(.titleAndIcon)
-                .font(.caption2.weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(ADEColor.accent)
+          // Anything still truncated can still be expanded: one more step per
+          // tap, with no ceiling to strand the reader partway through.
+          Button {
+            assistantLineBudget += workAssistantMessageLineBudgetStep
+          } label: {
+            Label("Show more", systemImage: "chevron.down")
+              .labelStyle(.titleAndIcon)
+              .font(.caption2.weight(.semibold))
           }
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.accent)
         }
       }
     }
@@ -623,16 +616,31 @@ func workMixColors(_ base: Color, _ other: Color, _ fraction: Double) -> Color {
   )
 }
 
+// Assistant answers are revealed in bounded increments, never capped.
+//
+// There is deliberately NO terminal ceiling here: a long tool dump or a
+// thousand-line answer must be readable in place, so "Show more" keeps
+// stepping until the whole message is on screen. The steps below bound the
+// cost of a single tap (one extra slice per render), not the total.
 let workAssistantMessageInitialLineBudget = 48
+/// Lines added to the requested budget by one "Show more" tap.
 let workAssistantMessageLineBudgetStep = 48
-let workAssistantMessageMaxLineBudget = 192
 let workAssistantMessageInitialCharacterBudget = 1_600
+/// Characters added to the budget by one "Show more" tap.
 let workAssistantMessageCharacterBudgetStep = 2_400
+/// Once the user has asked for more, the line budget is the promise the
+/// "N of M lines" summary makes, so the character budget has to be able to
+/// carry that many lines of ordinary prose instead of quietly capping the
+/// reveal well below the advertised line count.
+let workAssistantMessageExpandedCharactersPerLine = 96
 let workAssistantMessageSmallFullCharacterBudget = 6_000
 let workAssistantMessageTailFullLineBudget = 128
 let workAssistantMessageTailFullCharacterBudget = 12_000
+/// Wide/monospaced answers (wireframes, tables, tree output) cost far more
+/// vertical space per line, so they walk a slower ladder: they start at 24
+/// lines and gain 24 per tap. Slower, still unbounded.
 let workAssistantMessageWideInitialLineBudget = 24
-let workAssistantMessageWideMaxLineBudget = 96
+let workAssistantMessageWideLineBudgetStep = 24
 let workChatAccessibilityPreviewLimit = 800
 
 enum WorkAssistantMessagePreviewAnchor: Equatable {
@@ -699,7 +707,13 @@ func workInitialAssistantMessagePreview(
 
 func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
   let extraSteps = max((lineBudget - workAssistantMessageInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
-  return workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+  let steppedBudget = workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+  // The first render keeps its tight budget so hydrating a long transcript
+  // stays cheap. Every expansion past it honours the line budget the summary
+  // advertises — otherwise a message of long lines would step in characters
+  // only, stranding the reader far short of the line count on screen.
+  guard extraSteps > 0 else { return steppedBudget }
+  return max(steppedBudget, lineBudget * workAssistantMessageExpandedCharactersPerLine)
 }
 
 func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int, tailCanRenderFull: Bool) -> Int {
@@ -891,13 +905,14 @@ private func workOpeningMarkdownFenceBeforeTail(
   return openingFence
 }
 
-func workAssistantMessageMaxLineBudget(for text: String) -> Int {
-  workAssistantMessageUsesMonospacedPreview(text)
-    ? workAssistantMessageWideMaxLineBudget
-    : workAssistantMessageMaxLineBudget
-}
-
-private func workAssistantMessageEffectiveLineBudget(
+/// Translate the shared requested budget (48 + 48 per tap) into the budget the
+/// layout can actually afford.
+///
+/// Wide/monospaced answers walk their own slower ladder — 24 lines, then 24
+/// more per tap — because each of their lines eats far more vertical space.
+/// It is a pace, not a cap: the ladder has no top, so repeated taps still
+/// reach the end of any message.
+func workAssistantMessageEffectiveLineBudget(
   requestedLineBudget: Int,
   usesMonospacedPreview: Bool
 ) -> Int {
@@ -907,13 +922,14 @@ private func workAssistantMessageEffectiveLineBudget(
   if requestedLineBudget <= workAssistantMessageInitialLineBudget {
     return min(requestedLineBudget, workAssistantMessageWideInitialLineBudget)
   }
-  return min(requestedLineBudget, workAssistantMessageWideMaxLineBudget)
+  let steps = (requestedLineBudget - workAssistantMessageInitialLineBudget) / workAssistantMessageLineBudgetStep
+  return workAssistantMessageWideInitialLineBudget + (steps * workAssistantMessageWideLineBudgetStep)
 }
 
 private func workAssistantMessageWideCharacterBudget(forLineBudget lineBudget: Int) -> Int {
-  let extraSteps = max((lineBudget - workAssistantMessageWideInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
+  let extraSteps = max((lineBudget - workAssistantMessageWideInitialLineBudget) / workAssistantMessageWideLineBudgetStep, 0)
   let steppedBudget = workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
-  return max(steppedBudget, lineBudget * 96)
+  return max(steppedBudget, lineBudget * workAssistantMessageExpandedCharactersPerLine)
 }
 
 func workAssistantMessageLineCount(_ text: String) -> Int {

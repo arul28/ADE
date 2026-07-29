@@ -33,6 +33,27 @@ struct WorkChatOlderHistoryLoadResult {
   }
 }
 
+/// Why the chat timeline is empty. `timeline.isEmpty` alone cannot tell a
+/// genuinely empty chat from one whose transcript request is still in flight
+/// or was dropped, and rendering "No chat messages yet" for the latter two is
+/// a false negative the user cannot distinguish from data loss.
+enum WorkChatTranscriptLoadState: Equatable {
+  case idle
+  case loading
+  case failed(String)
+}
+
+/// Copy for a failed transcript load. A transport error can arrive empty or as
+/// whitespace; falling back keeps the failure state from reading like a blank
+/// card, which is the exact ambiguity this state exists to remove.
+func workChatTranscriptFailureMessage(_ message: String) -> String {
+  let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else {
+    return "The machine didn’t answer the transcript request."
+  }
+  return trimmed
+}
+
 func workChatShouldRequestOlderHistory(
   topY: CGFloat,
   triggerArmed: Bool,
@@ -291,6 +312,16 @@ struct WorkChatSessionView: View {
   var onRunUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onEditUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onDismissUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
+  /// Whether the transcript this chat is showing has actually arrived. An empty
+  /// timeline is the same shape for a brand-new chat, a transcript request still
+  /// in flight, and a `chat_subscribe` that was dropped and will never be
+  /// answered — only this tells the empty state which of the three it is.
+  /// Defaults to `.idle` so callers that have not wired a real load state keep
+  /// today's behaviour instead of silently claiming a chat is loading.
+  var transcriptLoadState: WorkChatTranscriptLoadState = .idle
+  /// Re-requests the transcript after a failed load. When nil the failure state
+  /// renders without a Retry button rather than offering a dead control.
+  var onRetryTranscript: (() -> Void)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -731,13 +762,7 @@ struct WorkChatSessionView: View {
     }
 
     if timeline.isEmpty {
-      ADEEmptyStateView(
-        symbol: "bubble.left.and.bubble.right",
-        title: selectedSubagentTaskId == nil ? "No chat messages yet" : "No subagent transcript",
-        message: selectedSubagentTaskId == nil
-          ? (isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine.")
-          : "This subagent did not publish detailed transcript output."
-      )
+      transcriptEmptyStateSection
     } else {
       let streamingMessageId = streamingAssistantMessageId
       let userBubbleWidth = maxUserBubbleWidth
@@ -749,6 +774,65 @@ struct WorkChatSessionView: View {
           maxUserBubbleWidth: userBubbleWidth
         )
       }
+    }
+  }
+
+  /// What an empty timeline is allowed to claim.
+  ///
+  /// "No chat messages yet" is an assertion about the host's state, so it may
+  /// only be shown once the transcript has actually been answered. While the
+  /// request is in flight — or after it failed or was dropped — the pane says
+  /// so instead, because a confident empty state there is indistinguishable
+  /// from data loss to the person holding the phone.
+  @ViewBuilder
+  var transcriptEmptyStateSection: some View {
+    switch transcriptLoadState {
+    case .loading:
+      VStack(spacing: 14) {
+        ProgressView()
+          .controlSize(.large)
+          .tint(ADEColor.accent)
+        Text("Loading transcript…")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+      }
+      .frame(maxWidth: .infinity)
+      .adeGlassCard(cornerRadius: 20, padding: 24)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Loading transcript")
+      .accessibilityAddTraits(.updatesFrequently)
+      .adeInspectable("Work.Chat.Transcript.Loading")
+    case .failed(let message):
+      ADEEmptyStateView(
+        symbol: "exclamationmark.triangle",
+        title: "Couldn’t load the transcript",
+        message: workChatTranscriptFailureMessage(message)
+      ) {
+        if let onRetryTranscript {
+          Button {
+            onRetryTranscript()
+          } label: {
+            Label("Retry", systemImage: "arrow.clockwise")
+              .font(.subheadline.weight(.semibold))
+              .frame(minHeight: 44)
+              .padding(.horizontal, 18)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.accent)
+          .accessibilityLabel("Retry loading the transcript")
+        }
+      }
+      .adeInspectable("Work.Chat.Transcript.LoadFailed")
+    case .idle:
+      ADEEmptyStateView(
+        symbol: "bubble.left.and.bubble.right",
+        title: selectedSubagentTaskId == nil ? "No chat messages yet" : "No subagent transcript",
+        message: selectedSubagentTaskId == nil
+          ? (isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine.")
+          : "This subagent did not publish detailed transcript output."
+      )
     }
   }
 
@@ -1817,10 +1901,10 @@ func workTimelineRenderEntries(
     }
 
     let requestedLineBudget = assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
-    let maxLineBudget = preview.usesMonospacedRendering
-      ? workAssistantMessageWideMaxLineBudget
-      : workAssistantMessageMaxLineBudget
-    let nextLineBudget = min(requestedLineBudget + workAssistantMessageLineBudgetStep, maxLineBudget)
+    // One bounded step per tap, with no ceiling. A 1000-line answer is reached
+    // by tapping "Show more" until it is all here; the reader is never left
+    // with a truncated message and no way to see the rest.
+    let nextLineBudget = requestedLineBudget + workAssistantMessageLineBudgetStep
     let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
 
     // A truncated tail can start inside a fenced tree and omit the opening
@@ -1870,7 +1954,10 @@ func workTimelineRenderEntries(
         summaryText: workAssistantMessagePreviewSummaryText(preview),
         visibleLineCount: preview.visibleLineCount,
         totalLineCount: preview.totalLineCount,
-        canShowMore: requestedLineBudget < maxLineBudget,
+        // Truncated means there is more to show, and there is always a next
+        // step that shows it — the control only disappears once the whole
+        // message is rendered and this branch stops running.
+        canShowMore: true,
         nextLineBudget: nextLineBudget
       )
       rendered.append(WorkTimelineRenderEntry(

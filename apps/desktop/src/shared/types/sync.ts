@@ -1291,8 +1291,10 @@ export type SyncChatSubscribeSnapshotPayload = {
    * True when the host honored `sinceSeq` and replayed buffered events
    * instead of producing a snapshot. `events` is empty in that case — the
    * replayed history arrives as ordinary `chat_event` envelopes. Clients must
-   * reset any stored seq watermark when this is absent/false because the
-   * host's seq stream may have restarted (e.g. host process restart).
+   * reset any stored seq watermark when this is absent/false because the host
+   * is providing an authoritative snapshot rather than proving a gap-free
+   * replay. Current hosts keep seq monotonic across host rehydration; resetting
+   * remains safe and preserves compatibility with older hosts that used epochs.
    */
   resumed?: boolean;
   /**

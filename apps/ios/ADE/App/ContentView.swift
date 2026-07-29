@@ -3,7 +3,7 @@ import UIKit
 
 private let adeAccent = ADEColor.accent
 
-private enum RootTab: Hashable, CaseIterable, Identifiable {
+private enum RootTab: String, Hashable, CaseIterable, Identifiable {
   case work
   case lanes
   case prs
@@ -46,7 +46,10 @@ private enum RootTab: Hashable, CaseIterable, Identifiable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var accountService: AccountService
-  @State private var selectedTab: RootTab = .work
+  @State private var selectedTab: RootTab = {
+    let saved = UserDefaults.standard.string(forKey: "ade.navigation.lastRootTab")
+    return saved.flatMap(RootTab.init(rawValue:)) ?? .work
+  }()
   @State private var analyticsConsentPresented = false
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
@@ -198,6 +201,7 @@ struct ContentView: View {
         mobileLaunchAccess.observeInitialAccountPhase(phase)
       }
       .onChange(of: selectedTab) { _, _ in
+        UserDefaults.standard.set(selectedTab.rawValue, forKey: "ade.navigation.lastRootTab")
         captureCurrentRootScreen()
       }
       .onChange(of: syncService.shouldShowProjectHub) { _, _ in

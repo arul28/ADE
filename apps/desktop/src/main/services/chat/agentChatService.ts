@@ -954,6 +954,12 @@ type PersistedChatState = {
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
+  /**
+   * High-water mark of the session's `eventSequence` counter as of the last
+   * persist. Read back alongside the transcript's own maximum on rehydration;
+   * see `resolveRehydratedEventSequence` for why both sources are consulted.
+   */
+  eventSequence?: number;
   updatedAt: string;
 };
 
@@ -997,6 +1003,30 @@ function isPersistedChatStateShape(value: unknown): value is PersistedChatState 
   return (record.version === 1 || record.version === 2)
     && typeof record.sessionId === "string"
     && record.sessionId.trim().length > 0;
+}
+
+/** Value a rehydrated session must resume its `eventSequence` counter from.
+ *
+ * Neither input alone is trustworthy, and the two fail in opposite directions.
+ * The transcript records every sequence number that was actually emitted and
+ * survives losing the metadata file entirely, but it stops growing once the
+ * session trips `MAX_CHAT_TRANSCRIPT_BYTES` — past that point the live counter
+ * keeps climbing with nothing on disk to show for it. The persisted counter
+ * keeps climbing past the cap, but it is only as fresh as the last
+ * `persistChatState` call and is missing outright on state written by builds
+ * that predate the field. Taking the larger of the two means a stale, missing
+ * or truncated source can only cost a gap in the numbering; it can never hand
+ * back a `(sessionId, sequence)` pair the session already used, which is the
+ * failure that makes consumers keyed on that pair discard the new event as a
+ * replay (how AskUserQuestion cards silently vanished on iOS).
+ */
+export function resolveRehydratedEventSequence(
+  transcriptMaxSequence: number,
+  persistedSequence: number | null | undefined,
+): number {
+  const positiveInteger = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  return Math.max(positiveInteger(transcriptMaxSequence), positiveInteger(persistedSequence));
 }
 
 function normalizeUnprocessedMessageResolutionReceipts(
@@ -8319,7 +8349,9 @@ export function createAgentChatService(args: {
    * replays of the old ones and drop them; that is exactly how AskUserQuestion
    * cards silently vanished on iOS for sessions reopened after a desktop
    * restart. Seeding from the file keeps sequences strictly increasing for the
-   * life of the transcript. */
+   * life of the transcript — but only for its life: a capped transcript stops
+   * recording the numbers the session goes on using, which is why callers pair
+   * this with the persisted counter via `resolveRehydratedEventSequence`. */
   const readTranscriptHydrationState = (
     managed: ManagedChatSession,
   ): {
@@ -11297,6 +11329,13 @@ export function createAgentChatService(args: {
     const claudePersistedSdkSessionId = managed.session.provider === "claude"
       ? liveClaudeSdkSessionId ?? claudeBackgroundResumeSessionId
       : null;
+    // Never let a persist walk the counter backwards: this file is the only
+    // record of the numbering once the transcript stops growing at
+    // MAX_CHAT_TRANSCRIPT_BYTES.
+    const eventSequenceHighWaterMark = resolveRehydratedEventSequence(
+      managed.eventSequence,
+      prevPersisted?.eventSequence,
+    );
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -11451,6 +11490,7 @@ export function createAgentChatService(args: {
           }
         : {}),
       ...collectOrchestrationFields(managed.session, prevPersisted),
+      ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
 
@@ -11681,6 +11721,9 @@ export function createAgentChatService(args: {
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : undefined;
+      // Absent on state written before the field existed; the transcript scan
+      // covers those sessions on its own.
+      const persistedEventSequence = resolveRehydratedEventSequence(0, record.eventSequence);
       const pendingSteers: PersistedPendingSteer[] | undefined = Array.isArray(record.pendingSteers)
         ? record.pendingSteers
             .filter((entry): entry is PersistedPendingSteer => {
@@ -11790,6 +11833,7 @@ export function createAgentChatService(args: {
         ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
           ? { runtimeMode: record.runtimeMode }
           : {}),
+        ...(persistedEventSequence > 0 ? { eventSequence: persistedEventSequence } : {}),
         ...hydrateOrchestrationFields(record as Record<string, unknown>),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
@@ -15839,9 +15883,14 @@ export function createAgentChatService(args: {
     };
     const transcriptHydration = readTranscriptHydrationState(managed);
     managed.todoItems = transcriptHydration.todoItems;
-    // Continue the transcript's numbering instead of restarting at 1 — see
-    // `readTranscriptHydrationState`.
-    managed.eventSequence = transcriptHydration.maxEventSequence;
+    // Continue this session's numbering instead of restarting at 1 — see
+    // `readTranscriptHydrationState` for the failure it prevents, and
+    // `resolveRehydratedEventSequence` for why the persisted counter is
+    // consulted alongside the transcript rather than instead of it.
+    managed.eventSequence = resolveRehydratedEventSequence(
+      transcriptHydration.maxEventSequence,
+      persisted?.eventSequence,
+    );
     if (!managed.session.interactionMode && managed.session.orchestrationRole) {
       managed.session.interactionMode = orchestrationInteractionModeForRole(managed.session.orchestrationRole);
     }

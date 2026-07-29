@@ -5386,13 +5386,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [original, tail])
   }
 
-  /// A host's `eventSequence` restarts at 1 whenever a session is rehydrated,
-  /// but it keeps appending to the SAME transcript, so one transcript can hold
-  /// two events numbered 67 hours apart. Identity used to be `sessionId:sequence`
-  /// and dedupe is first-key-wins over file order, so the newer event was
-  /// discarded as a duplicate of the older one. On a real 425-event transcript
-  /// that destroyed 103 events — including the `approval_request` envelopes
-  /// carrying AskUserQuestion cards, which is why the phone showed no question.
+  /// Older hosts restarted `eventSequence` at 1 whenever a session was
+  /// rehydrated while appending to the SAME transcript, so a legacy transcript
+  /// can contain two events numbered 67 hours apart. Identity used to be
+  /// `sessionId:sequence` and dedupe is first-key-wins over file order, so the
+  /// newer event was discarded as a duplicate of the older one. On a real
+  /// 425-event transcript that destroyed 103 events — including the
+  /// `approval_request` envelopes carrying AskUserQuestion cards, which is why
+  /// the phone showed no question.
   @MainActor
   func testReusedTranscriptSequenceKeepsBothEventsFromDifferentEpochs() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -5413,7 +5414,7 @@ final class ADETests: XCTestCase {
       sequence: 67,
       provenance: nil
     )
-    // Same sequence number, four hours later: the host restarted and its
+    // Same sequence number, four hours later: a legacy host restarted and its
     // counter began again at 1.
     let secondEpoch = AgentChatEventEnvelope(
       sessionId: "session-1",
@@ -17850,7 +17851,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(firstPage.totalLineCount, 120)
     XCTAssertTrue(firstPage.text.contains("row 24"))
     XCTAssertFalse(firstPage.text.contains("row 25"))
-    XCTAssertEqual(workAssistantMessageMaxLineBudget(for: firstPage.text), workAssistantMessageWideMaxLineBudget)
+    XCTAssertEqual(
+      workAssistantMessageEffectiveLineBudget(
+        requestedLineBudget: workAssistantMessageInitialLineBudget,
+        usesMonospacedPreview: workAssistantMessageUsesMonospacedPreview(firstPage.text)
+      ),
+      workAssistantMessageWideInitialLineBudget
+    )
   }
 
 
@@ -23395,5 +23402,282 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     }
     XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
     XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
+  }
+}
+
+// MARK: - Hub chat activation outcome
+
+/// The hub chat cover used to leave `mode` on `.deciding` forever whenever
+/// `openProjectForHubChat` failed (it reports via `lastError`, it does not
+/// throw), stranding the user on an indefinite "Opening …" spinner. Every
+/// outcome must now resolve to something renderable, with a Retry affordance on
+/// the failures.
+final class HubChatActivationOutcomeTests: XCTestCase {
+  private func failureMessage(_ outcome: HubChatActivationOutcome) -> String? {
+    guard case .failed(let message) = outcome else { return nil }
+    return message
+  }
+
+  func testActivatedWhenProjectBecomesActive() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: true,
+      lastError: nil,
+      timedOut: false
+    )
+    XCTAssertEqual(outcome, .activated)
+  }
+
+  func testNonActiveHubChatAlwaysActivatesItsProject() {
+    XCTAssertTrue(hubChatRequiresProjectActivation(isActiveProject: false))
+    XCTAssertFalse(hubChatRequiresProjectActivation(isActiveProject: true))
+  }
+
+  func testFailedActivationSurfacesSyncLastError() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "The machine could not open that project for phone sync.",
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not open that project for phone sync."
+    )
+  }
+
+  func testFailedActivationWithoutLastErrorNamesTheProjectAndTheFix() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: nil,
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not switch to ADE. Check that it is online, then try again."
+    )
+  }
+
+  /// A blank `lastError` is as useless to the user as a missing one.
+  func testBlankLastErrorFallsBackToTheSpecificMessage() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "   ",
+      timedOut: false
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine could not switch to ADE. Check that it is online, then try again."
+    )
+  }
+
+  /// `switchToDesktopProject` flips `activeProjectId` before it tears the socket
+  /// down and reconnects, so a timed-out activation can still read as "active"
+  /// while nothing is connected or hydrated. The timeout must win, otherwise the
+  /// cover opens a chat that cannot stream.
+  func testTimeoutReportsUnresponsiveMachineEvenWhenProjectReadsActive() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: true,
+      lastError: nil,
+      timedOut: true
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine took too long to open ADE. It may be offline or still reconnecting."
+    )
+  }
+
+  func testTimeoutCopyWinsOverAStaleLastError() {
+    let outcome = hubChatActivationOutcome(
+      projectName: "ADE",
+      isActiveProject: false,
+      lastError: "Timed out loading GitHub repositories.",
+      timedOut: true
+    )
+    XCTAssertEqual(
+      failureMessage(outcome),
+      "The machine took too long to open ADE. It may be offline or still reconnecting."
+    )
+  }
+}
+
+/// Launch normally lands on the hub. The one exception is a session iOS ended
+/// for us: the relaunch is indistinguishable from a foreground, so bouncing the
+/// user to the hub reads as losing their place.
+final class SyncProjectRouteRestoreTests: XCTestCase {
+  private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+  func testRestoresARecentlyOpenProject() {
+    XCTAssertTrue(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreOnceTheMarkerIsStale() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-(syncProjectRouteRestoreWindow + 1)),
+        now: now
+      )
+    )
+  }
+
+  func testRestoresRightUpToTheEdgeOfTheWindow() {
+    XCTAssertTrue(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-(syncProjectRouteRestoreWindow - 1)),
+        now: now
+      )
+    )
+  }
+
+  /// The user left the project before the app died, so the hub is where they
+  /// actually were — there is no marker to replay.
+  func testDoesNotRestoreWithoutAMarker() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: nil,
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  /// A marker for a project that is no longer the active one would drop the
+  /// user into the wrong project's tabs.
+  func testDoesNotRestoreWhenTheMarkerNamesADifferentProject() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-b",
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreWithoutAnActiveProject() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: nil,
+        savedAt: now.addingTimeInterval(-60),
+        now: now
+      )
+    )
+  }
+
+  /// A marker stamped in the future means the clock moved; honouring it would
+  /// keep restoring long past the window.
+  func testDoesNotRestoreAMarkerFromTheFuture() {
+    XCTAssertFalse(
+      syncShouldRestoreProjectRoute(
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(600),
+        now: now
+      )
+    )
+  }
+
+  func testRestoresTheSameOpenWorkChatWithTheRecentProject() {
+    XCTAssertEqual(
+      syncRestoredWorkSessionId(
+        savedSessionId: "chat-42",
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      ),
+      "chat-42"
+    )
+  }
+
+  func testDoesNotRestoreAWorkChatUnderADifferentProject() {
+    XCTAssertNil(
+      syncRestoredWorkSessionId(
+        savedSessionId: "chat-42",
+        savedProjectId: "project-a",
+        activeProjectId: "project-b",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreAnEmptyWorkChatRoute() {
+    XCTAssertNil(
+      syncRestoredWorkSessionId(
+        savedSessionId: "  ",
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+}
+
+/// Each initial-hydration leg owns an independent domain status. A single
+/// failure must leave the other cached/ready surfaces renderable and give the
+/// failed surface an explicit Retry notice instead of a blank root.
+final class SyncPartialHydrationRenderingTests: XCTestCase {
+  func testEverySingleLegFailureHasAnErrorNoticeWhileOtherLegsStayReady() {
+    for failedDomain in [SyncDomain.lanes, .work, .prs] {
+      var statuses = Dictionary(
+        uniqueKeysWithValues: [SyncDomain.lanes, .work, .prs].map {
+          ($0, SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: Date()))
+        }
+      )
+      statuses[failedDomain] = SyncDomainStatus(
+        phase: .failed,
+        lastError: "Timed out loading fresh data.",
+        lastHydratedAt: nil
+      )
+
+      let notice = statuses[failedDomain]?.inlineHydrationFailureNotice(for: failedDomain)
+      XCTAssertNotNil(notice, "\(failedDomain) must render a Retry notice")
+      XCTAssertEqual(notice?.message, "Timed out loading fresh data.")
+      for healthyDomain in statuses.keys where healthyDomain != failedDomain {
+        XCTAssertEqual(statuses[healthyDomain]?.phase, .ready)
+        XCTAssertNil(statuses[healthyDomain]?.inlineHydrationFailureNotice(for: healthyDomain))
+      }
+    }
+  }
+
+  func testBlankHydrationErrorStillProducesConcreteCopy() {
+    let status = SyncDomainStatus(phase: .failed, lastError: "  \n ", lastHydratedAt: nil)
+    let notice = status.inlineHydrationFailureNotice(for: .work)
+    XCTAssertEqual(notice?.title, "Work hydration failed")
+    XCTAssertTrue(notice?.message.contains("Fresh data could not be loaded") == true)
+  }
+}
+
+final class WorkChatTranscriptLoadStateTests: XCTestCase {
+  func testWhitespaceFailureCannotRenderABlankErrorCard() {
+    XCTAssertEqual(
+      workChatTranscriptFailureMessage(" \n "),
+      "The machine didn’t answer the transcript request."
+    )
+  }
+
+  func testHostFailureCopyIsPreservedForRetryState() {
+    XCTAssertEqual(
+      workChatTranscriptFailureMessage("  The transcript request timed out.  "),
+      "The transcript request timed out."
+    )
   }
 }
