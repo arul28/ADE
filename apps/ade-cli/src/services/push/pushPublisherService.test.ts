@@ -289,6 +289,8 @@ describe("createPushPublisherService flush", () => {
       title: string | null;
       toolType?: string | null;
       chatSessionId?: string | null;
+      status?: string | null;
+      runtimeState?: string | null;
       settledAt?: string | null;
       settleOverride?: "settled" | "active" | null;
     }>();
@@ -1962,12 +1964,20 @@ describe("createPushPublisherService flush", () => {
     cliSessions.set("cli-settle-1", {
       title: "Fix auth race",
       toolType: "codex",
+      status: "running",
       settledAt: "2026-07-29T22:00:00.000Z",
     });
     publisher.handleCliRuntimeSignal("scope-1", {
       laneId: "auth-lane",
       sessionId: "cli-settle-1",
       runtimeState: "running",
+    });
+    expect(publisher._debug.runs.get("cli-settle-1")?.phase).toBe("running");
+
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-settle-1",
+      runtimeState: "idle",
     });
     expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
 

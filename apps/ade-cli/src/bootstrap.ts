@@ -697,6 +697,7 @@ export async function createAdeRuntime(args: {
     const session = sessionService.get(event.sessionId);
     if (
       session
+      && (session.status !== "running" || session.runtimeState === "idle")
       && (
         session.settleOverride === "settled"
         || (session.settleOverride !== "active" && Boolean(session.settledAt))
@@ -1523,6 +1524,8 @@ export async function createAdeRuntime(args: {
               title: session.title ?? null,
               toolType: session.toolType ?? null,
               chatSessionId: session.chatSessionId ?? null,
+              status: session.status,
+              runtimeState: session.runtimeState ?? null,
               settledAt: session.settledAt ?? null,
               settleOverride: session.settleOverride ?? null,
             };

@@ -2289,11 +2289,11 @@ describe("session lifecycle remote commands", () => {
       dismissPendingInput: true,
     }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
 
-    expect(handleSessionSettled).toHaveBeenCalledWith(null, "session-1");
+    expect(handleSessionSettled).not.toHaveBeenCalled();
     expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
   });
 
-  it("ends push runs for ordinary and bulk settlements", async () => {
+  it("leaves settlement push projection to the central session listener", async () => {
     const handleSessionSettled = vi.fn();
     const { service } = createLifecycleService({
       pushPublisherService: { handleSessionSettled },
@@ -2302,8 +2302,7 @@ describe("session lifecycle remote commands", () => {
     await service.execute(makePayload("session.settleSession", { sessionId: "session-1" }));
     await service.execute(makePayload("session.settleSessions", { sessionIds: ["session-1"] }));
 
-    expect(handleSessionSettled).toHaveBeenNthCalledWith(1, null, "session-1");
-    expect(handleSessionSettled).toHaveBeenNthCalledWith(2, null, "session-1");
+    expect(handleSessionSettled).not.toHaveBeenCalled();
   });
 
   it("normalizes the snooze deadline and rejects unparseable ones", async () => {

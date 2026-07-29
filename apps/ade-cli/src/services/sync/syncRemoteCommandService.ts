@@ -3987,22 +3987,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ptyService: args.ptyService,
     });
     if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
-    args.pushPublisherService?.handleSessionSettled(null, sessionId);
     return { ok: true, sessionId };
   });
   register("session.unsettleSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "session.unsettleSession requires sessionId.");
     return { ok: args.sessionService.unsettleSession(sessionId), sessionId };
   });
-  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const settledSessionIds = args.sessionService.settleSessions(
-      parseRemoteSessionIds(payload, "session.settleSessions"),
-    );
-    for (const settledSessionId of settledSessionIds) {
-      args.pushPublisherService?.handleSessionSettled(null, settledSessionId);
-    }
-    return settledSessionIds;
-  });
+  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.sessionService.settleSessions(parseRemoteSessionIds(payload, "session.settleSessions")));
   register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.unsettleSessions(parseRemoteSessionIds(payload, "session.unsettleSessions"));
     return { ok: true };

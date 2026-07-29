@@ -196,6 +196,8 @@ export type PushPublisherSources = {
     title: string | null;
     toolType?: string | null;
     chatSessionId?: string | null;
+    status?: string | null;
+    runtimeState?: string | null;
     settledAt?: string | null;
     settleOverride?: "settled" | "active" | null;
   } | null;
@@ -934,7 +936,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           runs.delete(run.sessionId);
           continue;
         }
-        if (record.settleOverride === "settled" || (record.settleOverride !== "active" && record.settledAt)) {
+        const atRest = record.status !== "running" || record.runtimeState === "idle";
+        if (
+          atRest
+          && (
+            record.settleOverride === "settled"
+            || (record.settleOverride !== "active" && record.settledAt)
+          )
+        ) {
           run.phase = "completed";
           recentRuns.set(run.sessionId, { ...run });
           runs.delete(run.sessionId);
@@ -1564,9 +1573,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (disposed || !signal.sessionId) return;
     const existing = runs.get(signal.sessionId);
     const session = scopes.get(scopeKey)?.resolveCliSession?.(signal.sessionId) ?? null;
+    const atRest = session?.status !== "running" || signal.runtimeState === "idle";
     if (
-      session?.settleOverride === "settled"
-      || (session?.settleOverride !== "active" && Boolean(session?.settledAt))
+      atRest
+      && (
+        session?.settleOverride === "settled"
+        || (session?.settleOverride !== "active" && Boolean(session?.settledAt))
+      )
     ) {
       if (existing) {
         existing.phase = "completed";
