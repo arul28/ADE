@@ -219,7 +219,9 @@ export function SessionInfoPopover({
                   ["Process", runtimeStateLabel(session.runtimeState)],
                   session.toolType ? ["Tool", formatToolTypeLabel(session.toolType)] : null,
                   session.exitCode != null ? ["Exit code", String(session.exitCode)] : null,
-                  session.attentionRequestedAt || session.pendingInputItemId
+                  session.attentionRequestedAt
+                    || session.pendingInputItemId
+                    || session.attentionSource === "provider_structured"
                     ? ["Attention source", lifecycleSourceLabel(session.attentionSource)]
                     : null,
                   session.settledAt || session.settleOverride === "settled"

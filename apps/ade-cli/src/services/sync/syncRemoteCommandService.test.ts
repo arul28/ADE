@@ -2293,6 +2293,19 @@ describe("session lifecycle remote commands", () => {
     expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
   });
 
+  it("ends push runs for ordinary and bulk settlements", async () => {
+    const handleSessionSettled = vi.fn();
+    const { service } = createLifecycleService({
+      pushPublisherService: { handleSessionSettled },
+    });
+
+    await service.execute(makePayload("session.settleSession", { sessionId: "session-1" }));
+    await service.execute(makePayload("session.settleSessions", { sessionIds: ["session-1"] }));
+
+    expect(handleSessionSettled).toHaveBeenNthCalledWith(1, null, "session-1");
+    expect(handleSessionSettled).toHaveBeenNthCalledWith(2, null, "session-1");
+  });
+
   it("normalizes the snooze deadline and rejects unparseable ones", async () => {
     const { service, sessionService } = createLifecycleService();
     const futureIso = new Date(Date.now() + 60 * 60_000).toISOString();

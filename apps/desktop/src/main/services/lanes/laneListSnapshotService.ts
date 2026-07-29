@@ -109,6 +109,8 @@ function sessionStatusBucket(args: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
+  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+  pendingInputWaiting?: boolean;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // `ade chat ask` escalation outranks everything; a declared settle maps to
@@ -117,7 +119,12 @@ function sessionStatusBucket(args: {
   // The tri-state override is consulted at the same declared-settle tier:
   // "active" is an explicit keep-active pin, "settled" acts like a declared
   // settle. Mirrors canonicalSessionState in shared/sessionCanonicalState.ts.
-  if (args.attentionRequestedAt || args.pendingInputItemId) return "awaiting-input";
+  if (
+    args.attentionRequestedAt
+    || args.pendingInputItemId
+    || args.attentionSource === "provider_structured"
+    || args.pendingInputWaiting === true
+  ) return "awaiting-input";
   const effectiveSettled = args.settleOverride === "active"
     ? false
     : args.settleOverride === "settled" || Boolean(args.settledAt);
@@ -136,6 +143,7 @@ function summarizeLaneRuntime(
     runtimeState?: string | null;
     toolType?: string | null;
     pendingInputItemId?: string | null;
+    attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
     pendingInputWaiting?: boolean;
   }>,
 ): LaneRuntimeSummary {

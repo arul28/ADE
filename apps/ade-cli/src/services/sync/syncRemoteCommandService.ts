@@ -3529,6 +3529,7 @@ function sessionStatusBucket(argsIn: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
+  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
@@ -3537,7 +3538,11 @@ function sessionStatusBucket(argsIn: {
   // turn is not running. The tri-state override is consulted at that same
   // declared-settle tier: "active" is an explicit keep-active pin that
   // suppresses settle, "settled" behaves like a declared settle.
-  if (argsIn.attentionRequestedAt || argsIn.pendingInputItemId) return "awaiting-input";
+  if (
+    argsIn.attentionRequestedAt
+    || argsIn.pendingInputItemId
+    || argsIn.attentionSource === "provider_structured"
+  ) return "awaiting-input";
   const effectiveSettled = argsIn.settleOverride === "active"
     ? false
     : argsIn.settleOverride === "settled" || Boolean(argsIn.settledAt);
@@ -3980,19 +3985,24 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       sessionService: args.sessionService,
       agentChatService: args.agentChatService ?? null,
       ptyService: args.ptyService,
-      onAttentionResolved: (resolvedSessionId) => {
-        args.pushPublisherService?.handleSessionSettled(null, resolvedSessionId);
-      },
     });
     if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
+    args.pushPublisherService?.handleSessionSettled(null, sessionId);
     return { ok: true, sessionId };
   });
   register("session.unsettleSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "session.unsettleSession requires sessionId.");
     return { ok: args.sessionService.unsettleSession(sessionId), sessionId };
   });
-  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.sessionService.settleSessions(parseRemoteSessionIds(payload, "session.settleSessions")));
+  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const settledSessionIds = args.sessionService.settleSessions(
+      parseRemoteSessionIds(payload, "session.settleSessions"),
+    );
+    for (const settledSessionId of settledSessionIds) {
+      args.pushPublisherService?.handleSessionSettled(null, settledSessionId);
+    }
+    return settledSessionIds;
+  });
   register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.unsettleSessions(parseRemoteSessionIds(payload, "session.unsettleSessions"));
     return { ok: true };

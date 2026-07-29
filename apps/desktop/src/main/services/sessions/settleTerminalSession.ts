@@ -16,7 +16,6 @@ export async function settleTerminalSession(args: {
   sessionService: ReturnType<typeof createSessionService>;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   ptyService?: ReturnType<typeof createPtyService> | null;
-  onAttentionResolved?: (sessionId: string) => void;
 }): Promise<boolean> {
   if (args.opts?.dismissPendingInput === true) {
     const session = args.sessionService.get(args.sessionId);
@@ -33,7 +32,6 @@ export async function settleTerminalSession(args: {
         throw new Error("Terminal runtime is unavailable; the explicit attention request could not be dismissed.");
       }
       args.ptyService.setSessionRuntimeState(args.sessionId, "idle");
-      args.onAttentionResolved?.(args.sessionId);
     } else {
       throw new Error("Resolve the terminal input before settling this session.");
     }

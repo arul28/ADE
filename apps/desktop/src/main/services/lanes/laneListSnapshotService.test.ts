@@ -86,7 +86,7 @@ describe("laneListSnapshotService", () => {
     });
   });
 
-  it("does not count stale chat awaiting state without an explicit pending item", async () => {
+  it("counts provider-structured awaiting state without an item id", async () => {
     const services = {
       ...makeHarness({
         id: "chat-1",
@@ -117,8 +117,8 @@ describe("laneListSnapshotService", () => {
     );
 
     expect(snapshot?.runtime).toMatchObject({
-      bucket: "running",
-      awaitingInputCount: 0,
+      bucket: "awaiting-input",
+      awaitingInputCount: 1,
       pendingInputCount: 0,
     });
   });
