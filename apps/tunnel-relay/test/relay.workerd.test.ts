@@ -154,7 +154,28 @@ async function attachments(stub: DurableObjectStub): Promise<Attachment[]> {
   ));
 }
 
+/** Opens one ready-v2 tunnel over an already-registered control socket. */
+async function openTunnel(args: {
+  stub: DurableObjectStub;
+  key: string;
+  control: WebSocket;
+}): Promise<{ client: WebSocket; pipe: WebSocket; id: string }> {
+  const open = nextMessage(args.control);
+  const client = await upgrade(args.stub, `https://relay.test/connect/${args.key}?ready=${RELAY_READY_VERSION}`);
+  expect(await nextMessage(client)).toBe(JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }));
+  const openMessage = JSON.parse(String(await open)) as { t: string; id: string; epoch: string; readyVersion: number };
+  expect(openMessage).toMatchObject({ t: "open", epoch: CONTROL_EPOCH, readyVersion: RELAY_READY_VERSION });
+
+  const pipe = await openPipe({ stub: args.stub, key: args.key, id: openMessage.id, epoch: CONTROL_EPOCH });
+  const ready = nextMessage(client);
+  args.control.send(JSON.stringify({ t: "ready", id: openMessage.id, epoch: CONTROL_EPOCH }));
+  expect(await ready).toBe(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
+  return { client, pipe, id: openMessage.id };
+}
+
+/** A claimed machine with a control socket and one established tunnel. */
 async function establishEpochV2(keyDigit: string): Promise<{
+  key: string;
   stub: DurableObjectStub;
   control: WebSocket;
   client: WebSocket;
@@ -165,35 +186,7 @@ async function establishEpochV2(keyDigit: string): Promise<{
   const stub = stubFor(key);
   await claim(stub, key);
   const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
-
-  const open = nextMessage(control);
-  const client = await upgrade(stub, `https://relay.test/connect/${key}?ready=${RELAY_READY_VERSION}`);
-  expect(await nextMessage(client)).toBe(JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }));
-  const openMessage = JSON.parse(String(await open)) as { t: string; id: string; epoch: string; readyVersion: number };
-  expect(openMessage).toMatchObject({ t: "open", epoch: CONTROL_EPOCH, readyVersion: RELAY_READY_VERSION });
-
-  const pipe = await openPipe({ stub, key, id: openMessage.id, epoch: CONTROL_EPOCH });
-  const ready = nextMessage(client);
-  control.send(JSON.stringify({ t: "ready", id: openMessage.id, epoch: CONTROL_EPOCH }));
-  expect(await ready).toBe(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
-  return { stub, control, client, pipe, id: openMessage.id };
-}
-
-/** Opens one more ready-v2 tunnel over an already-registered control socket. */
-async function openTunnel(args: {
-  stub: DurableObjectStub;
-  key: string;
-  control: WebSocket;
-}): Promise<{ client: WebSocket; pipe: WebSocket; id: string }> {
-  const open = nextMessage(args.control);
-  const client = await upgrade(args.stub, `https://relay.test/connect/${args.key}?ready=${RELAY_READY_VERSION}`);
-  expect(await nextMessage(client)).toBe(JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }));
-  const { id } = JSON.parse(String(await open)) as { id: string };
-  const pipe = await openPipe({ stub: args.stub, key: args.key, id, epoch: CONTROL_EPOCH });
-  const ready = nextMessage(client);
-  args.control.send(JSON.stringify({ t: "ready", id, epoch: CONTROL_EPOCH }));
-  expect(await ready).toBe(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
-  return { client, pipe, id };
+  return { key, stub, control, ...(await openTunnel({ stub, key, control })) };
 }
 
 async function prewarm(stub: DurableObjectStub, key: string): Promise<unknown> {
@@ -354,12 +347,8 @@ describe("TunnelDurableObject in workerd", () => {
   });
 
   it("keeps concurrent tunnels on one machine independently paired across hibernation", async () => {
-    const key = machineKey("1");
-    const stub = stubFor(key);
-    await claim(stub, key);
-    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
-
-    const first = await openTunnel({ stub, key, control });
+    const { key, stub, control, ...firstTunnel } = await establishEpochV2("1");
+    const first = firstTunnel;
     const second = await openTunnel({ stub, key, control });
     expect(first.id).not.toBe(second.id);
 
@@ -391,6 +380,18 @@ describe("TunnelDurableObject in workerd", () => {
     expect(await stillRouting).toBe("second-survives");
   });
 
+  it("hands back a stable socket object, which is what makes caching possible", async () => {
+    const { stub, id } = await establishEpochV2("6");
+
+    // The instance caches attachment and partner state keyed by the socket
+    // object. If the runtime ever returned a fresh wrapper per lookup, both
+    // caches would silently never hit and every other test would still pass.
+    await runInDurableObject<TunnelDurableObject, void>(stub, (_instance, state) => {
+      expect(state.getWebSockets(`conn:${id}`)[0]).toBe(state.getWebSockets(`conn:${id}`)[0]);
+      expect(state.getWebSockets("control")[0]).toBe(state.getWebSockets("control")[0]);
+    });
+  });
+
   it("reports an unavailable partner rather than forwarding into a closing socket", async () => {
     const { stub, client, pipe, id } = await establishEpochV2("5");
 
@@ -416,15 +417,10 @@ describe("TunnelDurableObject in workerd", () => {
     const close = await clientClosed;
     expect(close.code).toBe(CLOSE_FORWARD_FAILED);
     expect(close.reason).toBe("relay partner unavailable");
-    expect(pipe).toBeDefined();
   });
 
   it("prewarms a hibernated object without disturbing its live tunnel", async () => {
-    const key = machineKey("2");
-    const stub = stubFor(key);
-    await claim(stub, key);
-    const control = await openControl({ stub, key, epoch: CONTROL_EPOCH });
-    const { client, pipe, id } = await openTunnel({ stub, key, control });
+    const { key, stub, client, pipe, id } = await establishEpochV2("2");
 
     await evictDurableObject(stub, { webSockets: "hibernate" });
     expect(await prewarm(stub, key)).toEqual({ ok: true, control: true });

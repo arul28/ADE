@@ -167,24 +167,20 @@ function validKey(value: string | undefined): value is string {
 }
 
 /** The regions Cloudflare accepts as a Durable Object placement hint. */
-export type RelayLocationHint =
-  | "wnam"
-  | "enam"
-  | "sam"
-  | "weur"
-  | "eeur"
-  | "apac"
-  | "oc"
-  | "afr"
-  | "me";
+export type RelayLocationHint = DurableObjectLocationHint;
 
-/** The subset of `request.cf` this router reads. Absent under `wrangler dev`. */
+/**
+ * The subset of `request.cf` this router reads, kept looser than Cloudflare's
+ * own types: `wrangler dev` omits `cf` entirely and miniflare will hand back
+ * whatever a test supplies.
+ */
 export type RequestPlacementGeo = {
   continent?: string | null;
   longitude?: string | number | null;
 };
 
 function parseLongitude(raw: unknown): number | null {
+  if (typeof raw === "string" && raw.trim() === "") return null;
   const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : Number.NaN;
   return Number.isFinite(value) && value >= -180 && value <= 180 ? value : null;
 }
@@ -202,9 +198,10 @@ export function locationHintForGeo(
 ): RelayLocationHint | undefined {
   const continent = typeof geo?.continent === "string" ? geo.continent.trim().toUpperCase() : "";
   const longitude = parseLongitude(geo?.longitude);
+  // Three continents span more than one Cloudflare region: the Americas and
+  // Europe split east/west, and western Asia is served by `me`. Each falls back
+  // to its most populous region when the longitude is missing.
   switch (continent) {
-    // Cloudflare's regions split North America and Europe in two, so fall back
-    // to the continent's larger half when the longitude is missing.
     case "NA":
       return longitude != null && longitude <= -100 ? "wnam" : "enam";
     case "SA":
@@ -221,10 +218,6 @@ export function locationHintForGeo(
       // Unknown or absent geography: let Cloudflare place the object itself.
       return undefined;
   }
-}
-
-function placementHintFor(request: Request): RelayLocationHint | undefined {
-  return locationHintForGeo((request as { cf?: RequestPlacementGeo | null }).cf);
 }
 
 export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
@@ -249,7 +242,7 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
   // Only the machine's own routes may influence placement — a travelling phone
   // must never drag a machine's object across the planet.
   const locationHint = route.kind === "claim" || route.kind === "host"
-    ? placementHintFor(request)
+    ? locationHintForGeo((request as { cf?: RequestPlacementGeo | null }).cf)
     : undefined;
   const stub = locationHint ? env.TUNNEL.get(id, { locationHint }) : env.TUNNEL.get(id);
   return stub.fetch(request);

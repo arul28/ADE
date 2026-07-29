@@ -117,11 +117,11 @@ export class TunnelDurableObject implements DurableObject {
     { frames: (string | ArrayBuffer)[]; bytes: number }
   >();
   private readonly terminalSocketLogs = new WeakSet<WebSocket>();
-  // Hibernation drops instance memory, so both caches below are pure overhead
-  // removal for the hot path: every read falls back to the durable attachment
-  // (or a tag scan) and repopulates itself after a wake.
-  private readonly attachments = new WeakMap<WebSocket, SocketAttachment>();
-  private readonly partners = new WeakMap<WebSocket, WebSocket>();
+  // Pure overhead removal for the hot path; the socket's own attachment stays
+  // authoritative. Hibernation drops instance memory, so every read falls back
+  // to the durable copy (or a tag scan) and repopulates itself after a wake.
+  private readonly cachedAttachments = new WeakMap<WebSocket, SocketAttachment>();
+  private readonly cachedPartners = new WeakMap<WebSocket, WebSocket>();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -134,17 +134,17 @@ export class TunnelDurableObject implements DurableObject {
    */
   private writeAttachment(ws: WebSocket, attachment: SocketAttachment): void {
     ws.serializeAttachment(attachment);
-    this.attachments.set(ws, attachment);
+    this.cachedAttachments.set(ws, attachment);
   }
 
   /** One-time deploy migration for hibernated pre-epoch socket attachments. */
   private normalizedAttachment(ws: WebSocket): SocketAttachment | null {
-    const cached = this.attachments.get(ws);
+    const cached = this.cachedAttachments.get(ws);
     if (cached) return cached;
     const attachment = ws.deserializeAttachment() as SocketAttachment | null;
     if (!attachment?.role) return null;
     if (attachment.epoch) {
-      this.attachments.set(ws, attachment);
+      this.cachedAttachments.set(ws, attachment);
       return attachment;
     }
     const migrated = {
@@ -160,10 +160,10 @@ export class TunnelDurableObject implements DurableObject {
 
   /** Drops both caches for a socket that has reached a terminal state. */
   private forgetSocket(ws: WebSocket): void {
-    const partner = this.partners.get(ws);
-    if (partner) this.partners.delete(partner);
-    this.partners.delete(ws);
-    this.attachments.delete(ws);
+    const partner = this.cachedPartners.get(ws);
+    if (partner) this.cachedPartners.delete(partner);
+    this.cachedPartners.delete(ws);
+    this.cachedAttachments.delete(ws);
   }
 
   private epochOf(attachment: SocketAttachment | null): string | null {
@@ -195,15 +195,9 @@ export class TunnelDurableObject implements DurableObject {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("method not allowed", { status: 405 });
     }
-    let control = false;
-    for (const ws of this.state.getWebSockets("control")) {
-      if (!this.isOpen(ws)) continue;
-      const attachment = ws.deserializeAttachment() as SocketAttachment | null;
-      if (attachment?.role === "control") {
-        control = true;
-        break;
-      }
-    }
+    const control = this.state.getWebSockets("control").some((ws) => (
+      this.isOpen(ws) && (ws.deserializeAttachment() as SocketAttachment | null)?.role === "control"
+    ));
     return jsonResponse({ ok: true, control }, { headers: { "cache-control": "no-store" } });
   }
 
@@ -538,24 +532,17 @@ export class TunnelDurableObject implements DurableObject {
         ? "client"
         : null;
     if (!partnerRole) return null;
-    // The cache is only ever a hint: it is re-checked against the same
-    // predicate the scan uses, so a stale entry degrades to the scan below.
-    const cached = this.partners.get(ws);
-    if (cached && cached !== ws && this.isPartnerOf(cached, att, partnerRole)) return cached;
-    if (cached) this.partners.delete(cached);
+    // The cache is only ever a hint, re-checked against the very predicate the
+    // scan uses, so a socket that closed since it was cached falls through.
+    const cached = this.cachedPartners.get(ws);
+    if (cached && this.isPartnerOf(cached, att, partnerRole)) return cached;
     for (const candidate of this.state.getWebSockets(`conn:${att.id}`)) {
-      if (candidate === ws || !this.isOpen(candidate)) continue;
-      const candidateAttachment = this.normalizedAttachment(candidate);
-      if (
-        candidateAttachment?.role === partnerRole
-        && this.epochOf(candidateAttachment) === this.epochOf(att)
-      ) {
-        this.partners.set(ws, candidate);
-        this.partners.set(candidate, ws);
-        return candidate;
-      }
+      if (candidate === ws || !this.isPartnerOf(candidate, att, partnerRole)) continue;
+      this.cachedPartners.set(ws, candidate);
+      this.cachedPartners.set(candidate, ws);
+      return candidate;
     }
-    this.partners.delete(ws);
+    this.cachedPartners.delete(ws);
     return null;
   }
 

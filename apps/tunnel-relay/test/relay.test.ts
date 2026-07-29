@@ -235,6 +235,10 @@ describe("locationHintForGeo", () => {
     expect(locationHintForGeo({ continent: "NA" })).toBe("enam");
     expect(locationHintForGeo({ continent: "EU", longitude: "not-a-number" })).toBe("weur");
     expect(locationHintForGeo({ continent: "AS", longitude: 999 })).toBe("apac");
+    // An empty longitude is missing data, not the prime meridian — `Number("")`
+    // is 0, which would otherwise read as a real coordinate and pick `me`.
+    expect(locationHintForGeo({ continent: "AS", longitude: "" })).toBe("apac");
+    expect(locationHintForGeo({ continent: "AS", longitude: "  " })).toBe("apac");
   });
 
   it("declines to hint when the geography is unknown", () => {
