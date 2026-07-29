@@ -32,6 +32,7 @@ describe("canonicalSessionState precedence", () => {
   // Table: explicit and structured signals must outrank everything below them.
   const cases: Array<[string, Partial<CanonicalSessionInputs>, string, string | null]> = [
     ["pendingInputItemId wins over stale silence", { pendingInputItemId: "i-1", lastActivityAt: silentSince }, "needs_you", "Needs you"],
+    ["provider provenance restores structured input without an item id", { attentionSource: "provider_structured" }, "needs_you", "Needs you"],
     ["runtime waiting-input does not outvote stale silence", { runtimeState: "waiting-input", lastActivityAt: silentSince }, "stale", "Stale"],
     ["runtime waiting-input alone stays non-interrupting", { runtimeState: "waiting-input", lastOutputPreview: "compiling..." }, "running", null],
     ["pendingInputItemId wins on an ended session", { pendingInputItemId: "i-1", status: "detached", exitCode: 1 }, "needs_you", "Needs you"],

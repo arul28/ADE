@@ -106,6 +106,7 @@ type SessionCanonicalUiInput = {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: TerminalSessionSummary["attentionSource"];
   lastActivityAt?: string | null;
   exitCode?: number | null;
   settledAt?: string | null;
@@ -127,6 +128,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     runtimeState: session.runtimeState,
     toolType: session.toolType,
     pendingInputItemId: session.pendingInputItemId,
+    attentionSource: session.attentionSource,
     lastActivityAt: session.lastActivityAt,
     exitCode: session.exitCode,
     settledAt: session.settledAt,
@@ -142,6 +144,7 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     runtimeState: session.runtimeState ?? null,
     toolType: session.toolType ?? null,
     pendingInputItemId: session.pendingInputItemId ?? null,
+    attentionSource: session.attentionSource ?? null,
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: session.lastActivityAt ?? null,
     exitCode: session.exitCode ?? null,

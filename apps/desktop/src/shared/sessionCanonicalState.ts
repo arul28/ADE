@@ -1,4 +1,5 @@
 import type {
+  SessionAttentionSource,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalRuntimeState,
@@ -64,6 +65,7 @@ export type CanonicalSessionInputs = {
   runtimeState?: TerminalRuntimeState | null;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: SessionAttentionSource | null;
   lastOutputPreview?: string | null;
   /** ISO timestamp of most recent output/activity (drives stale). */
   lastActivityAt?: string | null;
@@ -117,7 +119,11 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
-  if (args.pendingInputItemId || args.attentionRequestedAt) {
+  if (
+    args.pendingInputItemId
+    || args.attentionRequestedAt
+    || args.attentionSource === "provider_structured"
+  ) {
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
   }
 
