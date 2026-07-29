@@ -22,3 +22,8 @@
 # gitleaks' generic-api-key rule fired only because the const identifier ends in
 # `KEY` and the namespaced value has mild entropy. Scoped to its original commit.
 86e23824a491bc8de59697b62169783f917e63b1:apps/desktop/src/renderer/lib/bannerDismiss.ts:generic-api-key:24
+
+# Synthetic filename used to prove files under `.ade/secrets` cannot be
+# imported as proof artifacts. No credential value is present; keep the
+# exception scoped to the original PR commit and exact test finding.
+631f4066397cd4f98b095d3f7d3a43d0cf758805:apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.test.ts:generic-api-key:423

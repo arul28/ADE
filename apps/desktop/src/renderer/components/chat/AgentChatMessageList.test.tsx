@@ -11,6 +11,10 @@ import type {
   ComputerUseArtifactView,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
+import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 vi.mock("lottie-react", () => ({
   useLottie: () => ({
@@ -146,6 +150,7 @@ function renderMessageList(
     onRetryOlderHistory?: () => void;
     onReturnToLatest?: () => void;
     proofArtifacts?: ComputerUseArtifactView[];
+    allowLocalProofArtifactProtocol?: boolean;
     onOpenProofDrawer?: () => void;
   },
 ) {
@@ -171,6 +176,7 @@ function renderMessageList(
         onRetryOlderHistory={options?.onRetryOlderHistory}
         onReturnToLatest={options?.onReturnToLatest}
         proofArtifacts={options?.proofArtifacts}
+        allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
       />
       <LocationProbe />
@@ -449,12 +455,171 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
-  it("renders collected proof even before transcript rows arrive", () => {
-    renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
+  // Proof used to be appended after every row as a permanently open thread
+  // footer. With no transcript rows it is now a compact chronological capture
+  // row that starts collapsed.
+  it("renders proof attached to an empty chat as a collapsed capture row", () => {
+    const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
 
-    expect(screen.getByText("Proof collected in this chat")).toBeTruthy();
-    expect(screen.getByText("Focused tests passed")).toBeTruthy();
-    expect(screen.getByText("381 focused tests passed.")).toBeTruthy();
+    expect(screen.queryByText("Proof collected in this chat")).toBeNull();
+    expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("chips proof onto the turn rule of the turn that captured it", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "Capture proof.", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:02:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        },
+      ],
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:01:00.000Z" }] },
+    );
+
+    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
+  });
+
+  it("does not attribute proof older than the loaded transcript page to its first visible turn", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "Capture current proof.", turnId: "turn-visible" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:02:00.000Z",
+          event: { type: "done", turnId: "turn-visible", status: "completed" },
+        },
+      ],
+      {
+        hasOlderHistory: true,
+        proofArtifacts: [
+          { ...transcriptProofArtifact, id: "proof-older-page", createdAt: "2026-03-17T09:30:00.000Z" },
+          { ...transcriptProofArtifact, id: "proof-visible-turn", createdAt: "2026-03-17T10:01:00.000Z" },
+        ],
+      },
+    );
+
+    expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /2 proof/ })).toBeNull();
+  });
+
+  it("keeps proof captured after the latest done event visible at the transcript tail", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "Finish first.", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:01:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        },
+      ],
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+    );
+
+    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps idle proof before a later turn and never attributes it to that turn", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "First turn.", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:01:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:03:00.000Z",
+          event: { type: "user_message", text: "Later turn.", turnId: "turn-2" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:04:00.000Z",
+          event: { type: "done", turnId: "turn-2", status: "completed" },
+        },
+      ],
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+    );
+
+    const proof = screen.getByRole("button", { name: /Proof added/ });
+    const laterTurn = screen.getByText("Later turn.");
+    expect(proof.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+  });
+
+  it("does not render trailing proof from outside the loaded history window", () => {
+    renderMessageList([], {
+      hasOlderHistory: true,
+      proofArtifacts: [transcriptProofArtifact],
+    });
+
+    expect(screen.queryByRole("button", { name: /Proof added/ })).toBeNull();
+  });
+
+  it("renders broken timeline proof as an amber missing state", () => {
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      }],
+      {
+        proofArtifacts: [{
+          ...transcriptProofArtifact,
+          availability: "missing_file",
+          createdAt: "2026-03-17T10:00:00.000Z",
+        }],
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
+    expect(screen.getByText("Missing proof")).toBeTruthy();
+    expect(document.querySelector('[data-chat-proof-broken="true"]')).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("resolves proof thumbnails in the non-virtualized transcript path", () => {
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      }],
+      {
+        allowLocalProofArtifactProtocol: true,
+        proofArtifacts: [{
+          ...transcriptProofArtifact,
+          kind: "screenshot",
+          mimeType: "image/png",
+          uri: ".ade/artifacts/proof.png",
+          createdAt: "2026-03-17T10:00:00.000Z",
+        }],
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
+    expect(screen.getByRole("img", { name: transcriptProofArtifact.title }).getAttribute("src"))
+      .toBe("ade-artifact://project/.ade/artifacts/proof.png");
   });
 
   it("keeps turn file-change summaries visible without a session id", () => {
@@ -1134,7 +1299,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
-  it("labels end-of-turn wall time as ran for, not worked for", () => {
+  it("labels end-of-turn wall time as ran, not worked for", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1148,7 +1313,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("Ran for 2m")).toBeTruthy();
+    // The turn rule reads `10:04 · ran 3m 32s` — mono, tabular, lower case.
+    expect(screen.getByText("ran 2m")).toBeTruthy();
     expect(screen.queryByText(/Worked for/)).toBeNull();
   });
 
@@ -2950,10 +3116,53 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toContain("The focused tests pass.");
     expect(rendered.container.textContent).toContain("1 file changed");
     expect(rendered.container.textContent).not.toContain("npm test");
-    expect(rendered.container.textContent).toContain("Ran for 5.0s");
+    expect(rendered.container.textContent).toContain("ran 5.0s");
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
     expect(rendered.container.textContent).toContain("npm test");
+  });
+
+  // "Keep the last": the row you read is the most recent one; quiet successes
+  // fold behind a count. Failures never fold — burying a rejected command
+  // behind "+N previous" is exactly the bug this shape must not introduce.
+  it("keeps the last tool call and folds the quiet successes behind a count", () => {
+    const command = (index: number, status: "completed" | "failed") => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${index}.000Z`,
+      event: {
+        type: "command" as const,
+        command: `step-${index}.sh`,
+        cwd: "/repo",
+        output: "ok",
+        itemId: `command-${index}`,
+        turnId: "turn-1",
+        status,
+        exitCode: status === "completed" ? 0 : 1,
+      },
+    });
+
+    const rendered = renderMessageList([
+      command(1, "completed"),
+      command(2, "completed"),
+      command(3, "failed"),
+      command(4, "completed"),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:06.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show activity from this turn" }));
+
+    // Last call + the failure survive; the two quiet successes fold.
+    expect(rendered.container.textContent).toContain("step-4.sh");
+    expect(rendered.container.textContent).toContain("step-3.sh");
+    expect(rendered.container.textContent).not.toContain("step-1.sh");
+    expect(rendered.container.textContent).toContain("+2 previous tool calls");
+
+    fireEvent.click(screen.getByText("+2 previous tool calls"));
+    expect(rendered.container.textContent).toContain("step-1.sh");
   });
 
   it("keeps mixed provider turn ids together while resetting fallback activity at a new user turn", () => {
@@ -3132,7 +3341,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     expect(rendered.container.textContent).toContain("pwd");
     expect(rendered.container.textContent).toContain("shell");
-    expect(rendered.container.innerHTML).toContain("max-w-[min(100%,70ch)]");
+    expect(rendered.container.innerHTML).toContain("max-w-[var(--chat-content-width,52rem)]");
   });
 
   it("renders each subagent as spawn + result cards (no per-tick activity bundle)", () => {
@@ -4249,13 +4458,99 @@ describe("AgentChatMessageList ade_card dispatch", () => {
     expect(screen.queryByText("CI failed")).toBeNull();
   });
 
-  it("does not advertise a host action without a real card-action dispatcher", () => {
-    const onApproval = vi.fn();
-    renderMessageList(
-      [cardEnvelope({ actions: [{ id: "open-lane", label: "Open lane", kind: "primary" }] })],
-      { onApproval },
-    );
-    expect(screen.queryByText("Open lane")).toBeNull();
-    expect(onApproval).not.toHaveBeenCalled();
+  // Previously the transcript passed no `onAction`, and `<AdeCard>` filters out
+  // every action it cannot route — so the schema's action row was unreachable
+  // by construction. It is now dispatched.
+  it("renders a host action and broadcasts it as ade:chat:card-action", () => {
+    const listener = vi.fn();
+    window.addEventListener("ade:chat:card-action", listener);
+    try {
+      renderMessageList([
+        cardEnvelope({ actions: [{ id: "open-lane", label: "Open lane", kind: "primary" }] }),
+      ]);
+      fireEvent.click(screen.getByText("Open lane"));
+      expect(listener).toHaveBeenCalledTimes(1);
+      const detail = (listener.mock.calls[0]![0] as CustomEvent).detail;
+      expect(detail).toMatchObject({ actionId: "open-lane", cardId: "run-42", variant: "proof_artifact" });
+    } finally {
+      window.removeEventListener("ade:chat:card-action", listener);
+    }
+  });
+
+  it("routes retry back through the card's own surface rather than a dead broadcast", () => {
+    const navListener = vi.fn();
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, navListener);
+    try {
+      renderMessageList([
+        cardEnvelope({
+          variant: "pr_ci",
+          title: "CI is running",
+          degradedReason: "Couldn’t read the job list from GitHub — 403",
+          navTarget: { kind: "pr", repoOwner: "arul28", repoName: "ADE", prNumber: 916 },
+          actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+        }),
+      ]);
+      fireEvent.click(screen.getByText("Retry"));
+      expect(navListener).toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, navListener);
+    }
+  });
+
+  it("says the detail is unavailable instead of showing a content-free green card", () => {
+    renderMessageList([
+      cardEnvelope({
+        variant: "pr_ci",
+        title: "CI passed",
+        metrics: [],
+        degradedReason: "Couldn’t read the job list from GitHub — 403",
+      }),
+    ]);
+    expect(screen.getByText("detail unavailable")).toBeTruthy();
+    expect(screen.getByText(/403/)).toBeTruthy();
+  });
+});
+
+/**
+ * The transcript's ONE content width.
+ *
+ * Before `--chat-content-width` there were seven disagreeing clamps in this
+ * directory, and the worst offender resolved `70` characters against the
+ * browser's 16px default (no card sets a font-size), so every card stopped
+ * ~26% short of the prose above it. This guard is source-level on purpose: a
+ * jsdom render cannot catch a clamp on a code path that happens not to be
+ * exercised.
+ */
+describe("chat transcript content width", () => {
+  const chatDir = path.dirname(fileURLToPath(import.meta.url));
+
+  /** Components only — a test file may name the old clamp to explain it. */
+  function chatComponentFiles(dir: string): string[] {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return chatComponentFiles(full);
+      if (/\.test\.tsx?$/.test(entry.name)) return [];
+      return /\.tsx?$/.test(entry.name) ? [full] : [];
+    });
+  }
+
+  it("has no `ch`-relative card clamp left anywhere under components/chat", () => {
+    const offenders = chatComponentFiles(chatDir)
+      .filter((file) => fs.readFileSync(file, "utf8").includes("70ch"))
+      .map((file) => path.basename(file));
+    expect(offenders).toEqual([]);
+  });
+
+  it("routes every transcript-row max-width through the shared token", () => {
+    // `max-w-[min(100%, …)]` is the row-level idiom the redesign unified. A
+    // bare `max-w-[22rem]` on a nested control is a different thing and stays.
+    const offenders: string[] = [];
+    for (const file of chatComponentFiles(chatDir)) {
+      const source = fs.readFileSync(file, "utf8");
+      for (const match of source.matchAll(/max-w-\[min\(100%,\s*[^\]]*\)\]/g)) {
+        offenders.push(`${path.basename(file)}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

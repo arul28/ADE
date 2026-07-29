@@ -15,6 +15,7 @@ import {
   STORAGE_LEDGER,
 } from "./storageLedger";
 import { recordLastFailure } from "../runtime/lastFailureStore";
+import { createPromptStash } from "../chat/promptStashService";
 
 const logger = {
   debug: vi.fn(),
@@ -120,7 +121,7 @@ describe("storageInsightsService", () => {
     writeSized(path.join(projectRoot, ".ade", "transcripts", "chat", "one.log"), 11);
     writeSized(path.join(projectRoot, ".ade", "cache", "terminal-snapshots", "one.txt"), 13);
     writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "cache.bin"), 7);
-    writeSized(path.join(projectRoot, ".ade", "artifacts", "proof.bin"), 5);
+    writeSized(path.join(projectRoot, ".ade", "artifacts", "computer-use", "proof.bin"), 5);
     writeSized(path.join(projectRoot, ".ade", "ade.db.recovery-fixture.bak"), 3);
     const lanePath = path.join(projectRoot, ".ade", "worktrees", "active-lane");
     writeSized(path.join(lanePath, "source.bin"), 17);
@@ -353,6 +354,99 @@ describe("storageInsightsService", () => {
 
     const capped = createStorageInsightsService({ projectRoot, adeHome, db, logger, scanEntryLimit: 1 });
     expect((await capped.getSnapshot()).truncated).toBe(true);
+  });
+
+  it("removes proof storage and drops the matching proof records with it", async () => {
+    // Settings used to render this card with a size and no Remove button,
+    // pointing the user at a proof-drawer control that did not exist.
+    const artifactsDir = path.join(projectRoot, ".ade", "artifacts");
+    const proofDir = path.join(artifactsDir, "computer-use");
+    const packsDir = path.join(artifactsDir, "packs");
+    const logBundlesDir = path.join(artifactsDir, "log-bundles");
+    writeSized(path.join(proofDir, "shot.png"), 21);
+    writeSized(path.join(packsDir, "lane-pack.tar"), 13);
+    writeSized(path.join(logBundlesDir, "diagnostic.log"), 8);
+    const purged: string[] = [];
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      purgeProofRecordsUnder: (removedPath) => purged.push(removedPath),
+    });
+
+    const targets: StorageCleanupTarget[] = [{ kind: "proof_attachments", path: proofDir }];
+    const preview = await service.cleanupPreview(targets);
+    expect(preview.blocked).toEqual([]);
+    expect(preview.items[0]).toMatchObject({ path: proofDir, bytes: 21, label: "Proof and recordings" });
+
+    const result = await service.cleanup(targets, { preview });
+    expect(result.removed).toEqual([{ path: proofDir, bytes: 21 }]);
+    expect(fs.existsSync(proofDir)).toBe(false);
+    expect(fs.existsSync(path.join(packsDir, "lane-pack.tar"))).toBe(true);
+    expect(fs.existsSync(path.join(logBundlesDir, "diagnostic.log"))).toBe(true);
+    // Rows must never outlive the bytes.
+    expect(purged).toEqual([proofDir]);
+  });
+
+  it("never offers the live composer attachment store for recursive cleanup", async () => {
+    const attachmentsDir = path.join(projectRoot, ".ade", "attachments");
+    const stashedImage = path.join(attachmentsDir, "stashed-image.png");
+    const activeDraftImage = path.join(attachmentsDir, "active-draft.png");
+    writeSized(stashedImage, 17);
+    writeSized(activeDraftImage, 19);
+    createPromptStash(db, {
+      text: "Keep this image",
+      attachments: [{ path: stashedImage, type: "image" }],
+    });
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.categories.find((category) => category.id === "proof_attachments")?.items)
+      .not.toContainEqual(expect.objectContaining({ path: attachmentsDir }));
+
+    const preview = await service.cleanupPreview([
+      { kind: "proof_attachments", path: attachmentsDir },
+      { kind: "proof_attachments", path: activeDraftImage },
+    ]);
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked).toEqual([
+      {
+        path: attachmentsDir,
+        reason: "Composer attachments are live chat data and cannot be removed from Storage.",
+      },
+      {
+        path: activeDraftImage,
+        reason: "Composer attachments are live chat data and cannot be removed from Storage.",
+      },
+    ]);
+    expect(fs.existsSync(stashedImage)).toBe(true);
+    expect(fs.existsSync(activeDraftImage)).toBe(true);
+  });
+
+  it("refuses proof cleanup for the shared artifacts parent", async () => {
+    const artifactsDir = path.join(projectRoot, ".ade", "artifacts");
+    writeSized(path.join(artifactsDir, "packs", "lane-pack.tar"), 4);
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const preview = await service.cleanupPreview([{ kind: "proof_attachments", path: artifactsDir }]);
+
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked).toEqual([
+      { path: artifactsDir, reason: "This path is not proof or attachment storage." },
+    ]);
+  });
+
+  it("refuses proof cleanup for paths outside the proof and attachment stores", async () => {
+    const outside = path.join(projectRoot, ".ade", "cache");
+    writeSized(path.join(outside, "blob.bin"), 4);
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+
+    const preview = await service.cleanupPreview([{ kind: "proof_attachments", path: outside }]);
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked).toEqual([
+      { path: outside, reason: "This path is not proof or attachment storage." },
+    ]);
   });
 
   it("itemizes a removed target and a target deleted after preview", async () => {

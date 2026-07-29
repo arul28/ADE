@@ -370,6 +370,16 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
     expect(actions).toContain("getBackendStatus");
     expect(actions).toContain("readArtifactPreview");
+    for (const action of [
+      "deleteArtifacts",
+      "ingest",
+      "listArtifacts",
+      "listBrokenArtifacts",
+      "pruneBrokenArtifacts",
+      "recoverArtifact",
+    ]) {
+      expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);
+    }
   });
 
   it("exposes prompt stashes through the project runtime for connected desktops", () => {

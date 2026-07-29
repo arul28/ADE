@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  ComputerUseArtifactAvailability,
+  ComputerUseArtifactBrokenRecord,
+  ComputerUseArtifactDeleteArgs,
+  ComputerUseArtifactDeleteOutcome,
+  ComputerUseArtifactDeleteResult,
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
   ComputerUseArtifactInput,
@@ -14,7 +19,6 @@ import type {
   ComputerUseArtifactRecord,
   ComputerUseArtifactReviewArgs,
   ComputerUseArtifactReviewState,
-  ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
   ComputerUseBackendStyle,
   ComputerUseBackendStatus,
@@ -29,6 +33,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
 import {
   fileExists,
+  isEnoentError,
   isRecord,
   nowIso,
   resolvePathWithinRoot,
@@ -52,8 +57,15 @@ type StoredArtifactRow = {
   storage_kind: string;
   mime_type: string | null;
   metadata_json: string;
+  lane_id: string | null;
   created_at: string;
 };
+
+const ARTIFACT_SELECT_COLUMNS = `
+  id, artifact_kind, backend_style, backend_name, source_tool_name,
+  original_type, title, description, uri, storage_kind, mime_type,
+  metadata_json, lane_id, created_at
+`;
 
 const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "accepted";
 const DEFAULT_WORKFLOW_STATE: ComputerUseArtifactWorkflowState = "evidence_only";
@@ -76,6 +88,18 @@ const ARTIFACT_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
 type ComputerUseArtifactRecordInsert = Omit<ComputerUseArtifactRecord, "id" | "createdAt" | "backendStyle"> & {
   backendStyle?: ComputerUseBackendStyle | null;
 };
+
+type ResolvedStoredArtifact = {
+  uri: string;
+  storageKind: "file" | "url";
+  mimeType: string | null;
+  stagedFilePath: string | null;
+};
+
+type RecoverableSourceResolution =
+  | { status: "found"; path: string }
+  | { status: "missing" }
+  | { status: "ambiguous"; paths: string[] };
 
 type StoredLinkRow = {
   id: string;
@@ -103,6 +127,35 @@ function isAllowedExternalArtifactSource(
       return false;
     }
   });
+}
+
+/**
+ * Paths an agent may read but must never be able to copy into the artifact
+ * store — artifacts are previewed in the renderer and synced to paired phones,
+ * so promoting a secrets blob into one is an exfiltration path.
+ */
+/**
+ * Realpaths both sides before comparing. A lexical check is bypassable with one
+ * `ln -s`: a directory symlink inside an allowed root that points at the secrets
+ * dir would fail this test and then pass the allow-list, which realpaths. The
+ * deny-list is the exfiltration barrier, so it has to be at least as strict as
+ * the check it guards.
+ */
+function isDeniedArtifactSource(absolutePath: string, deniedRoots: string[]): boolean {
+  const normalized = realpathOrSelf(path.resolve(absolutePath));
+  return deniedRoots.some((root) => {
+    const normalizedRoot = realpathOrSelf(path.resolve(root));
+    return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + path.sep);
+  });
+}
+
+/** Realpath when the path exists; the resolved input otherwise. */
+function realpathOrSelf(candidate: string): string {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
 }
 
 function resolveRendererArtifactPath(rawPath: string, projectRoot: string): string {
@@ -209,6 +262,39 @@ function dedupeOwners(owners: ComputerUseArtifactOwner[]): ComputerUseArtifactOw
   return result;
 }
 
+/**
+ * Extensions an on-disk file may be imported with.
+ *
+ * Proof is renderable evidence — images, video, browser traces, logs. The
+ * import roots are deliberately wide (a lane worktree and the project root,
+ * because agents capture next to the code they are changing), which puts
+ * `.env.local`, `.ade/*.db` and any key material exactly one `ade proof attach`
+ * away from an artifact store that syncs to paired phones and gets linked from
+ * PRs. Denying roots alone cannot cover that: the sensitive files live in the
+ * same directories as the legitimate ones. So the allow-list is on the artifact
+ * itself, and anything that is not plausibly proof is refused outright.
+ *
+ * Inline text/JSON does not pass through here — {@link materializeInlineContent}
+ * writes its own file inside the artifacts dir and never reads a user path.
+ */
+const IMPORTABLE_ARTIFACT_EXTENSIONS: ReadonlySet<string> = new Set([
+  "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "heic",
+  "mp4", "webm", "mov", "avi", "mkv",
+  "heif", "tif", "tiff",
+  "m4v", "ogv",
+  "zip", "har",
+  "log", "txt", "md",
+]);
+
+/** Extension of an import candidate, lowercased and without the dot. */
+function importExtension(absolutePath: string): string {
+  return path.extname(absolutePath).replace(/^\./, "").trim().toLowerCase();
+}
+
+function isImportableArtifactFile(absolutePath: string): boolean {
+  return IMPORTABLE_ARTIFACT_EXTENSIONS.has(importExtension(absolutePath));
+}
+
 function inferArtifactExtension(input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind): string {
   const fromPath = toOptionalString(input.path) ?? toOptionalString(input.uri);
   if (fromPath) {
@@ -251,6 +337,12 @@ export function createComputerUseArtifactBrokerService(args: {
     layout.artifactsDir,
     layout.cacheDir,
     layout.tmpDir,
+    // Agents run inside lane worktrees and capture next to the code they are
+    // changing, so a lane worktree is as legitimate a capture source as the
+    // project root itself. `worktreesDir` is listed explicitly because a lane
+    // worktree can be relocated outside `projectRoot`.
+    layout.worktreesDir,
+    projectRoot,
     os.tmpdir(),
     path.join(os.homedir(), ".agent-browser"),
     ...(args.additionalAllowedImportRoots ?? [])
@@ -258,6 +350,7 @@ export function createComputerUseArtifactBrokerService(args: {
       .filter(Boolean)
       .map((root) => path.resolve(root)),
   ]));
+  const deniedImportRoots = [layout.secretsDir];
 
   const emit = (payload: ComputerUseEventPayload): void => {
     try {
@@ -267,7 +360,11 @@ export function createComputerUseArtifactBrokerService(args: {
     }
   };
 
-  const materializeInlineContent = (input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind, title: string): string => {
+  const materializeInlineContent = (
+    input: ComputerUseArtifactInput,
+    kind: ComputerUseArtifactKind,
+    title: string,
+  ): { uri: string; stagedFilePath: string } => {
     const extension = inferArtifactExtension(input, kind);
     const artifactPath = createComputerUseArtifactPath(projectRoot, title, extension);
     if (input.json != null) {
@@ -275,55 +372,144 @@ export function createComputerUseArtifactBrokerService(args: {
     } else {
       writeTextAtomic(artifactPath, input.text ?? "");
     }
-    return toProjectArtifactUri(projectRoot, artifactPath);
+    return {
+      uri: toProjectArtifactUri(projectRoot, artifactPath),
+      stagedFilePath: artifactPath,
+    };
   };
 
-  const resolveStoredUri = (input: ComputerUseArtifactInput, kind: ComputerUseArtifactKind, title: string): { uri: string; storageKind: "file" | "url"; mimeType: string | null } => {
+  /**
+   * Roots a caller-supplied *relative* path is tried against, in order.
+   *
+   * Agents run inside lane worktrees, so a relative path they hand us is
+   * relative to the worktree, not to `projectRoot`. Resolving only against
+   * `projectRoot` is what silently discarded every capture taken outside
+   * `.ade/artifacts`.
+   */
+  const relativeResolutionRoots = (callerRoot: string | null): string[] => {
+    return [path.resolve(callerRoot ?? projectRoot)];
+  };
+
+  const resolveStoredUri = (
+    input: ComputerUseArtifactInput,
+    kind: ComputerUseArtifactKind,
+    title: string,
+    callerRoot: string | null,
+    requestImportRoots: string[],
+  ): ResolvedStoredArtifact => {
     const directUri = toOptionalString(input.uri);
     if (directUri && isHttpUrl(directUri)) {
-      return { uri: directUri, storageKind: "url", mimeType: toOptionalString(input.mimeType) };
+      return {
+        uri: directUri,
+        storageKind: "url",
+        mimeType: toOptionalString(input.mimeType),
+        stagedFilePath: null,
+      };
     }
 
     const pathLike = toOptionalString(input.path) ?? (directUri && !isHttpUrl(directUri) ? directUri : null);
     if (pathLike) {
-      const absolutePath = path.isAbsolute(pathLike)
-        ? pathLike
-        : resolvePathWithinRoot(projectRoot, pathLike, { allowMissing: true });
-      if (fileExists(absolutePath)) {
-        try {
-          const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);
-          return {
-            uri: toProjectArtifactUri(projectRoot, existingArtifactPath),
-            storageKind: "file",
-            mimeType: toOptionalString(input.mimeType),
-          };
-        } catch {
-          // Fall through to external import handling.
+      const attempted: string[] = [];
+      let absolutePath: string | null = null;
+      if (path.isAbsolute(pathLike)) {
+        attempted.push(pathLike);
+        if (fileExists(pathLike)) absolutePath = pathLike;
+      } else {
+        for (const root of relativeResolutionRoots(callerRoot)) {
+          let candidate: string;
+          try {
+            candidate = resolvePathWithinRoot(root, pathLike, { allowMissing: true });
+          } catch {
+            attempted.push(path.join(root, pathLike));
+            continue;
+          }
+          attempted.push(candidate);
+          if (fileExists(candidate)) {
+            absolutePath = candidate;
+            break;
+          }
         }
-        if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
-          throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
-        }
-        const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
-        const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
-        secureCopyFromDescriptor(absolutePath, targetPath);
+      }
+
+      if (!absolutePath) {
+        // Never persist a record for bytes we could not find. A row whose file
+        // was never imported renders as a permanently broken tile and cannot be
+        // recovered later, so failing loudly at capture time is the only honest
+        // outcome.
+        throw new Error(
+          `Artifact file not found: ${pathLike}. Tried ${attempted.join(", ") || pathLike}. `
+          + `Pass an absolute path, or a path relative to ${callerRoot ?? projectRoot}.`,
+        );
+      }
+
+      if (isDeniedArtifactSource(absolutePath, deniedImportRoots)) {
+        throw new Error(`Artifact path is not allowed as a proof source: ${absolutePath}`);
+      }
+
+      if (!isImportableArtifactFile(absolutePath)) {
+        throw new Error(
+          `Artifact file type is not importable as proof: ${absolutePath}. `
+          + `Proof must be an image, video, browser trace, or log `
+          + `(${[...IMPORTABLE_ARTIFACT_EXTENSIONS].join(", ")}).`,
+        );
+      }
+
+      try {
+        const existingArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolutePath);
         return {
-          uri: toProjectArtifactUri(projectRoot, targetPath),
+          uri: toProjectArtifactUri(projectRoot, existingArtifactPath),
           storageKind: "file",
           mimeType: toOptionalString(input.mimeType),
+          stagedFilePath: null,
         };
+      } catch {
+        // Fall through to external import handling.
       }
+      if (!isAllowedExternalArtifactSource(absolutePath, [...allowedImportRoots, ...requestImportRoots])) {
+        throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
+      }
+      const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
+      const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
+      secureCopyFromDescriptor(absolutePath, targetPath);
       return {
-        uri: pathLike,
+        uri: toProjectArtifactUri(projectRoot, targetPath),
         storageKind: "file",
         mimeType: toOptionalString(input.mimeType),
+        stagedFilePath: targetPath,
       };
     }
 
+    const materialized = materializeInlineContent(input, kind, title);
     return {
-      uri: materializeInlineContent(input, kind, title),
+      uri: materialized.uri,
       storageKind: "file",
       mimeType: toOptionalString(input.mimeType),
+      stagedFilePath: materialized.stagedFilePath,
     };
+  };
+
+  /**
+   * Lane an artifact belongs to, so deleting the lane deletes its captures.
+   * Chat sessions are `terminal_sessions` rows and carry the lane binding; an
+   * explicit `lane` owner wins when one was supplied.
+   */
+  const resolveLaneIdForOwners = (owners: ComputerUseArtifactOwner[]): string | null => {
+    const explicitLane = owners.find((owner) => owner.kind === "lane")?.id;
+    if (explicitLane) return explicitLane;
+    for (const owner of owners) {
+      if (owner.kind !== "chat_session") continue;
+      try {
+        const row = db.get<{ lane_id: string | null }>(
+          "select lane_id from terminal_sessions where id = ? limit 1",
+          [owner.id],
+        );
+        if (row?.lane_id) return row.lane_id;
+      } catch {
+        // The lane binding is a convenience for cleanup, never a hard
+        // requirement for keeping the capture.
+      }
+    }
+    return null;
   };
 
   const insertArtifactRecord = (record: ComputerUseArtifactRecordInsert): ComputerUseArtifactRecord => {
@@ -339,8 +525,9 @@ export function createComputerUseArtifactBrokerService(args: {
       `
         insert into computer_use_artifacts(
           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
-          original_type, title, description, uri, storage_kind, mime_type, metadata_json, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+          lane_id, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         next.id,
@@ -356,6 +543,7 @@ export function createComputerUseArtifactBrokerService(args: {
         next.storageKind,
         next.mimeType,
         JSON.stringify(next.metadata ?? {}),
+        next.laneId ?? null,
         next.createdAt,
       ],
     );
@@ -395,9 +583,7 @@ export function createComputerUseArtifactBrokerService(args: {
   const readArtifactById = (artifactId: string): ComputerUseArtifactRecord | null =>
     readArtifactRows(
       `
-        select id, artifact_kind, backend_style, backend_name, source_tool_name,
-               original_type, title, description, uri, storage_kind, mime_type,
-               metadata_json, created_at
+        select ${ARTIFACT_SELECT_COLUMNS}
         from computer_use_artifacts
         where project_id = ?
           and id = ?
@@ -405,6 +591,150 @@ export function createComputerUseArtifactBrokerService(args: {
       `,
       [projectId, artifactId],
     )[0] ?? null;
+
+  /**
+   * Absolute on-disk location an artifact's bytes should live at, or null when
+   * the record does not point inside the project artifact store. The read jail
+   * is the same one `readArtifactPreview` and the `ade-artifact://` protocol
+   * handler enforce — delete must never be able to unlink outside it.
+   */
+  const resolveArtifactFilePath = (record: ComputerUseArtifactRecord): string | null => {
+    if (record.storageKind !== "file") return null;
+    const uri = record.uri?.trim();
+    if (!uri || isHttpUrl(uri)) return null;
+    const candidate = resolveRendererArtifactPath(uri, projectRoot);
+    try {
+      return resolvePathWithinRoot(layout.artifactsDir, candidate, { allowMissing: true });
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Where a broken record's original bytes might still be. Ingest records the
+   * validated path/URI and caller root in broker-stamped metadata, so a capture
+   * can be re-imported as long as its authorized lane worktree still exists.
+   */
+  const resolveLaneRoots = (laneIds: Set<string>): string[] => {
+    if (!laneIds.size) return [];
+
+    const placeholders = [...laneIds].map(() => "?").join(", ");
+    const rows = db.all<{ worktree_path: string; attached_root_path: string | null }>(
+      `
+        select worktree_path, attached_root_path
+        from lanes
+        where project_id = ?
+          and id in (${placeholders})
+      `,
+      [projectId, ...[...laneIds].sort()],
+    );
+    return Array.from(new Set(
+      rows
+        .flatMap((row) => [row.attached_root_path, row.worktree_path])
+        .filter((root): root is string => Boolean(root))
+        .map((root) => path.resolve(root)),
+    )).sort();
+  };
+
+  const resolveArtifactLaneRoots = (record: ComputerUseArtifactRecord): string[] => {
+    const laneIds = new Set<string>();
+    if (record.laneId) laneIds.add(record.laneId);
+    for (const link of readLinkRows([record.id])) {
+      if (link.ownerKind === "lane") {
+        laneIds.add(link.ownerId);
+        continue;
+      }
+      if (link.ownerKind !== "chat_session") continue;
+      const session = db.get<{ lane_id: string | null }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [link.ownerId],
+      );
+      if (session?.lane_id) laneIds.add(session.lane_id);
+    }
+    return resolveLaneRoots(laneIds);
+  };
+
+  const resolveCandidateAcrossRoots = (
+    candidate: string,
+    roots: string[],
+  ): RecoverableSourceResolution => {
+    const matches = new Set<string>();
+    for (const root of roots) {
+      let resolved: string;
+      try {
+        resolved = resolvePathWithinRoot(root, candidate, { allowMissing: true });
+      } catch {
+        continue;
+      }
+      if (fileExists(resolved)) matches.add(realpathOrSelf(path.resolve(resolved)));
+    }
+    const paths = [...matches].sort();
+    if (paths.length === 1) return { status: "found", path: paths[0]! };
+    if (paths.length > 1) return { status: "ambiguous", paths };
+    return { status: "missing" };
+  };
+
+  const resolveRecoverableSource = (record: ComputerUseArtifactRecord): RecoverableSourceResolution => {
+    const candidates: string[] = [];
+    const push = (value: string | null | undefined): void => {
+      if (!value) return;
+      const trimmed = value.trim();
+      if (!trimmed || isHttpUrl(trimmed)) return;
+      if (!candidates.includes(trimmed)) candidates.push(trimmed);
+    };
+    push(toOptionalString(record.metadata?.sourcePath));
+    push(toOptionalString(record.metadata?.sourceUri));
+    push(record.uri);
+
+    const metadataCallerRoot = toOptionalString(record.metadata?.callerRoot);
+    const laneRoots = resolveArtifactLaneRoots(record);
+    const authoritativeRoots = metadataCallerRoot
+      ? [path.resolve(metadataCallerRoot)]
+      : laneRoots.length
+        ? laneRoots
+        : null;
+    const fallbackRoots = [projectRoot, ...listLaneWorktreeRoots()];
+
+    for (const candidate of candidates) {
+      if (path.isAbsolute(candidate)) {
+        if (fileExists(candidate)) return { status: "found", path: realpathOrSelf(path.resolve(candidate)) };
+        continue;
+      }
+      const resolution = resolveCandidateAcrossRoots(
+        candidate,
+        authoritativeRoots ?? fallbackRoots,
+      );
+      if (resolution.status !== "missing") {
+        return resolution;
+      }
+    }
+    return { status: "missing" };
+  };
+
+  const listLaneWorktreeRoots = (): string[] => {
+    try {
+      return fs.readdirSync(layout.worktreesDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(layout.worktreesDir, entry.name))
+        .sort();
+    } catch {
+      return [];
+    }
+  };
+
+  const findRecoverableSourcePath = (record: ComputerUseArtifactRecord): string | null => {
+    const resolution = resolveRecoverableSource(record);
+    return resolution.status === "found" ? resolution.path : null;
+  };
+
+  const resolveAvailability = (record: ComputerUseArtifactRecord): ComputerUseArtifactAvailability => {
+    if (record.storageKind === "url" || isHttpUrl(record.uri ?? "")) return "available";
+    const filePath = resolveArtifactFilePath(record);
+    // A file-kind record whose URI does not land inside `.ade/artifacts` was
+    // never imported — this is the shape the pre-fix silent fallback persisted.
+    if (!filePath) return "unimported";
+    return fileExists(filePath) ? "available" : "missing_file";
+  };
 
   const toArtifactView = (record: ComputerUseArtifactRecord, links: ComputerUseArtifactLink[]): ComputerUseArtifactView => {
     const reviewState = toOptionalString(record.metadata.reviewState) as ComputerUseArtifactReviewState | null;
@@ -415,29 +745,9 @@ export function createComputerUseArtifactBrokerService(args: {
       reviewState: reviewState ?? DEFAULT_REVIEW_STATE,
       workflowState: workflowState ?? DEFAULT_WORKFLOW_STATE,
       reviewNote: toOptionalString(record.metadata.reviewNote),
+      availability: resolveAvailability(record),
     };
   };
-
-  const getLink = (artifactId: string, owner: ComputerUseArtifactOwner): ComputerUseArtifactLink | null =>
-    db.get<StoredLinkRow>(
-      `
-        select id, artifact_id, owner_kind, owner_id, relation, metadata_json, created_at
-        from computer_use_artifact_links
-        where artifact_id = ?
-          and project_id = ?
-          and owner_kind = ?
-          and owner_id = ?
-          and relation = ?
-        limit 1
-      `,
-      [artifactId, projectId, owner.kind, owner.id.trim(), owner.relation ?? "attached_to"],
-    )
-      ? readLinkRows([artifactId]).find((link) =>
-          link.ownerKind === owner.kind
-          && link.ownerId === owner.id.trim()
-          && link.relation === (owner.relation ?? "attached_to")
-        ) ?? null
-      : null;
 
   const updateArtifactMetadata = (artifactId: string, updater: (current: Record<string, unknown>) => Record<string, unknown>): ComputerUseArtifactView => {
     const current = readArtifactById(artifactId);
@@ -475,6 +785,7 @@ export function createComputerUseArtifactBrokerService(args: {
       storageKind: row.storage_kind as ComputerUseArtifactRecord["storageKind"],
       mimeType: row.mime_type,
       metadata: safeJsonParse(row.metadata_json, {}),
+      laneId: row.lane_id ?? null,
       createdAt: row.created_at,
     }));
 
@@ -509,21 +820,9 @@ export function createComputerUseArtifactBrokerService(args: {
     if (local.proofRequirements.browser_verification.available) localKinds.push("browser_verification");
     if (local.proofRequirements.console_logs.available) localKinds.push("console_logs");
 
+    // Only backends ADE can actually ingest from are listed. A permanently
+    // `available: false` entry is decoration, not status.
     const backends: ComputerUseExternalBackendStatus[] = [];
-    const ghostInstalled = commandExists("ghost");
-    backends.push({
-      name: "Ghost OS",
-      available: false,
-      state: ghostInstalled ? "installed" : "missing",
-      detail: ghostInstalled
-        ? "Ghost OS CLI is installed, but ADE Ghost integration readiness is not enabled yet."
-        : "Ghost OS CLI is not installed on this machine.",
-      supportedKinds: [
-        "screenshot",
-        "browser_verification",
-      ],
-    });
-
     const agentBrowserInstalled = commandExists("agent-browser");
     backends.push({
       name: "agent-browser",
@@ -554,18 +853,198 @@ export function createComputerUseArtifactBrokerService(args: {
     };
   };
 
+  /**
+   * Remove artifacts: rows (artifact + every link) and the stored file.
+   *
+   * Idempotent — an id with no row lands in `missing`, and a row whose file
+   * is already gone still has its rows removed. File removal is jailed to
+   * `.ade/artifacts`, so a record that points elsewhere (an http URL, or one
+   * of the never-imported records the old silent fallback wrote) only ever
+   * loses its rows.
+   */
+  const deleteArtifacts = (args: ComputerUseArtifactDeleteArgs): ComputerUseArtifactDeleteResult => {
+    const ids = Array.from(new Set([
+      ...(toOptionalString(args?.artifactId) ? [toOptionalString(args.artifactId)!] : []),
+      ...((args?.artifactIds ?? []).map((id) => toOptionalString(id)).filter((id): id is string => Boolean(id))),
+    ]));
+    if (!ids.length) throw new Error("artifactId or artifactIds is required.");
+
+    const deleted: ComputerUseArtifactDeleteOutcome[] = [];
+    const missing: string[] = [];
+    const failed: Array<{ artifactId: string; reason: string }> = [];
+
+    for (const artifactId of ids) {
+      const record = readArtifactById(artifactId);
+      if (!record) {
+        missing.push(artifactId);
+        continue;
+      }
+      // Read the owners before the rows go, so the delete can be announced to
+      // the same surfaces `artifact-linked` reached. An `owner: null` event is
+      // silently dropped by every listener, which is why deletes made outside
+      // the drawer used to leave it showing a row that no longer existed.
+      const owners = readLinkRows([artifactId]).map((link) => ({
+        kind: link.ownerKind,
+        id: link.ownerId,
+        relation: link.relation,
+      }));
+      try {
+        const filePath = resolveArtifactFilePath(record);
+        let fileRemoved = false;
+        let freedBytes = 0;
+        const sharedReference = filePath && record.storageKind === "file"
+          ? readArtifactRows(
+              `
+                select ${ARTIFACT_SELECT_COLUMNS}
+                from computer_use_artifacts
+                where project_id = ?
+                  and storage_kind = 'file'
+                  and id <> ?
+              `,
+              [projectId, artifactId],
+            ).some((candidate) => resolveArtifactFilePath(candidate) === filePath)
+          : false;
+        if (filePath && !sharedReference) {
+          try {
+            const stat = fs.statSync(filePath);
+            if (!stat.isFile()) {
+              throw new Error(`Artifact storage path is not a regular file: ${filePath}`);
+            }
+            freedBytes = stat.size;
+            fs.rmSync(filePath, { force: true });
+            fileRemoved = true;
+          } catch (error) {
+            // Absence is idempotent. Permission, lock, I/O, and other failures
+            // must retain both rows so the deletion can be retried rather than
+            // orphaning bytes that ADE can no longer manage.
+            if (!isEnoentError(error)) throw error;
+          }
+        }
+        db.run("delete from computer_use_artifact_links where artifact_id = ?", [artifactId]);
+        db.run("delete from computer_use_artifacts where id = ? and project_id = ?", [artifactId, projectId]);
+        deleted.push({
+          artifactId,
+          title: record.title,
+          fileRemoved,
+          path: filePath,
+          freedBytes,
+        });
+        const deletedAt = nowIso();
+        if (owners.length) {
+          for (const owner of owners) {
+            emit({ type: "artifact-deleted", artifactId, at: deletedAt, owner });
+          }
+        } else {
+          emit({ type: "artifact-deleted", artifactId, at: deletedAt, owner: null });
+        }
+      } catch (error) {
+        failed.push({
+          artifactId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      deleted,
+      missing,
+      failed,
+      freedBytes: deleted.reduce((sum, entry) => sum + entry.freedBytes, 0),
+    };
+  };
+
+  /**
+   * Every record whose bytes cannot be served, with enough detail for the UI
+   * to say what happened and offer recovery when the original file survives.
+   */
+  const collectBrokenArtifacts = (limit: number | null): ComputerUseArtifactBrokenRecord[] => {
+    const pageSize = 500;
+    const broken: ComputerUseArtifactBrokenRecord[] = [];
+    let offset = 0;
+
+    for (;;) {
+      const records = readArtifactRows(
+        `
+          select ${ARTIFACT_SELECT_COLUMNS}
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+          order by created_at desc, id desc
+          limit ? offset ?
+        `,
+        [projectId, pageSize, offset],
+      );
+      for (const record of records) {
+        const availability = resolveAvailability(record);
+        if (availability === "available") continue;
+        broken.push({
+          artifactId: record.id,
+          title: record.title,
+          kind: record.kind,
+          uri: record.uri,
+          createdAt: record.createdAt,
+          reason: availability === "unimported" ? "outside_artifact_store" : "missing_file",
+          laneId: record.laneId ?? null,
+          recoverablePath: findRecoverableSourcePath(record),
+        });
+        if (limit != null && broken.length >= limit) return broken;
+      }
+      if (records.length < pageSize) return broken;
+      offset += records.length;
+    }
+  };
+
+  const listBrokenArtifacts = (args: { limit?: number } = {}): ComputerUseArtifactBrokenRecord[] => {
+    const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 1000)));
+    return collectBrokenArtifacts(limit);
+  };
+
   return {
     ingest(request: ComputerUseArtifactIngestionRequest): ComputerUseArtifactIngestionResult {
       const owners = dedupeOwners(request.owners ?? []);
-      const artifacts = request.inputs.map((input) => {
-        const kind = normalizeInputKind(input);
-        const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
-        const { uri, storageKind, mimeType } = resolveStoredUri(input, kind, title);
+      const callerRoot = toOptionalString(request.callerRoot);
+      const laneId = resolveLaneIdForOwners(owners);
+      // The broker accepts extra roots only from its own lane table. The RPC
+      // supplies `callerRoot` after authenticating it, but callers cannot turn
+      // an arbitrary path into an import root merely by placing it in metadata.
+      const requestImportRoots = laneId ? resolveLaneRoots(new Set([laneId])) : [];
+      // Resolve every input before persisting any of them. `resolveStoredUri`
+      // now throws (missing file, non-importable type, denied source), and a
+      // half-committed batch would leave the agent's retry inserting the
+      // already-stored inputs a second time.
+      const resolved: Array<{
+        input: ComputerUseArtifactInput;
+        kind: ComputerUseArtifactKind;
+        title: string;
+        stored: ResolvedStoredArtifact;
+      }> = [];
+      const stagedFilePaths: string[] = [];
+      try {
+        for (const input of request.inputs) {
+          const kind = normalizeInputKind(input);
+          const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
+          const stored = resolveStoredUri(input, kind, title, callerRoot, requestImportRoots);
+          if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
+          resolved.push({ input, kind, title, stored });
+        }
+      } catch (error) {
+        for (const stagedFilePath of stagedFilePaths) {
+          try {
+            fs.rmSync(stagedFilePath, { force: true });
+          } catch {
+            // Preserve the validation error; cleanup is best-effort.
+          }
+        }
+        throw error;
+      }
+      const artifacts = resolved.map(({ input, kind, title, stored }) => {
+        const { uri, storageKind, mimeType } = stored;
         const metadata = {
           ...(isRecord(input.metadata) ? input.metadata : {}),
           sourcePath: toOptionalString(input.path),
           sourceUri: toOptionalString(input.uri),
           rawType: toOptionalString(input.rawType),
+          ...(callerRoot ? { callerRoot } : {}),
         };
         const record = insertArtifactRecord({
           kind,
@@ -579,6 +1058,7 @@ export function createComputerUseArtifactBrokerService(args: {
           storageKind,
           mimeType,
           metadata,
+          laneId,
         });
         for (const owner of owners) {
           insertLink(record.id, owner);
@@ -604,7 +1084,10 @@ export function createComputerUseArtifactBrokerService(args: {
     },
 
     listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
-      const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
+      // Public callers cap ordinary list responses at 200. Internal proof
+      // maintenance may request up to the broken-record audit ceiling so it
+      // can authorize a bounded batch without one lookup per artifact.
+      const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
       let artifacts: ComputerUseArtifactRecord[] = [];
       const artifactId = toOptionalString(args.artifactId);
       if (artifactId) {
@@ -616,30 +1099,30 @@ export function createComputerUseArtifactBrokerService(args: {
       if (ownerKind && ownerId) {
         artifacts = readArtifactRows(
           `
-            select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
+            select distinct a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
                    a.original_type, a.title, a.description, a.uri, a.storage_kind, a.mime_type,
-                   a.metadata_json, a.created_at
+                   a.metadata_json, a.lane_id, a.created_at
             from computer_use_artifacts a
-            inner join computer_use_artifact_links l
+            left join computer_use_artifact_links l
               on l.artifact_id = a.id
+             and l.project_id = ?
             where a.project_id = ?
-              and l.project_id = ?
-              and l.owner_kind = ?
-              and l.owner_id = ?
+              and (
+                (l.owner_kind = ? and l.owner_id = ?)
+                or (? = 'lane' and a.lane_id = ?)
+              )
               ${args.kind ? "and a.artifact_kind = ?" : ""}
             order by a.created_at desc
             limit ?
           `,
           args.kind
-            ? [projectId, projectId, ownerKind, ownerId, args.kind, limit]
-            : [projectId, projectId, ownerKind, ownerId, limit],
+            ? [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, args.kind, limit]
+            : [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, limit],
         );
       } else {
         artifacts = readArtifactRows(
           `
-            select id, artifact_kind, backend_style, backend_name, source_tool_name,
-                   original_type, title, description, uri, storage_kind, mime_type,
-                   metadata_json, created_at
+            select ${ARTIFACT_SELECT_COLUMNS}
             from computer_use_artifacts
             where project_id = ?
               ${args.kind ? "and artifact_kind = ?" : ""}
@@ -660,24 +1143,138 @@ export function createComputerUseArtifactBrokerService(args: {
       return artifacts.map((artifact) => toArtifactView(artifact, linksByArtifact.get(artifact.id) ?? []));
     },
 
-    routeArtifact(args: ComputerUseArtifactRouteArgs): ComputerUseArtifactView {
-      const artifactId = String(args.artifactId ?? "").trim();
-      if (!artifactId.length) throw new Error("artifactId is required.");
-      const owner = { ...args.owner, id: args.owner.id.trim() };
-      if (!owner.id.length) throw new Error("owner.id is required.");
+
+    deleteArtifacts,
+    listBrokenArtifacts,
+
+    /** Drop every unrenderable record. Files were never there to remove. */
+    pruneBrokenArtifacts(): ComputerUseArtifactDeleteResult {
+      const broken = collectBrokenArtifacts(null);
+      if (!broken.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
+      return deleteArtifacts({ artifactIds: broken.map((entry) => entry.artifactId) });
+    },
+
+    /**
+     * Re-import a broken record's original file when it still exists on disk,
+     * turning a dead row back into a viewable artifact.
+     */
+    recoverArtifact(args: { artifactId: string }): ComputerUseArtifactView {
+      const artifactId = toOptionalString(args?.artifactId);
+      if (!artifactId) throw new Error("artifactId is required.");
       const record = readArtifactById(artifactId);
       if (!record) throw new Error(`Computer-use artifact not found: ${artifactId}`);
-      const existing = getLink(artifactId, owner);
-      if (!existing) {
-        insertLink(artifactId, owner);
-        emit({
-          type: "artifact-linked",
-          artifactId,
-          at: nowIso(),
-          owner,
-        });
+      if (resolveAvailability(record) === "available") {
+        return toArtifactView(record, readLinkRows([artifactId]));
       }
-      return toArtifactView(record, readLinkRows([artifactId]));
+      const source = resolveRecoverableSource(record);
+      if (source.status === "ambiguous") {
+        throw new Error(
+          `The original file for "${record.title}" matches multiple surviving roots and cannot be recovered safely: `
+          + source.paths.join(", "),
+        );
+      }
+      if (source.status === "missing") {
+        throw new Error(
+          `The original file for "${record.title}" no longer exists, so it cannot be recovered. Remove the record instead.`,
+        );
+      }
+      const sourcePath = source.path;
+      const artifactLaneRoots = resolveArtifactLaneRoots(record);
+      if (!isAllowedExternalArtifactSource(sourcePath, [...allowedImportRoots, ...artifactLaneRoots])
+        || isDeniedArtifactSource(sourcePath, deniedImportRoots)) {
+        throw new Error(`Artifact path is outside allowed import roots: ${sourcePath}`);
+      }
+      // Recovery re-imports bytes from a surviving lane worktree, so it is an
+      // import like any other and gets the same file-type gate.
+      if (!isImportableArtifactFile(sourcePath)) {
+        throw new Error(`Artifact file type is not importable as proof: ${sourcePath}`);
+      }
+      const extension = inferArtifactExtension({ path: sourcePath }, record.kind);
+      const targetPath = createComputerUseArtifactPath(projectRoot, record.title, extension);
+      secureCopyFromDescriptor(sourcePath, targetPath);
+      db.run(
+        "update computer_use_artifacts set uri = ?, storage_kind = 'file' where id = ? and project_id = ?",
+        [toProjectArtifactUri(projectRoot, targetPath), artifactId, projectId],
+      );
+      const refreshed = readArtifactById(artifactId);
+      if (!refreshed) throw new Error(`Failed to refresh computer-use artifact: ${artifactId}`);
+      return toArtifactView(refreshed, readLinkRows([artifactId]));
+    },
+
+    /**
+     * Lane cascade. Deleting a lane deletes the captures taken in it — that is
+     * the behaviour users expect from "delete the lane and its stuff".
+     * Artifacts also linked to a chat outside the lane are kept so a shared
+     * capture never disappears from a chat the user did not delete.
+     */
+    deleteArtifactsForLane(args: { laneId: string }): ComputerUseArtifactDeleteResult {
+      const laneId = toOptionalString(args?.laneId);
+      if (!laneId) throw new Error("laneId is required.");
+      const rows = db.all<{ id: string }>(
+        `
+          select a.id
+          from computer_use_artifacts a
+          where a.project_id = ?
+            and (
+              a.lane_id = ?
+              or exists (
+                select 1 from computer_use_artifact_links l
+                where l.artifact_id = a.id
+                  and l.owner_kind = 'lane'
+                  and l.owner_id = ?
+              )
+            )
+            and not exists (
+              select 1
+              from computer_use_artifact_links l2
+              join terminal_sessions s on s.id = l2.owner_id
+              where l2.artifact_id = a.id
+                and l2.owner_kind = 'chat_session'
+                and s.lane_id is not null
+                and s.lane_id <> ?
+            )
+        `,
+        [projectId, laneId, laneId, laneId],
+      );
+      if (!rows.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
+      return deleteArtifacts({ artifactIds: rows.map((row) => row.id) });
+    },
+
+    /** Drop every artifact record for the project (used by "clear local data"). */
+    deleteAllArtifacts(): ComputerUseArtifactDeleteResult {
+      const rows = db.all<{ id: string }>(
+        "select id from computer_use_artifacts where project_id = ?",
+        [projectId],
+      );
+      if (!rows.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
+      return deleteArtifacts({ artifactIds: rows.map((row) => row.id) });
+    },
+
+    /**
+     * Drop records whose stored file lived at or under `removedPath`. Called
+     * after Settings → Storage removes proof files so the rows never outlive
+     * the bytes.
+     */
+    purgeArtifactRecordsUnder(removedPath: string): ComputerUseArtifactDeleteResult {
+      const root = path.resolve(removedPath);
+      const rows = readArtifactRows(
+        `
+          select ${ARTIFACT_SELECT_COLUMNS}
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+        `,
+        [projectId],
+      );
+      const ids = rows
+        .filter((record) => {
+          const filePath = resolveArtifactFilePath(record);
+          if (!filePath) return false;
+          return filePath === root || filePath.startsWith(root + path.sep);
+        })
+        .map((record) => record.id);
+      if (!ids.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
+      return deleteArtifacts({ artifactIds: ids });
     },
 
     updateArtifactReview(args: ComputerUseArtifactReviewArgs): ComputerUseArtifactView {

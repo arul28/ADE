@@ -471,7 +471,11 @@ a lane parented to primary would always show zero behind.
    `database_cleanup` step wraps every cascade delete inside a single
    `begin immediate` / `commit` transaction so a partial failure rolls
    back to a consistent DB state instead of leaving lane rows
-   half-deleted. Generic ADE action calls
+   half-deleted. Before that transaction, ADE collects and deletes proof files
+   attributed by `computer_use_artifacts.lane_id` or a legacy lane owner link.
+   Every file is realpath-confined to `.ade/artifacts`; a capture also owned by
+   a chat in another lane survives, and archive remains non-destructive.
+   Generic ADE action calls
    (`lane.delete` through `ade actions run` / TUI `/ade`) use the same
    teardown path, including lane-environment cleanup and port lease
    release. The ADE Code TUI also surfaces this through a dedicated

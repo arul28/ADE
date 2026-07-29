@@ -570,9 +570,11 @@ import type {
   RunHealthCheckArgs,
   ActivateFallbackArgs,
   DeactivateFallbackArgs,
+  ComputerUseArtifactBrokenRecord,
+  ComputerUseArtifactDeleteArgs,
+  ComputerUseArtifactDeleteResult,
   ComputerUseArtifactListArgs,
   ComputerUseArtifactReviewArgs,
-  ComputerUseArtifactRouteArgs,
   ComputerUseArtifactView,
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
@@ -1788,9 +1790,16 @@ declare global {
         getOwnerSnapshot: (
           args: ComputerUseOwnerSnapshotArgs,
         ) => Promise<ComputerUseOwnerSnapshot>;
-        routeArtifact: (
-          args: ComputerUseArtifactRouteArgs,
-        ) => Promise<ComputerUseArtifactView>;
+        deleteArtifacts: (
+          args: ComputerUseArtifactDeleteArgs,
+        ) => Promise<ComputerUseArtifactDeleteResult>;
+        listBrokenArtifacts: (args?: {
+          limit?: number;
+        }) => Promise<ComputerUseArtifactBrokenRecord[]>;
+        pruneBrokenArtifacts: () => Promise<ComputerUseArtifactDeleteResult>;
+        recoverArtifact: (args: {
+          artifactId: string;
+        }) => Promise<ComputerUseArtifactView>;
         updateArtifactReview: (
           args: ComputerUseArtifactReviewArgs,
         ) => Promise<ComputerUseArtifactView>;

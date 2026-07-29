@@ -538,6 +538,10 @@ struct WorkAdeCardModel: Identifiable, Equatable {
   let progress: WorkAdeCardProgress?
   let navTarget: WorkAdeCardNavTarget?
   let actions: [WorkAdeCardAction]
+  let durationMs: Int?
+  let degradedReason: String?
+  let isStale: Bool?
+  let rowsTruncated: Int?
   /// REQUIRED on the wire; never empty here — the parser substitutes a
   /// generated description when an emitter sends a blank one.
   let fallbackText: String
@@ -556,17 +560,37 @@ struct WorkAdeCardModel: Identifiable, Equatable {
   /// optionals only overwrite when the newer payload actually carries them, so
   /// a terse progress ping cannot erase rows an earlier emit established.
   func merging(_ incoming: WorkAdeCardModel) -> WorkAdeCardModel {
-    WorkAdeCardModel(
+    let incomingProgressTotal = incoming.progress.map {
+      $0.passed + $0.failed + $0.running + $0.queued
+    } ?? 0
+    let existingHasDetail = !metrics.isEmpty
+      || !rows.isEmpty
+      || progress.map { $0.passed + $0.failed + $0.running + $0.queued > 0 } == true
+    let incomingHasDetail = !incoming.metrics.isEmpty
+      || !incoming.rows.isEmpty
+      || incomingProgressTotal > 0
+    let preservesEarlierDetail = existingHasDetail
+      && (!incomingHasDetail || incoming.degradedReason != nil)
+
+    return WorkAdeCardModel(
       id: id,
       variant: incoming.variant.isEmpty ? variant : incoming.variant,
       isTerminal: incoming.isTerminal,
       title: incoming.title.isEmpty ? title : incoming.title,
       subtitle: incoming.subtitle ?? subtitle,
-      metrics: incoming.metrics.isEmpty ? metrics : incoming.metrics,
-      rows: incoming.rows.isEmpty ? rows : incoming.rows,
-      progress: incoming.progress ?? progress,
+      metrics: preservesEarlierDetail && incoming.metrics.isEmpty ? metrics : incoming.metrics,
+      rows: preservesEarlierDetail && incoming.rows.isEmpty ? rows : incoming.rows,
+      progress: preservesEarlierDetail && incomingProgressTotal == 0 ? progress : incoming.progress,
       navTarget: incoming.navTarget ?? navTarget,
       actions: incoming.actions.isEmpty ? actions : incoming.actions,
+      durationMs: incoming.durationMs ?? durationMs,
+      degradedReason: incomingHasDetail ? incoming.degradedReason : incoming.degradedReason ?? degradedReason,
+      isStale: preservesEarlierDetail
+        ? true
+        : incomingHasDetail
+          ? incoming.isStale ?? false
+          : incoming.isStale ?? isStale,
+      rowsTruncated: incoming.rowsTruncated ?? rowsTruncated,
       fallbackText: incoming.fallbackText.isEmpty ? fallbackText : incoming.fallbackText,
       turnId: incoming.turnId ?? turnId,
       timestamp: timestamp

@@ -14,6 +14,9 @@ import type {
   AgentChatSessionSummary,
   AgentChatSteerResult,
   AiSettingsStatus,
+  ComputerUseArtifactView,
+  ComputerUseEventPayload,
+  ComputerUseOwnerSnapshot,
   PrSummary,
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
@@ -585,6 +588,7 @@ function installAdeMocks(options?: {
   const writeClipboardText = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
   const sessionChangeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
+  const computerUseEventListeners = new Set<(event: ComputerUseEventPayload) => void>();
 
   globalThis.window.ade = {
     app: {
@@ -714,7 +718,13 @@ function installAdeMocks(options?: {
     },
     computerUse: {
       getOwnerSnapshot: vi.fn().mockResolvedValue({ artifacts: [] }),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      readArtifactPreview: vi.fn().mockResolvedValue(null),
+      onEvent: vi.fn().mockImplementation((listener: (event: ComputerUseEventPayload) => void) => {
+        computerUseEventListeners.add(listener);
+        return () => {
+          computerUseEventListeners.delete(listener);
+        };
+      }),
     },
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
@@ -811,6 +821,11 @@ function installAdeMocks(options?: {
     },
     emitSessionChanged: (event: TerminalSessionChangedEvent) => {
       for (const listener of sessionChangeListeners) {
+        listener(event);
+      }
+    },
+    emitComputerUseEvent: (event: ComputerUseEventPayload) => {
+      for (const listener of computerUseEventListeners) {
         listener(event);
       }
     },
@@ -1396,6 +1411,76 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
+  });
+
+  it("removes deleted proof from the open drawer when the event no longer has an owner", async () => {
+    const session = buildSession("session-1", { title: "Proof event chat" });
+    const proof: ComputerUseArtifactView = {
+      id: "proof-deleted",
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title: "Proof to delete",
+      description: null,
+      uri: ".ade/artifacts/proof-deleted.png",
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    };
+    const mocks = installAdeMocks({ sessions: [session] });
+    const populatedSnapshot: ComputerUseOwnerSnapshot = {
+        owner: { kind: "chat_session", id: session.sessionId },
+        backendStatus: {
+          backends: [],
+          localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+        },
+        summary: "1 proof item",
+        activeBackend: null,
+        artifacts: [proof],
+        recentArtifacts: [proof],
+        activity: [],
+      };
+    vi.mocked(window.ade.computerUse.getOwnerSnapshot)
+      .mockResolvedValueOnce(populatedSnapshot)
+      .mockResolvedValue({
+        owner: { kind: "chat_session", id: session.sessionId },
+        backendStatus: {
+          backends: [],
+          localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+        },
+        summary: "No proof",
+        activeBackend: null,
+        artifacts: [],
+        recentArtifacts: [],
+        activity: [],
+      });
+    seedDrawerStore();
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
+    expect(await screen.findByText("Proof to delete")).toBeTruthy();
+
+    act(() => {
+      mocks.emitComputerUseEvent({
+        type: "artifact-deleted",
+        artifactId: proof.id,
+        at: "2026-07-28T12:01:00.000Z",
+        owner: null,
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByText("Proof to delete")).toBeNull());
+    expect(await screen.findByText("No proof collected yet")).toBeTruthy();
+    expect(window.ade.computerUse.getOwnerSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("does not reopen chat actions after tasks arrive while the Agents tab is already open", async () => {

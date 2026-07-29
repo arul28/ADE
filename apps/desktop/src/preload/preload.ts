@@ -611,7 +611,9 @@ import type {
   DeactivateFallbackArgs,
   ComputerUseArtifactListArgs,
   ComputerUseArtifactReviewArgs,
-  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactBrokenRecord,
+  ComputerUseArtifactDeleteArgs,
+  ComputerUseArtifactDeleteResult,
   ComputerUseArtifactView,
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
@@ -6612,17 +6614,50 @@ contextBridge.exposeInMainWorld("ade", {
       args: ComputerUseOwnerSnapshotArgs,
     ): Promise<ComputerUseOwnerSnapshot> =>
       computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
-    routeArtifact: async (
-      args: ComputerUseArtifactRouteArgs,
+    deleteArtifacts: async (
+      args: ComputerUseArtifactDeleteArgs,
+    ): Promise<ComputerUseArtifactDeleteResult> =>
+      clearAround(
+        () => computerUseOwnerSnapshotCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "deleteArtifacts",
+            { args },
+            () => ipcRenderer.invoke(IPC.computerUseDeleteArtifacts, args),
+          ),
+      ),
+    listBrokenArtifacts: async (
+      args: { limit?: number } = {},
+    ): Promise<ComputerUseArtifactBrokenRecord[]> =>
+      callProjectRuntimeActionOr(
+        "computer_use_artifacts",
+        "listBrokenArtifacts",
+        { args },
+        () => ipcRenderer.invoke(IPC.computerUseListBrokenArtifacts, args),
+      ),
+    pruneBrokenArtifacts: async (): Promise<ComputerUseArtifactDeleteResult> =>
+      clearAround(
+        () => computerUseOwnerSnapshotCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "pruneBrokenArtifacts",
+            { args: {} },
+            () => ipcRenderer.invoke(IPC.computerUsePruneBrokenArtifacts),
+          ),
+      ),
+    recoverArtifact: async (
+      args: { artifactId: string },
     ): Promise<ComputerUseArtifactView> =>
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
         () =>
           callProjectRuntimeActionOr(
             "computer_use_artifacts",
-            "routeArtifact",
+            "recoverArtifact",
             { args },
-            () => ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+            () => ipcRenderer.invoke(IPC.computerUseRecoverArtifact, args),
           ),
       ),
     updateArtifactReview: async (

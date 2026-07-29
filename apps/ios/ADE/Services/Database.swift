@@ -123,6 +123,7 @@ final class DatabaseService {
     let storageKind: String
     let mimeType: String?
     let metadataJson: String?
+    let laneId: String?
     let createdAt: String
     let ownerKind: String
     let ownerId: String
@@ -2162,7 +2163,7 @@ final class DatabaseService {
 
     let sql = """
       select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
-             a.title, a.description, a.uri, a.storage_kind, a.mime_type, a.metadata_json, a.created_at,
+             a.title, a.description, a.uri, a.storage_kind, a.mime_type, a.metadata_json, a.lane_id, a.created_at,
              l.owner_kind, l.owner_id, l.relation
         from computer_use_artifacts a
         inner join computer_use_artifact_links l on l.artifact_id = a.id
@@ -2200,10 +2201,11 @@ final class DatabaseService {
         storageKind: stringValue(statement, index: 9) ?? "",
         mimeType: stringValue(statement, index: 10),
         metadataJson: stringValue(statement, index: 11),
-        createdAt: stringValue(statement, index: 12) ?? "",
-        ownerKind: stringValue(statement, index: 13) ?? "",
-        ownerId: stringValue(statement, index: 14) ?? "",
-        relation: stringValue(statement, index: 15) ?? "attached_to"
+        laneId: stringValue(statement, index: 12),
+        createdAt: stringValue(statement, index: 13) ?? "",
+        ownerKind: stringValue(statement, index: 14) ?? "",
+        ownerId: stringValue(statement, index: 15) ?? "",
+        relation: stringValue(statement, index: 16) ?? "attached_to"
       )
     }).map { row in
       let reviewMetadata = decodeJson(row.metadataJson, as: ComputerUseArtifactReviewMetadata.self)
@@ -2220,6 +2222,7 @@ final class DatabaseService {
         storageKind: row.storageKind,
         mimeType: row.mimeType,
         metadataJson: row.metadataJson,
+        laneId: row.laneId,
         createdAt: row.createdAt,
         ownerKind: row.ownerKind,
         ownerId: row.ownerId,
@@ -2949,6 +2952,19 @@ final class DatabaseService {
       columnName: "woke_reason",
       definition: "text"
     )
+    // `computer_use_artifacts` is CRR-synced. Desktop captures now stamp their
+    // owning lane, so the phone must know the nullable column before applying
+    // that changeset. Older hosts simply leave it null.
+    try ensureColumn(
+      tableName: "computer_use_artifacts",
+      columnName: "lane_id",
+      definition: "text"
+    )
+    if hasTable(named: "computer_use_artifacts") {
+      try exec(
+        "create index if not exists idx_computer_use_artifacts_lane on computer_use_artifacts(project_id, lane_id)"
+      )
+    }
     try exec("""
       create table if not exists lane_list_snapshots (
         lane_id text primary key,

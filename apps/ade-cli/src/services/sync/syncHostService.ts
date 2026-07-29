@@ -5712,6 +5712,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (/^https?:\/\//i.test(candidate)) {
       throw new Error("Remote artifact URLs are not supported by this sync host.");
     }
+    // Stored URIs use the `ade-artifact://project/<relative>` form the renderer
+    // and the remote-command service both understand. Without stripping the
+    // scheme here the phone resolves a path that starts with "project/" and
+    // every artifact read fails.
+    if (/^ade-artifact:\/\/project(?:\/|$)/i.test(candidate)) {
+      try {
+        candidate = decodeURIComponent(new URL(candidate).pathname.replace(/^\/+/, ""));
+      } catch {
+        throw new Error("Artifact URI is invalid.");
+      }
+    }
     if (/^file:\/\//i.test(candidate)) {
       try {
         candidate = fileURLToPath(candidate);

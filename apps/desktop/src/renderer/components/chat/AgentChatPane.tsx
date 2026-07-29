@@ -189,7 +189,7 @@ import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../wor
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
-import { buildChatAppearanceRootStyle } from "./chatAppearance";
+import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import {
   buildLaneBindingIndex,
@@ -930,9 +930,9 @@ function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
 const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
 const PANE_RESERVE_LEFT_PX = 276; // 16.5rem pane + 12px gutter
 const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
-// The centered chat column's default width (`--chat-column`, 52rem @ 16px root).
-// Used to tell whether a floating pane already fits in the chat's side margin.
-const CHAT_COLUMN_PX = 832;
+// The centered chat column's width. NOT a constant any more: it is the JS half
+// of the `--chat-content-width` token (chatAppearance.ts), so this maths and the
+// CSS that lays the column out can never disagree.
 /**
  * Reserve gutter space for the floating panes — but ONLY when they'd otherwise
  * overlap the centered chat column. When the window is wide enough that a pane
@@ -948,7 +948,7 @@ function computePaneReserve(
 ): { left: string; right: string } {
   if (width <= 0) return { left: "0px", right: "0px" };
   // Free space on each side of the centered column at full width.
-  const naturalSideMargin = Math.max(0, (width - CHAT_COLUMN_PX) / 2);
+  const naturalSideMargin = Math.max(0, (width - resolveChatContentWidthPx(width)) / 2);
   let right = 0;
   if (
     rightOpen
@@ -7397,7 +7397,21 @@ export function AgentChatPane({
     if (!isTileActive) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
-      if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
+      const belongsToSelectedChat = event.owner?.kind === "chat_session"
+        && event.owner.id === selectedSessionId;
+      // Global/CLI deletes can arrive after their owner links are gone, so the
+      // event may not carry an owner. Optimistically remove the matching id
+      // from this drawer, then force an authoritative snapshot refresh.
+      if (event.type === "artifact-deleted" && (event.owner == null || belongsToSelectedChat)) {
+        setComputerUseSnapshot((current) => current
+          ? {
+              ...current,
+              artifacts: current.artifacts.filter((artifact) => artifact.id !== event.artifactId),
+              recentArtifacts: current.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+            }
+          : current);
+        void refreshComputerUseSnapshot(selectedSessionId, { force: true });
+      } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
     });
@@ -12263,7 +12277,7 @@ export function AgentChatPane({
   const SIDE_PANE_WIDTH_PX = 264; // 16.5rem
   const centeredPaneOffsetPx = Math.max(
     12,
-    Math.round(((chatAreaWidth - CHAT_COLUMN_PX) / 2 - SIDE_PANE_WIDTH_PX) / 2),
+    Math.round(((chatAreaWidth - resolveChatContentWidthPx(chatAreaWidth)) / 2 - SIDE_PANE_WIDTH_PX) / 2),
   );
   const rightPaneOffsetPx = paneReserve.right === "0px" ? centeredPaneOffsetPx : 12;
   const leftPaneOffsetPx = paneReserve.left === "0px" ? centeredPaneOffsetPx : 12;

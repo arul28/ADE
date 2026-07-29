@@ -15,7 +15,7 @@ import {
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
-import { adeCardRowKey } from "../../../shared/adeCard";
+import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -1040,6 +1040,61 @@ function resolveAdeCardRowIndex(
   return null;
 }
 
+type AdeCardEvent = Extract<AgentChatEvent, { type: "ade_card" }>;
+
+/**
+ * Merge a repeat `ade_card` emit into the row that is already in the transcript.
+ *
+ * A re-emit is a PATCH, not a replacement — but the emitters do not honour that
+ * on their own: `buildPrCiCard` always writes `rows` and `progress`, so a poll
+ * that came back from a rate-limited GitHub used to overwrite a good card with
+ * `rows: []` and an all-zero progress bar. A card that has already shown real
+ * detail therefore keeps it whenever the incoming payload has none, and is
+ * flagged `stale` so the surface can say "this is the last thing we knew"
+ * rather than silently showing old numbers as current.
+ *
+ * The flag clears itself the moment a healthy detail refresh lands, including
+ * a successful refresh whose rows and totals are genuinely empty.
+ */
+function mergeAdeCardEvent(
+  existing: AdeCardEvent,
+  incoming: AdeCardEvent,
+  cardId: string,
+): AdeCardEvent {
+  const merged: AdeCardEvent = { ...existing, ...incoming, cardId };
+
+  const incomingRows = incoming.rows ?? [];
+  const incomingMetrics = incoming.metrics ?? [];
+  const incomingProgressTotal = adeCardProgressTotal(incoming.progress);
+  const existingHadDetail = (existing.rows?.length ?? 0) > 0
+    || (existing.metrics?.length ?? 0) > 0
+    || adeCardProgressTotal(existing.progress) > 0;
+  const incomingIsDetailRefresh = incoming.rows !== undefined
+    || incoming.metrics !== undefined
+    || incoming.progress !== undefined;
+
+  if (existingHadDetail && incoming.degradedReason) {
+    if (!incomingRows.length && existing.rows?.length) merged.rows = existing.rows;
+    if (!incomingMetrics.length && existing.metrics?.length) merged.metrics = existing.metrics;
+    if (incomingProgressTotal === 0 && existing.progress) merged.progress = existing.progress;
+    if (existing.rowsTruncated != null && incoming.rowsTruncated == null) {
+      merged.rowsTruncated = existing.rowsTruncated;
+    }
+    merged.stale = true;
+    return merged;
+  }
+
+  // Healthy emit: drop every degradation-only field the previous failed fetch
+  // left behind. Full healthy card payloads omit the retry action and reason,
+  // so the initial spread cannot distinguish recovery from a partial patch.
+  if (incomingIsDetailRefresh && !incoming.degradedReason) {
+    merged.stale = incoming.stale ?? false;
+    merged.degradedReason = incoming.degradedReason ?? undefined;
+    merged.actions = incoming.actions ?? [];
+  }
+  return merged;
+}
+
 function removeCollapsedTranscriptRow(
   rows: ChatTranscriptRenderEnvelope[],
   context: CollapseTranscriptContext,
@@ -1874,9 +1929,7 @@ export function appendCollapsedChatTranscriptEvent(
       rows[existingIndex] = {
         key,
         timestamp: envelope.timestamp,
-        // Merge, don't replace: an update that omits `rows`/`metrics` is a
-        // partial patch, not an instruction to blank them.
-        event: { ...existing.event, ...event, cardId },
+        event: mergeAdeCardEvent(existing.event, event, cardId),
       };
       context?.adeCardRowIndexById.set(cardId, existingIndex);
       return;

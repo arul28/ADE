@@ -2222,6 +2222,10 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
   var actions: [AgentChatAdeCardAction]? = nil
   var fallbackText: String? = nil
   var turnId: String? = nil
+  var durationMs: Int? = nil
+  var degradedReason: String? = nil
+  var stale: Bool? = nil
+  var rowsTruncated: Int? = nil
 
   /// Last-resort body for a payload that could not be decoded at all.
   static let empty = AgentChatAdeCardPayload()
@@ -2229,6 +2233,7 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case cardId, variant, state, title, subtitle
     case metrics, rows, progress, navTarget, actions, fallbackText, turnId
+    case durationMs, degradedReason, stale, rowsTruncated
   }
 
   init() {}
@@ -2247,6 +2252,10 @@ struct AgentChatAdeCardPayload: Decodable, Equatable {
     actions = try? container.decodeIfPresent([AgentChatAdeCardAction].self, forKey: .actions)
     fallbackText = try? container.decodeIfPresent(String.self, forKey: .fallbackText)
     turnId = try? container.decodeIfPresent(String.self, forKey: .turnId)
+    durationMs = try? container.decodeIfPresent(Int.self, forKey: .durationMs)
+    degradedReason = try? container.decodeIfPresent(String.self, forKey: .degradedReason)
+    stale = try? container.decodeIfPresent(Bool.self, forKey: .stale)
+    rowsTruncated = try? container.decodeIfPresent(Int.self, forKey: .rowsTruncated)
   }
 }
 
@@ -3533,6 +3542,8 @@ struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
   var storageKind: String
   var mimeType: String?
   var metadataJson: String?
+  /// Optional for compatibility with hosts that predate lane-scoped proof.
+  var laneId: String? = nil
   var createdAt: String
   var ownerKind: String
   var ownerId: String

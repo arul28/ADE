@@ -7832,6 +7832,41 @@ describe("sync host reliability guards", () => {
     }
   });
 
+  it("serves artifacts stored under the ade-artifact scheme the broker writes", async () => {
+    // Stored URIs are `ade-artifact://project/<relative>`. Without stripping
+    // the scheme the phone resolved a path starting with "project/" and every
+    // artifact read failed, even for captures that render fine on desktop.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "computer-use", "shot.png");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-artifact-scheme");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "artifact-scheme",
+        payload: {
+          action: "readArtifact",
+          args: { uri: "ade-artifact://project/.ade/artifacts/computer-use/shot.png" },
+        },
+      }));
+
+      const response = await waitForEnvelope(peer.envelopes, "file_response", "artifact-scheme");
+      expect(response.payload).toMatchObject({ ok: true, action: "readArtifact" });
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("rejects oversized artifact reads with a clear file response", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const artifactPath = path.join(projectRoot, ".ade", "artifacts", "large.bin");

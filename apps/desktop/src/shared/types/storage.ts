@@ -98,7 +98,11 @@ export type StorageCleanupTarget =
   | { kind: "archived_lane_worktree"; laneId: string; path: string }
   | { kind: "stale_tmp_staging"; path: string }
   | { kind: "rebuildable_cache"; path: string }
-  | { kind: "recovery_backup"; path: string };
+  | { kind: "recovery_backup"; path: string }
+  // Screenshots, recordings, and attachments under `.ade/artifacts` or
+  // `.ade/attachments`. Removing these also drops the matching proof records,
+  // so the drawer never lists an item whose bytes are gone.
+  | { kind: "proof_attachments"; path: string };
 
 export type StorageCleanupPreview = {
   // `identity` binds a confirmation to the exact file generation the user

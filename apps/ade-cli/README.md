@@ -444,6 +444,13 @@ ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
+ade proof attach shots/result.png --caption "Checkout complete"
+ade proof rm artifact-id
+ade proof broken --text                              # list missing/unimported proof records
+ade proof recover artifact-id                       # re-import when the original capture still exists
+ade proof prune                                      # preview broken records; does not delete
+ade proof prune --broken                             # delete every broken proof record
+ade proof actions --text                             # full computer_use_artifacts action inventory
 ade ios-sim devices --text
 ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text

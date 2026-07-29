@@ -32,6 +32,8 @@ import {
   Code,
   Paperclip,
   Target,
+  Clock,
+  Cube,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -55,7 +57,7 @@ import type {
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
@@ -134,7 +136,22 @@ import { ContextCompactDivider } from "./ContextCompactDivider";
 import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
-import { ChatProofTimeline } from "./ChatComputerUsePanel";
+import {
+  ChatCardRow,
+  ChatCardSub,
+  ChatCardTitle,
+  ChatProofFilmstrip,
+  formatScheduledRunAt,
+  type ChatCardTone,
+} from "./chatCardPrimitives";
+
+/** True for an absolute POSIX or Windows path, which the project handler cannot serve. */
+function path_isAbsoluteLike(value: string): boolean {
+  return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value);
+}
+
+/** Stable empty array so a proof-free turn never re-renders the divider. */
+const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -235,7 +252,7 @@ function CodexTurnRecoveryCard({
   }, [event.turnId, onRecover, pendingAction, resultLabels, targetSessionId]);
 
   return (
-    <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
+    <div className="w-fit max-w-[var(--chat-content-width,52rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
       <div className="flex items-center gap-2">
         <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
         <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
@@ -328,7 +345,7 @@ function CodexTurnRecoveryReceipt({ event }: { event: CodexTurnRecoveryEvent }) 
       ? "Recovery failed"
       : "Recovering";
   return (
-    <div className={cn("inline-flex max-w-[min(100%,44rem)] items-center gap-2 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", tone)}>
+    <div className={cn("inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", tone)}>
       {event.state === "recovered"
         ? <CheckCircle size={12} weight="duotone" className="shrink-0" />
         : <Warning size={12} weight="duotone" className="shrink-0" />}
@@ -1370,11 +1387,20 @@ function activityBundleDetail(item: ChatActivityBundleItem): string | null {
     const changed = event.items.filter((task) => task.status !== "pending");
     return changed.slice(0, 3).map((task) => `${task.status.replace("_", " ")}: ${task.description}`).join(" · ") || null;
   }
+  // `nextRunAt` deliberately does NOT fall through to here — a raw ISO string
+  // (`2026-07-28T12:17:18.016Z`) is not a brief. It renders formatted in the
+  // row's meta column instead; see `activityBundleWhen`.
   return event.summary?.trim()
     || event.error?.trim()
     || event.cron?.trim()
-    || event.nextRunAt?.trim()
     || null;
+}
+
+/** `runs in 4m · 12:17` for a scheduled row, or null for anything else. */
+function activityBundleWhen(item: ChatActivityBundleItem): string | null {
+  const event = item.event;
+  if (event.type !== "scheduled_work_update") return null;
+  return formatScheduledRunAt(event.nextRunAt);
 }
 
 function activityKindLabel(kind: ReturnType<typeof activityBundleKind>): string {
@@ -1387,19 +1413,20 @@ function activityKindTone(kind: ReturnType<typeof activityBundleKind>): string {
   return "border-amber-300/14 bg-amber-300/[0.055] text-amber-100/72";
 }
 
-function activityStatusIcon(item: ChatActivityBundleItem): React.ReactNode {
+/**
+ * Status → the shared card tone. Replaces a bespoke glyph switch that painted
+ * failures `text-red-300/80` — failures are amber in ADE chat, never red.
+ */
+function activityBundleTone(item: ChatActivityBundleItem): ChatCardTone {
   if (item.event.type === "todo_update") {
     const total = item.event.items.length;
     const completed = item.event.items.filter((task) => task.status === "completed").length;
-    return total > 0 && completed === total
-      ? <CheckCircle size={12} weight="bold" className="text-emerald-300/80" />
-      : <Circle size={10} weight="fill" className="text-sky-300/75" />;
+    return total > 0 && completed === total ? "ok" : "running";
   }
   const status = activityBundleStatus(item);
-  if (status.includes("failed")) return <XCircle size={12} weight="bold" className="text-red-300/80" />;
-  if (status.includes("stopped") || status.includes("cancelled")) return <Warning size={12} weight="fill" className="text-amber-300/80" />;
-  if (status.includes("complete")) return <CheckCircle size={12} weight="bold" className="text-emerald-300/80" />;
-  return <Circle size={10} weight="fill" className="text-sky-300/75" />;
+  if (status.includes("failed") || status.includes("stopped") || status.includes("cancelled")) return "warn";
+  if (status.includes("complete")) return "ok";
+  return "running";
 }
 
 function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: string | null): void {
@@ -1468,32 +1495,37 @@ function ActivityBundleRow({
   const detail = activityBundleDetail(item);
   const title = activityBundleTitle(item);
   const taskId = activityBundleTaskId(item);
+  // Scheduled work reads as "when, then what" — the clock belongs in the meta
+  // column with everything else's timing, and the brief sits under the title.
+  const when = activityBundleWhen(item);
 
   return (
     <button
       type="button"
       className={cn(
-        "group flex w-full min-w-0 items-start gap-2.5 text-left transition-colors",
+        "group block w-full min-w-0 text-left transition-colors",
         standalone
-          ? "rounded-lg border border-white/[0.06] bg-white/[0.028] px-3 py-2.5 shadow-[0_10px_30px_rgba(0,0,0,0.10)] hover:border-white/[0.11] hover:bg-white/[0.04]"
+          ? "rounded-[calc(var(--chat-radius-card)-6px)] bg-white/[0.03] px-3 py-2.5 hover:bg-white/[0.05]"
           : "rounded-md px-1.5 py-1.5 hover:bg-white/[0.035]",
       )}
       onClick={() => openChatInfoFromActivity(sessionId, taskId)}
     >
-      <span className="mt-0.5 shrink-0">
-        {activityStatusIcon(item)}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/76">{title}</span>
+      <ChatCardRow
+        align={detail || when ? "top" : "center"}
+        icon={kind === "schedule" ? Clock : undefined}
+        tone={activityBundleTone(item)}
+        meta={when}
+        action={(
           <span className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*7.5/14)] font-bold uppercase tracking-[0.14em]", activityKindTone(kind))}>
             {activityBundleStatus(item)}
           </span>
-        </span>
+        )}
+      >
+        <ChatCardTitle className="font-medium text-fg/78">{title}</ChatCardTitle>
         {detail ? (
-          <span className="mt-0.5 block truncate text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38">{summarizeInlineText(detail, 160)}</span>
+          <ChatCardSub className="mt-0.5">{summarizeInlineText(detail, 160)}</ChatCardSub>
         ) : null}
-      </span>
+      </ChatCardRow>
     </button>
   );
 }
@@ -3203,7 +3235,7 @@ function QueueRecoveryCard({
 
   if (settled || expired) return null;
   return (
-    <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60">
+    <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60">
       <Warning size={11} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
       <span>
         Cleared {messageCount} queued message{messageCount === 1 ? "" : "s"}.
@@ -3230,6 +3262,45 @@ function QueueRecoveryCard({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Dispatcher for an `ade_card`'s non-`open` actions.
+ *
+ * `<AdeCard>` filters out every action it cannot route, so before this existed
+ * the schema's action row was unreachable: no `onAction` prop meant no buttons,
+ * whatever the emitter sent. Two behaviours:
+ *
+ * - `retry` / `refresh` re-enter the card's own surface when it has a nav
+ *   target. That is a real retry, not a no-op: the PR checks tab refetches on
+ *   mount, which is exactly what a rate-limited CI card needs.
+ * - anything else is broadcast as `ade:chat:card-action` for a host to pick up,
+ *   the same extension shape as `ade:chat:open-info`.
+ */
+function dispatchAdeCardAction(
+  card: Extract<AgentChatEvent, { type: "ade_card" }>,
+  actionId: string,
+  sessionId: string | null,
+): void {
+  if ((actionId === "retry" || actionId === "refresh") && card.navTarget) {
+    navigateToAppTarget(card.navTarget);
+    return;
+  }
+  try {
+    window.dispatchEvent(
+      new CustomEvent("ade:chat:card-action", {
+        detail: {
+          actionId,
+          cardId: card.cardId,
+          variant: card.variant,
+          ...(sessionId ? { sessionId } : {}),
+          ...(card.navTarget ? { navTarget: card.navTarget } : {}),
+        },
+      }),
+    );
+  } catch {
+    /* no-op */
+  }
 }
 
 function renderEvent(
@@ -3304,7 +3375,7 @@ function renderEvent(
         <button
           type="button"
           onClick={() => navigateToSpawnedChat(event.childSessionId, options?.laneId ?? null)}
-          className="mx-auto inline-flex max-w-[min(100%,70ch)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
+          className="mx-auto inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
           title="Open the spawned chat"
         >
           <span className="min-w-0 truncate">{summary || `"${event.childTitle}" finished`}</span>
@@ -3781,7 +3852,7 @@ function renderEvent(
   if (event.type === "codex_safety_buffering") {
     const reasons = event.state.reasons?.filter(Boolean) ?? [];
     return (
-      <div className="inline-flex max-w-[min(100%,46rem)] items-center gap-2 rounded-lg border border-sky-300/14 bg-sky-500/[0.05] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-sky-100/78">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-sky-300/14 bg-sky-500/[0.05] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-sky-100/78">
         <ShieldCheck size={12} weight="duotone" className="shrink-0 text-sky-200/70" />
         <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-sky-200/55">safety</span>
         <span className="min-w-0 truncate">
@@ -3810,7 +3881,7 @@ function renderEvent(
     const duration = formatCompactDuration(event.durationMs);
     const isRunning = event.status === "running";
     return (
-      <div className="inline-flex max-w-[min(100%,34rem)] items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
         {isRunning ? <ChatStatusGlyph status="working" size={12} /> : <Circle size={10} weight="fill" className="shrink-0 text-fg/32" />}
         <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-fg/38">wait</span>
         <span className="min-w-0 truncate">{duration ? `Sleeping ${duration}` : "Sleeping"}</span>
@@ -3820,7 +3891,7 @@ function renderEvent(
 
   if (event.type === "codex_thread_deleted") {
     return (
-      <div className="inline-flex max-w-[min(100%,44rem)] items-center gap-2 rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Warning size={12} weight="duotone" className="shrink-0 text-amber-200/75" />
         <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">thread</span>
         <span className="min-w-0 truncate">Deleted upstream. Next message starts fresh.</span>
@@ -3848,7 +3919,7 @@ function renderEvent(
     const percent = Math.max(0, Math.min(100, usage.percentage));
     const categories = usage.categories.length ? usage.categories : [];
     return (
-      <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78">
+      <div className="w-fit max-w-[var(--chat-content-width,52rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78">
         <div className="flex flex-wrap items-center gap-2">
           <Brain size={13} weight="regular" className="text-cyan-200/70" />
           <span className="font-medium text-cyan-50/90">Context usage</span>
@@ -3901,7 +3972,7 @@ function renderEvent(
         ? `${action}: ${objective}`
         : action;
     return (
-      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
         <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
         <span className="min-w-0 truncate">{message}</span>
@@ -3919,7 +3990,7 @@ function renderEvent(
             : `Goal check ${event.goal.iterations}`)
         : `Goal set: ${event.goal.condition.trim()}`;
     return (
-      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
         <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
         <span className="min-w-0 truncate">{message}</span>
@@ -3939,7 +4010,7 @@ function renderEvent(
     if (totalCount === 0) return null;
     const onCancel = options?.onCancelQueuedMessage;
     return (
-      <div className="inline-flex max-w-[min(100%,70ch)] flex-col gap-1 rounded-lg border border-amber-400/16 bg-amber-500/[0.05] px-2.5 py-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/80">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] flex-col gap-1 rounded-lg border border-amber-400/16 bg-amber-500/[0.05] px-2.5 py-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/80">
         <div className="flex items-center gap-2">
           <Warning size={11} weight="bold" className="shrink-0 text-amber-300/80" aria-hidden />
           <span className="min-w-0">
@@ -3985,7 +4056,7 @@ function renderEvent(
     if (event.status !== "cancelled" && event.status !== "discarded") return null;
     const label = event.status === "discarded" ? "Queued message discarded" : "Queued message cancelled";
     return (
-      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
         <Warning size={11} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
         <span className="min-w-0 truncate">{event.preview ? `${label}: ${event.preview}` : label}</span>
       </div>
@@ -4138,7 +4209,7 @@ function renderEvent(
           : null;
       return (
         <div className={cn(
-          "inline-flex max-w-[min(100%,70ch)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+          "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
           style.border,
           style.bg,
           style.text,
@@ -4188,7 +4259,7 @@ function renderEvent(
     const isLive = Boolean(options?.turnActive);
     return (
       <motion.div
-        className="w-fit max-w-[70ch]"
+        className="w-fit max-w-[var(--chat-content-width,52rem)]"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
@@ -4529,7 +4600,16 @@ function renderEvent(
 
   /* ── ade_card (generic ADE-emitted card; unknown variants degrade in-place) ── */
   if (event.type === "ade_card") {
-    return <AdeCard card={event} />;
+    // Without a dispatcher the card filters out every non-`open` action, so the
+    // schema's action row could never be used. `retry`/`refresh` re-enter the
+    // card's own surface (which refetches on mount); anything else is broadcast
+    // for a host to pick up, mirroring `ade:chat:open-info`.
+    return (
+      <AdeCard
+        card={event}
+        onAction={(actionId) => dispatchAdeCardAction(event, actionId, options?.sessionId ?? null)}
+      />
+    );
   }
 
   /* ── Cloud artifact (auto-pulled into lane) ── */
@@ -4810,16 +4890,23 @@ function formatTurnDuration(durationMs: number): string {
 }
 
 /**
- * End-of-turn divider — a hairline with a plain-text cutout. Shows the wall time
- * (or the interrupted/failed status + model) plus how long the turn worked. It
- * is driven by the universal `done` event, so it renders identically for every
- * runtime (Codex / Claude / Cursor / Droid / OpenCode).
+ * End-of-turn divider — a hairline with a mono cutout reading
+ * `10:04 · ran 3m 32s` (or the interrupted/failed status + model). Driven by the
+ * universal `done` event, so it renders identically for every runtime (Codex /
+ * Claude / Cursor / Droid / OpenCode).
+ *
+ * When the turn captured proof, a small `N proof` chip sits on the rule and
+ * opens the drawer. The artifacts themselves render inline where they were
+ * captured — the chip is a way back, not a second copy.
  */
 function DoneTurnDivider({
   event,
   timestamp,
   durationMs,
   toolEntries,
+  proofArtifacts,
+  resolveProofThumbnailSrc,
+  onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
   onRevealChatTerminal,
@@ -4829,28 +4916,35 @@ function DoneTurnDivider({
   timestamp: string;
   durationMs: number | null;
   toolEntries: ChatWorkLogEntry[];
+  proofArtifacts?: ComputerUseArtifactView[];
+  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
+  onOpenProofDrawer?: () => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   sessionId?: string | null;
 }) {
   const [activityOpen, setActivityOpen] = useState(false);
+  // Proof captured during this turn renders inline, at the moment it happened,
+  // and starts collapsed so a long capture run never buries the reply.
+  const [proofOpen, setProofOpen] = useState(false);
+  const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   const ranFor = durationMs !== null && durationMs > 1500
-    ? `Ran for ${formatTurnDuration(durationMs)}`
+    ? `ran ${formatTurnDuration(durationMs)}`
     : null;
   const hasToolActivity = toolEntries.length > 0;
   const content = (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
+        "inline-flex shrink-0 items-center gap-2 px-1 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)]",
         completed ? "text-fg/40" : doneStatusToneClass(event.status),
       )}
     >
         {!completed && modelLabel ? (
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1.5 font-sans">
             <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
             <span className="font-medium">{modelLabel}</span>
           </span>
@@ -4858,12 +4952,12 @@ function DoneTurnDivider({
         {completed ? (
           <span>{formatTime(timestamp)}</span>
         ) : (
-          <span className="font-medium uppercase tracking-wide">{event.status}</span>
+          <span className="font-sans font-medium uppercase tracking-wide">{event.status}</span>
         )}
         {reasonLabel ? (
           <>
             <span className="opacity-40">·</span>
-            <span className="normal-case">{reasonLabel}</span>
+            <span className="font-sans normal-case">{reasonLabel}</span>
           </>
         ) : null}
         {ranFor ? (
@@ -4894,6 +4988,18 @@ function DoneTurnDivider({
             {content}
           </button>
         ) : content}
+        {turnProof.length > 0 ? (
+          <button
+            type="button"
+            aria-expanded={proofOpen}
+            onClick={() => setProofOpen((open) => !open)}
+            title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
+            className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
+          >
+            <Cube size={10} weight="bold" aria-hidden />
+            {turnProof.length} proof
+          </button>
+        ) : null}
         <span className="h-px flex-1 bg-white/[0.06]" />
       </div>
       <AnimatePresence initial={false}>
@@ -4903,7 +5009,9 @@ function DoneTurnDivider({
             animate={{ opacity: 1, height: "auto", y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            className="mx-auto mt-2 w-full max-w-[min(100%,70ch)] overflow-hidden border-l border-white/[0.08] pl-4"
+            /* Left-aligned like every other transcript row — this used to be the
+               only `mx-auto`-centred block in the thread. */
+            className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-white/[0.08] pl-4"
           >
             <ChatToolActivityDetails
               entries={toolEntries}
@@ -4915,6 +5023,16 @@ function DoneTurnDivider({
           </motion.div>
         ) : null}
       </AnimatePresence>
+      {turnProof.length > 0 && proofOpen ? (
+        <div className="mt-2 w-full max-w-[var(--chat-content-width,52rem)]">
+          <ChatProofFilmstrip
+            artifacts={turnProof}
+            resolveThumbnailSrc={resolveProofThumbnailSrc}
+            onOpenAll={onOpenProofDrawer}
+            onOpenArtifact={onOpenProofDrawer}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5097,6 +5215,12 @@ type EventRowProps = {
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   settledQueueRecoveryIds?: Set<string>;
+  /** Proof captured during this turn — surfaced as a chip on the turn rule. */
+  turnProof?: ComputerUseArtifactView[];
+  /** Proof captured after this row but outside a completed turn window. */
+  inlineProof?: ComputerUseArtifactView[];
+  resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
+  onOpenProofDrawer?: () => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -5143,6 +5267,10 @@ const EventRow = React.memo(function EventRow({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
+  turnProof,
+  inlineProof,
+  resolveProofThumbnailSrc,
+  onOpenProofDrawer,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -5182,7 +5310,7 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {envelope.event.type === "work_log_group"
         ? (
-          <div className="w-fit min-w-0 max-w-[min(100%,70ch)] overflow-hidden">
+          <div className="w-fit min-w-0 max-w-[var(--chat-content-width,52rem)] overflow-hidden">
             <ChatWorkLogBlock
               entries={envelope.event.entries}
               summary={envelope.event.summary}
@@ -5238,10 +5366,23 @@ const EventRow = React.memo(function EventRow({
           timestamp={envelope.timestamp}
           durationMs={turnEndDurationMs ?? null}
           toolEntries={turnToolEntries}
+          proofArtifacts={turnProof}
+          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+          onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
+        />
+      ) : null}
+      {inlineProof?.length ? (
+        <ChatProofFilmstrip
+          artifacts={inlineProof}
+          title="Proof added"
+          defaultOpen={false}
+          resolveThumbnailSrc={resolveProofThumbnailSrc}
+          onOpenAll={onOpenProofDrawer}
+          onOpenArtifact={onOpenProofDrawer}
         />
       ) : null}
     </div>
@@ -6026,6 +6167,113 @@ function AgentChatMessageListMain({
     return map;
   }, [allGroupedRows]);
 
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row.
+   *
+   * Proof itself renders inline where it was captured (an `ade_card` row), so
+   * this is only the turn summary's "N proof" chip — a way back to the drawer
+   * from the turn that produced the capture, not a second copy of the artifacts.
+   * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
+   */
+  /**
+   * Thumbnail source for inline proof. The stored `uri` is project-relative
+   * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
+   * exactly that against the active project root — so a local project gets real
+   * previews synchronously, with no per-tile IPC. A remote project has no such
+   * handler, so tiles fall back to their kind label and the drawer (which reads
+   * bytes over the runtime) stays the way to view them.
+   */
+  const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
+    if (!allowLocalProofArtifactProtocol) return null;
+    const uri = artifact.uri?.trim();
+    if (!uri) return null;
+    if (/^ade-artifact:\/\//i.test(uri)) return uri;
+    if (/^https?:\/\//i.test(uri) || path_isAbsoluteLike(uri)) return null;
+    return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
+  }, [allowLocalProofArtifactProtocol]);
+
+  const turnProofTimeline = useMemo(() => {
+    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
+    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
+    if (!proofArtifacts.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const stamped = proofArtifacts
+      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    if (!stamped.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
+      const at = Date.parse(env.timestamp);
+      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(loadedTranscriptStart)) {
+      return {
+        byDoneRowKey,
+        inlineByRowKey,
+        // With no loaded rows, an older page means this is not the transcript
+        // boundary. Do not pull unknown historic proof into the visible tail.
+        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
+      };
+    }
+    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
+    const assignedIds = new Set<string>();
+    let turnStartMs: number | null = null;
+    for (const env of allGroupedRows) {
+      const rowMs = Date.parse(env.timestamp);
+      if (!Number.isFinite(rowMs)) continue;
+      if (
+        turnStartMs == null
+        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
+      ) {
+        turnStartMs = rowMs;
+      }
+      if (env.event.type !== "done") continue;
+      const endMs = rowMs;
+      const startMs = turnStartMs ?? endMs;
+      const captured = visibleStamped
+        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
+        .map((entry) => entry.artifact);
+      if (captured.length > 0) {
+        byDoneRowKey.set(env.key, captured);
+        for (const artifact of captured) assignedIds.add(artifact.id);
+      }
+      turnStartMs = null;
+    }
+
+    const visibleRows = groupedRows
+      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    const unanchored: ComputerUseArtifactView[] = [];
+    for (const entry of visibleStamped) {
+      if (assignedIds.has(entry.artifact.id)) continue;
+      let anchorKey: string | null = null;
+      for (const row of visibleRows) {
+        if (row.at > entry.at) break;
+        anchorKey = row.row.key;
+      }
+      if (!anchorKey) {
+        unanchored.push(entry.artifact);
+        continue;
+      }
+      const existing = inlineByRowKey.get(anchorKey) ?? [];
+      existing.push(entry.artifact);
+      inlineByRowKey.set(anchorKey, existing);
+    }
+
+    return {
+      byDoneRowKey,
+      inlineByRowKey,
+      unanchored,
+    };
+  }, [allGroupedRows, groupedRows, hasOlderHistory, proofArtifacts]);
+  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
+  const inlineProofByRowKey = turnProofTimeline.inlineByRowKey;
+  const unanchoredProofArtifacts = turnProofTimeline.unanchored;
+
   const handleReviewChanges = useCallback(() => {
     if (!turnSummary?.changedFileCount) return;
     const state = currentLaneId ? { laneId: currentLaneId } : undefined;
@@ -6756,6 +7004,10 @@ function AgentChatMessageListMain({
     const turnToolEntries = envelope.event.type === "done"
       ? (transcriptToolActivity.byDoneRowKey.get(envelope.key) ?? [])
       : undefined;
+    const turnProof = envelope.event.type === "done"
+      ? turnProofByRowKey.get(envelope.key)
+      : undefined;
+    const inlineProof = inlineProofByRowKey.get(envelope.key);
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
@@ -6779,6 +7031,10 @@ function AgentChatMessageListMain({
           turnModel={turnModel}
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
+          turnProof={turnProof}
+          inlineProof={inlineProof}
+          resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+          onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
           onRecoverContinuity={onRecoverContinuity}
@@ -6829,6 +7085,10 @@ function AgentChatMessageListMain({
         turnModel={turnModel}
         turnEndDurationMs={turnEndDurationMs}
         turnToolEntries={turnToolEntries}
+        turnProof={turnProof}
+        inlineProof={inlineProof}
+        resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+        onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
         onRecoverContinuity={onRecoverContinuity}
@@ -6867,7 +7127,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -6885,7 +7145,7 @@ function AgentChatMessageListMain({
 
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
-      className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
+      className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
@@ -6909,6 +7169,18 @@ function AgentChatMessageListMain({
   // End-of-turn dividers now render inline at each `done` row (DoneTurnDivider),
   // so there is no separate bottom divider.
   const turnDivider = null;
+  const trailingProof = unanchoredProofArtifacts.length > 0 ? (
+    <div className="w-full max-w-[var(--chat-content-width,52rem)]">
+      <ChatProofFilmstrip
+        artifacts={unanchoredProofArtifacts}
+        title="Proof added"
+        defaultOpen={false}
+        resolveThumbnailSrc={resolveProofThumbnailSrc}
+        onOpenAll={onOpenProofDrawer}
+        onOpenArtifact={onOpenProofDrawer}
+      />
+    </div>
+  ) : null;
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
@@ -6979,7 +7251,9 @@ function AgentChatMessageListMain({
               ) : null}
             </div>
           ) : null}
-          {rows.length === 0 && !streamingIndicator && proofArtifacts.length === 0 ? (
+          {/* Proof with no following turn completion is a chronological tail
+              row, not the old permanently pinned footer. */}
+          {rows.length === 0 && !streamingIndicator && !trailingProof ? (
             null
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
@@ -6995,25 +7269,17 @@ function AgentChatMessageListMain({
                 {/* Bottom spacer fills remaining scroll area */}
                 <div style={{ height: bottomSpacerHeight }} aria-hidden />
               </div>
+              {trailingProof}
               {streamingIndicator}
               {turnDivider}
-              <ChatProofTimeline
-                artifacts={proofArtifacts}
-                onOpenDrawer={onOpenProofDrawer}
-                allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-              />
             </div>
           ) : (
             /* ── Non-virtualized path: render all rows (small conversation) ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
+              {trailingProof}
               {streamingIndicator}
               {turnDivider}
-              <ChatProofTimeline
-                artifacts={proofArtifacts}
-                onOpenDrawer={onOpenProofDrawer}
-                allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
-              />
             </div>
           )}
         </div>
