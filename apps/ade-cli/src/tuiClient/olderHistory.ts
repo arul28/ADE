@@ -1,5 +1,6 @@
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import {
+  captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot,
   orderAgentChatEventsChronologically,
 } from "../../../desktop/src/shared/chatHistoryMerge";
@@ -164,10 +165,14 @@ export function mergeHydratedTuiHistory(
   existing: readonly AgentChatEventEnvelope[],
   pending: readonly AgentChatEventEnvelope[],
 ): AgentChatEventEnvelope[] {
+  const arrivalWatermark = captureAgentChatHistoryArrivalWatermark(
+    existing,
+    tuiEventDedupKey,
+  );
   const merged = mergeAgentChatHistorySnapshot(
     [...snapshotTail],
     [...existing, ...pending],
-    { identityKey: tuiEventDedupKey },
+    { arrivalWatermark, identityKey: tuiEventDedupKey },
   );
   return dedupeTuiEvents(
     orderAgentChatEventsChronologically(merged),

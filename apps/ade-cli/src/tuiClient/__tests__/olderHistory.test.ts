@@ -271,6 +271,34 @@ describe("mergeHydratedTuiHistory", () => {
     expect(merged).toEqual([older, originalPrompt]);
   });
 
+  it("preserves delayed pending output that sorts inside the refreshed snapshot", () => {
+    const prompt = envelope(10, {
+      timestamp: "2026-01-01T12:10:00.000Z",
+      event: { type: "user_message", text: "ship it", turnId: "turn-1", messageId: "message-1" },
+    });
+    const done = envelope(12, {
+      timestamp: "2026-01-01T12:12:00.000Z",
+      event: { type: "done", turnId: "turn-1", status: "completed" },
+    });
+    const staleReplay = envelope(9, {
+      timestamp: "2026-01-01T12:09:00.000Z",
+      event: { type: "text", text: "stale replay" },
+    });
+    const delayedPending = envelope(11, {
+      timestamp: "2026-01-01T12:11:00.000Z",
+      event: { type: "text", text: "delayed pending output" },
+    });
+
+    const merged = mergeHydratedTuiHistory(
+      [{ ...prompt }, { ...done }],
+      [prompt, done, staleReplay],
+      [delayedPending],
+    );
+
+    expect(merged).toEqual([prompt, delayedPending, done]);
+    expect(merged[1]).toBe(delayedPending);
+  });
+
   it("caps a large hydrated merge while preserving the chronological newest tail", () => {
     const existingCount = TUI_LOADED_EVENT_CAP + 25;
     const existing = Array.from({ length: existingCount }, (_, index) => {
