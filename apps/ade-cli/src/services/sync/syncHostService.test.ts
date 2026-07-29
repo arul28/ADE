@@ -74,7 +74,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import {
@@ -293,6 +293,15 @@ describe("buildSyncHostHelloOkPayload", () => {
     };
 
     expect(buildSyncHostHelloOkPayload({ ...base, peer }).features.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("chunkedEnvelopes");
+    expect(buildSyncHostHelloOkPayload({
+      ...base,
+      peer,
+      chunkedEnvelopes: true,
+    }).features.chunkedEnvelopes).toEqual({
+      enabled: true,
+      maxFrameBytes: DEFAULT_SYNC_MAX_FRAME_BYTES,
+    });
     expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("compactInvalidationV1");
     expect(buildSyncHostHelloOkPayload({
       ...base,

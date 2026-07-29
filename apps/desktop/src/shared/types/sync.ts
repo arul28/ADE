@@ -124,6 +124,7 @@ export const SYNC_APPLICATION_COMPRESSION_CODECS = ["deflate"] as const;
 export type SyncApplicationCompressionCodec =
   (typeof SYNC_APPLICATION_COMPRESSION_CODECS)[number];
 export const SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES = 512;
+export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
@@ -524,6 +525,14 @@ export type SyncFeatureFlags = {
   };
   changesetAck: {
     enabled: boolean;
+  };
+  /**
+   * Bidirectional oversized-envelope framing. The host returns this only to a
+   * peer that declared the matching hello capability.
+   */
+  chunkedEnvelopes?: {
+    enabled: true;
+    maxFrameBytes: number;
   };
   /**
    * Reliable terminal input delivery. When enabled, clients may attach an

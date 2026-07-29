@@ -1,5 +1,5 @@
 import { deflateSync, gzipSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BACKPRESSURE_POLL_MS,
   createSyncEnvelopeChunkAssembler,
@@ -163,6 +163,26 @@ describe("createSyncEnvelopeChunkAssembler", () => {
     expect(assembler.add({ chunkId: "hb", index: 0, total: 2, part: raw.subarray(0, half).toString("base64") })).toBeNull();
     const result = assembler.add({ chunkId: "hb", index: 1, total: 2, part: raw.subarray(half).toString("base64") });
     expect(result).toBe(encoded);
+  });
+
+  it("expires an incomplete chunk set after 30 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const assembler = createSyncEnvelopeChunkAssembler();
+      expect(assembler.add({
+        chunkId: "timed-out",
+        index: 0,
+        total: 2,
+        part: Buffer.from("first").toString("base64"),
+      })).toBeNull();
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(29_999);
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(assembler.pendingCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

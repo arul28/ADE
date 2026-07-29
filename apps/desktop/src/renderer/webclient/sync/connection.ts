@@ -19,6 +19,7 @@ import type {
 } from "../../../shared/types/sync";
 import {
   SYNC_APPLICATION_COMPRESSION_CODECS,
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -36,10 +37,12 @@ import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof, signRelayReauthorizationProof } from "./dpop";
 import { randomHex } from "./ids";
 import {
+  createEnvelopeChunkAssembler,
   createProjectCatalogChunkAssembler,
   decodeEnvelopeText,
   encodeEnvelopeText,
-  encodeEnvelopeTextWithCompression,
+  encodeEnvelopeFrames,
+  parseEnvelopeChunkPayload,
   type EncodeEnvelopeInput,
 } from "./wireProtocol";
 
@@ -297,6 +300,7 @@ export class SyncConnection {
   private relayLastRefreshStartedAtMs: number | null = null;
   private relayAuthorizationTerminalError: string | null = null;
   private outboundSendQueue: Promise<void> = Promise.resolve();
+  private readonly envelopeChunks = createEnvelopeChunkAssembler();
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
     envelope: new Set(),
@@ -424,15 +428,21 @@ export class SyncConnection {
           ),
         }
       : null;
-    if (!negotiated) {
+    const maxFrameBytes = this.latestHello?.features.chunkedEnvelopes?.enabled === true
+      ? Math.max(1_025, Math.floor(this.latestHello.features.chunkedEnvelopes.maxFrameBytes))
+      : null;
+    if (!negotiated && !maxFrameBytes) {
       socket.send(encodeEnvelopeText(input));
       return;
     }
     this.outboundSendQueue = this.outboundSendQueue
       .then(async () => {
-        const text = await encodeEnvelopeTextWithCompression(input, negotiated);
+        const frames = await encodeEnvelopeFrames(input, {
+          compression: negotiated,
+          maxFrameBytes,
+        });
         if (!this.isCurrentSocket(socket, generation) || socket.readyState !== SOCKET_OPEN) return;
-        socket.send(text);
+        for (const frame of frames) socket.send(frame);
       })
       .catch((error) => {
         if (!this.isCurrentSocket(socket, generation)) return;
@@ -468,6 +478,7 @@ export class SyncConnection {
     }
     this.ws = null;
     this.latestHello = null;
+    this.envelopeChunks.reset();
     this.setStatus({
       state: "disconnected",
       endpoint: null,
@@ -755,11 +766,13 @@ export class SyncConnection {
                   capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY
                   && capability !== SYNC_INVALIDATION_ONLY_V1_CAPABILITY
                   && capability !== SYNC_COMPACT_INVALIDATION_V1_CAPABILITY
+                  && capability !== SYNC_CHUNKED_ENVELOPES_CAPABILITY
                 ),
               ),
               SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
               SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
               SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+              SYNC_CHUNKED_ENVELOPES_CAPABILITY,
             ],
           },
           compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
@@ -925,6 +938,7 @@ export class SyncConnection {
           SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
           SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
           SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          SYNC_CHUNKED_ENVELOPES_CAPABILITY,
         ],
       },
       compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
@@ -955,9 +969,20 @@ export class SyncConnection {
       onHelloError?: (payload: SyncHelloErrorPayload) => void;
     } = {},
   ): Promise<void> {
-    const envelope = await decodeEnvelopeText(event.data);
+    let envelope = await decodeEnvelopeText(event.data);
     if (!this.isCurrentSocket(socket, generation)) return;
     this.setStatus({ lastSeenAt: nowIso() });
+    if (envelope.type === "envelope_chunk") {
+      const chunk = parseEnvelopeChunkPayload(envelope.payload);
+      if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+      const reassembled = this.envelopeChunks.add(chunk);
+      if (!reassembled) return;
+      envelope = await decodeEnvelopeText(reassembled);
+      if (envelope.type === "envelope_chunk") {
+        throw new Error("Nested envelope_chunk frames are not allowed.");
+      }
+      if (!this.isCurrentSocket(socket, generation)) return;
+    }
     if (envelope.type === "hello_ok") {
       callbacks.onHelloOk?.(envelope.payload as SyncHelloOkPayload);
     } else if (envelope.type === "hello_error") {

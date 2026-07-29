@@ -187,7 +187,22 @@ import {
   createMachineIdentitySigningStore,
   type MachineIdentitySigningStore,
 } from "./machineIdentitySigningStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, SYNC_HOST_MAX_PORT, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import {
+  createSyncEnvelopeChunkAssembler,
+  DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+  DEFAULT_SYNC_HOST_PORT,
+  DEFAULT_SYNC_MAX_FRAME_BYTES,
+  SYNC_HOST_MAX_PORT,
+  encodeSyncEnvelope,
+  encodeSyncEnvelopeFrames,
+  mapPlatform,
+  parseSyncEnvelope,
+  parseSyncEnvelopeChunkPayload,
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
+  wsDataToText,
+  type ParsedSyncEnvelope,
+} from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
@@ -584,6 +599,7 @@ type PeerState = {
   lifecycleGeneration: number;
   metadata: SyncPeerMetadata | null;
   negotiatedCompression: SyncApplicationCompressionCodec | null;
+  envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
   authKind: SyncHostAuthKind;
@@ -1262,6 +1278,7 @@ export function buildSyncHostHelloOkPayload(args: {
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   compression?: SyncApplicationCompressionCodec | null;
+  chunkedEnvelopes?: boolean;
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
@@ -1356,6 +1373,14 @@ export function buildSyncHostHelloOkPayload(args: {
       changesetAck: {
         enabled: true,
       },
+      ...(args.chunkedEnvelopes
+        ? {
+            chunkedEnvelopes: {
+              enabled: true as const,
+              maxFrameBytes: DEFAULT_SYNC_MAX_FRAME_BYTES,
+            },
+          }
+        : {}),
       ...(args.terminalInputAckEnabled
         ? {
             terminalInputAck: {
@@ -3214,6 +3239,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lifecycleGeneration: 0,
       metadata: null,
       negotiatedCompression: null,
+      envelopeChunks: createSyncEnvelopeChunkAssembler(),
       authenticated: false,
       authTimeout: null,
       authKind: null,
@@ -3284,6 +3310,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let envelope: ParsedSyncEnvelope;
       try {
         envelope = parseSyncEnvelope(wsDataToText(raw));
+        if (
+          envelope.type === "envelope_chunk"
+          && peer.authenticated
+          && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+        ) {
+          const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
+          if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+          const reassembled = peer.envelopeChunks.add(chunk);
+          if (!reassembled) return;
+          envelope = parseSyncEnvelope(reassembled);
+          if (envelope.type === "envelope_chunk") {
+            throw new Error("Nested envelope_chunk frames are not allowed.");
+          }
+        }
       } catch (error) {
         args.logger.warn("sync_host.message_parse_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -3321,6 +3361,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.lifecycleGeneration += 1;
       abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
+      peer.envelopeChunks.reset();
       clearPeerAuthTimeout(peer);
       releaseConnectionAttemptWinner(peer);
       peer.relayAuthorization?.dispose();
@@ -7426,6 +7467,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         heartbeatIntervalMs,
         pollIntervalMs,
         compression: negotiatedCompression,
+        chunkedEnvelopes: hello.peer.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true,
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
@@ -8609,6 +8651,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const relayAuthorizationSnapshot = peer.relayAuthorization?.snapshot() ?? null;
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
+          peer.envelopeChunks.reset();
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");

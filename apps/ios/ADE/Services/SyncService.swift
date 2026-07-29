@@ -1569,6 +1569,8 @@ private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
 private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
 private let syncApplicationCompressionCodecs = ["deflate"]
 private let syncApplicationCompressionThresholdBytes = 512
+private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
+private let syncDefaultMaxFrameBytes = 720 * 1024
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -1638,6 +1640,64 @@ func syncEncodeEnvelopeText(
     )
   }
   return text
+}
+
+func syncEncodeEnvelopeFrames(
+  type: String,
+  requestId: String?,
+  projectId: String?,
+  payload: Any,
+  compressionCodec: String?,
+  compressionThresholdBytes: Int,
+  chunkedEnvelopes: Bool,
+  maxFrameBytes: Int
+) throws -> [String] {
+  let text = try syncEncodeEnvelopeText(
+    type: type,
+    requestId: requestId,
+    projectId: projectId,
+    payload: payload,
+    compressionCodec: compressionCodec,
+    compressionThresholdBytes: compressionThresholdBytes
+  )
+  guard chunkedEnvelopes,
+        maxFrameBytes > 1_024,
+        text.utf8.count > maxFrameBytes else {
+    return [text]
+  }
+
+  let raw = Data(text.utf8)
+  let partBytes = max(16 * 1024, ((maxFrameBytes - 1_024) * 3) / 4)
+  let total = Int(ceil(Double(raw.count) / Double(partBytes)))
+  let chunkId = UUID().uuidString
+  var frames: [String] = []
+  frames.reserveCapacity(total)
+  for index in 0..<total {
+    let start = index * partBytes
+    let end = min(raw.count, start + partBytes)
+    let frame = try syncEncodeEnvelopeText(
+      type: "envelope_chunk",
+      requestId: requestId,
+      projectId: nil,
+      payload: [
+        "chunkId": chunkId,
+        "index": index,
+        "total": total,
+        "part": raw.subdata(in: start..<end).base64EncodedString(),
+      ],
+      compressionCodec: nil,
+      compressionThresholdBytes: Int.max
+    )
+    guard frame.utf8.count <= maxFrameBytes else {
+      throw NSError(
+        domain: "ADE",
+        code: 4,
+        userInfo: [NSLocalizedDescriptionKey: "Could not fit a sync chunk inside the negotiated frame budget."]
+      )
+    }
+    frames.append(frame)
+  }
+  return frames
 }
 
 func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayload {
@@ -1751,6 +1811,7 @@ struct SyncEnvelopeChunkAssembler {
 
   private struct PartialChunk {
     let total: Int
+    let createdAt: TimeInterval
     var parts: [Int: Part] = [:]
     var decodedBytes = 0
     var encodedBytes = 0
@@ -1766,7 +1827,13 @@ struct SyncEnvelopeChunkAssembler {
     self.maxEnvelopeBytes = max(1, maxEnvelopeBytes)
   }
 
-  mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
+  mutating func add(
+    chunkId: String,
+    index: Int,
+    total: Int,
+    part: String,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> String? {
     guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
     let encodedBytes = part.utf8.count
     let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
@@ -1781,7 +1848,7 @@ struct SyncEnvelopeChunkAssembler {
         arrivalOrder.removeFirst()
         buffers.removeValue(forKey: oldest)
       }
-      buffers[chunkId] = PartialChunk(total: total)
+      buffers[chunkId] = PartialChunk(total: total, createdAt: now)
       arrivalOrder.append(chunkId)
     }
     guard var buffer = buffers[chunkId], buffer.total == total else {
@@ -1821,6 +1888,35 @@ struct SyncEnvelopeChunkAssembler {
   mutating func reset() {
     buffers.removeAll()
     arrivalOrder.removeAll()
+  }
+
+  var pendingCount: Int {
+    buffers.count
+  }
+
+  var nextExpirationUptime: TimeInterval? {
+    buffers.values.map(\.createdAt).min().map {
+      $0 + syncEnvelopeChunkReassemblyTimeoutSeconds
+    }
+  }
+
+  @discardableResult
+  mutating func expireStale(
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> Int {
+    let stale = buffers.compactMap { chunkId, buffer in
+      now - buffer.createdAt >= syncEnvelopeChunkReassemblyTimeoutSeconds
+        ? chunkId
+        : nil
+    }
+    for chunkId in stale {
+      buffers.removeValue(forKey: chunkId)
+    }
+    if !stale.isEmpty {
+      let staleIds = Set(stale)
+      arrivalOrder.removeAll { staleIds.contains($0) }
+    }
+    return stale.count
   }
 }
 
@@ -3354,6 +3450,7 @@ final class SyncService: ObservableObject {
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
+  private var envelopeChunkExpiryTask: Task<Void, Never>?
   private var transportProbeTask: Task<Void, Never>?
   /// cr-sqlite site id of the project DB the connected host currently serves
   /// (lowercased), from hello_ok's serverDbSiteId. Nil for older hosts.
@@ -3417,6 +3514,8 @@ final class SyncService: ObservableObject {
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
+  private var supportsChunkedEnvelopes = false
+  private var negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
   private var negotiatedCompressionCodec: String?
   private var negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
   private var relayAuthorizationLease: SyncRelayAuthorizationLease?
@@ -15548,6 +15647,16 @@ final class SyncService: ObservableObject {
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
+       chunking["enabled"] as? Bool == true,
+       let frameBytes = (chunking["maxFrameBytes"] as? NSNumber)?.intValue,
+       frameBytes > 1_024 {
+      supportsChunkedEnvelopes = true
+      negotiatedMaxFrameBytes = min(syncDefaultMaxFrameBytes, frameBytes)
+    } else {
+      supportsChunkedEnvelopes = false
+      negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
+    }
     if let compression = payload["compression"] as? [String: Any],
        compression["codec"] as? String == "deflate",
        let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
@@ -15844,6 +15953,21 @@ final class SyncService: ObservableObject {
     handleSocketFailure(task, error: error)
   }
 
+  private func scheduleEnvelopeChunkExpiry() {
+    envelopeChunkExpiryTask?.cancel()
+    guard let expiresAt = envelopeChunkAssembler.nextExpirationUptime else {
+      envelopeChunkExpiryTask = nil
+      return
+    }
+    let delay = max(0, expiresAt - ProcessInfo.processInfo.systemUptime)
+    envelopeChunkExpiryTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard !Task.isCancelled, let self else { return }
+      self.envelopeChunkAssembler.expireStale()
+      self.scheduleEnvelopeChunkExpiry()
+    }
+  }
+
   private func handleIncoming(_ pre: SyncPreprocessedEnvelope) async throws {
     let type = pre.type
     let requestId = pre.requestId
@@ -15863,7 +15987,14 @@ final class SyncService: ObservableObject {
             let index = dict["index"] as? Int,
             let total = dict["total"] as? Int,
             let part = dict["part"] as? String else { return }
-      if let reassembled = envelopeChunkAssembler.add(chunkId: chunkId, index: index, total: total, part: part) {
+      let reassembled = envelopeChunkAssembler.add(
+        chunkId: chunkId,
+        index: index,
+        total: total,
+        part: part
+      )
+      scheduleEnvelopeChunkExpiry()
+      if let reassembled {
         // The reassembled envelope can be tens of megabytes — decode it off
         // the main actor like any first-class frame.
         let nested = try await Task.detached(priority: .userInitiated) {
@@ -16477,19 +16608,23 @@ final class SyncService: ObservableObject {
       : negotiatedCompressionThresholdBytes
     let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
       ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId)
-    guard let text = try? syncEncodeEnvelopeText(
+    guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
       requestId: requestId,
       projectId: projectId,
       payload: payload,
       compressionCodec: compressionCodec,
-      compressionThresholdBytes: activeCompressionThreshold
+      compressionThresholdBytes: activeCompressionThreshold,
+      chunkedEnvelopes: supportsChunkedEnvelopes,
+      maxFrameBytes: negotiatedMaxFrameBytes
     ) else { return false }
 
-    sendSocket.send(.string(text)) { error in
-      if let error {
-        Task { @MainActor in
-          self.handleSocketFailure(sendSocket, error: error)
+    for frame in frames {
+      sendSocket.send(.string(frame)) { error in
+        if let error {
+          Task { @MainActor in
+            self.handleSocketFailure(sendSocket, error: error)
+          }
         }
       }
     }
@@ -16706,6 +16841,10 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
+    envelopeChunkExpiryTask?.cancel()
+    envelopeChunkExpiryTask = nil
+    supportsChunkedEnvelopes = false
+    negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
     negotiatedCompressionCodec = nil
     negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
     connectionGeneration &+= 1

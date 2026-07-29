@@ -400,6 +400,73 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(legacyEnvelope["compression"] as? String, "gzip")
   }
 
+  func testSyncOutboundChunkFramesStayInsideBudgetAndReassemble() throws {
+    let payload = ["text": String(repeating: "0123456789abcdef", count: 8_000)]
+    let legacy = try syncEncodeEnvelopeFrames(
+      type: "changeset_batch",
+      requestId: "chunk-round-trip",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: nil,
+      compressionThresholdBytes: Int.max,
+      chunkedEnvelopes: false,
+      maxFrameBytes: 32 * 1024
+    )
+    let direct = try syncEncodeEnvelopeText(
+      type: "changeset_batch",
+      requestId: "chunk-round-trip",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: nil,
+      compressionThresholdBytes: Int.max
+    )
+    XCTAssertEqual(legacy, [direct], "No-capability output must remain byte-identical.")
+
+    let frames = try syncEncodeEnvelopeFrames(
+      type: "changeset_batch",
+      requestId: "chunk-round-trip",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: nil,
+      compressionThresholdBytes: Int.max,
+      chunkedEnvelopes: true,
+      maxFrameBytes: 32 * 1024
+    )
+    XCTAssertGreaterThan(frames.count, 1)
+    XCTAssertTrue(frames.allSatisfy { $0.utf8.count <= 32 * 1024 })
+
+    var assembler = SyncEnvelopeChunkAssembler()
+    var reassembled: String?
+    for frame in frames.reversed() {
+      let decoded = try XCTUnwrap(
+        syncPreprocessIncoming(frame)?.payload as? [String: Any]
+      )
+      reassembled = assembler.add(
+        chunkId: try XCTUnwrap(decoded["chunkId"] as? String),
+        index: try XCTUnwrap(decoded["index"] as? Int),
+        total: try XCTUnwrap(decoded["total"] as? Int),
+        part: try XCTUnwrap(decoded["part"] as? String)
+      ) ?? reassembled
+    }
+    XCTAssertEqual(reassembled, direct)
+  }
+
+  func testSyncEnvelopeChunkAssemblerExpiresIncompleteSets() {
+    var assembler = SyncEnvelopeChunkAssembler()
+    XCTAssertNil(assembler.add(
+      chunkId: "stale",
+      index: 0,
+      total: 2,
+      part: Data("first".utf8).base64EncodedString(),
+      now: 100
+    ))
+    XCTAssertEqual(assembler.pendingCount, 1)
+    XCTAssertEqual(assembler.expireStale(now: 129.999), 0)
+    XCTAssertEqual(assembler.pendingCount, 1)
+    XCTAssertEqual(assembler.expireStale(now: 130), 1)
+    XCTAssertEqual(assembler.pendingCount, 0)
+  }
+
   func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 

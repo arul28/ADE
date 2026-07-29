@@ -42,10 +42,13 @@ import {
 import { randomHex } from "../ids";
 import {
   assembleProjectCatalogChunks,
+  createEnvelopeChunkAssembler,
   decodeEnvelopeText,
+  encodeEnvelopeFrames,
   encodeEnvelopeText,
   encodeEnvelopeTextWithCompression,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
+  parseEnvelopeChunkPayload,
 } from "../wireProtocol";
 import {
   createSyncDpopNonceCache,
@@ -570,6 +573,62 @@ describe("browser sync envelope codec", () => {
     const decoded = await decodeEnvelopeText(text);
     expect(decoded.compression).toBe("none");
     expect(decoded.payload).toEqual({ text: "host outbound ".repeat(300) });
+  });
+
+  it("keeps no-capability output byte-identical and reassembles bounded chunks", async () => {
+    const input = {
+      type: "command" as const,
+      requestId: "chunked-browser-command",
+      payload: {
+        commandId: "chunked-browser-command",
+        action: "chat.send",
+        args: { text: "browser outbound chunk ".repeat(5_000) },
+      },
+    };
+    const direct = encodeEnvelopeText(input);
+    expect(await encodeEnvelopeFrames(input, {
+      compression: null,
+      maxFrameBytes: null,
+    })).toEqual([direct]);
+
+    const frames = await encodeEnvelopeFrames(input, {
+      compression: null,
+      maxFrameBytes: 32 * 1024,
+    });
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames.every((frame) => new TextEncoder().encode(frame).byteLength <= 32 * 1024)).toBe(true);
+
+    const assembler = createEnvelopeChunkAssembler();
+    let reassembled: string | null = null;
+    for (const frame of [...frames].reverse()) {
+      const outer = await decodeEnvelopeText(frame);
+      expect(outer.type).toBe("envelope_chunk");
+      const chunk = parseEnvelopeChunkPayload(outer.payload);
+      expect(chunk).not.toBeNull();
+      reassembled = assembler.add(chunk!) ?? reassembled;
+    }
+    expect(reassembled).toBe(direct);
+    expect(parseSyncEnvelope(reassembled!).payload).toEqual(input.payload);
+  });
+
+  it("expires incomplete browser chunk sets after 30 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const assembler = createEnvelopeChunkAssembler();
+      assembler.add({
+        chunkId: "browser-timeout",
+        index: 0,
+        total: 2,
+        part: "Zmlyc3Q=",
+      });
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(29_999);
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(assembler.pendingCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("inflates host gzip envelopes and rejects oversize declarations", async () => {

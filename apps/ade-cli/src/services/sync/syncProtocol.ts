@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { deflateSync, gunzipSync, gzipSync, inflateSync } from "node:zlib";
-import type { SyncCompressionCodec, SyncEnvelope, SyncEnvelopeChunkPayload, SyncPeerPlatform, SyncProtocolVersion } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  type SyncCompressionCodec,
+  type SyncEnvelope,
+  type SyncEnvelopeChunkPayload,
+  type SyncPeerPlatform,
+  type SyncProtocolVersion,
+} from "../../../../desktop/src/shared/types";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
@@ -15,7 +22,7 @@ export const BACKPRESSURE_POLL_MS = 25;
 export const MAX_CHANNEL_ID_CHARS = 128;
 
 /** Hello capability a client declares when it can reassemble envelope_chunk frames. */
-export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
+export { SYNC_CHUNKED_ENVELOPES_CAPABILITY };
 
 /** Hello capability for paired desktop clients that consume only rpc/fwd envelopes. */
 export const SYNC_RUNTIME_ONLY_CAPABILITY = "runtimeOnly";
@@ -24,6 +31,7 @@ export const SYNC_RUNTIME_ONLY_CAPABILITY = "runtimeOnly";
 // kills the whole connection ("Message too long") past that. Keep every frame
 // comfortably under that even after the base64 + wrapper overhead of a chunk.
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
+export const SYNC_ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
 
 export function decodeStrictBase64(value: unknown): Buffer | null {
   if (typeof value !== "string") return null;
@@ -184,40 +192,77 @@ export function parseSyncEnvelopeChunkPayload(payload: unknown): SyncEnvelopeChu
  * Keeps only a handful of in-flight chunk ids so a malicious or broken host
  * cannot grow the buffer unboundedly.
  */
-export function createSyncEnvelopeChunkAssembler(options: { maxConcurrentChunks?: number; maxTotalParts?: number } = {}) {
+export function createSyncEnvelopeChunkAssembler(options: {
+  maxConcurrentChunks?: number;
+  maxTotalParts?: number;
+  maxEnvelopeBytes?: number;
+  timeoutMs?: number;
+} = {}) {
   const maxConcurrentChunks = options.maxConcurrentChunks ?? 8;
   const maxTotalParts = options.maxTotalParts ?? 512;
-  const buffers = new Map<string, { total: number; parts: Map<number, string> }>();
+  const maxEnvelopeBytes = options.maxEnvelopeBytes ?? 32 * 1024 * 1024;
+  const timeoutMs = options.timeoutMs ?? SYNC_ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS;
+  const buffers = new Map<string, {
+    total: number;
+    parts: Map<number, Buffer>;
+    bytes: number;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
+
+  const remove = (chunkId: string): void => {
+    const buffer = buffers.get(chunkId);
+    if (!buffer) return;
+    clearTimeout(buffer.timeout);
+    buffers.delete(chunkId);
+  };
+
   return {
     add(payload: SyncEnvelopeChunkPayload): string | null {
       if (payload.total > maxTotalParts) return null;
+      const decodedPart = decodeStrictBase64(payload.part);
+      if (!decodedPart || decodedPart.byteLength > maxEnvelopeBytes) {
+        remove(payload.chunkId);
+        return null;
+      }
       let buffer = buffers.get(payload.chunkId);
       if (!buffer) {
         while (buffers.size >= maxConcurrentChunks) {
           const oldest = buffers.keys().next().value;
           if (oldest == null) break;
-          buffers.delete(oldest);
+          remove(oldest);
         }
-        buffer = { total: payload.total, parts: new Map() };
+        const timeout = setTimeout(() => remove(payload.chunkId), timeoutMs);
+        timeout.unref?.();
+        buffer = { total: payload.total, parts: new Map(), bytes: 0, timeout };
         buffers.set(payload.chunkId, buffer);
       }
       if (buffer.total !== payload.total) {
-        buffers.delete(payload.chunkId);
+        remove(payload.chunkId);
         return null;
       }
-      buffer.parts.set(payload.index, payload.part);
+      const previous = buffer.parts.get(payload.index);
+      const nextBytes = buffer.bytes - (previous?.byteLength ?? 0) + decodedPart.byteLength;
+      if (nextBytes > maxEnvelopeBytes) {
+        remove(payload.chunkId);
+        return null;
+      }
+      buffer.parts.set(payload.index, decodedPart);
+      buffer.bytes = nextBytes;
       if (buffer.parts.size < buffer.total) return null;
-      buffers.delete(payload.chunkId);
+      remove(payload.chunkId);
       const segments: Buffer[] = [];
       for (let index = 0; index < buffer.total; index += 1) {
         const part = buffer.parts.get(index);
         if (part == null) return null;
-        segments.push(Buffer.from(part, "base64"));
+        segments.push(part);
       }
       return Buffer.concat(segments).toString("utf8");
     },
     reset(): void {
-      buffers.clear();
+      for (const chunkId of buffers.keys()) remove(chunkId);
+    },
+    pendingCount(): number {
+      return buffers.size;
     },
   };
 }
