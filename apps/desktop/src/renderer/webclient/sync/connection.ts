@@ -211,6 +211,13 @@ export class SyncConnectionError extends Error {
   }
 }
 
+function protocolVersionMismatchMessage(payload: SyncHelloErrorPayload): string {
+  if (payload.updateTarget === "host") {
+    return "Update ADE on your Mac to connect to this browser.";
+  }
+  return "Update ADE in this browser to connect to your Mac.";
+}
+
 function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
   return payload.features?.invalidationOnlyV1?.enabled === true
     && payload.features?.compactInvalidationV1?.enabled === true;
@@ -876,7 +883,13 @@ export class SyncConnection {
             },
             onHelloError: (payload) => {
               if (settled || !this.isCurrentSocket(socket, generation)) return;
-              fail(new Error(payload.message || "Account authentication was rejected."));
+              fail(payload.code === "protocol_version_mismatch"
+                ? new SyncConnectionError(
+                    protocolVersionMismatchMessage(payload),
+                    payload.code,
+                    payload,
+                  )
+                : new Error(payload.message || "Account authentication was rejected."));
             },
           });
         }).catch((error) => {
@@ -1308,6 +1321,12 @@ export class SyncConnection {
   }
 
   private handleAuthFailure(environment: WebClientEnvironmentRecord, payload: SyncHelloErrorPayload): SyncConnectionError {
+    if (payload.code === "protocol_version_mismatch") {
+      this.shouldReconnect = false;
+      const message = protocolVersionMismatchMessage(payload);
+      this.setStatus({ state: "error", error: message });
+      return new SyncConnectionError(message, payload.code, payload);
+    }
     if (payload.code === "relay_account_required") {
       this.shouldReconnect = false;
       this.setStatus({ state: "error", error: payload.message });
@@ -1339,6 +1358,7 @@ export class SyncConnection {
         error.code === "attributed_auth_failed"
         || error.code === "terminal_auth_failed"
         || error.code === "invalidation_only_v1_unsupported"
+        || error.code === "protocol_version_mismatch"
       );
   }
 

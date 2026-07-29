@@ -5,12 +5,15 @@ import {
   type SyncCompressionCodec,
   type SyncEnvelope,
   type SyncEnvelopeChunkPayload,
+  type SyncHelloErrorPayload,
   type SyncPeerPlatform,
   type SyncProtocolVersion,
 } from "../../../../desktop/src/shared/types";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
+export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
+export const SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE = 4406;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const SYNC_HOST_MAX_PORT = 8999;
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
@@ -77,6 +80,37 @@ export type ParsedSyncEnvelope = {
   payload: unknown;
   raw: SyncEnvelope;
 };
+
+export class SyncProtocolVersionMismatchError extends Error {
+  readonly code = "protocol_version_mismatch";
+  readonly updateTarget: "client" | "host";
+
+  constructor(
+    readonly receivedVersion: number,
+    readonly requestId: string | null,
+  ) {
+    const updateTarget = receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED ? "client" : "host";
+    const supported = SYNC_PROTOCOL_MIN_SUPPORTED === SYNC_PROTOCOL_VERSION
+      ? String(SYNC_PROTOCOL_VERSION)
+      : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
+    super(
+      `Sync protocol version ${receivedVersion} is incompatible with this ADE host (supported: ${supported}).`,
+    );
+    this.name = "SyncProtocolVersionMismatchError";
+    this.updateTarget = updateTarget;
+  }
+
+  toHelloErrorPayload(): SyncHelloErrorPayload {
+    return {
+      code: this.code,
+      message: this.message,
+      receivedVersion: this.receivedVersion,
+      currentVersion: SYNC_PROTOCOL_VERSION,
+      minSupportedVersion: SYNC_PROTOCOL_MIN_SUPPORTED,
+      updateTarget: this.updateTarget,
+    };
+  }
+}
 
 type EncodeEnvelopeArgs = {
   type: SyncEnvelope["type"];
@@ -272,8 +306,23 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
   if (!decoded || typeof decoded !== "object") {
     throw new Error("Invalid sync envelope JSON.");
   }
-  if (decoded.version !== SYNC_PROTOCOL_VERSION) {
-    throw new Error(`Unsupported sync protocol version: ${String((decoded as { version?: unknown }).version ?? "unknown")}`);
+  const receivedVersion = (decoded as { version?: unknown }).version;
+  if (
+    typeof receivedVersion === "number"
+    && Number.isInteger(receivedVersion)
+    && (
+      receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED
+      || receivedVersion > SYNC_PROTOCOL_VERSION
+    )
+  ) {
+    const rawRequestId = (decoded as { requestId?: unknown }).requestId;
+    throw new SyncProtocolVersionMismatchError(
+      receivedVersion,
+      typeof rawRequestId === "string" && rawRequestId.trim() ? rawRequestId.trim() : null,
+    );
+  }
+  if (receivedVersion !== SYNC_PROTOCOL_VERSION) {
+    throw new Error(`Invalid sync protocol version: ${String(receivedVersion ?? "unknown")}`);
   }
 
   const requestId = typeof decoded.requestId === "string" && decoded.requestId.trim().length > 0

@@ -42,6 +42,7 @@ import {
 import { randomHex } from "../ids";
 import {
   assembleProjectCatalogChunks,
+  BrowserSyncProtocolVersionMismatchError,
   createEnvelopeChunkAssembler,
   decodeEnvelopeText,
   encodeEnvelopeFrames,
@@ -515,6 +516,25 @@ describe("browser sync DPoP", () => {
 });
 
 describe("browser sync envelope codec", () => {
+  it.each([
+    [0, "host"],
+    [2, "client"],
+  ] as const)("reports typed browser version skew for protocol %i", async (version, updateTarget) => {
+    const promise = decodeEnvelopeText(JSON.stringify({
+      version,
+      type: "hello_ok",
+      compression: "none",
+      payloadEncoding: "json",
+      payload: {},
+    }));
+    await expect(promise).rejects.toMatchObject({
+      name: "BrowserSyncProtocolVersionMismatchError",
+      code: "protocol_version_mismatch",
+      receivedVersion: version,
+      updateTarget,
+    } satisfies Partial<BrowserSyncProtocolVersionMismatchError>);
+  });
+
   it("round-trips browser-encoded envelopes through the real host parser", () => {
     const text = encodeEnvelopeText({
       type: "command",

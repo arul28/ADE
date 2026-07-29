@@ -15,6 +15,9 @@ import {
   parseSyncEnvelopeChunkPayload,
   PEER_BACKPRESSURE_BYTES,
   RPC_DATA_CHUNK_BYTES,
+  SyncProtocolVersionMismatchError,
+  SYNC_PROTOCOL_MIN_SUPPORTED,
+  SYNC_PROTOCOL_VERSION,
 } from "./syncProtocol";
 
 // Deterministic xorshift PRNG — gzip cannot compress its output, so payloads
@@ -201,6 +204,35 @@ describe("parseSyncEnvelopeChunkPayload", () => {
 });
 
 describe("parseSyncEnvelope", () => {
+  it.each([
+    [0, "client"],
+    [2, "host"],
+  ] as const)("throws a typed version mismatch for protocol %i", (version, updateTarget) => {
+    let caught: unknown;
+    try {
+      parseSyncEnvelope(JSON.stringify({
+        version,
+        type: "hello",
+        requestId: `version-${version}`,
+        compression: "none",
+        payloadEncoding: "json",
+        payload: {},
+      }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SyncProtocolVersionMismatchError);
+    const mismatch = caught as SyncProtocolVersionMismatchError;
+    expect(mismatch.toHelloErrorPayload()).toEqual({
+      code: "protocol_version_mismatch",
+      message: mismatch.message,
+      receivedVersion: version,
+      currentVersion: SYNC_PROTOCOL_VERSION,
+      minSupportedVersion: SYNC_PROTOCOL_MIN_SUPPORTED,
+      updateTarget,
+    });
+  });
+
   it("preserves the legacy gzip wire frame unless a codec is explicitly selected", () => {
     const args = {
       type: "chat_event" as const,

@@ -74,7 +74,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import {
@@ -4139,6 +4139,74 @@ describe("createSyncHostService LAN discovery", () => {
         code: 4003,
         reason: "Authentication timed out",
       });
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore close failures
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it.each([
+    [0, "client"],
+    [2, "host"],
+  ] as const)("returns a typed error immediately for protocol version %i", async (version, updateTarget) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      authTimeoutMs: 15_000,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      const startedAt = Date.now();
+      const response = new Promise<ParsedSyncEnvelope>((resolve, reject) => {
+        client!.once("message", (raw) => {
+          try {
+            resolve(parseSyncEnvelope(wsDataToText(raw)));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        client!.once("close", (code, reason) => {
+          resolve({ code, reason: reason.toString("utf8") });
+        });
+      });
+      client.send(JSON.stringify({
+        version,
+        type: "hello",
+        requestId: `mismatch-${version}`,
+        compression: "none",
+        payloadEncoding: "json",
+        payload: {},
+      }));
+
+      const mismatch = await response;
+      expect(mismatch.type).toBe("hello_error");
+      expect(mismatch.requestId).toBe(`mismatch-${version}`);
+      expect(mismatch.payload).toMatchObject({
+        code: "protocol_version_mismatch",
+        receivedVersion: version,
+        currentVersion: 1,
+        minSupportedVersion: 1,
+        updateTarget,
+      });
+      expect(await closed).toEqual({
+        code: SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
+        reason: "Sync protocol version mismatch",
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
       try {
         client?.close();

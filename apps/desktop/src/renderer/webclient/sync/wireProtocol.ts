@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types/sync";
 
 export const SYNC_PROTOCOL_VERSION = 1;
+export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
 export const ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
@@ -18,6 +19,23 @@ export type EncodeEnvelopeInput = {
   requestId?: string | null;
   payload?: unknown;
 };
+
+export class BrowserSyncProtocolVersionMismatchError extends Error {
+  readonly code = "protocol_version_mismatch";
+  readonly updateTarget: "client" | "host";
+
+  constructor(readonly receivedVersion: number) {
+    const supported = SYNC_PROTOCOL_MIN_SUPPORTED === SYNC_PROTOCOL_VERSION
+      ? String(SYNC_PROTOCOL_VERSION)
+      : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
+    const updateTarget = receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED ? "host" : "client";
+    super(updateTarget === "host"
+      ? `Update ADE on your Mac. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
+      : `Update ADE in this browser. The Mac uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
+    this.name = "BrowserSyncProtocolVersionMismatchError";
+    this.updateTarget = updateTarget;
+  }
+}
 
 function normalizeOptionalString(value: string | null | undefined): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -206,8 +224,19 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
     throw new Error("Invalid sync envelope JSON.");
   }
   const envelope = decoded as SyncEnvelope;
-  if (envelope.version !== SYNC_PROTOCOL_VERSION) {
-    throw new Error(`Unsupported sync protocol version: ${String((decoded as { version?: unknown }).version ?? "unknown")}`);
+  const receivedVersion = (decoded as { version?: unknown }).version;
+  if (
+    typeof receivedVersion === "number"
+    && Number.isInteger(receivedVersion)
+    && (
+      receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED
+      || receivedVersion > SYNC_PROTOCOL_VERSION
+    )
+  ) {
+    throw new BrowserSyncProtocolVersionMismatchError(receivedVersion);
+  }
+  if (receivedVersion !== SYNC_PROTOCOL_VERSION) {
+    throw new Error(`Invalid sync protocol version: ${String(receivedVersion ?? "unknown")}`);
   }
   if (envelope.compression === "gzip" || envelope.compression === "deflate") {
     if (envelope.payloadEncoding !== "base64" || typeof envelope.payload !== "string") {

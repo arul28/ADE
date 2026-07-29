@@ -1571,6 +1571,37 @@ private let syncApplicationCompressionCodecs = ["deflate"]
 private let syncApplicationCompressionThresholdBytes = 512
 private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
 private let syncDefaultMaxFrameBytes = 720 * 1024
+private let syncProtocolVersion = 1
+private let syncProtocolMinSupported = 1
+
+struct SyncProtocolVersionMismatchError: LocalizedError, Equatable {
+  let receivedVersion: Int
+  let currentVersion: Int
+  let minSupportedVersion: Int
+  let updateTarget: String
+
+  var errorDescription: String? {
+    updateTarget == "host"
+      ? "Update ADE on your Mac. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      : "Update ADE on this iPhone. The Mac uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+  }
+}
+
+func syncProtocolMismatchMessage(_ payload: [String: Any]) -> String {
+  let target = payload["updateTarget"] as? String
+  let received = (payload["receivedVersion"] as? NSNumber)?.intValue
+  let current = (payload["currentVersion"] as? NSNumber)?.intValue
+  let minimum = (payload["minSupportedVersion"] as? NSNumber)?.intValue
+  let versions: String
+  if let received, let current, let minimum {
+    versions = " Protocol \(received) is incompatible with \(minimum)-\(current)."
+  } else {
+    versions = ""
+  }
+  return target == "host"
+    ? "Update ADE on your Mac to connect this iPhone.\(versions)"
+    : "Update ADE on this iPhone to connect to your Mac.\(versions)"
+}
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -1578,6 +1609,22 @@ func syncPreprocessIncoming(
 ) throws -> SyncPreprocessedEnvelope? {
   guard let data = text.data(using: .utf8) else { return nil }
   guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+  if let version = (envelope["version"] as? NSNumber)?.intValue,
+     version < syncProtocolMinSupported || version > syncProtocolVersion {
+    throw SyncProtocolVersionMismatchError(
+      receivedVersion: version,
+      currentVersion: syncProtocolVersion,
+      minSupportedVersion: syncProtocolMinSupported,
+      updateTarget: version < syncProtocolMinSupported ? "host" : "client"
+    )
+  }
+  guard (envelope["version"] as? NSNumber)?.intValue == syncProtocolVersion else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid sync protocol version."]
+    )
+  }
   let type = envelope["type"] as? String ?? ""
   let requestId = envelope["requestId"] as? String
   let payload: Any
@@ -1605,7 +1652,7 @@ func syncEncodeEnvelopeText(
   var envelope: [String: Any]
   if payloadData.count >= compressionThresholdBytes {
     envelope = [
-      "version": 1,
+      "version": syncProtocolVersion,
       "type": type,
       "compression": compressionCodec ?? "gzip",
       "payloadEncoding": "base64",
@@ -1618,7 +1665,7 @@ func syncEncodeEnvelopeText(
     ]
   } else {
     envelope = [
-      "version": 1,
+      "version": syncProtocolVersion,
       "type": type,
       "compression": "none",
       "payloadEncoding": "json",
@@ -5628,7 +5675,9 @@ final class SyncService: ObservableObject {
   ) -> Error {
     let errorPayload = payload as? [String: Any]
     let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    let message = code == "protocol_version_mismatch"
+      ? syncProtocolMismatchMessage(errorPayload ?? [:])
+      : (errorPayload?["message"] as? String) ?? "Authentication failed."
     if code == "relay_account_required" {
       return syncRelayAuthorizationRequirementForHostRejection(
         relayAccountOwnerId: relayAccountOwnerId,
@@ -14012,7 +14061,7 @@ final class SyncService: ObservableObject {
     payload: Any
   ) throws -> String {
     let envelope: [String: Any] = [
-      "version": 1,
+      "version": syncProtocolVersion,
       "type": type,
       "requestId": requestId,
       "compression": "none",
@@ -14029,7 +14078,9 @@ final class SyncService: ObservableObject {
   private func candidateHelloError(_ payload: Any, profile: HostConnectionProfile) -> Error {
     let errorPayload = payload as? [String: Any]
     let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    let message = code == "protocol_version_mismatch"
+      ? syncProtocolMismatchMessage(errorPayload ?? [:])
+      : (errorPayload?["message"] as? String) ?? "Authentication failed."
     if code == "relay_account_required" {
       return syncRelayAuthorizationRequirementForHostRejection(
         relayAccountOwnerId: profile.relayAccountOwnerId,
@@ -16040,7 +16091,9 @@ final class SyncService: ObservableObject {
     case "hello_error":
       let errorPayload = payload as? [String: Any]
       let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-      let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+      let message = code == "protocol_version_mismatch"
+        ? syncProtocolMismatchMessage(errorPayload ?? [:])
+        : (errorPayload?["message"] as? String) ?? "Authentication failed."
       if code == "relay_account_required" {
         connectionState = .error
         let profile = activeHostProfile ?? loadProfile()

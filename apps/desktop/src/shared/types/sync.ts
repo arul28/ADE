@@ -935,8 +935,18 @@ export type SyncHelloOkPayload = {
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
+  code:
+    | "auth_failed"
+    | "invalid_hello"
+    | "relay_account_required"
+    | "connection_attempt_superseded"
+    | "protocol_version_mismatch";
   message: string;
+  /** Present for a typed protocol-version rejection. */
+  receivedVersion?: number;
+  currentVersion?: number;
+  minSupportedVersion?: number;
+  updateTarget?: "client" | "host";
   /**
    * Identity of the machine that rejected this hello. Lets a client tell
    * "the machine I'm paired with revoked this device" (safe to drop the

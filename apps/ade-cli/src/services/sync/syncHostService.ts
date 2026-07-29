@@ -199,6 +199,8 @@ import {
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SyncProtocolVersionMismatchError,
+  SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
   type ParsedSyncEnvelope,
@@ -3325,6 +3327,44 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
         }
       } catch (error) {
+        if (error instanceof SyncProtocolVersionMismatchError) {
+          const response = encodeSyncEnvelope({
+            type: "hello_error",
+            requestId: error.requestId,
+            payload: error.toHelloErrorPayload(),
+            compressionThresholdBytes: Number.POSITIVE_INFINITY,
+            compressionCodec: "none",
+          });
+          let closed = false;
+          const closeForMismatch = () => {
+            if (closed) return;
+            closed = true;
+            clearPeerAuthTimeout(peer);
+            try {
+              peer.ws.close(
+                SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
+                "Sync protocol version mismatch",
+              );
+            } catch {
+              // The typed frame was already attempted.
+            }
+          };
+          try {
+            peer.ws.send(response, closeForMismatch);
+            const fallback = setTimeout(closeForMismatch, 1_000);
+            fallback.unref?.();
+          } catch {
+            closeForMismatch();
+          }
+          const payload = error.toHelloErrorPayload();
+          args.logger.warn("sync_host.protocol_version_mismatch", {
+            receivedVersion: payload.receivedVersion,
+            currentVersion: payload.currentVersion,
+            minSupportedVersion: payload.minSupportedVersion,
+            remoteAddress: peer.remoteAddress,
+          });
+          return;
+        }
         args.logger.warn("sync_host.message_parse_failed", {
           error: error instanceof Error ? error.message : String(error),
           peerDeviceId: peer.metadata?.deviceId ?? null,

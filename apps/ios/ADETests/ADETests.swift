@@ -352,6 +352,39 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSyncPreprocessReportsTypedVersionSkew() {
+    for (version, target) in [(0, "host"), (2, "client")] {
+      let envelope = """
+      {"version":\(version),"type":"hello_ok","compression":"none","payloadEncoding":"json","payload":{}}
+      """
+      XCTAssertThrowsError(try syncPreprocessIncoming(envelope)) { error in
+        XCTAssertEqual(
+          error as? SyncProtocolVersionMismatchError,
+          SyncProtocolVersionMismatchError(
+            receivedVersion: version,
+            currentVersion: 1,
+            minSupportedVersion: 1,
+            updateTarget: target
+          )
+        )
+      }
+    }
+  }
+
+  func testSyncProtocolMismatchMessageNamesTheDeviceToUpdate() {
+    let versions: [String: Any] = [
+      "receivedVersion": 2,
+      "currentVersion": 1,
+      "minSupportedVersion": 1,
+    ]
+    XCTAssertTrue(syncProtocolMismatchMessage(
+      versions.merging(["updateTarget": "host"]) { _, right in right }
+    ).contains("Update ADE on your Mac"))
+    XCTAssertTrue(syncProtocolMismatchMessage(
+      versions.merging(["updateTarget": "client"]) { _, right in right }
+    ).contains("Update ADE on this iPhone"))
+  }
+
   func testSyncPreprocessDecodesNodeDeflateFixture() throws {
     // Produced by Node 22's zlib.deflateSync from the JSON payload below.
     let encodedPayload = "eJyrVipJrShRslJKLsovLlbIzC3ISc1NzStJLMnMz1MYFRxUgkq1APjvqcA="
