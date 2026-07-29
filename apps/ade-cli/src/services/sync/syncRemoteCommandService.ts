@@ -1667,10 +1667,22 @@ function projectChatOntoSession(
     };
   }
   if (chat.status === "active") {
-    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
+    return {
+      ...base,
+      runtimeState: "running" as const,
+      chatIdleSinceAt: null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
   }
   if (chat.status === "idle" || chat.status === "ended") {
-    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    return {
+      ...base,
+      runtimeState: "idle" as const,
+      chatIdleSinceAt: chat.idleSinceAt ?? null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
   }
   return base;
 }
@@ -2235,8 +2247,24 @@ async function listRemoteWorkSessions(
         attentionSource: "provider_structured" as const,
       };
     }
-    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    if (chat.status === "active") {
+      return {
+        ...session,
+        runtimeState: "running" as const,
+        chatIdleSinceAt: null,
+        pendingInputItemId: null,
+        attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+      };
+    }
+    if (chat.status === "idle") {
+      return {
+        ...session,
+        runtimeState: "idle" as const,
+        chatIdleSinceAt: chat.idleSinceAt ?? null,
+        pendingInputItemId: null,
+        attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+      };
+    }
     return session;
   });
 }

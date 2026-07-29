@@ -1557,6 +1557,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const existing = runs.get(signal.sessionId);
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
+    // Explicit/provider-structured attention owns this phase until the
+    // lifecycle event that resolves it. PTY heartbeats are observational and
+    // must not erase a real request.
+    if (existing?.phase === "waiting_for_input" || existing?.phase === "waiting_for_approval") return;
     // `idle` = no output for 12s with no OSC prompt marker — we can't prove
     // the CLI is working OR at a prompt, so publish it as `stale` (dimmed,
     // not counted active) instead of overstating it as a live running row.

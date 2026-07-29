@@ -1801,6 +1801,23 @@ describe("createSyncRemoteCommandService", () => {
       orchestrationRole: "worker",
       orchestrationTag: "impl",
     }));
+
+    getSessionSummary.mockResolvedValueOnce({
+      sessionId: "session-1",
+      status: "active",
+      awaitingInput: false,
+    });
+    ptyService.enrichSessions.mockReturnValueOnce([{
+      ...enrichedSession,
+      pendingInputItemId: "provider-question-1",
+      attentionSource: "provider_structured",
+    }]);
+    const resumed = await service.execute(makePayload("work.getSession", { sessionId: "session-1" }));
+    expect(resumed).toEqual(expect.objectContaining({
+      runtimeState: "running",
+      pendingInputItemId: null,
+      attentionSource: null,
+    }));
   });
 
   it("delegates PR merge contexts and queue state to the injected services", async () => {

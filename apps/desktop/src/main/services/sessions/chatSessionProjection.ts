@@ -101,6 +101,7 @@ export function projectChatOntoSession(
       runtimeState: "running",
       chatIdleSinceAt: null,
       pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
     };
   }
   if (chat.status === "idle" || chat.status === "ended") {
@@ -109,6 +110,7 @@ export function projectChatOntoSession(
       runtimeState: "idle",
       chatIdleSinceAt: chat.idleSinceAt ?? null,
       pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
     };
   }
   return fallbackUnprojectedChatSession(base);

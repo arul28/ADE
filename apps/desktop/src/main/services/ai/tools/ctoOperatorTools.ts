@@ -589,7 +589,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.setSessionSettleOverride = tool({
     description:
       "Pin an ADE session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
-      "pin, and null hands the row back to the declared lifecycle state.",
+      "pin, and `clear` returns the row to the declared lifecycle state.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
       override: z.enum(["settled", "active", "clear"]).describe("'clear' removes the pin."),

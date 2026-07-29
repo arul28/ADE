@@ -8529,6 +8529,7 @@ final class SyncService: ObservableObject {
     resultShape: SessionLifecycleResultShape? = .envelope,
     settledAt: String?? = nil,
     settleOverride: String?? = nil,
+    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -8545,6 +8546,7 @@ final class SyncService: ObservableObject {
       sessionId: trimmed,
       settledAt: settledAt,
       settleOverride: settleOverride,
+      settleSource: settleSource,
       snoozedUntil: snoozedUntil,
       snoozedAt: snoozedAt,
       wokeAt: wokeAt,
@@ -8567,6 +8569,7 @@ final class SyncService: ObservableObject {
         sessionId: trimmed,
         settledAt: restored(settledAt, previous.settledAt),
         settleOverride: restored(settleOverride, previous.settleOverride),
+        settleSource: restored(settleSource, previous.settleSource),
         snoozedUntil: restored(snoozedUntil, previous.snoozedUntil),
         snoozedAt: restored(snoozedAt, previous.snoozedAt),
         wokeAt: restored(wokeAt, previous.wokeAt),
@@ -8609,7 +8612,8 @@ final class SyncService: ObservableObject {
       // the machine settled nothing. Mirrors the desktop `settleMany`.
       resultShape: .changedIdList,
       settledAt: .some(iso8601WithFractionalSecondsFormatter.string(from: Date())),
-      settleOverride: .some(nil)
+      settleOverride: .some(nil),
+      settleSource: .some("user")
     )
   }
 
@@ -8635,7 +8639,8 @@ final class SyncService: ObservableObject {
       // the desktop `unsettleMany`, which passes no `applied` predicate.
       resultShape: nil,
       settledAt: .some(nil),
-      settleOverride: nil
+      settleOverride: nil,
+      settleSource: .some(nil)
     )
   }
 

@@ -2108,6 +2108,7 @@ final class DatabaseService {
     sessionId: String,
     settledAt: String?? = nil,
     settleOverride: String?? = nil,
+    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -2118,6 +2119,7 @@ final class DatabaseService {
         sessionId: sessionId,
         settledAt: settledAt,
         settleOverride: settleOverride,
+        settleSource: settleSource,
         snoozedUntil: snoozedUntil,
         snoozedAt: snoozedAt,
         wokeAt: wokeAt,
@@ -2130,6 +2132,7 @@ final class DatabaseService {
     sessionId: String,
     settledAt: String?? = nil,
     settleOverride: String?? = nil,
+    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -2150,6 +2153,7 @@ final class DatabaseService {
 
     assign("settled_at", settledAt)
     assign("settle_override", settleOverride)
+    assign("settle_source", settleSource)
     assign("snoozed_until", snoozedUntil)
     assign("snoozed_at", snoozedAt)
     assign("woke_at", wokeAt)

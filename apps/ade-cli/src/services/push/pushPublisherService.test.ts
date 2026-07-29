@@ -1875,6 +1875,18 @@ describe("createPushPublisherService flush", () => {
       detail: "Which account should the e2e test use?",
     });
 
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-ask-1",
+      runtimeState: "idle",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    const heartbeatPayload = publish.mock.calls.at(-1)?.[0];
+    expect(heartbeatPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "waiting_for_input",
+    });
+
     publisher.dispose();
   });
 
