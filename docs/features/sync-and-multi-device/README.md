@@ -68,6 +68,44 @@ diagnostics. It is **disabled by default** and only activates when
 sessions both leave it off; everything below describes the runtime-hosted
 path unless explicitly noted.
 
+### The machine-wide sync host lease
+
+Hosting phone sync is exclusive per machine, and that exclusivity is a real
+lease, not a convention. `syncHostSingleton.ts` owns an advisory lock file at
+`$TMPDIR/ade-sync-host-<uid>.json` (override: `ADE_SYNC_HOST_LOCK_PATH`)
+recording the owning pid, channel, project root, and bound port. A project
+scope acquires it when its sync service starts; a projectless brain that binds
+the shared listener with no active scope acquires a `projectRoot: null` lease
+of its own and drops it the moment a scope takes over, so the lock file always
+names the real owner.
+
+The lease is also the answer to *"is it me?"* for every other machine-exclusive
+subsystem. Two of them gate on holding it:
+
+- **the relay tunnel** (`syncTunnelClientService`), because the relay Durable
+  Object keeps exactly one host control socket per `machineKey` and evicts the
+  previous holder with close code `4505`; and
+- **the account-directory publisher** (`accountMachinePublisherService`),
+  because publishing endpoints means "reach me here", and a runtime that does
+  not host sync would be pointing controllers at nothing.
+
+Holding a *listener* is not sufficient for either — a dev `ade serve`, a
+headless one-shot, or an embedded fallback can bind an ephemeral listener
+without ever winning the lease. `holdsSyncHostSingleton()` reports current
+process authority and `onSyncHostSingletonAuthorityChanged()` publishes
+transitions (none-held → held and held → none-held only), because the lease is
+acquired well after process start and can be released again.
+
+Authority transitions are debounced by
+`SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (5 s) on the *loss* edge.
+`ProjectScopeRegistry.performSyncHostSwitch` deactivates the outgoing sync host
+before activating the target, so within one brain authority legitimately reads
+false for the width of a project switch. A real loss of authority outlives that
+window; a handoff never does. Without the grace, every project switch would
+stop and restart the machine's relay tunnel and tear down and rebuild the
+directory publisher (`ade doctor` would report "Account-directory publishing
+has not started" in the gap).
+
 ## Who participates
 
 - **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
@@ -290,7 +328,13 @@ Runtime support files outside `services/sync/`:
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
   validated LAN/Tailscale/relay routes, coalesces overlapping work, and sends
-  the account bearer only to the trusted HTTPS directory origin. The published
+  the account bearer only to the trusted HTTPS directory origin. `runServe`
+  constructs and starts it only while the brain holds the machine-wide sync
+  host lease, and disposes it after authority has been lost for longer than
+  `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (a project switch never qualifies);
+  the publisher cannot be restarted after dispose, so a later lease acquisition
+  builds a fresh one. A second brain publishing its own endpoints would point
+  phones at a runtime that does not host sync. The published
   machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
   build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
   stable build (or an already-suffixed name) is left untouched, so the same
@@ -420,6 +464,21 @@ Runtime support files outside `services/sync/`:
 
 Desktop connection UI:
 
+- `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
+  the `relay-offline` banner alongside the GitHub/AI-provider family.
+  `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (the physical
+  machine's relay, not whichever runtime a remote-bound project routes to),
+  then keeps it current from the existing `sync-status` broadcast, committing a
+  new object only when a field the banner reads actually changed.
+  `deriveRelayOutageState` reports `"suppressed"` immediately — nothing
+  recovers a machine-local ownership conflict on its own, so a grace period
+  would only delay the fix — and `"down"` only after `RELAY_OUTAGE_GRACE_MS`
+  (2 minutes) of uninterrupted outage measured from `relayControlFailingSinceMs`,
+  which is past every ordinary sleep/wake or Wi-Fi-hop redial. The threshold is
+  crossed on wall-clock time, so `relayGraceRemainingMs` arms exactly one timer
+  for the remaining grace rather than polling. The dismiss key is global (relay
+  identity is machine-wide) and its fingerprint is the outage state, so
+  dismissing a plain outage cannot hide a later process conflict.
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the single
   top-bar Connections surface with Machines, Phone, and Web tabs. The
   panel owns its header close control and passes the current in-app route to the
@@ -706,6 +765,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   timeout with a vague "took too long" banner. iOS treats that code as
   transient (retryable and queueable, like a timeout), so queued
   operations survive host restarts instead of being deleted on replay.
+- `syncHostSingleton.ts` — the machine-wide sync host lease. Owns the advisory
+  lock file (`$TMPDIR/ade-sync-host-<uid>.json`, override
+  `ADE_SYNC_HOST_LOCK_PATH`) that records the owning pid, channel, project
+  root, and bound port, diagnoses conflicts (`SyncHostSingletonConflictError`)
+  against live listeners so a stale record cannot strand a new host, and
+  exposes `updatePort` / `dispose` on the acquired lease. Alongside the file it
+  keeps a **process-wide authority registry**: `holdsSyncHostSingleton()`
+  answers whether *this* process currently owns the machine's phone sync, and
+  `onSyncHostSingletonAuthorityChanged()` notifies subscribers on none-held →
+  held and held → none-held transitions. That registry is what the relay tunnel
+  and the account-directory publisher gate on — see *The machine-wide sync host
+  lease* above.
 - `syncHostStartupLoop.ts` — retry loop around mobile sync host startup
   for the brain. Same-channel singleton conflicts (update races, restart
   overlap, a stale sibling) always retry — the loop may evict a stale
@@ -895,11 +966,33 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   so the object is created near the machine rather than near whichever request
   arrives first. Cloudflare honors a hint only at creation, so an existing
   machineKey keeps its original placement.
+- `relayTunnelAuthorityGate.ts` — decides whether a runtime may run the
+  machine's relay tunnel at all. `createRelayTunnelAuthorityGate` subscribes to
+  `onSyncHostSingletonAuthorityChanged` and starts the tunnel only while this
+  process both hosts the brain-level shared listener **and** holds the
+  machine-wide sync host lease; a loss of authority stops it after
+  `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (5 s) so an in-process project switch
+  rides through. Every start re-attaches the host listener, because `stop()`
+  drops the reference and it is otherwise attached once per runtime — a
+  gate-driven stop/start would otherwise come back with a live control socket
+  and no bridge, rejecting phone connects with "host sync listener unavailable"
+  until the brain restarted. Re-winning the lease also calls
+  `clearControlSuppression()`, but only for a gate that has actually observed a
+  release, so opening a second project cannot reset the eviction budget.
+  `dispose()` detaches the subscription without stopping the tunnel: the client
+  is machine-level and shared across project scopes, so a closing scope must
+  not sever relay for the others. `bootstrap.ts` builds one gate per scope.
 - `syncTunnelClientService.ts` — the brain-side tunnel client. When the
   machine has a current ADE account lease it keeps an outbound WebSocket
   registered with the relay worker (HMAC-signed host/pipe upgrades,
-  exponential backoff with jitter capped at 60 s) so controllers off the
-  LAN/tailnet can dial the machine through the relay. Connect and reconnect are
+  exponential backoff with decorrelated jitter, a 1 s floor, and a 60 s cap)
+  so controllers off the LAN/tailnet can dial the machine through the relay.
+  `computeBackoffMs` samples from a window widened by the *previous* delay
+  rather than resampling the same narrow exponential band, so two clients that
+  collide once do not keep colliding at the same instant; the floor exists
+  because full jitter from zero let rival processes both resample near-zero
+  delays forever. The client runs only under `relayTunnelAuthorityGate` — the
+  runtime holding the machine-wide sync host lease. Connect and reconnect are
   single-flight: lease reconciliation does not close a still-valid connecting
   socket, and a transient token-refresh exception retains the current control
   route through the last known account-lease expiry. Sign-out, an explicit
@@ -912,8 +1005,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   socket opens and whenever the shared listener reports a fresh loopback
   validation, serializing probes through the same validation queue used by
   inbound opens. The listener itself arrives through `attachHostListener()`,
-  which `bootstrap.ts` calls from the runtime that owns the shared listener —
-  not from the construction factory. The client is shared one-per-machine
+  which `relayTunnelAuthorityGate` calls on every start from the runtime that
+  owns the shared listener — not from the construction factory. The client is shared one-per-machine
   (`getSharedSyncTunnelClientService`, keyed by `sync-cloud-relay.json`) and is
   built by whichever runtime bootstraps first, which is regularly a scope with
   no listener at all (a headless one-shot, an embedded fallback), so anything
@@ -963,7 +1056,27 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   poison a route that already has a ready tunnel. Pipe/local application close
   codes and sanitized reasons are preserved across the bridge; other closes
   normalize to `4000`. Account loss clears validation and all sockets, while
-  account switches force a clean control reconnect. Control observability
+  account switches force a clean control reconnect.
+  A close with `RELAY_CLOSE_CONTROL_REPLACED` (`4505`) is handled as its own
+  regime, not as a network failure: it can only mean another process registered
+  the same `machineKey`, so redialing on the network schedule just evicts the
+  rival right back. The client retries on a fixed `CONTROL_REPLACED_RETRY_BASE_MS`
+  (60 s) floor jittered upward only, at most
+  `MAX_CONTROL_REPLACED_REATTEMPTS` (3) times, then stops dialing entirely and
+  reports `controlSuppressed` with the actionable reason "Another ADE process
+  owns the relay connection for this machine." Suppression is enforced at the
+  dial itself as well as in the reconnect scheduler, because the once-a-second
+  account-lease poll calls `connectControl` directly. Because the rival usually
+  exits on its own, a stopped client re-arms once after
+  `CONTROL_REPLACED_REARM_MS` (10 minutes); `clearControlSuppression()` also
+  re-arms immediately when this process (re)acquires the sync host lease, and a
+  control socket that survives the ready-stability window resets the budget so a
+  long-lived brain cannot accumulate its way to a permanent stop. Structured
+  events are `sync_tunnel.control_replaced`, `.control_replaced_stopped`, and
+  `.control_suppression_cleared`; one edge-triggered `ade_relay_suppressed`
+  analytics event (coarse attempt count + `control_replaced` code, no URL,
+  `machineKey`, or close reason) is captured per suppression episode.
+  Control observability
   preserves the causal failure rather than replacing it with a generic WebSocket error:
   upgrade rejection captures the HTTP status and at most 512 sanitized response
   bytes; close telemetry records code, reason, and whether the socket opened.
@@ -973,7 +1086,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   lifecycle events. `routeHealth.relay`
   exposes `skipReason` / `lastControlError` plus the end-to-end verdict, while
   `lastControlOpenAt` and `lastBridgeValidationAt` retain the two independent
-  success histories.
+  success histories. It also carries `relayControlSuppressed`,
+  `relayControlSuppressedReason`, and `relayControlFailingSinceMs` — the last
+  being the start of the *current uninterrupted* outage, which `lastFailureAt`
+  can never express because it restamps on every retry. Suppression outranks
+  every other reason in both the `ade doctor` relay row and the desktop banner,
+  since nothing downstream can succeed while another process owns the slot and
+  no other reason tells the user what to do about it.
 - `syncRelaySelfProbe.ts` — `probeRelayEndToEnd`, the stateless relay
   round-trip check used by the tunnel client's `runSelfProbe`. It opens
   `wss://<relay>/connect/<machineKey>?ready=2`, requires an `accepted` v2 first
@@ -1758,7 +1877,10 @@ feature is merged or because a deliberately isolated-port host is running.
   payloads. Treat the relay operator as trusted for confidentiality. Adding
   end-to-end payload encryption to the relay path is planned security work.
   The host opens and advertises Relay only while its ADE account lease is
-  current. Every paired Relay hello — including first-time PIN pairing — must
+  current **and** it holds the machine-wide sync host lease. The relay Durable
+  Object keeps one host control socket per `machineKey`, so relay ownership is
+  a machine-level singleton, not a per-process capability; a runtime without
+  the lease neither dials the relay nor publishes to the directory. Every paired Relay hello — including first-time PIN pairing — must
   also carry a fresh short-lived Clerk token whose subject matches the account
   signed in on the host; the proof is never persisted. Direct LAN/Tailscale
   hellos do not need an account token. Sign-out, account switch, expiry, or a
@@ -1845,6 +1967,8 @@ feature is merged or because a deliberately isolated-port host is running.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
+| Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
+| Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
 | Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
@@ -1870,6 +1994,16 @@ feature is merged or because a deliberately isolated-port host is running.
   runtime is. Code that wants the sync service must reach into the
   runtime IPC bridge, not into the renderer or the Electron main
   process.
+- **Relay ownership is machine-wide, so "has a listener" is never the test.**
+  Any runtime can bind an ephemeral sync listener — a dev `ade serve`, a
+  headless one-shot, an embedded fallback. Only one may dial the relay or
+  publish to the account directory, because the relay Durable Object keeps one
+  host control socket per `machineKey` and evicts the previous holder with
+  close code `4505`. New machine-exclusive subsystems must gate on
+  `holdsSyncHostSingleton()` (through `relayTunnelAuthorityGate` or the same
+  authority subscription), and must tolerate the momentary `false` that a
+  project switch produces by riding it out for
+  `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` rather than reacting on the edge.
 - **`ADE_ENABLE_DESKTOP_SYNC_HOST` is a diagnostics escape hatch.** If
   you turn it on, both an in-process host and the standing runtime can be
   alive simultaneously on the same machine — that's intentional for

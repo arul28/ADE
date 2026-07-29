@@ -26,7 +26,9 @@ import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/type
 import type { ProjectLaunchContext } from "../types";
 
 const childProcess = vi.hoisted(() => {
-  const child = { unref: vi.fn() };
+  // `pid` stays undefined by default so the spawn record is a no-op for the
+  // tests that only assert argv shape; the duplicate-spawn test sets a live pid.
+  const child = { unref: vi.fn(), pid: undefined as number | undefined };
   return {
     child,
     spawn: vi.fn(() => child),
@@ -162,6 +164,7 @@ describe("connectToAde embedded mode", () => {
     embedded.createAdeRpcRequestHandler.mockClear();
     childProcess.spawn.mockClear();
     childProcess.child.unref.mockClear();
+    childProcess.child.pid = undefined;
     childProcess.spawn.mockImplementation(() => childProcess.child);
     runtimeService.installRuntimeService.mockClear();
     runtimeService.installRuntimeService.mockReturnValue({
@@ -725,6 +728,41 @@ describe("connectToAde embedded mode", () => {
     expect(childProcess.spawn).toHaveBeenCalledTimes(1);
     expect(client.request).toHaveBeenCalled();
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("does not spawn a second brain while a recently spawned one is still coming up", async () => {
+    // The spawn lock only serializes the first attempt. A brain that has not yet
+    // bound its socket must not attract a rival spawn from the next `ade code`,
+    // or a burst of launches leaves a burst of immortal brains.
+    const socketPath = useMissingMachineSocket();
+    childProcess.child.pid = process.pid;
+    mockAttachedClient();
+
+    const first = await connectToAde({ project });
+    await first.close();
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+
+    // Socket still absent, so this launch takes the same spawn path.
+    expect(fs.existsSync(socketPath)).toBe(false);
+    const second = await connectToAde({ project });
+    await second.close();
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawns again once the recorded brain is gone", async () => {
+    const socketPath = useMissingMachineSocket();
+    // A pid that cannot be alive: the record must not suppress the replacement.
+    childProcess.child.pid = 0x7fffffff;
+    mockAttachedClient();
+
+    const first = await connectToAde({ project });
+    await first.close();
+    const second = await connectToAde({ project });
+    await second.close();
+
+    expect(fs.existsSync(socketPath)).toBe(false);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(2);
   });
 
   it("unlinks stale machine socket files before retrying daemon startup", async () => {

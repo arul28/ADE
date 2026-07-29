@@ -22,6 +22,7 @@ export const EVENTS = Object.freeze({
   UPDATE_PROMPTED: "ade_update_prompted",
   BRAIN_RECOVERED: "ade_brain_recovered",
   PUBLISH_FAILING: "ade_publish_failing",
+  RELAY_SUPPRESSED: "ade_relay_suppressed",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
@@ -534,6 +535,7 @@ export const dashboardSpec = Object.freeze({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recovered from wedge"),
               eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing"),
+              eventNode(EVENTS.RELAY_SUPPRESSED, "Relay suppressed by rival process"),
               eventNode(EVENTS.UPDATE_INSTALL_ABORTED, "Update install aborted"),
               eventNode(EVENTS.UPDATE_QUIT_ESCALATED, "Update quit escalated"),
               eventNode(EVENTS.UPDATE_INSTALL_DID_NOT_LAND, "Update did not land"),

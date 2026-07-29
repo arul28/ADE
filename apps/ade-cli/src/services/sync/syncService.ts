@@ -573,9 +573,20 @@ export function createSyncService(args: SyncServiceArgs) {
     const status = accountAuthService.getStatus();
     return status.signedIn && Boolean(status.userId?.trim());
   };
+  // Governs whether this runtime ADVERTISES a relay URL to phones (pairing
+  // connect info, brain_status, hello_ok). A suppressed tunnel has deliberately
+  // stopped dialing because another ADE process owns this machine's relay slot,
+  // so continuing to hand out the URL points phones at a route that can only
+  // fail — and a phone that already saved it never purges the candidate,
+  // because the purge is driven by an explicitly null cloudRelayWssUrl.
+  //
+  // Route health deliberately does NOT use this: `ade doctor` and the desktop
+  // banner must still report relay as enabled-but-suppressed rather than
+  // silently "disabled", which is how this whole failure stayed invisible.
   const isCloudRelayUsable = (): boolean =>
     isRelayAccountSignedIn()
-    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true);
+    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true)
+    && args.syncTunnelClientService?.getStatus().controlSuppressed !== true;
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,

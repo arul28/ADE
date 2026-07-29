@@ -2783,6 +2783,54 @@ describe("relay control eviction (close 4505)", () => {
     }
   });
 
+  it("reports one coarse analytics event per suppression episode and no relay identifiers", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const sockets: StubWebSocket[] = [];
+    const captureAnalytics = vi.fn();
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlReplacedRearmMs: REARM_MS,
+      captureAnalytics,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      for (let round = 0; round <= MAX_CONTROL_REPLACED_REATTEMPTS; round += 1) {
+        sockets[sockets.length - 1]!.open();
+        sockets[sockets.length - 1]!.remoteClose(RELAY_CLOSE_CONTROL_REPLACED, "replaced by newer host");
+        await vi.advanceTimersByTimeAsync(CONTROL_REPLACED_RETRY_BASE_MS + 1);
+      }
+
+      // Four evictions, ONE event: the product fact is the episode, not the
+      // retry. Raw close reasons, the relay URL and the machineKey stay local.
+      expect(captureAnalytics).toHaveBeenCalledTimes(1);
+      const captured = captureAnalytics.mock.calls[0]![0] as Record<string, unknown>;
+      expect(captured).toMatchObject({
+        event: "ade_relay_suppressed",
+        surface: "api",
+        properties: { attempt: MAX_CONTROL_REPLACED_REATTEMPTS + 1, code: "control_replaced" },
+      });
+      expect(Object.keys(captured.properties as object).sort()).toEqual(["attempt", "code"]);
+      expect(JSON.stringify(captured)).not.toContain("replaced by newer host");
+      expect(JSON.stringify(captured)).not.toContain(service.getStatus().machineKey);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
   it("re-arms and dials promptly once this process wins the sync host lease", async () => {
     vi.useFakeTimers();
     const originalFetch = globalThis.fetch;

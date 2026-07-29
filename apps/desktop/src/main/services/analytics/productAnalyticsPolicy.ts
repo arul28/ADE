@@ -19,7 +19,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_install_aborted", "ade_update_quit_escalated", "ade_update_install_did_not_land",
   "ade_update_auto_applied",
   "ade_update_auto_apply_cancelled",
-  "ade_brain_recovered", "ade_publish_failing",
+  "ade_brain_recovered", "ade_publish_failing", "ade_relay_suppressed",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -42,6 +42,7 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_prompted: 10,
   ade_brain_recovered: 10,
   ade_publish_failing: 10,
+  ade_relay_suppressed: 10,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -64,6 +65,7 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_prompted: 3,
   ade_brain_recovered: 3,
   ade_publish_failing: 3,
+  ade_relay_suppressed: 3,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -126,6 +128,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_update_prompted: new Set(["from_version", "to_version", "user_action"]),
   ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
+  ade_relay_suppressed: new Set(["attempt", "code"]),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;

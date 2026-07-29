@@ -71,11 +71,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/ade-cli/src/bootstrap.ts` — the relay side of a paired route. The tunnel
   client is shared one-per-machine (`getSharedSyncTunnelClientService`, keyed by
-  `sync-cloud-relay.json`); bootstrap hands the shared listener to
-  `attachHostListener()` outside the construction factory so the runtime that
-  owns the listener supplies the port, loopback nonce, and bridge proof
-  regardless of which runtime created the instance. See *Relay tunnel and the
-  sync port* below.
+  `sync-cloud-relay.json`); bootstrap builds a
+  `relayTunnelAuthorityGate` per project scope, which starts the tunnel only
+  while this process holds the machine-wide sync host lease and hands the
+  shared listener to `attachHostListener()` outside the construction factory,
+  so the runtime that owns the listener supplies the port, loopback nonce, and
+  bridge proof regardless of which runtime created the instance. See *Relay
+  tunnel and the sync port* below.
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — the host end: paired
   hello authentication (with the `sync_host.paired_device_rejected` /
   `sync_host.paired_account_owner_mismatch` rejection logs and the
@@ -718,6 +720,22 @@ validates once the listener is bound. Symptom when this is wrong:
 `relayBridgeValidated` is false and `lastBridgeValidationAt` has never been set —
 relay silently never works, and a LAN auth failure becomes a total outage
 because no fallback route exists.
+
+Whether a runtime may dial the relay at all is a separate question, decided by
+`relayTunnelAuthorityGate` on the machine-wide sync host lease
+(`syncHostSingleton`), not by owning a listener. The relay Durable Object keeps
+one host control socket per `machineKey` and evicts the previous holder with
+close code `4505`, so two brains that both dial it evict each other in a tight
+loop and relay stays down for both — the failure mode that made this a lease in
+the first place. A `4505` close therefore suppresses redialing (bounded
+re-attempts on a 60 s floor, then a stop with a 10-minute re-arm) and surfaces
+as `routeHealth.relay.relayControlSuppressed` in `ade doctor` and in the
+desktop relay banner, rather than being retried as if it were a network fault.
+The gate rides out the momentary authority gap of an in-process project switch
+with a 5 s grace and re-attaches the host listener on every start, because
+`stop()` drops the listener reference and a start without it would leave a live
+control socket with no bridge, rejecting every phone connect with "host sync
+listener unavailable".
 
 ADE advertises its sync port with `tailscale serve --bg --tcp=<port>`. That
 outlives the process that registered it, so the served port is reclaimed after

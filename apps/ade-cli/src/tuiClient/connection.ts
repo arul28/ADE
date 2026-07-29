@@ -6,6 +6,11 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  clearRuntimeSpawnRecord,
+  hasRecentRuntimeSpawn,
+  recordRuntimeSpawn,
+} from "../services/runtime/runtimeSpawnRecord";
 import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext, RuntimeEventGapMetadata } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
@@ -534,6 +539,14 @@ function attachedRuntimeMismatchReason(
 }
 
 function spawnDaemon(socketPath: string): boolean {
+  // `ade code` has its own spawn path, so the machine CLI's spawn record is the
+  // only thing that stops the two from racing each other into duplicate brains.
+  // The spawn lock below only serializes the *first* attempt: when a cold brain
+  // takes longer to bind than tryDaemon's ~4.7s retry budget (routine on a large
+  // repo), the lock is released, the recovery path spawns a second brain, and a
+  // concurrent `ade code` spawns a third. Report success so the caller still
+  // runs its connect-with-retry against the brain that is already coming up.
+  if (hasRecentRuntimeSpawn(socketPath)) return true;
   const cliEntrypoint = resolveCliEntrypoint();
   const buildHash = computeCliEntrypointBuildHash();
   const nodeArgs =
@@ -559,6 +572,7 @@ function spawnDaemon(socketPath: string): boolean {
       env,
     },
   );
+  if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
   child.unref();
   return true;
 }
@@ -1025,6 +1039,11 @@ export async function connectToAde(args: {
       return await tryDaemon(1);
     } catch (firstError) {
       if (firstError instanceof StaleAdeSocketError) {
+        // tryDaemon ran with shutdownOnStale, so that brain was just asked to
+        // exit. Its pid can outlive the request by a moment, and if it was one
+        // we spawned the record would suppress the replacement this path exists
+        // to start.
+        clearRuntimeSpawnRecord(machineSocketPath);
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       const repaired = await repairService();

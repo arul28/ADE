@@ -120,6 +120,18 @@ type SyncTunnelClientArgs = {
   controlReadyStableMs?: number;
   /** Test seam for the post-eviction re-arm interval. */
   controlReplacedRearmMs?: number;
+  /**
+   * Edge-triggered product signal, emitted once per suppression episode when
+   * this machine gives up on relay because another ADE process owns it. Coarse
+   * counters only — never a URL, machineKey, or close reason.
+   */
+  captureAnalytics?: (input: {
+    event: "ade_relay_suppressed";
+    surface: "api";
+    properties: { attempt: number; code: string };
+    dedupeKey: string;
+    minimumIntervalMs: number;
+  }) => void;
   reconnectBackoffMs?: (attempt: number) => number;
   createWebSocket?: (
     url: string,
@@ -362,6 +374,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let controlReplacedStopped = false;
   let controlSuppressedReason: string | null = null;
   let controlReplacedRearmTimer: NodeJS.Timeout | null = null;
+  // Identifies one continuous suppression episode, so the analytics dedupe key
+  // collapses every eviction in a single war into one accepted event while a
+  // genuinely new episode (after a recovery) still reports.
+  let controlSuppressionEpisodeId = 0;
   let controlFailingSinceMs: number | null = null;
   let started = false;
   let stopped = false;
@@ -633,6 +649,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
    * the "which subset does this one clear" divergence cannot creep back in.
    */
   const resetControlEvictionState = (): void => {
+    if (controlReplacedAttempts > 0) controlSuppressionEpisodeId += 1;
     controlReplacedAttempts = 0;
     controlReplacedStopped = false;
     controlSuppressedReason = null;
@@ -663,6 +680,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         reason: RELAY_CONTROL_REPLACED_MESSAGE,
         rearmInMs: args.controlReplacedRearmMs ?? CONTROL_REPLACED_REARM_MS,
       });
+      // One event per episode, not per eviction: this is the coarse product
+      // fact "a machine lost relay to a rival ADE process", which is the only
+      // way to see in the field whether multi-brain hygiene actually holds.
+      try {
+        args.captureAnalytics?.({
+          event: "ade_relay_suppressed",
+          surface: "api",
+          properties: { attempt: controlReplacedAttempts, code: "control_replaced" },
+          dedupeKey: `relay-suppressed:${controlSuppressionEpisodeId}`,
+          minimumIntervalMs: 24 * 60 * 60 * 1_000,
+        });
+      } catch {
+        // Analytics must never affect relay behavior.
+      }
       controlReplacedRearmTimer ??= (() => {
         const timer = setTimeout(() => {
           controlReplacedRearmTimer = null;

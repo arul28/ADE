@@ -16254,12 +16254,33 @@ async function runServe(
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
         getServiceMainPid: getRuntimeServiceMainPid,
+        // The pre-loop claim above only sees a socket that ALREADY existed. Two
+        // brains started together on a fresh path both pass it, then one wins
+        // the lease and binds while the loser waits here forever — never
+        // reaching its own bind check. Re-check while we wait, and only for a
+        // provably live owner so a probe hiccup can't make a brain quit on
+        // itself.
+        abortIf: async () => {
+          if (isAdeRuntimeNamedPipePath(socketPath) || !fs.existsSync(socketPath)) return false;
+          return await probeLocalSocketForLiveness(socketPath) === "live";
+        },
       });
     } catch (error: unknown) {
       // Cross-channel conflict (another build's live brain owns mobile sync):
       // real builds never run sync-less, so fail before publishing ade.sock.
-      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+      const [{ SyncHostSingletonConflictError }, { SyncHostStartupAbortedError }] = await Promise.all([
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/syncHostStartupLoop"),
+      ]);
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof SyncHostStartupAbortedError) {
+        await disposeServeResources();
+        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
+          socketPath,
+          cause: "Another ADE brain took this socket while this one waited for mobile sync.",
+          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+        }), { code: "socket_owned_by_other" as const });
+      }
       if (error instanceof SyncHostSingletonConflictError) {
         await disposeServeResources();
         throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
@@ -17035,6 +17056,18 @@ function formatSyncStatus(value: unknown): string {
           relayEndToEndRoundTripMs == null ? "" : ` (${relayEndToEndRoundTripMs}ms)`
         }`
       : "not yet verified";
+  // Start of the CURRENT uninterrupted control outage. The `relay control
+  // error` row can't answer "how long has this been broken", because the brain
+  // restamps its failure on every retry — and that duration is exactly what
+  // separates an ordinary sleep/wake redial from a route that is really down.
+  // Null while relay control is connected.
+  const relayFailingSinceMs = typeof relay.relayControlFailingSinceMs === "number"
+    && Number.isFinite(relay.relayControlFailingSinceMs)
+    ? relay.relayControlFailingSinceMs
+    : null;
+  const relayFailingSince = relayFailingSinceMs == null
+    ? null
+    : relativeTime(new Date(relayFailingSinceMs).toISOString());
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;
@@ -17064,6 +17097,7 @@ function formatSyncStatus(value: unknown): string {
     ["tailscale", tailscaleState],
     ["relay", relayState],
     ["relay control error", relay.lastControlError],
+    ["relay failing since", relayFailingSince],
     ["relay control opened", relay.lastControlOpenAt],
     ["relay bridge validated", relay.lastBridgeValidationAt],
     ["relay end-to-end", relayEndToEndState],

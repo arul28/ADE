@@ -1625,6 +1625,12 @@ export async function createAdeRuntime(args: {
           : null;
       },
       onPublicationStateChanged: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
+      // The analytics service is machine-scoped and shared, so capturing it in
+      // this one-per-machine factory closure is safe (unlike the listener
+      // accessors above, which is why those moved to attachHostListener).
+      captureAnalytics: (input) => {
+        productAnalyticsService.captureInternal(input);
+      },
     });
     return service;
   });
