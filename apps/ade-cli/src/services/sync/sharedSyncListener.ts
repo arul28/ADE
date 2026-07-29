@@ -138,6 +138,12 @@ export type SyncPeerHandoffSnapshot = {
   /** Legacy project-chat handoff shape. */
   subscribedChatSessionIds?: string[];
   chatTranscriptOffsets?: Record<string, number>;
+  /**
+   * Highest host-assigned chat-event sequence for each handed-off
+   * subscription. The next project host restores these before it resumes the
+   * live socket, so a host rehydration cannot reuse `(sessionId, seq)`.
+   */
+  chatEventSequences?: Record<string, number>;
   /** All-projects roster (mobile hub) subscription, restored on adoption so a
    * hosted-project switch does not silently stop the hub feed. */
   rosterSubscribed?: boolean;

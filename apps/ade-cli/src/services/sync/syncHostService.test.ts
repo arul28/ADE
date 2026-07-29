@@ -6902,6 +6902,24 @@ describe("sync host handoff over a shared listener", () => {
         waitForEnvelope(envelopes, "chat_subscribe", "foreign-subscribe"),
       ]);
 
+      const beforeHandoffEvent: AgentChatEventEnvelope = {
+        sessionId: "personal-chat",
+        timestamp: "2026-07-09T11:59:00.000Z",
+        sequence: 40,
+        event: { type: "text", text: "personal update before handoff" },
+      };
+      fs.appendFileSync(personalTranscriptPath, `${JSON.stringify(beforeHandoffEvent)}\n`, "utf8");
+      const beforeHandoffStreamed = await waitForValue(
+        () => envelopes.find((envelope) => {
+          if (envelope.type !== "chat_event") return false;
+          const payload = envelope.payload as AgentChatEventEnvelope & { event: { text?: string } };
+          return payload.sessionId === "personal-chat"
+            && payload.event.text === "personal update before handoff";
+        }),
+        "personal chat event before handoff",
+      );
+      expect(beforeHandoffStreamed.payload).toMatchObject({ seq: 40 });
+
       await hostA.dispose();
       hostA = null;
       const envelopeCountAfterDispose = envelopes.length;
@@ -6951,6 +6969,8 @@ describe("sync host handoff over a shared listener", () => {
       const personalEvent: AgentChatEventEnvelope = {
         sessionId: "personal-chat",
         timestamp: "2026-07-09T12:00:00.000Z",
+        // Simulate a rehydrated legacy source that restarted its own counter.
+        // The sync host's carried high-water still owns the wire identity.
         sequence: 1,
         event: { type: "text", text: "personal update after handoff" },
       };
@@ -6964,6 +6984,7 @@ describe("sync host handoff over a shared listener", () => {
       );
       expect(streamed.payload).toMatchObject({
         sessionId: "personal-chat",
+        seq: 41,
         event: { type: "text", text: "personal update after handoff" },
       });
       expect(closeEvents).toEqual([]);
@@ -9255,6 +9276,32 @@ describe("chat event replay buffer (resumable chat streams)", () => {
     expect(recordChatEventInReplayBuffer(buffer, first)).toBe(1);
     expect(buffer.latestSeq).toBe(2);
     expect(buffer.entries.map((entry) => entry.seq)).toEqual([1, 2]);
+  });
+
+  it("continues above a rehydrated host high-water without reusing a session seq", () => {
+    const beforeHydration = createChatEventReplayBuffer();
+    expect(recordChatEventInReplayBuffer(beforeHydration, chatEnvelope(40))).toBe(40);
+
+    const afterHydration = createChatEventReplayBuffer(beforeHydration.latestSeq);
+    // Even a legacy/reset source envelope cannot make the new host reuse 40.
+    const resetSourceEvent = chatEnvelope(1, "first event after host hydration");
+    expect(recordChatEventInReplayBuffer(afterHydration, resetSourceEvent)).toBe(41);
+    expect(new Set([
+      `${sessionId}:${beforeHydration.entries[0]!.seq}`,
+      `${sessionId}:${afterHydration.entries[0]!.seq}`,
+    ]).size).toBe(2);
+    expect(afterHydration.latestSeq).toBe(41);
+  });
+
+  it("keeps legacy event envelopes compatible while using durable sequence floors when present", () => {
+    const legacy = chatEnvelope(1) as AgentChatEventEnvelope & { sequence?: number };
+    delete legacy.sequence;
+    const legacyBuffer = createChatEventReplayBuffer();
+    expect(recordChatEventInReplayBuffer(legacyBuffer, legacy)).toBe(1);
+
+    const modernBuffer = createChatEventReplayBuffer();
+    expect(recordChatEventInReplayBuffer(modernBuffer, chatEnvelope(73))).toBe(73);
+    expect(modernBuffer.entries[0]?.event).not.toHaveProperty("seq");
   });
 
   it("falls back to snapshot for a fresh subscribe without sinceSeq", () => {
