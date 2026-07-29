@@ -134,13 +134,30 @@ function chat(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessio
   };
 }
 
-function event(sessionId: string, sequence: number, type: string): AgentChatEventEnvelope {
+function event(
+  sessionId: string,
+  sequence: number,
+  type: string,
+  overrides: Partial<AgentChatEventEnvelope> = {},
+): AgentChatEventEnvelope {
   return {
     sessionId,
     sequence,
     timestamp: `2026-01-01T00:00:0${sequence}.000Z`,
     event: { type } as AgentChatEventEnvelope["event"],
+    ...overrides,
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 async function flushAsyncEffects() {
@@ -311,6 +328,52 @@ describe("AdeCodeApp polling", () => {
     expect(mocks.listChatSessions).toHaveBeenCalledTimes(2);
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
+    await unmountApp(instance);
+  });
+
+  it("keeps live output flushed while selected-chat history is in flight", async () => {
+    mocks.listLanes.mockResolvedValue([lane({ worktreeAvailable: true })]);
+    const history = deferred<{
+      sessionId: string;
+      events: AgentChatEventEnvelope[];
+      truncated: boolean;
+    }>();
+    mocks.getChatHistory.mockReturnValue(history.promise);
+    const instance = await renderApp(
+      <AdeCodeApp project={{ ...project, sessionHint: "chat-1" }} />,
+    );
+
+    expect(mocks.getChatHistory).toHaveBeenCalledWith(connection, "chat-1");
+
+    const delayedLive = event("chat-1", 2, "text", {
+      event: { type: "text", text: "delayed output survives hydration" },
+    });
+    await act(async () => {
+      [...chatListeners][0]?.(delayedLive);
+      await vi.advanceTimersByTimeAsync(40);
+    });
+    await flushAsyncEffects();
+
+    history.resolve({
+      sessionId: "chat-1",
+      events: [
+        event("chat-1", 1, "user_message", {
+          event: {
+            type: "user_message",
+            text: "start",
+            turnId: "turn-1",
+            messageId: "message-1",
+          },
+        }),
+        event("chat-1", 3, "done", {
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        }),
+      ],
+      truncated: false,
+    });
+    await flushAsyncEffects();
+
+    expect(stripAnsi(instance.lastFrame() ?? "")).toContain("delayed output survives hydration");
     await unmountApp(instance);
   });
 

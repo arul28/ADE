@@ -156,6 +156,18 @@ export function mergeDetachedTuiHistoryTail(
 }
 
 /**
+ * Freeze the TUI-semantic identities already resident when an asynchronous
+ * history request starts. Include both rendered and pending envelopes at the
+ * call site so a pending pre-request replay cannot masquerade as in-flight
+ * output if it flushes before the snapshot returns.
+ */
+export function captureTuiHistoryArrivalWatermark(
+  events: readonly AgentChatEventEnvelope[],
+): ReadonlySet<string> {
+  return captureAgentChatHistoryArrivalWatermark(events, tuiEventDedupKey);
+}
+
+/**
  * Reconcile a refreshed authoritative tail with cached scrollback and events
  * received while hydration was in flight. Older cached rows stay before the
  * tail; replayed historical rows are never appended after it.
@@ -164,11 +176,8 @@ export function mergeHydratedTuiHistory(
   snapshotTail: readonly AgentChatEventEnvelope[],
   existing: readonly AgentChatEventEnvelope[],
   pending: readonly AgentChatEventEnvelope[],
+  arrivalWatermark: ReadonlySet<string>,
 ): AgentChatEventEnvelope[] {
-  const arrivalWatermark = captureAgentChatHistoryArrivalWatermark(
-    existing,
-    tuiEventDedupKey,
-  );
   const merged = mergeAgentChatHistorySnapshot(
     [...snapshotTail],
     [...existing, ...pending],

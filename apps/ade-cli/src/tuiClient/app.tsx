@@ -271,7 +271,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
-import { advanceOlderHistoryCursor, mergeDetachedTuiHistoryTail, mergeHydratedTuiHistory, prependOlderTuiHistory, resolveSnapshotHistoryCursor, shouldRequestOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP, TUI_SNAPSHOT_DISPLAY_CAP, type OlderHistoryStatus } from "./olderHistory";
+import { advanceOlderHistoryCursor, captureTuiHistoryArrivalWatermark, mergeDetachedTuiHistoryTail, mergeHydratedTuiHistory, prependOlderTuiHistory, resolveSnapshotHistoryCursor, shouldRequestOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP, TUI_SNAPSHOT_DISPLAY_CAP, type OlderHistoryStatus } from "./olderHistory";
 import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
 import {
   EMPTY_BRACKETED_PASTE_STATE,
@@ -3680,7 +3680,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
   }, []);
 
-  const mergeHydratedEventsWithLive = useCallback((sessionId: string, displayEvents: AgentChatEventEnvelope[]) => {
+  const captureHydratedEventsWatermark = useCallback((sessionId: string) => (
+    captureTuiHistoryArrivalWatermark([
+      ...(eventsBySessionIdRef.current[sessionId] ?? []),
+      ...pendingChatEnvelopesRef.current.filter((envelope) => envelope.sessionId === sessionId),
+    ])
+  ), []);
+
+  const mergeHydratedEventsWithLive = useCallback((
+    sessionId: string,
+    displayEvents: AgentChatEventEnvelope[],
+    arrivalWatermark: ReadonlySet<string>,
+  ) => {
     const existing = eventsBySessionIdRef.current[sessionId] ?? [];
     const pending = pendingChatEnvelopesRef.current.filter((envelope) => envelope.sessionId === sessionId);
     if (detachedHistorySessionIdsRef.current.has(sessionId)) {
@@ -3693,7 +3704,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       );
     }
     if (existing.length === 0 && pending.length === 0) return displayEvents;
-    return mergeHydratedTuiHistory(displayEvents, existing, pending);
+    return mergeHydratedTuiHistory(displayEvents, existing, pending, arrivalWatermark);
   }, []);
 
   const commitActiveSessionEvents = useCallback((
@@ -4757,6 +4768,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     const generation = drawerPreviewGenerationRef.current + 1;
     drawerPreviewGenerationRef.current = generation;
+    const historyArrivalWatermark = captureHydratedEventsWatermark(sessionId);
     void (async () => {
       try {
         const history = await getChatHistory(conn, sessionId);
@@ -4798,7 +4810,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // displayed-oldest ← buffer ← tailStartOffset seams contiguous.
         const dedupedHistory = dedupeTuiEvents(visibleHistory, Math.max(1, visibleHistory.length));
         const { display, buffer: olderBuffer } = splitSnapshotForDisplay(dedupedHistory);
-        const historyEvents = mergeHydratedEventsWithLive(sessionId, display);
+        const historyEvents = mergeHydratedEventsWithLive(
+          sessionId,
+          display,
+          historyArrivalWatermark,
+        );
         loadedSessionIdRef.current = sessionId;
         commitActiveSessionEvents(sessionId, historyEvents, history.events.length);
         // A locally cleared transcript view must not page older history back in.
@@ -4832,7 +4848,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ));
       }
     })();
-  }, [clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
   const toggleDrawerClosedCliGroup = useCallback((laneId: string | null) => {
     if (!laneId) return;
     setDrawerClosedCliExpandedLaneIds((prev) => {
@@ -7398,6 +7414,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         nextSessionId,
       });
       if (shouldHydrateHistory) {
+        const historyArrivalWatermark = captureHydratedEventsWatermark(nextSessionId);
         const history = await getChatHistory(conn, nextSessionId);
         if (!isCurrentRefresh()) return;
         if (history.unavailable === true) {
@@ -7427,7 +7444,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           // displayed-oldest ← buffer ← tailStartOffset seams contiguous.
           const dedupedHistory = dedupeTuiEvents(visibleHistory, Math.max(1, visibleHistory.length));
           const { display, buffer: olderBuffer } = splitSnapshotForDisplay(dedupedHistory);
-          nextEvents = mergeHydratedEventsWithLive(nextSessionId, display);
+          nextEvents = mergeHydratedEventsWithLive(
+            nextSessionId,
+            display,
+            historyArrivalWatermark,
+          );
           const activeModelId = nextSession?.modelId ?? null;
           const fallbackContext = activeModelId ? getModelById(activeModelId)?.contextWindow ?? null : null;
           const stats = latestTokenStats(history.events, fallbackContext);
@@ -7584,7 +7605,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (draftMode) draftSeededFromHistoryRef.current = true;
     }
-  }, [clearedAt, clearOlderHistoryCursor, commitActiveSessionEvents, drawerLaneId, loadProviderModels, mergeHydratedEventsWithLive, modelState.provider, project, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, selectedDrawerChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  }, [captureHydratedEventsWatermark, clearedAt, clearOlderHistoryCursor, commitActiveSessionEvents, drawerLaneId, loadProviderModels, mergeHydratedEventsWithLive, modelState.provider, project, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, selectedDrawerChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
 
   const renameLane = useCallback(async (laneIdArg: string | null, name: string) => {
     const conn = connectionRef.current;

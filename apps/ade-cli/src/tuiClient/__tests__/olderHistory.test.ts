@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import {
   advanceOlderHistoryCursor,
+  captureTuiHistoryArrivalWatermark,
   mergeDetachedTuiHistoryTail,
   mergeHydratedTuiHistory,
   prependOlderTuiHistory,
@@ -240,6 +241,7 @@ describe("mergeHydratedTuiHistory", () => {
       [{ ...latest }],
       [older, latest, replayedOldTurn],
       [genuinelyLive],
+      captureTuiHistoryArrivalWatermark([older, latest, replayedOldTurn]),
     );
 
     expect(merged.map((entry) => entry.sequence)).toEqual([10, 20, 21]);
@@ -266,12 +268,13 @@ describe("mergeHydratedTuiHistory", () => {
       [replayedPrompt],
       [older, originalPrompt],
       [],
+      captureTuiHistoryArrivalWatermark([older, originalPrompt]),
     );
 
     expect(merged).toEqual([older, originalPrompt]);
   });
 
-  it("preserves delayed pending output that sorts inside the refreshed snapshot", () => {
+  it("preserves delayed live output flushed while hydration is in flight", () => {
     const prompt = envelope(10, {
       timestamp: "2026-01-01T12:10:00.000Z",
       event: { type: "user_message", text: "ship it", turnId: "turn-1", messageId: "message-1" },
@@ -289,10 +292,17 @@ describe("mergeHydratedTuiHistory", () => {
       event: { type: "text", text: "delayed pending output" },
     });
 
+    const existingAtRequestStart = [prompt, done, staleReplay];
+    const arrivalWatermark = captureTuiHistoryArrivalWatermark(existingAtRequestStart);
+    const pending = [delayedPending];
+    const existingAtMerge = [...existingAtRequestStart, ...pending.splice(0)];
+
+    expect(pending).toEqual([]);
     const merged = mergeHydratedTuiHistory(
       [{ ...prompt }, { ...done }],
-      [prompt, done, staleReplay],
-      [delayedPending],
+      existingAtMerge,
+      pending,
+      arrivalWatermark,
     );
 
     expect(merged).toEqual([prompt, delayedPending, done]);
@@ -315,7 +325,12 @@ describe("mergeHydratedTuiHistory", () => {
       });
     });
 
-    const merged = mergeHydratedTuiHistory(snapshotTail, existing, pending);
+    const merged = mergeHydratedTuiHistory(
+      snapshotTail,
+      existing,
+      pending,
+      captureTuiHistoryArrivalWatermark(existing),
+    );
 
     expect(merged).toHaveLength(TUI_LOADED_EVENT_CAP);
     expect(merged[0]?.sequence).toBe(existingCount + pending.length - TUI_LOADED_EVENT_CAP + 1);
