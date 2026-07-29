@@ -691,13 +691,18 @@ export async function createAdeRuntime(args: {
   // Late-bound because the publisher is constructed after the session/PTY
   // services. Session changes still use it once publishing is attached.
   let pushPublisherForPtySignals: PushPublisherService | null = null;
+  let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
   const sessionService = createSessionService({ db });
   sessionService.onChanged((event) => {
     pushEvent("runtime", { type: "terminal_session_changed", event });
     const session = sessionService.get(event.sessionId);
+    const runtimeState = session
+      ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
+        ?? session.runtimeState
+      : null;
     if (
       session
-      && (session.status !== "running" || session.runtimeState === "idle")
+      && (session.status !== "running" || runtimeState === "idle")
       && (
         session.settleOverride === "settled"
         || (session.settleOverride !== "active" && Boolean(session.settledAt))
@@ -960,6 +965,7 @@ export async function createAdeRuntime(args: {
     loadPty: ptyBackend ?? (() => nodePty),
     disposePtyBackend: ptyBackend?.dispose
   });
+  ptyServiceForSessionChanges = ptyService;
 
   const testService = createTestService({
     db,
