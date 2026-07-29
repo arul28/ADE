@@ -1216,7 +1216,7 @@ describe("SessionListPane", () => {
       const header = screen.getByText("Elsewhere Lane").closest(
         ".ade-lane-group-header",
       )!;
-      expect(header.closest(".opacity-55")).not.toBeNull();
+      expect(header.closest("[data-dimmed]")).not.toBeNull();
       const marker = document.querySelector("[data-machine-marker-mode]")!;
       expect(marker.getAttribute("data-machine-online")).toBe("false");
       // A glyph cannot say "offline", so the machine name is always spelled out.

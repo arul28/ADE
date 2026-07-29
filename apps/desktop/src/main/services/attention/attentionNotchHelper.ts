@@ -160,6 +160,7 @@ export class AttentionNotchHelper {
       });
       child.once("close", (code, signal) => {
         this.childReady = false;
+        this.lastSurface = null;
         this.stopRefreshTimer();
         if (this.stableTimer) {
           clearTimeout(this.stableTimer);
@@ -427,12 +428,7 @@ export class AttentionNotchHelper {
   }
 
   private activeRefreshIntervalMs(): number {
-    return (
-      this.child
-      && this.childReady
-      && this.lastSurface != null
-      && this.screenAwake
-    )
+    return (this.lastSurface != null && this.screenAwake)
       ? (this.options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS)
       : (this.options.idleRefreshIntervalMs ?? IDLE_REFRESH_INTERVAL_MS);
   }

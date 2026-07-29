@@ -24,9 +24,9 @@ export { attentionNotchSettingsFromPreferences } from "./attentionNotchLocalSett
 const POLL_INTERVAL_MS = 15_000;
 const PRESENCE_INTERVAL_MS = 30_000;
 const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
-// This backstop sits above the main-process budget so normal host failures
-// retain their real error and only a wedged IPC layer replaces it.
-const ATTENTION_SNAPSHOT_TIMEOUT_MS = 45_000;
+// This backstop must clear a 15s relay request, one 401 retry, and the 30s
+// local-runtime fallback so legitimate host failures retain their real error.
+const ATTENTION_SNAPSHOT_TIMEOUT_MS = 75_000;
 const NOTCH_SETTINGS_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
 
@@ -489,10 +489,10 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
     send();
     schedule();
     const onVisibilityChange = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
+      // Coming back reports at once: presence is how other devices learn this
+      // machine is being watched, and a 120s-stale "hidden" claim right as the
+      // user returns is the one case that misleads. Going hidden waits — `blur`
+      // has already reported the foreground change.
       if (document.visibilityState === "visible") send();
       schedule();
     };

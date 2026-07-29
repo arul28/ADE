@@ -6985,10 +6985,29 @@ app.whenReady().then(async () => {
     onOutput: handleAttentionNotchOutput,
     onRefreshRequested: requestAttentionNotchRefresh,
   });
-  powerMonitor?.on?.("lock-screen", () => attentionNotchHelper?.setScreenAwake(false));
-  powerMonitor?.on?.("suspend", () => attentionNotchHelper?.setScreenAwake(false));
-  powerMonitor?.on?.("unlock-screen", () => attentionNotchHelper?.setScreenAwake(true));
-  powerMonitor?.on?.("resume", () => attentionNotchHelper?.setScreenAwake(true));
+  // Sleep does not always lock the machine, so resume must clear suspension
+  // without overriding the independent lock state.
+  let notchScreenLocked = false;
+  let notchSystemSuspended = false;
+  const syncNotchScreenState = () => {
+    attentionNotchHelper?.setScreenAwake(!notchScreenLocked && !notchSystemSuspended);
+  };
+  powerMonitor?.on?.("lock-screen", () => {
+    notchScreenLocked = true;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("unlock-screen", () => {
+    notchScreenLocked = false;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("suspend", () => {
+    notchSystemSuspended = true;
+    syncNotchScreenState();
+  });
+  powerMonitor?.on?.("resume", () => {
+    notchSystemSuspended = false;
+    syncNotchScreenState();
+  });
 
   attentionIpcBridge = registerIpc({
     getCtx: () => {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, DesktopTower, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -15,9 +15,9 @@ import {
 import { useAppStore } from "../../state/appStore";
 import {
   useCrossMachineLaneUnion,
-  type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
+import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
@@ -106,6 +106,19 @@ function bucketHandoffJobsByTime(jobs: HandoffLaunchJob[]) {
     else older.push(job);
   }
   return { today, yesterday, older };
+}
+
+/**
+ * Whether a foreign lane has work actually in flight. An offline machine's chats
+ * can still read as running — that is only the last thing it reported — so both
+ * the collapse default and the auto-collapse effect must ask this, not the
+ * partition alone, or expanding a dropped machine's group slams it shut again.
+ */
+function foreignRowHasLiveWork(
+  row: CrossMachineLaneRow,
+  active: readonly TerminalSessionSummary[],
+): boolean {
+  return row.online && active.length > 0;
 }
 
 function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
@@ -397,6 +410,7 @@ function StickyGroupHeader({
       onLayoutAnimationStart={() => setSliding(true)}
       onLayoutAnimationComplete={() => setSliding(false)}
       className={cn("relative", !isLane && "mt-0.5 first:mt-0", dimmed && "opacity-55")}
+      data-dimmed={dimmed ? "true" : undefined}
     >
       {dropIndicatorEdge ? (
         <div
@@ -615,55 +629,6 @@ function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }
       <span className="tabular-nums">#{pr.githubPrNumber}</span>
       <span style={{ color }}>{label}</span>
     </span>
-  );
-}
-
-/**
- * Adaptive machine marker on a lane header.
- *
- * Rendered ONLY for lanes that are not on the machine you're sitting at — the
- * common single-machine case pays nothing. Default form is a bare monochrome
- * glyph; the name is promoted into the row when a glyph alone would be
- * ambiguous (the machine is offline, two or more foreign machines on screen, or
- * the branch also exists elsewhere). The lane accent owns the color channel, so
- * this stays monochrome: a tint here would read as a second lane color.
- *
- * An unreachable machine keeps its rows, so this has a dimmed form — and it is
- * the only thing on the row that says why the group has gone quiet.
- */
-function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
-  return (
-    <SmartTooltip
-      forceEnabled
-      content={{
-        label: marker.machineName,
-        description: marker.online
-          ? "This lane lives on another connected machine."
-          : "This machine is offline. Its lanes and chats are shown as last reported and cannot be acted on.",
-      }}
-    >
-      <span
-        role="img"
-        tabIndex={0}
-        className={cn(
-          "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px text-[10px] font-medium leading-none",
-          marker.online
-            ? "border-amber-400/20 bg-amber-400/[0.06] text-muted-fg/70"
-            : "border-white/[0.08] bg-white/[0.03] text-muted-fg/45",
-        )}
-        aria-label={marker.online ? marker.machineName : `${marker.machineName}, offline`}
-        data-machine-id={marker.machineId}
-        data-machine-marker-mode={marker.mode}
-        data-machine-online={marker.online ? "true" : "false"}
-      >
-        <DesktopTower
-          size={10}
-          weight="duotone"
-          className={cn("shrink-0", marker.online ? "text-amber-400/85" : "text-muted-fg/45")}
-        />
-        {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
-      </span>
-    </SmartTooltip>
   );
 }
 
@@ -1490,12 +1455,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       const foreignRow = foreignRows.find(
         (row) => `${row.machineId}:${row.lane.id}` === laneId,
       );
-      // An offline machine's chats can look "active" — that is just the last
-      // thing it reported. Discarding the expansion on that evidence would slam
-      // the group shut the moment the user opened it to read them.
       if (
-        foreignRow?.online
-        && partitionQuietSessions(foreignRow.sessions).active.length > 0
+        foreignRow
+        && foreignRowHasLiveWork(foreignRow, partitionQuietSessions(foreignRow.sessions).active)
       ) {
         toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
       }
@@ -1779,10 +1741,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         const compositeLaneId = `${row.machineId}:${row.lane.id}`;
         const marker = markersByLaneId.get(compositeLaneId) ?? null;
         const quiet = partitionQuietSessions(row.sessions);
-        // An offline machine's chats cannot be running, whatever they last
-        // reported, so the group folds shut like a quiet one: retained and
+        // An offline machine's group folds shut like a quiet one: retained and
         // inspectable, not presented as live work.
-        const laneQuiet = !row.online || quiet.active.length === 0;
+        const laneQuiet = !foreignRowHasLiveWork(row, quiet.active);
         const laneOpenMarker = `lane-open:${compositeLaneId}`;
         const collapsed = laneQuiet
           ? !workCollapsedSectionIds.includes(laneOpenMarker)

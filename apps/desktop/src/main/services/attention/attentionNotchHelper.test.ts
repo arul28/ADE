@@ -369,7 +369,7 @@ describe("AttentionNotchHelper", () => {
     }
   });
 
-  it("restarts after a spawn error without leaving a refresh timer running", () => {
+  it("restarts after a spawn error without retaining the previous surface or refresh timer", () => {
     vi.useFakeTimers();
     try {
       const failedChild = fakeChild();
@@ -384,7 +384,7 @@ describe("AttentionNotchHelper", () => {
         onOutput: vi.fn(),
         onRefreshRequested,
         refreshIntervalMs: 1_000,
-        idleRefreshIntervalMs: 1_000,
+        idleRefreshIntervalMs: 4_000,
         restartDelayMs: 100,
         platform: "darwin",
       });
@@ -407,8 +407,16 @@ describe("AttentionNotchHelper", () => {
         celebrationsEnabled: true,
         soundsEnabled: false,
       });
+      failedChild.emit("spawn");
+      (failedChild.stdout as PassThrough).write(
+        `${JSON.stringify({ type: "surface", displayId: 1, surface: "menu_bar" })}\n`,
+      );
       failedChild.emit("error", new Error("spawn ENOEXEC"));
       failedChild.emit("close", -2, null);
+      expect(helper.getHealth()).toMatchObject({
+        state: "starting",
+        surface: null,
+      });
       vi.advanceTimersByTime(1_000);
 
       expect(onRefreshRequested).not.toHaveBeenCalled();
@@ -416,6 +424,8 @@ describe("AttentionNotchHelper", () => {
 
       restartedChild.emit("spawn");
       vi.advanceTimersByTime(1_000);
+      expect(onRefreshRequested).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(3_000);
       expect(onRefreshRequested).toHaveBeenCalledOnce();
       helper.dispose();
     } finally {

@@ -51,7 +51,6 @@ import {
 import {
   deriveLaneMachineOptions,
   type LaneMachineOption,
-  type LaneMachineRepoMatch,
 } from "../components/lanes/laneMachines";
 import {
   rootAppStoreApi,
@@ -641,6 +640,8 @@ type SyncRuntime = {
   graceTimer: ReturnType<typeof setTimeout> | null;
   /** Last `lane.list` read per machine, keyed the same way the store is. */
   laneReadAtMsByMachineId: Map<string, number>;
+  /** Lane ids a completed lane read did not explain, so we stop re-asking. */
+  unresolvedLaneIdsByMachineId: Map<string, Set<string>>;
 };
 
 /**
@@ -682,6 +683,7 @@ const runtime: SyncRuntime = {
   dropsByMachineId: new Map(),
   graceTimer: null,
   laneReadAtMsByMachineId: new Map(),
+  unresolvedLaneIdsByMachineId: new Map(),
 };
 
 /**
@@ -784,12 +786,21 @@ function isMachineEligibleNow(machineId: string): boolean {
  * Whether this tick should re-read a machine's lanes as well as its chats.
  * First read always does; after that the lane list has its own slow cadence.
  */
-function shouldReadLanes(machineId: string, nowMs: number): boolean {
+function shouldReadLanes(machineId: string): boolean {
   const readAtMs = runtime.laneReadAtMsByMachineId.get(machineId);
-  return readAtMs == null || nowMs - readAtMs >= FOREIGN_LANE_REFRESH_MS;
+  return readAtMs == null || Date.now() - readAtMs >= FOREIGN_LANE_REFRESH_MS;
 }
 
-/** Lanes referenced by chats we can see but have no lane row for. */
+/**
+ * A chat on a lane we have no row for, that a lane read has not already failed
+ * to explain.
+ *
+ * The second half is load-bearing. `session.list` does not filter on lane
+ * status while `lane.list` asks for `includeArchived: false`, so a chat on an
+ * archived lane is permanently unresolvable — and without remembering that, it
+ * would demand a fresh lane read on every single tick, which is exactly the cost
+ * this cadence exists to remove.
+ */
 function hasUnknownLaneReference(
   machineId: string,
   sessions: readonly TerminalSessionSummary[],
@@ -798,7 +809,41 @@ function hasUnknownLaneReference(
     (rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId]?.lanes ?? [])
       .map((lane) => lane.id),
   );
-  return sessions.some((session) => session.laneId && !known.has(session.laneId));
+  const unexplained = runtime.unresolvedLaneIdsByMachineId.get(machineId);
+  return sessions.some((session) =>
+    session.laneId && !known.has(session.laneId) && !unexplained?.has(session.laneId));
+}
+
+/**
+ * Applies the lane cadence to one machine's read and records what it settled.
+ *
+ * Both read paths share this because the invariant they must not drift on is
+ * "stamp the cadence only when lanes were actually read" — get that wrong on one
+ * side and that machine pays the full `includeStatus` cost on every tick forever.
+ */
+async function resolveLaneCadence(
+  machineId: string,
+  prefetched: LaneSummary[] | null,
+  sessions: readonly TerminalSessionSummary[],
+  generation: number,
+  catchUp: () => Promise<LaneSummary[]>,
+): Promise<LaneSummary[] | null> {
+  const lanes = prefetched
+    ?? (hasUnknownLaneReference(machineId, sessions) ? await catchUp() : null);
+  if (!lanes) return null;
+  // The catch-up read awaits the network, and a scope change in that window has
+  // already cleared these maps for the new scope. Re-populating them here would
+  // suppress that scope's first lane read for a full cadence.
+  if (generation !== runtime.generation) return null;
+  runtime.laneReadAtMsByMachineId.set(machineId, Date.now());
+  const known = new Set(lanes.map((lane) => lane.id));
+  const unexplained = new Set<string>();
+  for (const session of sessions) {
+    if (session.laneId && !known.has(session.laneId)) unexplained.add(session.laneId);
+  }
+  if (unexplained.size > 0) runtime.unresolvedLaneIdsByMachineId.set(machineId, unexplained);
+  else runtime.unresolvedLaneIdsByMachineId.delete(machineId);
+  return lanes;
 }
 
 async function readMachine(
@@ -823,9 +868,8 @@ async function readMachine(
       `lane.list on ${machineName}`,
     );
   try {
-    const wantLanes = shouldReadLanes(machineId, Date.now());
     const [laneResult, sessionResult] = await Promise.all([
-      wantLanes ? readLanes() : null,
+      shouldReadLanes(machineId) ? readLanes() : null,
       withTimeout(
         callAction(targetId, projectId, {
           domain: "session",
@@ -843,13 +887,14 @@ async function readMachine(
     // A chat is rendered under its lane, so a chat launched on a lane this
     // machine has never reported would be invisible until the slow lane cadence
     // came round. Seeing one is the signal to pay for the lane read now.
-    let lanes = laneResult ? decodeForeignLanes(laneResult.result) : null;
-    if (!lanes && hasUnknownLaneReference(machineId, sessions)) {
-      const catchUp = await readLanes();
-      if (generation !== runtime.generation) return;
-      lanes = decodeForeignLanes(catchUp.result);
-    }
-    if (lanes) runtime.laneReadAtMsByMachineId.set(machineId, Date.now());
+    const lanes = await resolveLaneCadence(
+      machineId,
+      laneResult ? decodeForeignLanes(laneResult.result) : null,
+      sessions,
+      generation,
+      async () => decodeForeignLanes((await readLanes()).result),
+    );
+    if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
       machineId,
       machineName,
@@ -895,9 +940,8 @@ async function readThisMachine(
       "lane.list on This Mac",
     );
   try {
-    const wantLanes = shouldReadLanes(THIS_MACHINE_ID, Date.now());
     const [laneResult, sessions] = await Promise.all([
-      wantLanes ? readLanes() : null,
+      shouldReadLanes(THIS_MACHINE_ID) ? readLanes() : null,
       withTimeout(
         window.ade.sessions.list(
           { limit: FOREIGN_SESSION_LIMIT },
@@ -908,12 +952,14 @@ async function readThisMachine(
       ),
     ]);
     if (generation !== runtime.generation) return;
-    let lanes = laneResult;
-    if (!lanes && hasUnknownLaneReference(THIS_MACHINE_ID, sessions)) {
-      lanes = await readLanes();
-      if (generation !== runtime.generation) return;
-    }
-    if (lanes) runtime.laneReadAtMsByMachineId.set(THIS_MACHINE_ID, Date.now());
+    const lanes = await resolveLaneCadence(
+      THIS_MACHINE_ID,
+      laneResult,
+      sessions,
+      generation,
+      readLanes,
+    );
+    if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
       machineId: THIS_MACHINE_ID,
       machineName: THIS_MACHINE_NAME,
@@ -1063,15 +1109,22 @@ function isEligibleMachineOption(option: LaneMachineOption): boolean {
 }
 
 function resolveEligibleMachines(): LaneMachineOption[] {
-  return resolveMachineOptions().filter(isEligibleMachineOption);
+  const eligible: LaneMachineOption[] = [];
+  for (const machine of resolveMachineConnectivity().values()) {
+    if (machine.eligible && machine.option) eligible.push(machine.option);
+  }
+  return eligible;
 }
 
-/** What the newest snapshot says about one machine, whether connected or not. */
+/**
+ * What the newest snapshot says about one machine. A machine that is not in the
+ * snapshot at all has no entry here — absence in the map IS that fact, which is
+ * why there is no "gone" state to represent.
+ */
 type MachineConnectivity = {
-  /** `null` when the machine is not in the connection snapshot at all. */
-  state: RemoteRuntimeConnectionState | null;
-  /** `null` unless the machine is connected — the match needs its project list. */
-  repoMatch: LaneMachineRepoMatch | null;
+  state: RemoteRuntimeConnectionState;
+  /** Present only for connected machines: the match needs their project list. */
+  option: LaneMachineOption | null;
   eligible: boolean;
 };
 
@@ -1080,7 +1133,7 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
   for (const connection of runtime.connections) {
     byMachineId.set(connection.target.id, {
       state: connection.state,
-      repoMatch: null,
+      option: null,
       eligible: false,
     });
   }
@@ -1088,9 +1141,15 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
   // names is connected and carries a usable repo verdict.
   for (const option of resolveMachineOptions()) {
     if (option.id === THIS_MACHINE_ID) continue;
+    const known = byMachineId.get(option.id);
+    if (known) {
+      known.option = option;
+      known.eligible = isEligibleMachineOption(option);
+      continue;
+    }
     byMachineId.set(option.id, {
       state: "connected",
-      repoMatch: option.repoMatch,
+      option,
       eligible: isEligibleMachineOption(option),
     });
   }
@@ -1105,23 +1164,25 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
  * about:
  *
  * - LIVE. Connected and still hosting this repository.
- * - DIMMED. Not connected, and a reconnect attempt has since run to completion
- *   and failed (or the target is idle, so no attempt is coming). Its lanes and
- *   chats stay on screen, collapsed and inert, because a machine being asleep
- *   does not make the work on it stop existing — and yanking a lane group out of
- *   the list on every wifi blip is what made machines look like they vanish.
- *   Believing a drop takes at least `UNREACHABLE_FLOOR_MS`, and at most
- *   `UNREACHABLE_CEILING_MS` when no attempt ever completes.
- * - FORGOTTEN. Only two things earn removal: the machine is gone from the
+ * - DIMMED. Its lanes and chats stay on screen, collapsed and inert, because a
+ *   machine being asleep does not make the work on it stop existing — and
+ *   yanking a lane group out of the list on every wifi blip is what made
+ *   machines look like they vanish. Believing a drop takes at least
+ *   `UNREACHABLE_FLOOR_MS`, and at most `UNREACHABLE_CEILING_MS` when no attempt
+ *   ever completes. A machine that is CONNECTED but whose repository we cannot
+ *   re-prove dims on the same floor: it is not being read, so calling it live is
+ *   a lie — but it is not removed, because absence of proof is not proof of
+ *   absence and a project list that has not caught up after a reconnect must not
+ *   read as "the repo is gone".
+ * - FORGOTTEN. Three things earn removal: the machine is gone from the
  *   connection snapshot entirely (unpaired or deleted — nothing will ever
- *   refresh it again), or it has been dimmed for `OFFLINE_RETENTION_MS`.
+ *   refresh it again); it is connected and positively reports the repository
+ *   missing, with an origin to prove it by (the case #941 was about); or it has
+ *   been dimmed for `OFFLINE_RETENTION_MS`.
  *
- * A machine we ARE connected to but cannot re-prove the repository on is left
- * exactly as it was. Absence of proof is not proof of absence: a project list
- * that has not caught up after a reconnect must not read as "the repo is gone".
- * Only a connected machine that positively reports the repository missing is
- * dropped, which is what keeps "if it can't be refreshed, it isn't shown" true
- * for the case #941 was about.
+ * The floor and the ceiling are one deadline, not two rules: `UNREACHABLE_FLOOR_MS`
+ * is never above `UNREACHABLE_CEILING_MS`, so a machine is simply held until the
+ * one that applies.
  */
 function applyReachability(): void {
   const store = rootAppStoreApi.getState();
@@ -1153,32 +1214,48 @@ function applyReachability(): void {
       forgotten.push(machineId);
       continue;
     }
-    if (machine.state === "connected") {
-      if (machine.repoMatch === "missing") {
-        forgotten.push(machineId);
-        continue;
-      }
-      runtime.dropsByMachineId.delete(machineId);
-      if (entry.online) reachable.push(machineId);
+    // Only an origin can prove a repository absent. `repoMatchFor` will say
+    // "missing" off a folder-name mismatch alone, and the scope's origin URL is
+    // re-resolved from the bound machine — so it can be transiently null while
+    // that machine blips. Deleting rows on that evidence is not recoverable.
+    if (
+      machine.state === "connected"
+      && machine.option?.repoMatch === "missing"
+      && (runtime.scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(runtime.scope))
+    ) {
+      forgotten.push(machineId);
       continue;
     }
 
     const drop = runtime.dropsByMachineId.get(machineId)
-      ?? { droppedAtMs: nowMs, sawAttempt: false, attemptFailed: false };
+      ?? (entry.online
+        ? { droppedAtMs: nowMs, sawAttempt: false, attemptFailed: false }
+        // Already dimmed with no drop record: a remount cleared the records
+        // while the store slice survived. A fresh record would restart the floor
+        // and flash the machine back to live, so the standing verdict is kept
+        // and only the retention deadline is re-anchored — to the last
+        // successful read, the closest thing to when it stopped answering.
+        : { droppedAtMs: entry.lastSyncedAtMs ?? nowMs, sawAttempt: true, attemptFailed: true });
     if (machine.state === "connecting") drop.sawAttempt = true;
     else if (drop.sawAttempt) drop.attemptFailed = true;
     runtime.dropsByMachineId.set(machineId, drop);
 
-    const elapsedMs = nowMs - drop.droppedAtMs;
-    // `idle` means the target is not dialing and will not start on its own, so
-    // waiting for a failed attempt would wait forever.
-    const answered = drop.attemptFailed || machine.state === "idle";
-    if (elapsedMs < UNREACHABLE_FLOOR_MS || !(answered || elapsedMs >= UNREACHABLE_CEILING_MS)) {
+    // `idle` means the target is not dialing and will not start on its own, and
+    // `connected` means it answers but cannot be read for this repository — in
+    // both cases there is no attempt left to wait for.
+    const answered = drop.attemptFailed
+      || machine.state === "idle"
+      || machine.state === "connected";
+    const dimAtMs = drop.droppedAtMs
+      + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
+    // A machine that is already dimmed stays dimmed until it is eligible again,
+    // whatever the deadline says — the verdict is the store's, not this tick's.
+    if (entry.online && nowMs < dimAtMs) {
       reachable.push(machineId);
-      noteDeadline(drop.droppedAtMs + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS));
+      noteDeadline(dimAtMs);
       continue;
     }
-    if (elapsedMs >= OFFLINE_RETENTION_MS) {
+    if (nowMs - drop.droppedAtMs >= OFFLINE_RETENTION_MS) {
       forgotten.push(machineId);
       continue;
     }
@@ -1189,6 +1266,7 @@ function applyReachability(): void {
     for (const machineId of forgotten) {
       runtime.dropsByMachineId.delete(machineId);
       runtime.laneReadAtMsByMachineId.delete(machineId);
+      runtime.unresolvedLaneIdsByMachineId.delete(machineId);
     }
     store.dropCrossMachineLanes(forgotten);
   }
@@ -1209,14 +1287,15 @@ function applyReachability(): void {
   }
 }
 
-/** Forgets every open drop record. Used by teardown and by scope changes. */
-function resetReachabilityTracking(): void {
+/** Forgets every per-machine record. Used by teardown and by scope changes. */
+function resetMachineTracking(): void {
   if (runtime.graceTimer) {
     clearTimeout(runtime.graceTimer);
     runtime.graceTimer = null;
   }
   runtime.dropsByMachineId.clear();
   runtime.laneReadAtMsByMachineId.clear();
+  runtime.unresolvedLaneIdsByMachineId.clear();
 }
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
@@ -1277,7 +1356,7 @@ function detach(): void {
     clearTimeout(runtime.refreshTimer);
     runtime.refreshTimer = null;
   }
-  resetReachabilityTracking();
+  resetMachineTracking();
   runtime.refreshQueued = false;
   runtime.refreshInFlight = false;
   for (const dispose of runtime.disposers.splice(0)) {
@@ -1308,7 +1387,7 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     // The new scope does wipe every machine slice, though, so a deadline carried
     // over from the old one could hide a machine with no grace at all the moment
     // it reappears here.
-    resetReachabilityTracking();
+    resetMachineTracking();
     rootAppStoreApi.getState().applyCrossMachineLaneScope(scope.scopeKey);
   }
   runtime.scope = scope;

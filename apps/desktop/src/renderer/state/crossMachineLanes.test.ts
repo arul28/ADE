@@ -968,6 +968,13 @@ describe("cross-machine refresh scheduling", () => {
     await vi.advanceTimersByTimeAsync(10_500);
     expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(2);
 
+    // That lane read did not explain it — `session.list` does not filter on lane
+    // status while `lane.list` excludes archived lanes, so a chat on an archived
+    // lane is permanently unresolvable. Asking again every tick would cost more
+    // than the cadence this test exists to prove.
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(2);
+
     stop();
   });
 
@@ -1066,11 +1073,14 @@ describe("believing a drop before a machine dims", () => {
     pushState: (state: string) => void;
   } {
     let emit: ((next: unknown) => void) | null = null;
+    // The snapshot read reports the machine's CURRENT state, the way the real
+    // one does — a remount must not be told the machine is back.
+    let latest: unknown = snapshot("connected");
     window.ade = {
       remoteRuntime: {
         // Reads never resolve: this suite is about reachability, not lane data.
         callAction: vi.fn(() => new Promise(() => {})),
-        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        getConnectionSnapshot: vi.fn(async () => latest),
         onConnectionSnapshotChanged: vi.fn((listener: (next: unknown) => void) => {
           emit = listener;
           return () => { emit = null; };
@@ -1086,8 +1096,8 @@ describe("believing a drop before a machine dims", () => {
     });
     return {
       stop,
-      push: (next) => emit?.(next),
-      pushState: (state) => emit?.(snapshot(state)),
+      push: (next) => { latest = next; emit?.(next); },
+      pushState: (state) => { latest = snapshot(state); emit?.(latest); },
     };
   }
 
@@ -1210,6 +1220,103 @@ describe("believing a drop before a machine dims", () => {
 
     await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
     expect(entry()).toBeUndefined();
+
+    stop();
+  });
+
+  it("keeps a dimmed machine dimmed across a remount", async () => {
+    vi.useFakeTimers();
+    const { stop, pushState } = await startSeeded();
+
+    pushState("connecting");
+    pushState("error");
+    await vi.advanceTimersByTimeAsync(46_000);
+    expect(isOnline()).toBe(false);
+
+    // Leaving Work and coming back tears the shared runtime down, taking its
+    // drop records with it while the store slice survives. Re-deriving a fresh
+    // drop would restart the floor and flash the machine back to live, with its
+    // group re-expanded and every action on it re-enabled.
+    stop();
+    const restarted = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(isOnline()).toBe(false);
+
+    restarted();
+  });
+
+  it("dims a connected machine whose repository it can no longer prove", async () => {
+    vi.useFakeTimers();
+    const { stop, push } = await startSeeded();
+
+    // Connected, folder name still matches, but the origin is gone from its
+    // project record — so identity is `unknown`, not `missing`. It must not be
+    // deleted, and it must not stay bright either: nothing is reading it.
+    push({
+      connections: [{
+        state: "connected",
+        target: CONNECTED_TARGET,
+        projects: [{ ...PROJECTS[0], gitOriginUrl: null }],
+      }],
+      connectedCount: 1,
+    });
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(isOnline()).toBe(false);
+    expect(entry()).toBeDefined();
+
+    stop();
+  });
+
+  it("keeps a machine whose repository cannot be proven absent without an origin", async () => {
+    vi.useFakeTimers();
+    const snapshots: { emit: ((next: unknown) => void) | null } = { emit: null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(() => new Promise(() => {})),
+        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        onConnectionSnapshotChanged: vi.fn((listener: (next: unknown) => void) => {
+          snapshots.emit = listener;
+          return () => { snapshots.emit = null; };
+        }),
+      },
+    } as unknown as typeof window.ade;
+    // No origin for this scope, so a folder-name mismatch is the only evidence
+    // available — and a name is not an identity. Deleting rows on that is not
+    // recoverable, so the machine is held instead.
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: null,
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    seedMachine();
+
+    snapshots.emit?.({
+      connections: [{
+        state: "connected",
+        target: CONNECTED_TARGET,
+        projects: [{
+          projectId: "project-z",
+          rootPath: "/elsewhere/some-other-name",
+          displayName: "Some Other Name",
+          gitOriginUrl: null,
+        }],
+      }],
+      connectedCount: 1,
+    });
+    expect(entry()).toBeDefined();
 
     stop();
   });

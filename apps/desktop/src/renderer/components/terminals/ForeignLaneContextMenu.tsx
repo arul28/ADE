@@ -13,7 +13,7 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 type ForeignLaneContextMenuProps = {
   lane: LaneSummary;
   machineName: string;
-  /** Live, not captured: every action below runs on the owning machine. */
+  /** False disables every action below: they all run on the owning machine. */
   online: boolean;
   x: number;
   y: number;
