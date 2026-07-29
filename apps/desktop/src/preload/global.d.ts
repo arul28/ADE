@@ -1713,6 +1713,7 @@ declare global {
         onEvent: (
           cb: (ev: AgentChatEventEnvelope) => void,
           pin?: OpenProjectBinding | null,
+          options?: { forcePinned?: boolean },
         ) => () => void;
         slashCommands: (
           args: AgentChatSlashCommandsArgs,

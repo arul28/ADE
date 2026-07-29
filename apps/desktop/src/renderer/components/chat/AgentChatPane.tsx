@@ -6896,7 +6896,11 @@ export function AgentChatPane({
     const retainedBinding = chatRuntimePin ?? projectBinding;
     return () => {
       retainChatSession(selectedSessionId, {
-        subscribe: (listener) => window.ade.agentChat.onEvent(listener, retainedBinding),
+        subscribe: (listener) => window.ade.agentChat.onEvent(
+          listener,
+          retainedBinding,
+          { forcePinned: true },
+        ),
       });
     };
   }, [chatRuntimePin, isTileVisible, projectBinding, selectedSessionId]);

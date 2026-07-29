@@ -9668,6 +9668,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(window.ade.agentChat.onEvent).toHaveBeenCalledWith(
       expect.any(Function),
       machineA,
+      { forcePinned: true },
     );
     expect(isChatSessionRetained(session.sessionId)).toBe(true);
   });

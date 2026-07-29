@@ -2959,9 +2959,11 @@ function subscribeRemoteAppControlEvents(
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
   pin?: OpenProjectBinding | null,
+  options?: { forcePinned?: boolean },
 ): () => void {
-  const removeLocal = agentChatEventFanout(cb);
-  if (pin && pin.key !== currentProjectBinding?.key) {
+  const forcePinned = Boolean(pin && options?.forcePinned === true);
+  const removeLocal = forcePinned ? () => undefined : agentChatEventFanout(cb);
+  if (pin && (forcePinned || pin.key !== currentProjectBinding?.key)) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cursor = 0;
