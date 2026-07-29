@@ -188,6 +188,16 @@ export function supportedAdoptChannelAeads(): AdoptChannelAead[] {
   return [...cachedSupportedAdoptChannelAeads];
 }
 
+export function negotiateAdoptChannelAead(
+  clientSupportedAeads: readonly string[] | null,
+  hostSupportedAeads: readonly AdoptChannelAead[],
+): AdoptChannelAead | null {
+  const clientChoices = clientSupportedAeads ?? ["chacha20-poly1305"];
+  return clientChoices.find((aead): aead is AdoptChannelAead =>
+    hostSupportedAeads.some((supported) => supported === aead)
+  ) ?? null;
+}
+
 export function seal(
   key: Buffer,
   aad: Buffer,

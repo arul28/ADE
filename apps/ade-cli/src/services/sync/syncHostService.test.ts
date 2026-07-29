@@ -2243,6 +2243,40 @@ describe("sync host account authentication", () => {
         message: expect.stringMatching(/expired/i),
       });
 
+      const corruptClient = await openAccountClient(port);
+      clients.push(corruptClient);
+      await issueChallenge(corruptClient, "corrupt-sealed-challenge");
+      corruptClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "corrupt-sealed-hello",
+        payload: {
+          peer: { ...peer, deviceId: "corrupt-sealed-device" },
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: "corrupt-sealed-device",
+            sealed: Buffer.alloc(28).toString("base64"),
+          },
+        },
+      }));
+      const corruptSealed = await waitForValue(
+        () => corruptClient.envelopes.find((entry) =>
+          entry.type === "hello_error" && entry.requestId === "corrupt-sealed-hello"
+        ),
+        "corrupt sealed hello rejection",
+      );
+      expect(corruptSealed.payload).toMatchObject({
+        code: "invalid_hello",
+        message: expect.stringMatching(/could not be opened/i),
+      });
+      expect(baseArgs.logger.warn).toHaveBeenCalledWith(
+        "sync_host.account_sealed_open_failed",
+        expect.objectContaining({
+          aead: "chacha20-poly1305",
+          transportOrigin: "direct",
+        }),
+      );
+
       const incompatibleClient = await openAccountClient(port);
       clients.push(incompatibleClient);
       const incompatibleEphemeral = generateX25519EphemeralKeyPair();
@@ -2266,11 +2300,32 @@ describe("sync host account authentication", () => {
       );
       expect(incompatible.payload).toEqual({
         message:
-          "No compatible account adoption cipher is available. Update ADE on both Macs.",
+          "No compatible account adoption cipher is available. Update ADE on both devices.",
       });
       expect(incompatibleClient.envelopes.some(
         (entry) => entry.type === "account_challenge_ok",
       )).toBe(false);
+      incompatibleClient.ws.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "incompatible-aead-repeat",
+        payload: {
+          v: 1,
+          nonce: Buffer.alloc(32, 12).toString("base64"),
+          clientEphemeralPublicKey:
+            incompatibleEphemeral.publicKeyRaw.toString("base64"),
+          supportedAeads: ["future-aead"],
+        },
+      }));
+      await waitForValue(
+        () => incompatibleClient.envelopes.find((entry) =>
+          entry.type === "account_challenge_error"
+          && entry.requestId === "incompatible-aead-repeat"
+        ),
+        "repeated incompatible AEAD rejection",
+      );
+      expect(baseArgs.logger.warn.mock.calls.filter(
+        ([event]) => event === "sync_host.account_challenge_cipher_incompatible",
+      )).toHaveLength(1);
 
       // Well-formed challenges only trigger a public signature and are the
       // normal adoption operation, so they must NEVER trip the abuse throttle —

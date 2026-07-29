@@ -1017,6 +1017,58 @@ final class PairingAndDpopTests: XCTestCase {
     )
   }
 
+  func testAdoptChannelMatchesTypeScriptAESGCMVectorAndNegotiatedSignature() throws {
+    XCTAssertEqual(
+      AdoptChannelCrypto.supportedAeads,
+      [.chacha20Poly1305, .aes256Gcm]
+    )
+    let sessionKey = SymmetricKey(
+      data: pairingTestData(
+        hex: "73dd8c3462d2bd6af30580cd4147d5049e6b96d6e0caad0abb512e47ea9c056e"
+      )
+    )
+    let sealed =
+      "AAECAwQFBgcICQoL3y2dKj5Mf5T1oCPmxekaK7cism6xBa4nVL2OXy7fjrsrUJkqDISXnL4xejxcZFKlg0QtQ3ojlneNBDLJJAvf/QBwppTjKydmgm8J65KHSjtbCdNoJFo="
+    let plaintext = try AdoptChannelCrypto.unseal(
+      sealed,
+      key: sessionKey,
+      aad: Data("ade-adopt-v1|host-vector|client-vector".utf8),
+      aead: .aes256Gcm
+    )
+    XCTAssertEqual(
+      String(decoding: plaintext, as: UTF8.self),
+      #"{"deviceId":"client-vector","accountToken":"token-vector","dpop":null}"#
+    )
+    XCTAssertEqual(
+      AdoptChannelCrypto.challengeSignatureInput(
+        hostDeviceId: "host-device",
+        nonce: "bm9uY2U=",
+        clientEphemeralPublicKey: "Y2xpZW50",
+        hostEphemeralPublicKey: "aG9zdA==",
+        timestampMilliseconds: 1_783_500_123_456,
+        aead: .aes256Gcm
+      ),
+      "ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456|aes-256-gcm"
+    )
+  }
+
+  func testAdoptChannelAcceptsNegotiatedAndLegacyHostCipherSelections() throws {
+    XCTAssertEqual(
+      try AdoptChannelCrypto.resolveHostAead(nil),
+      .chacha20Poly1305
+    )
+    XCTAssertEqual(
+      try AdoptChannelCrypto.resolveHostAead("aes-256-gcm"),
+      .aes256Gcm
+    )
+    XCTAssertThrowsError(
+      try AdoptChannelCrypto.resolveHostAead("future-aead")
+    )
+    XCTAssertThrowsError(
+      try AdoptChannelCrypto.resolveHostAead(NSNull())
+    )
+  }
+
   func testAdoptChannelRejectsPresentMalformedDirectorySigningKey() throws {
     XCTAssertNil(
       try AdoptChannelCrypto.signingPublicKey(fromOptionalDirectoryValue: nil)

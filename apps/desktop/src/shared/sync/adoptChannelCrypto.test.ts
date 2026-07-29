@@ -9,6 +9,7 @@ import {
   buildAdoptChallengeSignatureInput,
   deriveAdoptSessionKey,
   generateX25519EphemeralKeyPair,
+  negotiateAdoptChannelAead,
   rawPublicKeyFromSpki,
   seal,
   signEd25519,
@@ -17,6 +18,17 @@ import {
 } from "./adoptChannelCrypto";
 
 describe("adoptChannelCrypto", () => {
+  it("negotiates the first client AEAD supported by the host", () => {
+    expect(negotiateAdoptChannelAead(
+      ["chacha20-poly1305", "aes-256-gcm"],
+      ["aes-256-gcm"],
+    )).toBe("aes-256-gcm");
+    expect(negotiateAdoptChannelAead(
+      null,
+      ["aes-256-gcm"],
+    )).toBeNull();
+  });
+
   it("derives the same session key and seals/unseals a payload", () => {
     const client = generateX25519EphemeralKeyPair();
     const host = generateX25519EphemeralKeyPair();
