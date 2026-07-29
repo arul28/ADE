@@ -13000,7 +13000,10 @@ final class SyncService: ObservableObject {
   /// hibernation, signaling the host and dialing its local port — 350ms for
   /// that guaranteed a second dial of every cold endpoint, so `accepted`
   /// extends the budget instead of the socket being abandoned.
-  private func awaitRelayCandidateReady(mailbox: SyncConnectionRaceTextMailbox) async throws {
+  @discardableResult
+  private func awaitRelayCandidateReady(
+    mailbox: SyncConnectionRaceTextMailbox
+  ) async throws -> SyncRelayReadyNegotiation {
     var negotiation = SyncRelayReadyNegotiation()
     var deadlineUptime = ProcessInfo.processInfo.systemUptime
       + TimeInterval(negotiation.phaseBudgetNanoseconds) / 1_000_000_000
@@ -13046,6 +13049,7 @@ final class SyncService: ObservableObject {
         }
       }
     }
+    return negotiation
   }
 
   private func nextRelayNegotiationEvent(
@@ -14423,14 +14427,16 @@ final class SyncService: ObservableObject {
     return relayTransportNegotiations[socket.taskIdentifier]
   }
 
-  func awaitRelayCandidateReadyForTesting(frames: [[String: Any]]) async throws {
+  func awaitRelayCandidateReadyForTesting(
+    frames: [[String: Any]]
+  ) async throws -> SyncRelayReadyNegotiation {
     let mailbox = SyncConnectionRaceTextMailbox()
     for frame in frames {
       let data = try JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys])
       guard let text = String(data: data, encoding: .utf8) else { continue }
       await mailbox.deliver(text)
     }
-    try await awaitRelayCandidateReady(mailbox: mailbox)
+    return try await awaitRelayCandidateReady(mailbox: mailbox)
   }
 
   func completeCapturedRefreshRequestsForTesting() {

@@ -262,6 +262,64 @@ final class SyncTransportSelectionTests: XCTestCase {
     )
   }
 
+  // MARK: - Persisted shape compatibility
+
+  func testAProfileSavedBeforeFailureMemoryStillDecodes() throws {
+    // Every paired machine on an upgrading device is stored in this shape. A
+    // decode failure here silently unpairs them, so the new fields must all be
+    // optional and absent-tolerant.
+    let legacy = """
+    {
+      "port": 4599,
+      "authKind": "paired",
+      "pairedDeviceId": "device-1",
+      "lastRemoteDbVersion": 42,
+      "lastHostDeviceId": "host-1",
+      "lastSuccessfulAddress": "192.168.1.8",
+      "savedAddressCandidates": ["192.168.1.8", "100.75.20.63"],
+      "discoveredLanAddresses": ["192.168.1.8"],
+      "tailscaleAddress": "100.75.20.63",
+      "endpointStates": [{"endpoint": "192.168.1.8", "lastSucceededAt": 1700000000}],
+      "updatedAt": "2026-01-01T00:00:00Z"
+    }
+    """
+
+    let profile = try JSONDecoder().decode(
+      HostConnectionProfile.self,
+      from: Data(legacy.utf8)
+    )
+
+    XCTAssertEqual(profile.lastSuccessfulAddress, "192.168.1.8")
+    XCTAssertEqual(profile.endpointStates?.count, 1)
+    XCTAssertEqual(profile.endpointStates?.first?.lastSucceededAt, 1_700_000_000)
+    XCTAssertNil(profile.endpointStates?.first?.consecutiveFailures)
+    XCTAssertNil(profile.endpointStates?.first?.negotiatedReadyV2)
+    XCTAssertNil(profile.networkRouteMemory)
+
+    // And a profile carrying the new state survives a round trip.
+    var upgraded = profile
+    upgraded.networkRouteMemory = syncNetworkRouteMemoryRecording(
+      nil,
+      fingerprint: "wifi:192.168.1",
+      endpoint: "192.168.1.8",
+      at: 1_700_000_100
+    )
+    upgraded.endpointStates = syncEndpointStatesMarkingFailed(
+      profile.endpointStates,
+      endpoints: [relayRoute],
+      at: 1_700_000_200
+    )
+    let roundTripped = try JSONDecoder().decode(
+      HostConnectionProfile.self,
+      from: JSONEncoder().encode(upgraded)
+    )
+    XCTAssertEqual(roundTripped.networkRouteMemory?.first?.endpoint, "192.168.1.8")
+    XCTAssertEqual(
+      roundTripped.endpointStates?.first(where: { $0.endpoint == relayRoute })?.consecutiveFailures,
+      1
+    )
+  }
+
   // MARK: - Relay dial single-flight
 
   func testSingleFlightGuardBlocksASecondDialForTheSameMachine() {
@@ -368,122 +426,4 @@ final class SyncTransportSelectionTests: XCTestCase {
       endpointNegotiatedReadyV2Before: false
     ))
   }
-
-  // MARK: - Roaming
-
-  private func roamInputs(
-    interfacesChanged: Bool = false,
-    current: SyncConnectionRouteKind? = .relay,
-    best: SyncConnectionRouteKind? = .relay,
-    ageSeconds: TimeInterval = 600,
-    sinceLastRoam: TimeInterval? = nil
-  ) -> SyncRoamInputs {
-    SyncRoamInputs(
-      hasLiveConnection: true,
-      isPathSatisfied: true,
-      interfacesChanged: interfacesChanged,
-      currentRouteKind: current,
-      bestAvailableRouteKind: best,
-      connectionAgeSeconds: ageSeconds,
-      secondsSinceLastRoamAttempt: sinceLastRoam
-    )
-  }
-
-  func testIdleCellularRelaySessionIsNeverRoamed() {
-    // The reported churn: connected over relay on cellular with a saved tailnet
-    // route, nothing about the network changing, a full race every path update.
-    XCTAssertNil(syncRoamTrigger(roamInputs(current: .relay, best: .relay)))
-  }
-
-  func testGenuinePathChangeStillFailsOverImmediately() {
-    XCTAssertEqual(
-      syncRoamTrigger(roamInputs(interfacesChanged: true, current: .tailnet, best: .relay, ageSeconds: 1)),
-      .pathChange,
-      "a young connection on a vanished route must still fail over"
-    )
-  }
-
-  func testUpgradeProbeNeedsABetterClassAndItsOwnInterval() {
-    XCTAssertEqual(
-      syncRoamTrigger(roamInputs(current: .relay, best: .lan, sinceLastRoam: 400)),
-      .upgradeProbe
-    )
-    XCTAssertNil(
-      syncRoamTrigger(roamInputs(current: .relay, best: .lan, sinceLastRoam: 120)),
-      "probes wait out the 5-minute interval"
-    )
-    XCTAssertNil(
-      syncRoamTrigger(roamInputs(current: .lan, best: .relay, sinceLastRoam: 400)),
-      "relay is not an upgrade over LAN"
-    )
-    XCTAssertNil(
-      syncRoamTrigger(roamInputs(current: .relay, best: .lan, ageSeconds: 3, sinceLastRoam: 400)),
-      "a connection younger than the age floor is left alone"
-    )
-  }
-
-  func testRoamCooldownSuppressesBurstsOfPathUpdatesButNotFailover() {
-    // A burst of updates around one physical change collapses to one race.
-    XCTAssertNil(syncRoamTrigger(roamInputs(
-      interfacesChanged: true,
-      current: .relay,
-      best: .lan,
-      sinceLastRoam: 1
-    )))
-    // Failover must not have to wait out the upgrade-probe cooldown: the route
-    // it is failing away from may already be gone.
-    XCTAssertEqual(
-      syncRoamTrigger(roamInputs(
-        interfacesChanged: true,
-        current: .relay,
-        best: .lan,
-        sinceLastRoam: SyncRoamTiming.pathChangeCooldownSeconds + 1
-      )),
-      .pathChange
-    )
-  }
-
-  func testRoamingRequiresALiveConnection() {
-    var inputs = roamInputs(interfacesChanged: true)
-    inputs.hasLiveConnection = false
-    XCTAssertNil(syncRoamTrigger(inputs), "reconnect owns the disconnected case")
-  }
-
-  func testALocalLinkOnlyIPv6CandidateIsAlsoDemotedOnCellular() {
-    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fe80::1"))
-    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fd12:3456:789a::1"))
-    XCTAssertFalse(syncIsLocalLinkOnlyCandidate("::1"))
-  }
-
-  func testInterfaceChangeIgnoresExpensiveAndConstrainedFlapping() {
-    let base = SyncNetworkPathSnapshot(
-      isSatisfied: true,
-      usesWiFi: false,
-      usesCellular: true,
-      usesWiredEthernet: false,
-      isExpensive: true,
-      isConstrained: false
-    )
-    let constrainedFlap = SyncNetworkPathSnapshot(
-      isSatisfied: true,
-      usesWiFi: false,
-      usesCellular: true,
-      usesWiredEthernet: false,
-      isExpensive: true,
-      isConstrained: true
-    )
-    let wifiReturned = SyncNetworkPathSnapshot(
-      isSatisfied: true,
-      usesWiFi: true,
-      usesCellular: false,
-      usesWiredEthernet: false,
-      isExpensive: false,
-      isConstrained: false
-    )
-
-    XCTAssertFalse(syncNetworkPathInterfacesChanged(previous: base, next: constrainedFlap))
-    XCTAssertTrue(syncNetworkPathInterfacesChanged(previous: base, next: wifiReturned))
-    XCTAssertTrue(syncNetworkPathInterfacesChanged(previous: nil, next: base))
-  }
-
 }

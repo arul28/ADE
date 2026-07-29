@@ -182,6 +182,123 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertEqual(syncJitteredReconnectDelayNanoseconds(base: 10_000, sample: 2), 12_000)
   }
 
+  // MARK: - Roaming
+
+  private func roamInputs(
+    interfacesChanged: Bool = false,
+    current: SyncConnectionRouteKind? = .relay,
+    best: SyncConnectionRouteKind? = .relay,
+    ageSeconds: TimeInterval = 600,
+    sinceLastRoam: TimeInterval? = nil
+  ) -> SyncRoamInputs {
+    SyncRoamInputs(
+      hasLiveConnection: true,
+      isPathSatisfied: true,
+      interfacesChanged: interfacesChanged,
+      currentRouteKind: current,
+      bestAvailableRouteKind: best,
+      connectionAgeSeconds: ageSeconds,
+      secondsSinceLastRoamAttempt: sinceLastRoam
+    )
+  }
+
+  func testIdleCellularRelaySessionIsNeverRoamed() {
+    // The reported churn: connected over relay on cellular with a saved tailnet
+    // route, nothing about the network changing, a full race every path update.
+    XCTAssertNil(syncRoamTrigger(roamInputs(current: .relay, best: .relay)))
+  }
+
+  func testGenuinePathChangeStillFailsOverImmediately() {
+    XCTAssertEqual(
+      syncRoamTrigger(roamInputs(interfacesChanged: true, current: .tailnet, best: .relay, ageSeconds: 1)),
+      .pathChange,
+      "a young connection on a vanished route must still fail over"
+    )
+  }
+
+  func testUpgradeProbeNeedsABetterClassAndItsOwnInterval() {
+    XCTAssertEqual(
+      syncRoamTrigger(roamInputs(current: .relay, best: .lan, sinceLastRoam: 400)),
+      .upgradeProbe
+    )
+    XCTAssertNil(
+      syncRoamTrigger(roamInputs(current: .relay, best: .lan, sinceLastRoam: 120)),
+      "probes wait out the 5-minute interval"
+    )
+    XCTAssertNil(
+      syncRoamTrigger(roamInputs(current: .lan, best: .relay, sinceLastRoam: 400)),
+      "relay is not an upgrade over LAN"
+    )
+    XCTAssertNil(
+      syncRoamTrigger(roamInputs(current: .relay, best: .lan, ageSeconds: 3, sinceLastRoam: 400)),
+      "a connection younger than the age floor is left alone"
+    )
+  }
+
+  func testRoamCooldownSuppressesBurstsOfPathUpdatesButNotFailover() {
+    // A burst of updates around one physical change collapses to one race.
+    XCTAssertNil(syncRoamTrigger(roamInputs(
+      interfacesChanged: true,
+      current: .relay,
+      best: .lan,
+      sinceLastRoam: 1
+    )))
+    // Failover must not have to wait out the upgrade-probe cooldown: the route
+    // it is failing away from may already be gone.
+    XCTAssertEqual(
+      syncRoamTrigger(roamInputs(
+        interfacesChanged: true,
+        current: .relay,
+        best: .lan,
+        sinceLastRoam: SyncRoamTiming.pathChangeCooldownSeconds + 1
+      )),
+      .pathChange
+    )
+  }
+
+  func testRoamingRequiresALiveConnection() {
+    var inputs = roamInputs(interfacesChanged: true)
+    inputs.hasLiveConnection = false
+    XCTAssertNil(syncRoamTrigger(inputs), "reconnect owns the disconnected case")
+  }
+
+  func testALocalLinkOnlyIPv6CandidateIsAlsoDemotedOnCellular() {
+    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fe80::1"))
+    XCTAssertTrue(syncIsLocalLinkOnlyCandidate("fd12:3456:789a::1"))
+    XCTAssertFalse(syncIsLocalLinkOnlyCandidate("::1"))
+  }
+
+  func testInterfaceChangeIgnoresExpensiveAndConstrainedFlapping() {
+    let base = SyncNetworkPathSnapshot(
+      isSatisfied: true,
+      usesWiFi: false,
+      usesCellular: true,
+      usesWiredEthernet: false,
+      isExpensive: true,
+      isConstrained: false
+    )
+    let constrainedFlap = SyncNetworkPathSnapshot(
+      isSatisfied: true,
+      usesWiFi: false,
+      usesCellular: true,
+      usesWiredEthernet: false,
+      isExpensive: true,
+      isConstrained: true
+    )
+    let wifiReturned = SyncNetworkPathSnapshot(
+      isSatisfied: true,
+      usesWiFi: true,
+      usesCellular: false,
+      usesWiredEthernet: false,
+      isExpensive: false,
+      isConstrained: false
+    )
+
+    XCTAssertFalse(syncNetworkPathInterfacesChanged(previous: base, next: constrainedFlap))
+    XCTAssertTrue(syncNetworkPathInterfacesChanged(previous: base, next: wifiReturned))
+    XCTAssertTrue(syncNetworkPathInterfacesChanged(previous: nil, next: base))
+  }
+
   func testPathHandoffSkipsStaleResetOfNewHealthySocket() {
     XCTAssertEqual(
       syncNetworkPathRecoveryAction(
@@ -995,11 +1112,16 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       try? FileManager.default.removeItem(at: baseURL)
     }
 
-    try await service.awaitRelayCandidateReadyForTesting(frames: [
+    // Returning without throwing is not enough: a runtime that wrongly honored
+    // the leading `ready` would also return here. Asserting that `accepted` was
+    // seen is what distinguishes the two.
+    let negotiation = try await service.awaitRelayCandidateReadyForTesting(frames: [
       ["t": "ready", "v": 2],
       ["t": "accepted", "v": 2],
       ["t": "ready", "v": 2],
     ])
+    XCTAssertTrue(negotiation.acceptedV2)
+    XCTAssertTrue(negotiation.ready)
   }
 
   func testRelayReauthorizationScheduleRetryGraceAndForegroundDue() {
