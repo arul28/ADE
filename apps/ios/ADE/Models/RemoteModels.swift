@@ -1971,16 +1971,16 @@ struct AgentChatEventProvenance: Decodable, Equatable {
 struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Identity must include the timestamp, not just the sequence.
   ///
-  /// A host's `eventSequence` counter restarts at 1 whenever a session is
-  /// rehydrated, but it keeps appending to the SAME transcript file — so one
-  /// transcript can hold two events numbered 67, hours apart. Keying identity on
-  /// `sessionId:sequence` alone made the newer event look like a duplicate of
-  /// the older one, and dedupe (first-key-wins) silently dropped it. That is how
-  /// an `approval_request` carrying a whole AskUserQuestion card disappeared
-  /// from a phone while the rest of the turn rendered fine.
+  /// Older hosts restarted `eventSequence` at 1 when a session was rehydrated
+  /// while continuing to append to the SAME transcript file. A legacy
+  /// transcript can therefore contain two events numbered 67, hours apart.
+  /// Keying identity on `sessionId:sequence` alone made the newer event look like
+  /// a duplicate of the older one, and dedupe (first-key-wins) silently dropped
+  /// it. That is how an `approval_request` carrying a whole AskUserQuestion card
+  /// disappeared from a phone while the rest of the turn rendered fine.
   ///
   /// A genuine redelivery carries the same timestamp AND sequence, so dedupe
-  /// still catches it; only cross-epoch collisions are broken apart.
+  /// still catches it; only legacy cross-epoch collisions are broken apart.
   var id: String {
     guard let sequence else { return "\(sessionId):\(timestamp)" }
     return "\(sessionId):\(timestamp):\(sequence)"

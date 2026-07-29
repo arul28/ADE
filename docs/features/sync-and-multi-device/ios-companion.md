@@ -2116,18 +2116,19 @@ different machine's cached limits.
   back as `sinceSeq` on re-subscribe so the runtime replays exactly the
   missed events from its replay buffer instead of re-sending a
   snapshot. Uncoverable gaps fall back to the snapshot path, and a
-  non-resumed subscribe ack resets the phone's watermark (seq epochs
-  restart at 1 when a new host takes over). The host treats optional
+  non-resumed subscribe ack resets the phone's watermark. Host handoff
+  carries the per-session high-water mark forward, so a new host does not
+  reuse a previously issued `(sessionId, seq)` pair. The host treats optional
   `chat_event` sends as delivered only when the socket accepts them; on
   backpressure it leaves the transcript offset unchanged and retries in
   order. Events without `seq` (older hosts) bypass the watermark entirely.
-- **`seq` is a resume cursor, not an event identity.** The counter is
-  per-runtime, but the transcript it numbers is durable and keeps being
-  appended across desktop restarts, so the same transcript can contain two
-  events numbered 67 hours apart. The phone's dedupe is first-key-wins over
-  file order, so keying `AgentChatEventEnvelope.id` on `sessionId:sequence`
-  made the newer event look like a replay of the older one and silently
-  discarded it — on a real 425-event transcript that destroyed 103 events,
+- **`seq` is a resume cursor, not an event identity.** Older hosts reset the
+  counter across desktop restarts while the durable transcript kept being
+  appended, so legacy transcripts can contain two events numbered 67 hours
+  apart. The phone's dedupe is first-key-wins over file order, so keying
+  `AgentChatEventEnvelope.id` on `sessionId:sequence` made the newer event look
+  like a replay of the older one and silently discarded it — on a real
+  425-event transcript that destroyed 103 events,
   including the `approval_request` envelopes carrying AskUserQuestion cards
   (the phone showed no question at all) and 31 short text chunks (short text
   has no content dedupe key, which needs >= 24 characters, so it fell through
@@ -2140,10 +2141,11 @@ different machine's cached limits.
   because a dropped gate is not a cosmetic loss — it is a card the user never
   sees and can never answer. Host-side, `readTranscriptHydrationState`
   (`agentChatService.ts`) now seeds a rehydrated session's `eventSequence`
-  from the transcript's maximum instead of restarting at 0, so sequences stay
-  strictly increasing for the life of the file. Any new phone-side identity or
-  cache key must follow the same rule: sequence numbers are unique within a
-  runtime lifetime only.
+  from the transcript's maximum instead of restarting at 0, while
+  `syncHostService.ts` carries its wire-sequence high-water marks through host
+  handoff. Current hosts therefore keep `(sessionId, seq)` pairs unique across
+  rehydration. Phone-side identity remains timestamp-qualified so old
+  transcripts and older hosts stay compatible.
 - **Transcript history pages through an opaque cursor.**
   `chat.getTranscript` responses carry `nextCursor`; the phone's
   `fetchChatTranscriptPage` requests strictly-older history with it.

@@ -5386,13 +5386,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [original, tail])
   }
 
-  /// A host's `eventSequence` restarts at 1 whenever a session is rehydrated,
-  /// but it keeps appending to the SAME transcript, so one transcript can hold
-  /// two events numbered 67 hours apart. Identity used to be `sessionId:sequence`
-  /// and dedupe is first-key-wins over file order, so the newer event was
-  /// discarded as a duplicate of the older one. On a real 425-event transcript
-  /// that destroyed 103 events — including the `approval_request` envelopes
-  /// carrying AskUserQuestion cards, which is why the phone showed no question.
+  /// Older hosts restarted `eventSequence` at 1 whenever a session was
+  /// rehydrated while appending to the SAME transcript, so a legacy transcript
+  /// can contain two events numbered 67 hours apart. Identity used to be
+  /// `sessionId:sequence` and dedupe is first-key-wins over file order, so the
+  /// newer event was discarded as a duplicate of the older one. On a real
+  /// 425-event transcript that destroyed 103 events — including the
+  /// `approval_request` envelopes carrying AskUserQuestion cards, which is why
+  /// the phone showed no question.
   @MainActor
   func testReusedTranscriptSequenceKeepsBothEventsFromDifferentEpochs() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -5413,7 +5414,7 @@ final class ADETests: XCTestCase {
       sequence: 67,
       provenance: nil
     )
-    // Same sequence number, four hours later: the host restarted and its
+    // Same sequence number, four hours later: a legacy host restarted and its
     // counter began again at 1.
     let secondEpoch = AgentChatEventEnvelope(
       sessionId: "session-1",
