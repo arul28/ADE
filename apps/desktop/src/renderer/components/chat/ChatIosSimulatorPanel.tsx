@@ -18,6 +18,7 @@ import type {
   IosSimulatorToolStatus,
   IosSimulatorWindowState,
   IosSimulatorWindowSource,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -79,6 +80,7 @@ type ChatIosSimulatorPanelProps = {
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
   drawerModeRequest?: { mode: IosSimulatorDrawerMode; nonce: number } | null;
+  runtimePin?: OpenProjectBinding | null;
 };
 
 type RenderedMediaBounds = {
@@ -747,6 +749,7 @@ export function ChatIosSimulatorPanel({
   onAddAttachment,
   onInsertDraft,
   drawerModeRequest,
+  runtimePin = null,
 }: ChatIosSimulatorPanelProps) {
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [devices, setDevices] = useState<IosSimulatorDevice[]>([]);
@@ -1778,12 +1781,12 @@ export function ChatIosSimulatorPanel({
       const { path } = await window.ade.agentChat.saveTempAttachment({
         data: stripDataUrlPrefix(cropDataUrl),
         filename: "ios-element.png",
-      });
+      }, ...(runtimePin ? [runtimePin] as const : []));
       attachmentPath = path;
       onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     }
     return { dataUrl: cropDataUrl, path: attachmentPath };
-  }, [onAddAttachment, snapshot]);
+  }, [onAddAttachment, runtimePin, snapshot]);
 
   const selectElementAt = useCallback(async (x: number, y: number, element: IosScreenElement | null) => {
     if (!onAddContext) {
@@ -1824,10 +1827,10 @@ export function ChatIosSimulatorPanel({
     const { path } = await window.ade.agentChat.saveTempAttachment({
       data: stripDataUrlPrefix(previewResult.dataUrl),
       filename: "xcode-preview.png",
-    });
+    }, ...(runtimePin ? [runtimePin] as const : []));
     onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     return path;
-  }, [onAddAttachment, previewResult?.dataUrl]);
+  }, [onAddAttachment, previewResult?.dataUrl, runtimePin]);
 
   const attachPreviewCapture = useCallback(async (frame: PreviewCrop["frame"]): Promise<({ path: string | null } & PreviewCrop) | null> => {
     if (!previewResult?.dataUrl || !previewResult.width || !previewResult.height) return null;
@@ -1838,12 +1841,12 @@ export function ChatIosSimulatorPanel({
       const { path } = await window.ade.agentChat.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "xcode-preview-capture.png",
-      });
+      }, ...(runtimePin ? [runtimePin] as const : []));
       attachmentPath = path;
       onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     }
     return { ...crop, path: attachmentPath };
-  }, [onAddAttachment, previewResult?.dataUrl, previewResult?.height, previewResult?.width]);
+  }, [onAddAttachment, previewResult?.dataUrl, previewResult?.height, previewResult?.width, runtimePin]);
 
   const attachSimulatorScreenshot = useCallback(async (): Promise<string | null> => {
     if (!onAddAttachment) return null;
@@ -1866,10 +1869,10 @@ export function ChatIosSimulatorPanel({
     const { path } = await window.ade.agentChat.saveTempAttachment({
       data: stripDataUrlPrefix(sourceSnapshot.screenshot.dataUrl),
       filename: "ios-simulator-screen.png",
-    });
+    }, ...(runtimePin ? [runtimePin] as const : []));
     onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     return path;
-  }, [activeDevice?.udid, onAddAttachment, projectRoot, selectedDeviceUdid, snapshot]);
+  }, [activeDevice?.udid, onAddAttachment, projectRoot, runtimePin, selectedDeviceUdid, snapshot]);
 
   const attachSimulatorCapture = useCallback(async (frame: PreviewCrop["frame"]): Promise<({ path: string | null } & PreviewCrop) | null> => {
     const screenshot = snapshot?.screenshot;
@@ -1881,12 +1884,12 @@ export function ChatIosSimulatorPanel({
       const { path } = await window.ade.agentChat.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "ios-simulator-capture.png",
-      });
+      }, ...(runtimePin ? [runtimePin] as const : []));
       attachmentPath = path;
       onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
     }
     return { ...crop, path: attachmentPath };
-  }, [onAddAttachment, snapshot?.screenshot]);
+  }, [onAddAttachment, runtimePin, snapshot?.screenshot]);
 
   const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!snapshot?.screenshot.dataUrl) return;

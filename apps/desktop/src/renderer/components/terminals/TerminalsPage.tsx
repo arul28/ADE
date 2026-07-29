@@ -681,6 +681,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
   }, [selectedSessions, work]);
 
+  const handleRefreshOrphanSessions = useCallback(() => {
+    setSessionActionError(null);
+    setDeletingSessionId("orphan-refresh");
+    invalidateSessionListCache();
+    void work.refresh({ showLoading: false, force: true })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setSessionActionError(`Refresh failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      })
+      .finally(() => {
+        setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));
+      });
+  }, [work]);
+
   const handleBulkStopAndDeleteSelected = useCallback(() => {
     void (async () => {
       // Operates on the entire selection: chats delete directly, while running
@@ -1270,6 +1285,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             onBulkClose={handleBulkCloseSelected}
             onBulkDelete={handleBulkDeleteSelected}
             onBulkStopAndDelete={handleBulkStopAndDeleteSelected}
+            onRefreshOrphanSessions={handleRefreshOrphanSessions}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -1306,15 +1322,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }),
     [
       work,
+      active,
       sortedLanes,
       handleSelectSession,
+      handleSelectForeignRuntimeSession,
       selectedSessionIds,
       handleBulkCloseSelected,
       handleBulkDeleteSelected,
       handleBulkStopAndDeleteSelected,
-      handleInfoClick,
+      handleRefreshOrphanSessions,
       handleContextMenu,
       handoffLaunchJobs,
+      sessionsPaneRefCb,
       workViewWithSidebar,
     ],
   );

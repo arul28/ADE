@@ -905,10 +905,13 @@ struct WorkRootScreen: View {
           toggleCollapsed(group.isQuiet ? group.quietOpenSectionId : group.id)
         }
       },
-      pullRequest: group.laneId.flatMap { lanePrTagsByLaneId[$0] },
+      pullRequest: group.isOrphaned ? nil : group.laneId.flatMap { lanePrTagsByLaneId[$0] },
       onOpenPullRequest: { tag in
         openLanePullRequest(tag: tag, laneId: group.laneId)
-      }
+      },
+      onRefreshOrphanedSessions: group.isOrphaned
+        ? { Task { await refreshFromPullGesture() } }
+        : nil
     )
     .disabled(isLaneDeleting)
     .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -921,6 +924,17 @@ struct WorkRootScreen: View {
       bottom: isQuietRow ? 0 : 2,
       trailing: 16
     ))
+
+    if group.isOrphaned && !collapsed {
+      Text("The lane record is missing from the latest machine snapshot. Refresh to reconcile it. ADE will not delete sessions, branches, worktrees, commits, or pull requests.")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .accessibilityIdentifier("work-orphan-session-explanation")
+    }
 
     if !collapsed {
       ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in

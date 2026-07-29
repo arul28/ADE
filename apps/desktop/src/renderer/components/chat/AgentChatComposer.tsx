@@ -1204,6 +1204,7 @@ export function AgentChatComposer({
   lastSentUserMessage = null,
   attachments,
   composerMachineBinding = null,
+  attachmentPersistenceUnavailableReason = null,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
   pinnedLinearIssue = null,
@@ -1346,6 +1347,8 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
+  attachmentPersistenceUnavailableReason?: string | null;
   contextAttachments?: AgentChatContextAttachment[];
   allowAttachmentOnlySubmit?: boolean;
   pinnedLinearIssue?: LaneLinearIssue | null;
@@ -1596,6 +1599,8 @@ export function AgentChatComposer({
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
+  const latestComposerMachineBindingRef = useRef(composerMachineBinding);
+  latestComposerMachineBindingRef.current = composerMachineBinding;
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
@@ -1627,8 +1632,10 @@ export function AgentChatComposer({
       ? `Steer active turn: ${composerInputContextLabel}`
       : composerInputContextLabel;
   const attachmentSlotsUsed = attachments.length + pendingImageAttachments.length;
-  const canAttach = !composerInputLocked && (!parallelChatMode || attachmentSlotsUsed < PARALLEL_CHAT_MAX_ATTACHMENTS);
-  const attachBlockedReason = getAttachBlockedReason({
+  const canAttach = !attachmentPersistenceUnavailableReason
+    && !composerInputLocked
+    && (!parallelChatMode || attachmentSlotsUsed < PARALLEL_CHAT_MAX_ATTACHMENTS);
+  const attachBlockedReason = attachmentPersistenceUnavailableReason ?? getAttachBlockedReason({
     composerInputLocked,
     composerInputLockMessage,
     parallelChatMode,
@@ -2008,6 +2015,10 @@ export function AgentChatComposer({
   };
 
   const addFileAttachments = async (files: FileList | File[] | null | undefined) => {
+    if (attachmentPersistenceUnavailableReason) {
+      setAttachError(attachmentPersistenceUnavailableReason);
+      return;
+    }
     if (!files?.length) return;
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
@@ -2021,22 +2032,8 @@ export function AgentChatComposer({
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
         }
-        const fileWithPath = file as File & { path?: string };
-        const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
         const attachmentName = file.name || "clipboard.png";
         const isImageAttachment = inferAttachmentType(attachmentName, file.type) === "image";
-
-        if (hasRealPath) {
-          const filePath = fileWithPath.path!;
-          const attachmentType = inferAttachmentType(filePath, file.type);
-          if (attachmentType === "image") {
-            const previewUrl = createObjectPreviewUrl(file);
-            if (previewUrl) rememberPreviewUrl(filePath, previewUrl);
-          }
-          onAddAttachment({ path: filePath, type: attachmentType });
-          addedInBatch += 1;
-          continue;
-        }
 
         if (file.size > MAX_TEMP_ATTACHMENT_BYTES) {
           setAttachError(
@@ -2048,13 +2045,19 @@ export function AgentChatComposer({
         const pendingImage = isImageAttachment
           ? addPendingImageAttachment(attachmentName, createObjectPreviewUrl(file))
           : null;
+        const attachmentOwnerBinding = composerMachineBinding;
         try {
           const buf = await file.arrayBuffer();
           const base64 = arrayBufferToBase64(buf);
           const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
             data: base64,
             filename: attachmentName,
-          });
+          }, attachmentOwnerBinding);
+          if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+            if (pendingImage) dropPendingImageAttachment(pendingImage.id);
+            setAttachError(`"${attachmentName}" was not attached because the selected machine changed. Attach it again.`);
+            continue;
+          }
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
             continue;
@@ -2080,12 +2083,17 @@ export function AgentChatComposer({
   };
 
   const addNativeClipboardImageAttachment = async () => {
+    if (attachmentPersistenceUnavailableReason) {
+      setAttachError(attachmentPersistenceUnavailableReason);
+      return;
+    }
     if (!canAttach) return;
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
+    const attachmentOwnerBinding = composerMachineBinding;
     try {
       const image = await window.ade.app.readClipboardImage();
       if (!image) {
@@ -2095,7 +2103,12 @@ export function AgentChatComposer({
       const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
-      });
+      }, attachmentOwnerBinding);
+      if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+        dropPendingImageAttachment(pendingImage.id);
+        setAttachError("Clipboard image was not attached because the selected machine changed. Paste it again.");
+        return;
+      }
       if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;
@@ -4677,7 +4690,7 @@ export function AgentChatComposer({
                 label: "Upload file",
                 description: parallelChatMode
                   ? attachBlockedReason ?? "Upload files from disk and send them to every parallel lane."
-                  : "Upload a file from disk and attach it to this message.",
+                  : attachBlockedReason ?? "Upload a file from disk and attach it to this message.",
               }}
             >
               <button

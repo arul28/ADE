@@ -9,6 +9,7 @@ import {
   type AiStatusCacheInvalidatedEventDetail,
   type AiStatusCacheUpdatedEventDetail,
 } from "./aiDiscoveryCache";
+import type { OpenProjectBinding } from "../../shared/types";
 
 const getStatusMock = vi.fn();
 const modelsMock = vi.fn();
@@ -76,6 +77,90 @@ describe("aiDiscoveryCache", () => {
     expect(projectB.mode).toBe("subscription");
     expect(projectAAgain.mode).toBe("guest");
     expect(getStatusMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes and isolates discovery by runtime binding", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "ade",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    };
+    const macbookBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/Users/arul/ADE",
+      rootPath: "/Users/arul/ADE",
+      displayName: "ADE",
+      gitOriginUrl: null,
+    };
+    getStatusMock
+      .mockResolvedValueOnce({ mode: "guest", availableProviders: { claude: CLAUDE_UNAVAILABLE, codex: false, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] })
+      .mockResolvedValueOnce({ mode: "subscription", availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] });
+    modelsMock
+      .mockResolvedValueOnce([{ id: "studio-model", displayName: "Studio", isDefault: true }])
+      .mockResolvedValueOnce([{ id: "macbook-model", displayName: "MacBook", isDefault: true }]);
+
+    const studioStatus = await getAiStatusCached({
+      projectRoot: "/repo/ADE",
+      pin: studioBinding,
+    });
+    const macbookStatus = await getAiStatusCached({
+      projectRoot: "/repo/ADE",
+      pin: macbookBinding,
+    });
+    const studioModels = await getAgentChatModelsCached({
+      projectRoot: "/repo/ADE",
+      provider: "codex",
+      pin: studioBinding,
+    });
+    const macbookModels = await getAgentChatModelsCached({
+      projectRoot: "/repo/ADE",
+      provider: "codex",
+      pin: macbookBinding,
+    });
+
+    expect(studioStatus.mode).toBe("guest");
+    expect(macbookStatus.mode).toBe("subscription");
+    expect(studioModels[0]?.id).toBe("studio-model");
+    expect(macbookModels[0]?.id).toBe("macbook-model");
+    expect(getStatusMock).toHaveBeenNthCalledWith(1, {
+      force: false,
+      refreshOpenCodeInventory: false,
+    }, studioBinding);
+    expect(getStatusMock).toHaveBeenNthCalledWith(2, {
+      force: false,
+      refreshOpenCodeInventory: false,
+    }, macbookBinding);
+    expect(modelsMock).toHaveBeenNthCalledWith(1, { provider: "codex" }, studioBinding);
+    expect(modelsMock).toHaveBeenNthCalledWith(2, { provider: "codex" }, macbookBinding);
+    expect(peekAiStatusCached("/repo/ADE", studioBinding)?.mode).toBe("guest");
+    expect(peekAiStatusCached("/repo/ADE", macbookBinding)?.mode).toBe("subscription");
+  });
+
+  it("invalidates every machine-scoped status entry for a project root", async () => {
+    const binding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/repo/ADE",
+      rootPath: "/repo/ADE",
+      displayName: "ADE",
+      gitOriginUrl: null,
+    };
+    getStatusMock.mockResolvedValue({
+      mode: "subscription",
+      availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false },
+      models: { claude: [], codex: [], cursor: [] },
+      features: [],
+    });
+
+    await getAiStatusCached({ projectRoot: "/repo/ADE", pin: binding });
+    expect(peekAiStatusCached("/repo/ADE", binding)).not.toBeNull();
+
+    invalidateAiDiscoveryCache("/repo/ADE");
+
+    expect(peekAiStatusCached("/repo/ADE", binding)).toBeNull();
   });
 
   it("reuses cached model discovery per provider", async () => {

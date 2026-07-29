@@ -20,6 +20,11 @@ type ForeignMenuState = {
   x: number;
   y: number;
 };
+type ManagedLaneState = {
+  laneId: string;
+  lane?: LaneSummary;
+  binding?: OpenProjectBinding;
+};
 
 export type LaneContextTrigger = (
   laneId: string,
@@ -52,7 +57,7 @@ export function useWorkLaneContextMenu(options?: {
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
   const [foreignMenuState, setForeignMenuState] = useState<ForeignMenuState | null>(null);
-  const [managedLaneId, setManagedLaneId] = useState<string | null>(null);
+  const [managedLane, setManagedLane] = useState<ManagedLaneState | null>(null);
   const lanesById = useMemo(() => {
     const map = new Map<string, (typeof lanes)[number]>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -157,8 +162,18 @@ export function useWorkLaneContextMenu(options?: {
     switchProjectToPath,
     switchRemoteProject,
   ]);
+  const manageForeignLane = useCallback(() => {
+    if (!foreignMenuState?.online) return;
+    const { binding, lane } = foreignMenuState;
+    close();
+    setManagedLane({
+      laneId: lane.id,
+      lane,
+      binding,
+    });
+  }, [close, foreignMenuState]);
 
-  const menu = menuState || foreignMenuState || managedLaneId
+  const menu = menuState || foreignMenuState || managedLane
     ? createPortal(
         <>
           {menuState ? (
@@ -170,7 +185,7 @@ export function useWorkLaneContextMenu(options?: {
               onAdoptAttached={(laneId) => goToLanesAction(laneId, "adopt")}
               onManage={(laneId) => {
                 close();
-                setManagedLaneId(laneId);
+                setManagedLane({ laneId });
               }}
               selectLane={(laneId) => {
                 if (!laneId) return;
@@ -208,13 +223,16 @@ export function useWorkLaneContextMenu(options?: {
                 y={foreignMenuState.y}
                 onClose={close}
                 onStartChat={startForeignChat}
+                onManage={manageForeignLane}
                 onOpenInLanes={openForeignLane}
               />
             </>
           ) : null}
           <WorkManageLaneDialogHost
-            laneId={managedLaneId}
-            onClose={() => setManagedLaneId(null)}
+            laneId={managedLane?.laneId ?? null}
+            lane={managedLane?.lane}
+            runtimePin={managedLane?.binding}
+            onClose={() => setManagedLane(null)}
           />
         </>,
         document.body,

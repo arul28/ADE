@@ -193,6 +193,7 @@ type MockSessionListPaneProps = {
   ) => void;
   onBulkDelete?: () => void;
   onBulkStopAndDelete?: () => void;
+  onRefreshOrphanSessions?: () => void;
   onContextMenu: (
     session: TerminalSessionSummary,
     event: React.MouseEvent,
@@ -298,6 +299,12 @@ vi.mock("./SessionListPane", () => ({
         </button>
         <button type="button" onClick={() => props.onBulkStopAndDelete?.()}>
           bulk stop and delete
+        </button>
+        <button
+          type="button"
+          onClick={() => props.onRefreshOrphanSessions?.()}
+        >
+          refresh orphaned records
         </button>
       </div>
     );
@@ -869,6 +876,48 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
     confirmSpy.mockRestore();
+  });
+
+  it("refreshes orphaned session records without deleting sessions or lanes", async () => {
+    const orphanedChat = workMocks.makeTerminalSession("chat-orphaned", "lane-missing", "codex-chat", {
+      status: "completed",
+      runtimeState: "exited",
+    });
+    const orphanedShell = workMocks.makeTerminalSession("shell-orphaned", "lane-missing", "shell", {
+      status: "completed",
+      runtimeState: "exited",
+    });
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const laneDelete = vi.fn();
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [orphanedChat, orphanedShell],
+      visibleSessions: [orphanedChat, orphanedShell],
+      endedFiltered: [orphanedChat, orphanedShell],
+      filtered: [orphanedChat, orphanedShell],
+      sessionsGroupedByLane: new Map([["lane-missing", [orphanedChat, orphanedShell]]]),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        lanes: { delete: laneDelete },
+        sessions: { delete: sessionDelete },
+      },
+    });
+
+    render(<TerminalsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "refresh orphaned records" }));
+
+    await waitFor(() => {
+      expect(workMocks.currentWork.refresh).toHaveBeenCalledWith({ showLoading: false, force: true });
+    });
+    expect(agentChatDelete).not.toHaveBeenCalled();
+    expect(sessionDelete).not.toHaveBeenCalled();
+    expect(laneDelete).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalled();
   });
 
   it("stops and deletes a single running CLI session via the context menu", async () => {

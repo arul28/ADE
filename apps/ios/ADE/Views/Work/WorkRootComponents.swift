@@ -323,6 +323,7 @@ struct WorkSidebarSectionHeader: View {
   /// Navigates to the header PR in the PRs tab. Defaults to a no-op so preview
   /// harnesses don't have to wire it.
   var onOpenPullRequest: (LanePrTag) -> Void = { _ in }
+  var onRefreshOrphanedSessions: (() -> Void)? = nil
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -339,7 +340,7 @@ struct WorkSidebarSectionHeader: View {
 
           sectionIcon
 
-          Text(group.label)
+          Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
             .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
             .foregroundStyle(quietAwareLabelColor)
             .lineLimit(1)
@@ -351,6 +352,14 @@ struct WorkSidebarSectionHeader: View {
       .buttonStyle(.plain)
       .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
       .accessibilityLabel(accessibilityLabelText)
+
+      if group.isOrphaned, let onRefreshOrphanedSessions {
+        Button("Refresh", systemImage: "arrow.clockwise", action: onRefreshOrphanedSessions)
+          .labelStyle(.iconOnly)
+          .buttonStyle(.plain)
+          .frame(minWidth: 44, minHeight: 44)
+          .accessibilityHint("Refreshes lane and session records. Nothing is deleted.")
+      }
 
       if let pullRequest {
         Button {
@@ -392,6 +401,7 @@ struct WorkSidebarSectionHeader: View {
 
   private var quietAwareLabelColor: Color {
     if isQuietRow { return ADEColor.textSecondary }
+    if group.isOrphaned { return ADEColor.warning }
     return group.laneColor != nil ? group.tint : ADEColor.textPrimary
   }
 
@@ -402,7 +412,8 @@ struct WorkSidebarSectionHeader: View {
     if isQuietRow {
       return "\(group.label), \(count) settled \(noun). Tap to \(action)."
     }
-    return "\(group.label), \(count) \(noun). Tap to \(action)."
+    let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
+    return "\(label), \(count) \(noun). Tap to \(action)."
   }
 
   @ViewBuilder
@@ -414,6 +425,11 @@ struct WorkSidebarSectionHeader: View {
         .frame(width: 7, height: 7)
     case .laneBranch:
       WorkLaneLogoMark(color: group.tint, laneIcon: group.laneIcon, size: 11)
+        .frame(width: 12, height: 12)
+    case .warning:
+      Image(systemName: "exclamationmark.triangle")
+        .font(.caption)
+        .foregroundStyle(ADEColor.warning)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)

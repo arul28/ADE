@@ -3150,9 +3150,102 @@ function subscribeFeedbackEvents(
   };
 }
 
+function subscribePinnedProjectRuntimeEvents<T>(
+  pin: OpenProjectBinding | null | undefined,
+  decode: (payload: unknown) => T | null,
+  cb: (payload: T) => void,
+  label: string,
+  onPayload?: () => void,
+): (() => void) | null {
+  if (!pin || pin.key === currentProjectBinding?.key) return null;
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let cursor = 0;
+  let eventEpoch: string | null = null;
+  let consecutiveFailures = 0;
+
+  const poll = async (): Promise<void> => {
+    let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+    try {
+      const request = { cursor, limit: 200 };
+      const batch = await ipcRenderer.invoke(
+        pin.kind === "remote"
+          ? IPC.remoteRuntimeStreamEvents
+          : IPC.localRuntimeStreamEvents,
+        pin.kind === "remote"
+          ? { id: pin.targetId, projectId: pin.projectId, request }
+          : { rootPath: pin.rootPath, request },
+      ) as RemoteRuntimeStreamEventsResult;
+      if (cancelled) return;
+      consecutiveFailures = 0;
+      let resetForEpochChange = false;
+      const batchEpoch =
+        typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
+          ? batch.eventEpoch.trim()
+          : null;
+      if (batchEpoch) {
+        const epochChanged = eventEpoch
+          ? batchEpoch !== eventEpoch
+          : cursor > 0;
+        eventEpoch = batchEpoch;
+        if (epochChanged) {
+          cursor = 0;
+          delay = 0;
+          resetForEpochChange = true;
+        }
+      }
+      if (!resetForEpochChange) {
+        cursor = Number.isFinite(batch.nextCursor)
+          ? Math.max(0, Math.floor(batch.nextCursor))
+          : cursor;
+        for (const event of batch.events ?? []) {
+          const payload = decode(event.payload);
+          if (!payload) continue;
+          onPayload?.();
+          cb(payload);
+        }
+        delay = batch.hasMore
+          ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
+          : batch.events?.length
+            ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
+            : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+      }
+    } catch (error) {
+      if (!cancelled) {
+        console.warn(`ADE pinned ${label} event polling failed`, error);
+      }
+      consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
+      delay = Math.min(
+        PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS *
+          2 ** (consecutiveFailures - 1),
+        PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS,
+      );
+    }
+    if (!cancelled) timer = setTimeout(() => void poll(), delay);
+  };
+
+  void poll();
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
 function subscribeComputerUseEvents(
   cb: (payload: ComputerUseEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<ComputerUseEventPayload>(
+      payload,
+      "computer_use_event",
+    ),
+    cb,
+    "computer use",
+    () => computerUseOwnerSnapshotCache.clear(),
+  );
+  if (removePinned) return removePinned;
   const removeLocal = computerUseEventFanout(cb);
   const removeRemote = subscribeRemoteComputerUseEvents(cb);
   return () => {
@@ -4041,7 +4134,15 @@ contextBridge.exposeInMainWorld("ade", {
     getStatus: async (args?: {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
-    }): Promise<AiSettingsStatus> => {
+    }, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AiSettingsStatus>(
+          pin,
+          "ai",
+          "getStatus",
+          { args },
+        );
+      }
       const cacheKey = getAiStatusCacheKey(args);
       if (args?.force === true) {
         aiStatusCache.clear();
@@ -4868,9 +4969,13 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => {
+    createChild: async (
+      args: CreateChildLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "createChild",
         { args },
@@ -4956,9 +5061,11 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     adoptAttached: async (
       args: AdoptAttachedLaneArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "adoptAttached",
         { args },
@@ -4978,9 +5085,13 @@ contextBridge.exposeInMainWorld("ade", {
       }
       clearGitReadCaches();
     },
-    reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => {
+    reparent: async (
+      args: ReparentLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ReparentLaneResult> => {
       clearGitReadCaches();
-      const result = await callProjectRuntimeActionOr<ReparentLaneResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<ReparentLaneResult>(
+        pin,
         "lane",
         "reparent",
         { args },
@@ -4989,9 +5100,13 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as ReparentLaneResult;
     },
-    updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> => {
+    updateAppearance: async (
+      args: UpdateLaneAppearanceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       clearGitReadCaches();
-      await callProjectRuntimeActionOr(
+      await callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "updateAppearance",
         { args },
@@ -4999,18 +5114,23 @@ contextBridge.exposeInMainWorld("ade", {
       );
       clearGitReadCaches();
     },
-    archive: async (args: ArchiveLaneArgs): Promise<void> => {
+    archive: async (
+      args: ArchiveLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       clearGitReadCaches();
-      await callProjectRuntimeActionOr("lane", "archive", { args }, () =>
+      await callPinnedOrBoundRuntimeActionOr(pin, "lane", "archive", { args }, () =>
         ipcRenderer.invoke(IPC.lanesArchive, args),
       );
       clearGitReadCaches();
     },
     archiveAndReclaim: async (
       args: ArchiveAndReclaimLaneArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<ArchiveAndReclaimLaneResult> => {
       clearGitReadCaches();
-      const result = await callProjectRuntimeActionOr<ArchiveAndReclaimLaneResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<ArchiveAndReclaimLaneResult>(
+        pin,
         "lane",
         "archiveAndReclaim",
         { args },
@@ -5054,21 +5174,43 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
         ipcRenderer.invoke(IPC.lanesListDeleteProgress),
       ),
-    getDeleteRisk: async (args: { laneId: string }): Promise<LaneDeleteRisk> =>
-      callProjectRuntimeActionOr(
+    getDeleteRisk: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneDeleteRisk> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "getDeleteRisk",
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesGetDeleteRisk, args),
       ),
-    getReclaimRisk: async (args: { laneId: string }): Promise<LaneReclaimRisk> =>
-      callProjectRuntimeActionOr(
+    getReclaimRisk: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneReclaimRisk> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "getReclaimRisk",
         { args },
         () => ipcRenderer.invoke(IPC.lanesGetReclaimRisk, args),
       ),
-    onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => {
+    onDeleteEvent: (
+      cb: (ev: LaneDeleteEvent) => void,
+      pin?: OpenProjectBinding | null,
+    ) => {
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<LaneDeleteEvent>(
+          payload,
+          "lane_delete_event",
+        ),
+        cb,
+        "lane delete",
+        clearGitReadCaches,
+      );
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneDeleteEvent,
@@ -5759,8 +5901,18 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args);
     },
-    getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
-      sessionDeltaCache.get(sessionId),
+    getDelta: async (
+      sessionId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<SessionDeltaSummary | null> =>
+      pin
+        ? callPinnedRuntimeAction<SessionDeltaSummary | null>(
+            pin,
+            "session",
+            "getDelta",
+            { args: { sessionId } },
+          )
+        : sessionDeltaCache.get(sessionId),
     onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
       const removeLocal = subscribeLocalSessionChangedEvents(cb);
       const removeRemote = subscribeRemoteSessionChangedEvents(cb);
@@ -5872,15 +6024,21 @@ contextBridge.exposeInMainWorld("ade", {
     parallelLaunchState: {
       get: async (
         args: AgentChatParallelLaunchStateArgs,
+        pin?: OpenProjectBinding | null,
       ): Promise<AgentChatParallelLaunchState | null> =>
-        callProjectRuntimeActionOr(
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
           "chat",
           "getParallelLaunchState",
           { args },
           () => ipcRenderer.invoke(IPC.agentChatParallelLaunchStateGet, args),
         ),
-      set: async (args: AgentChatSetParallelLaunchStateArgs): Promise<void> =>
-        callProjectRuntimeActionOr(
+      set: async (
+        args: AgentChatSetParallelLaunchStateArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<void> =>
+        callPinnedOrBoundRuntimeActionOr(
+          pin,
           "chat",
           "setParallelLaunchState",
           { args },
@@ -6114,7 +6272,16 @@ contextBridge.exposeInMainWorld("ade", {
     },
     models: async (
       args: AgentChatModelsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatModelInfo[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatModelInfo[]>(
+          pin,
+          "chat",
+          "getAvailableModels",
+          { args },
+        );
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatModelInfo[]
       >("chat", "getAvailableModels", { args });
@@ -6612,8 +6779,16 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getOwnerSnapshot: async (
       args: ComputerUseOwnerSnapshotArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseOwnerSnapshot> =>
-      computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
+      pin
+        ? callPinnedRuntimeAction<ComputerUseOwnerSnapshot>(
+            pin,
+            "computer_use_artifacts",
+            "getOwnerSnapshot",
+            { args },
+          )
+        : computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
     deleteArtifacts: async (
       args: ComputerUseArtifactDeleteArgs,
     ): Promise<ComputerUseArtifactDeleteResult> =>
@@ -7577,7 +7752,16 @@ contextBridge.exposeInMainWorld("ade", {
     },
     quickOpen: async (
       args: FilesQuickOpenArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesQuickOpenItem[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<FilesQuickOpenItem[]>(
+          pin,
+          "file",
+          "quickOpen",
+          { args },
+        );
+      }
       return callFilesWorkspaceActionOr<FilesQuickOpenItem[]>(
         args.workspaceId,
         "quickOpen",

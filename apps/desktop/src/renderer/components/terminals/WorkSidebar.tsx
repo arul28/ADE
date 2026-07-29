@@ -385,6 +385,7 @@ export function WorkSidebar({
   const contextDisabledReason = targetDisabledReason;
   const warningReason = toolAttributionReason ?? contextDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
+  const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
   const terminalOwnerSessionId =
     contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
@@ -531,7 +532,7 @@ export function WorkSidebar({
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
               sessionId={panelSessionId}
-              onAddAttachment={canInsertContext ? addAttachment : undefined}
+              onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
               onAddContext={canInsertContext ? addBuiltInBrowserContext : undefined}
               onInsertDraft={canInsertContext ? insertDraft : undefined}
             />
@@ -606,7 +607,7 @@ export function WorkSidebar({
         projectRoot={laneRoot}
         controlDisabledReason={null}
         ignoreChatOwnership
-        onAddAttachment={canInsertContext ? addAttachment : undefined}
+        onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
         onAddContext={canInsertContext ? addIosContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
       />
@@ -616,7 +617,7 @@ export function WorkSidebar({
         laneId={laneId}
         projectRoot={laneRoot}
         controlDisabledReason={null}
-        onAddAttachment={canInsertContext ? addAttachment : undefined}
+        onAddAttachment={shouldPersistPanelAttachment ? addAttachment : undefined}
         onAddContext={canInsertContext ? addAppControlContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
       />
@@ -637,6 +638,7 @@ export function WorkSidebar({
     insertDraft,
     laneId,
     warningReason,
+    shouldPersistPanelAttachment,
     laneRoot,
     navigate,
     selectedCommit,
