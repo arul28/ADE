@@ -1670,14 +1670,14 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncConnectionHealthKeepsHelloInReconnectingUntilReady() {
+  func testSyncConnectionHealthTreatsHydrationAsConnected() {
     let health = syncConnectionHealth(
       connectionState: .syncing,
       prefersReducedSyncLoad: false,
       lastError: "Transient sync work"
     )
 
-    XCTAssertEqual(health.transport, .connecting)
+    XCTAssertEqual(health.transport, .connected)
     XCTAssertEqual(health.load, .normal)
     XCTAssertNil(health.lastFailureMessage)
   }
@@ -1726,7 +1726,14 @@ final class ADETests: XCTestCase {
       ),
       "Not connected"
     )
-    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: false,
+        directoryOnline: false,
+        lastSeenAt: nil
+      ),
+      "Last seen unknown"
+    )
     XCTAssertEqual(
       machineRowVisualState(
         isAuthenticatedCurrent: false,
@@ -1771,13 +1778,19 @@ final class ADETests: XCTestCase {
       lastResolvedAt: "2026-07-20T00:00:00.000Z"
     )
     XCTAssertFalse(hubSavedMachineIsRecentlyReachable(saved, liveHosts: []))
-    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: false,
+        directoryOnline: false,
+        lastSeenAt: nil
+      ),
+      "Last seen unknown"
+    )
   }
 
   func testAccountMachineRowHintStaysRouteNeutral() throws {
     // A machine advertised over Tailscale/relay must not surface that route on
-    // the primary machine rows — the row hint is presence-only, and route kind
-    // is confined to the Connection details section.
+    // the primary machine rows. Reachability and transport are separate facts.
     let machineJSON = try XCTUnwrap("""
       {
         "machineKey": "machine-key",
@@ -1795,15 +1808,26 @@ final class ADETests: XCTestCase {
     // routeLabel still knows the route (used only for diagnostics vocabulary)…
     XCTAssertEqual(machine.routeLabel, "Tailscale")
     // …but the string the rows actually render is route-neutral.
-    let rowHint = machineStatusHint(online: machine.online)
-    XCTAssertEqual(rowHint, "Recently reachable")
+    let rowHint = machineReachabilityText(
+      isConnected: false,
+      directoryOnline: machine.online,
+      lastSeenAt: nil
+    )
+    XCTAssertEqual(rowHint, "Online")
     for routeWord in ["Tailscale", "relay", "Local network", "lan", "tailnet"] {
       XCTAssertFalse(
         rowHint.localizedCaseInsensitiveContains(routeWord),
         "Primary machine row hint must not foreground the \(routeWord) route."
       )
     }
-    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: false,
+        directoryOnline: false,
+        lastSeenAt: nil
+      ),
+      "Last seen unknown"
+    )
   }
 
   func testSyncConnectionHealthSeparatesLoadStrainFromTransportFailure() {
@@ -1856,6 +1880,75 @@ final class ADETests: XCTestCase {
       "Connected"
     )
     XCTAssertNil(settingsConnectedRouteChipText(durationMs: 300, routeKind: nil))
+  }
+
+  func testTransportBadgeNamesObservedRoute() {
+    XCTAssertEqual(syncTransportBadgeText(routeKind: .lan), "via LAN")
+    XCTAssertEqual(syncTransportBadgeText(routeKind: .tailnet), "via Tailscale")
+    XCTAssertEqual(syncTransportBadgeText(routeKind: .relay), "via ADE Relay")
+    XCTAssertNil(syncTransportBadgeText(routeKind: nil))
+  }
+
+  func testMachineReachabilityTextPrioritizesLiveFacts() {
+    let now = Date(timeIntervalSince1970: 2_000_000)
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: true,
+        directoryOnline: false,
+        lastSeenAt: now.addingTimeInterval(-3_600),
+        now: now
+      ),
+      "Connected"
+    )
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: false,
+        directoryOnline: true,
+        lastSeenAt: now.addingTimeInterval(-3_600),
+        now: now
+      ),
+      "Online"
+    )
+    XCTAssertEqual(
+      machineReachabilityText(
+        isConnected: false,
+        directoryOnline: false,
+        lastSeenAt: now.addingTimeInterval(-125),
+        now: now
+      ),
+      "Last seen 2m ago"
+    )
+  }
+
+  func testAccountMachinePrefersCustomName() throws {
+    let data = try XCTUnwrap("""
+      {
+        "machineKey": "machine-key",
+        "name": "Reported hostname",
+        "customName": "Studio",
+        "online": false
+      }
+      """.data(using: .utf8))
+    let machine = try JSONDecoder().decode(AccountMachine.self, from: data)
+    XCTAssertEqual(machine.displayName, "Studio")
+  }
+
+  func testHubFirstConnectExpandsOnlyActiveProject() {
+    XCTAssertEqual(
+      hubProjectIdsCollapsedByDefault([
+        (id: "active", isActive: true),
+        (id: "other", isActive: false),
+        (id: "third", isActive: false),
+      ]),
+      Set(["other", "third"])
+    )
+  }
+
+  func testSettingsVersionLabelIncludesMarketingAndBuildVersions() {
+    XCTAssertEqual(
+      settingsVersionLabel(marketingVersion: "1.2.24", build: "243"),
+      "v1.2.24 (243)"
+    )
   }
 
   @MainActor

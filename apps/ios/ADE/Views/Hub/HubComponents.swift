@@ -25,9 +25,8 @@ struct HubTopBar: View {
         .shadow(color: ADEColor.purpleAccent.opacity(0.35), radius: 10)
         .accessibilityLabel("ADE")
 
-      Spacer(minLength: 8)
-
       HubConnectionPill()
+        .layoutPriority(1)
 
       HubCircularButton(systemImage: "plus", tint: ADEColor.accent, action: onAdd)
         .accessibilityLabel("Add project")
@@ -105,12 +104,17 @@ struct HubConnectionPill: View {
     if let host = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
       return host
     }
-    switch syncService.connectionState {
-    case .connected, .syncing: return "Connected"
+    switch syncService.connectionHealth.transport {
+    case .connected: return "Connected"
     case .connecting: return "Connecting…"
-    case .error: return "Error"
+    case .unreachable: return "Unreachable"
     case .disconnected: return "Offline"
     }
+  }
+
+  private var transportLabel: String? {
+    guard syncService.connectionHealth.transport.isConnected else { return nil }
+    return syncTransportBadgeText(routeKind: syncService.lastConnectedRouteKind)
   }
 
   /// Name of the project currently switching in, if any — drives the progress
@@ -140,17 +144,25 @@ struct HubConnectionPill: View {
         } else {
           HStack(spacing: 6) {
             Circle().fill(tint).frame(width: 7, height: 7)
-            Text(label)
-              .font(.system(.caption, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
+            VStack(alignment: .leading, spacing: 0) {
+              Text(label)
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              if let transportLabel {
+                Text(transportLabel)
+                  .font(.caption2.weight(.medium))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .lineLimit(1)
+              }
+            }
           }
           .id("machine")
           .transition(.opacity)
         }
       }
       .padding(.horizontal, 11)
-      .padding(.vertical, 8)
+      .padding(.vertical, transportLabel == nil ? 8 : 5)
       .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
       .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
     }

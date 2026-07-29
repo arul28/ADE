@@ -79,7 +79,11 @@ struct HubQuickConnectSection: View {
             case .account(let machine):
               HubQuickConnectCard(
                 title: machine.displayName,
-                routeHint: machineStatusHint(online: machine.online),
+                routeHint: machineReachabilityText(
+                  isConnected: false,
+                  directoryOnline: machine.online,
+                  lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+                ),
                 deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
                 online: machine.online,
                 isConnecting: connectingId == accountKey(machine),
@@ -92,7 +96,11 @@ struct HubQuickConnectSection: View {
               )
               HubQuickConnectCard(
                 title: host.hostName,
-                routeHint: machineStatusHint(online: online),
+                routeHint: machineReachabilityText(
+                  isConnected: false,
+                  directoryOnline: online,
+                  lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
+                ),
                 deviceSymbol: machineDeviceSymbol(deviceType: nil, platform: nil),
                 online: online,
                 isConnecting: connectingId == savedKey(host),

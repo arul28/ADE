@@ -1366,6 +1366,38 @@ final class AccountService: ObservableObject {
     }
   }
 
+  func renameMachine(_ machine: AccountMachine, customName: String?) async throws {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.directoryBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
+    let renamed = try await directory.renameMachine(
+      baseURL: baseURL,
+      token: initialSession.token,
+      machineKey: machine.machineKey,
+      customName: customName,
+      refreshToken: { [weak self] in
+        guard let self,
+              self.isPairingCommitAuthorized(initialSession.authorization) else { return nil }
+        return try? await self.freshRelaySession(
+          expectedAuthorization: initialSession.authorization
+        ).token
+      }
+    )
+    guard isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
+    if let index = machines.firstIndex(where: { $0.machineKey == renamed.machineKey }) {
+      machines[index] = renamed
+    } else {
+      await loadMachines()
+    }
+  }
+
   // MARK: - Identity mapping
 
   private func emailAuthActions() -> AccountEmailAuthActions {

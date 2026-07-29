@@ -24,6 +24,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   let machineKey: String
   let deviceId: String?
   let name: String?
+  let customName: String?
   let platform: String?
   let deviceType: String?
   /// Stable machine identity key advertised by the directory. Newer records
@@ -42,6 +43,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     machineKey = try container.decode(String.self, forKey: .machineKey)
     deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
     name = try container.decodeIfPresent(String.self, forKey: .name)
+    customName = try container.decodeIfPresent(String.self, forKey: .customName)
     platform = try container.decodeIfPresent(String.self, forKey: .platform)
     deviceType = try container.decodeIfPresent(String.self, forKey: .deviceType)
     pubkey = try container.decodeIfPresent(String.self, forKey: .pubkey)
@@ -52,12 +54,15 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case machineKey, deviceId, name, platform, deviceType, pubkey, reachableEndpoints, lastSeenAt, createdAt, online
+    case machineKey, deviceId, name, customName, platform, deviceType, pubkey, reachableEndpoints, lastSeenAt, createdAt, online
   }
 
   /// Human display name — falls back to the platform or a generic label so a
   /// bare row never renders empty.
   var displayName: String {
+    if let trimmed = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+      return trimmed
+    }
     if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
       return trimmed
     }
@@ -196,6 +201,71 @@ struct AccountDirectoryClient {
       throw DirectoryError.unauthorized
     default:
       throw DirectoryError.server(http.statusCode)
+    }
+  }
+
+  func renameMachine(
+    baseURL: URL,
+    token: String,
+    machineKey: String,
+    customName: String?,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws -> AccountMachine {
+    let key = machineKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = customName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !key.isEmpty, (name?.count ?? 0) <= 80 else {
+      throw DirectoryError.transport("Machine names can be up to 80 characters.")
+    }
+    let encodedName: Any = name?.isEmpty == false ? (name ?? "") : NSNull()
+    let url = baseURL
+      .appendingPathComponent("account/machines")
+      .appendingPathComponent(key)
+    let body = try JSONSerialization.data(
+      withJSONObject: ["customName": encodedName]
+    )
+    let correlationID = UUID().uuidString.lowercased()
+
+    func request(using accessToken: String) async throws -> (Data, HTTPURLResponse) {
+      var request = URLRequest(url: url)
+      request.httpMethod = "PATCH"
+      request.httpBody = body
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      request.timeoutInterval = 12
+      request.cachePolicy = .reloadIgnoringLocalCacheData
+      do {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+          throw DirectoryError.transport("The directory returned an unexpected response.")
+        }
+        return (data, http)
+      } catch let error as DirectoryError {
+        throw error
+      } catch {
+        throw DirectoryError.transport("Couldn't reach the machine directory.")
+      }
+    }
+
+    var (data, response) = try await request(using: token)
+    if response.statusCode == 401,
+       let refreshToken,
+       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !refreshed.isEmpty {
+      (data, response) = try await request(using: refreshed)
+    }
+    switch response.statusCode {
+    case 200:
+      do {
+        return try JSONDecoder().decode(AccountMachine.self, from: data)
+      } catch {
+        throw DirectoryError.transport("The directory returned unreadable data.")
+      }
+    case 401, 403:
+      throw DirectoryError.unauthorized
+    default:
+      throw DirectoryError.server(response.statusCode)
     }
   }
 }

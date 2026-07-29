@@ -80,9 +80,9 @@ func syncConnectionHealth(
     switch connectionState {
     case .disconnected:
       return .disconnected
-    case .connecting, .syncing:
+    case .connecting:
       return .connecting
-    case .connected:
+    case .connected, .syncing:
       return .connected
     case .error:
       return .unreachable

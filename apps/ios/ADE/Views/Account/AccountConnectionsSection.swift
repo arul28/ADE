@@ -292,7 +292,11 @@ struct AccountMachineRow: View {
         title: machine.displayName,
         // Keep the route kind (lan/tailnet/relay) out of the primary row —
         // presence is only a hint and route detail lives in Connection details.
-        routeHint: machineStatusHint(online: machine.online),
+        routeHint: machineReachabilityText(
+          isConnected: false,
+          directoryOnline: machine.online,
+          lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+        ),
         online: machine.online,
         statusPill: nil,
         affordance: .connect,
