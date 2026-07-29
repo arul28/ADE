@@ -114,6 +114,7 @@ func workCanonicalSessionState(
   runtimeState: String? = nil,
   toolType: String? = nil,
   pendingInputItemId: String? = nil,
+  providerStructuredInput: Bool = false,
   lastOutputPreview: String? = nil,
   lastActivityAt: String? = nil,
   exitCode: Int? = nil,
@@ -136,7 +137,7 @@ func workCanonicalSessionState(
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
   // An escalated ask outranks BOTH override values.
-  if !pending.isEmpty || !attentionRequested.isEmpty {
+  if !pending.isEmpty || providerStructuredInput || !attentionRequested.isEmpty {
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
 
@@ -245,7 +246,8 @@ func workCanonicalSessionState(
     status: session.status,
     runtimeState: session.runtimeState,
     toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
+    pendingInputItemId: summary?.pendingInputItemId ?? session.pendingInputItemId,
+    providerStructuredInput: summary?.awaitingInput == true,
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: workSessionStaleActivityTimestamp(session: session, summary: summary),
     exitCode: session.exitCode,

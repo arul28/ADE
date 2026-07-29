@@ -3675,7 +3675,7 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   ] = await Promise.all([
     args.laneService.getChildren(laneId),
     Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
-    args.agentChatService?.listSessions(laneId, { includeAutomation: true }) ?? Promise.resolve([]),
+    args.agentChatService?.listSessions(laneId, { includeAutomation: true }).catch(() => []) ?? Promise.resolve([]),
     Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: suggestionLanes }) ?? []),
     Promise.resolve(args.autoRebaseService?.listStatuses({ lanes: [lane] }) ?? []),
     Promise.resolve(args.laneService.getStateSnapshot(laneId)),

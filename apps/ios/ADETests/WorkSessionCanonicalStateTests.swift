@@ -246,6 +246,19 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(badge?.kind, .needsYou)
   }
 
+  func testRowWrapperMapsChatSummaryPendingItemToNeedsYou() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    let summary = makeChatSummary(
+      status: "active",
+      awaitingInput: false,
+      pendingInputItemId: "provider-question-1"
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(session: session, summary: summary, now: now).phase,
+      .needsYou
+    )
+  }
+
   func testCapsuleBadgeSurfacesFailedExit() {
     let session = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130)
     let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
@@ -527,7 +540,11 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
-  private func makeChatSummary(status: String, awaitingInput: Bool?) -> AgentChatSessionSummary {
+  private func makeChatSummary(
+    status: String,
+    awaitingInput: Bool?,
+    pendingInputItemId: String? = nil
+  ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: "chat-1",
       laneId: "lane-1",
@@ -568,7 +585,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       lastOutputPreview: nil,
       summary: nil,
       awaitingInput: awaitingInput,
-      pendingInputItemId: nil,
+      pendingInputItemId: pendingInputItemId,
       threadId: nil,
       requestedCwd: nil
     )
