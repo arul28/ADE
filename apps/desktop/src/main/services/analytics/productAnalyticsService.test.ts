@@ -642,6 +642,48 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("normalizes persisted identify quotas and rejects timestamps outside the active minute", () => {
+    const nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    const first = makeHarness({ now: () => nowMs });
+    first.service.capture({ event: "ade_app_opened", surface: "desktop" });
+    const statePath = path.join(first.root, "analytics.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      quota: {
+        identifyAccepted: number;
+        identifyMinuteWindow: number[];
+      };
+    };
+    state.quota.identifyAccepted = 1;
+    state.quota.identifyMinuteWindow = [
+      nowMs - 60_001,
+      nowMs - 30_000,
+      nowMs,
+      nowMs + 60_001,
+      Number.POSITIVE_INFINITY,
+    ];
+    fs.writeFileSync(statePath, `${JSON.stringify(state)}\n`);
+
+    const minuteLimited = makeHarness({ root: first.root, now: () => nowMs });
+    expect(minuteLimited.service.identifyAccount("user_minute_limited")).toEqual({
+      accepted: false,
+      reason: "rate_limited",
+    });
+    const minuteState = JSON.parse(fs.readFileSync(statePath, "utf8")) as typeof state;
+    expect(minuteState.quota.identifyMinuteWindow).toEqual([nowMs - 30_000, nowMs]);
+
+    minuteState.quota.identifyAccepted = 999;
+    minuteState.quota.identifyMinuteWindow = [];
+    fs.writeFileSync(statePath, `${JSON.stringify(minuteState)}\n`);
+    const dailyLimited = makeHarness({ root: first.root, now: () => nowMs });
+    expect(dailyLimited.service.identifyAccount("user_daily_limited")).toEqual({
+      accepted: false,
+      reason: "daily_budget",
+    });
+    const dailyState = JSON.parse(fs.readFileSync(statePath, "utf8")) as typeof state;
+    expect(dailyState.quota.identifyAccepted).toBe(3);
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
   it("rejects personal keys and invalid explicit ingestion hosts", () => {
     const personalKey = makeHarness({ token: "phx_personal_admin_key" });
     expect(personalKey.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({

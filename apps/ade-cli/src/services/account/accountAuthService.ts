@@ -83,6 +83,11 @@ export type AccountSessionRecord = {
   oauthConfig?: AccountOAuthConfig;
 };
 
+export type AccountAnalyticsIdentity = {
+  identifyAccount(userId: string | null | undefined): unknown;
+  resetAccountIdentity(): unknown;
+};
+
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
 
 export type AccountIdentityProvider = "github" | "google" | "apple" | "email";
@@ -650,10 +655,7 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
 
 export function createAccountActionDomainService(
   service: AccountAuthService,
-  analytics?: {
-    identifyAccount(userId: string | null | undefined): unknown;
-    resetAccountIdentity(): unknown;
-  },
+  analytics?: AccountAnalyticsIdentity,
 ): AccountActionDomainService {
   const identifyStatus = (status: AccountAuthStatus): AccountAuthStatus => {
     if (status.signedIn) analytics?.identifyAccount(status.userId);
@@ -688,10 +690,7 @@ export function createAccountActionDomainService(
 
 export async function callAccountAction(args: {
   service: AccountAuthService;
-  analytics?: {
-    identifyAccount(userId: string | null | undefined): unknown;
-    resetAccountIdentity(): unknown;
-  };
+  analytics?: AccountAnalyticsIdentity;
   action: string;
   actionArgs?: Record<string, unknown>;
 }): Promise<{

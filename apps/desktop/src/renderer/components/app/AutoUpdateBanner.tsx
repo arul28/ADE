@@ -59,6 +59,8 @@ export function AutoUpdateBanner() {
 
   const banner = describeStalenessBanner(snapshot);
   const signature = banner?.signature ?? null;
+  const currentVersion = snapshot.currentVersion;
+  const updateVersion = snapshot.version;
 
   // Re-enable the Restart action whenever the banner state changes (or clears);
   // a stale "restarting" flag must never stick across a new staged version.
@@ -67,7 +69,7 @@ export function AutoUpdateBanner() {
   }, [signature]);
 
   const handleRestart = useCallback(() => {
-    captureUpdatePromptDecision(snapshot, "accepted");
+    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
     setRestarting(true);
     void window.ade.updateQuitAndInstall()
       .then((started) => {
@@ -76,10 +78,10 @@ export function AutoUpdateBanner() {
       .catch(() => {
         setRestarting(false);
       });
-  }, [snapshot]);
+  }, [currentVersion, updateVersion]);
 
   const handleCancelAutoApply = useCallback(() => {
-    captureUpdatePromptDecision(snapshot, "deferred");
+    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "deferred");
     cancelRequestedRef.current = true;
     dismissToast(AUTO_APPLY_TOAST_ID);
     void window.ade.updateCancelAutoApply?.().then(
@@ -92,7 +94,7 @@ export function AutoUpdateBanner() {
         cancelRequestedRef.current = false;
       },
     );
-  }, [snapshot]);
+  }, [currentVersion, updateVersion]);
 
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.

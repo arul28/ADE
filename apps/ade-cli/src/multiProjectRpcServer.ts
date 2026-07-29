@@ -63,6 +63,7 @@ import {
 } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
+  type AccountAnalyticsIdentity,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
 import {
@@ -101,10 +102,7 @@ export type MultiProjectRpcHandlerOptions = {
     "capabilities" | "call" | "streamEvents" | "dispose"
   > & Partial<Pick<PersonalChatScope, "activitySummary">>;
   accountAuthService?: AccountAuthService;
-  productAnalyticsService?: {
-    identifyAccount(userId: string | null | undefined): unknown;
-    resetAccountIdentity(): unknown;
-  };
+  productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   getRuntimeStatus?: () => {
     syncPort: number | null;

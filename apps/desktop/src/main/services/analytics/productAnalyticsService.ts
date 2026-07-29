@@ -207,12 +207,16 @@ function normalizeQuotaState(value: unknown, nowMs: number): ProductAnalyticsQuo
     minuteWindows,
     dedupe: Object.fromEntries(dedupeEntries),
     droppedByReason,
-    identifyAccepted: finiteCount(raw.identifyAccepted, 3),
+    identifyAccepted: finiteCount(raw.identifyAccepted, IDENTIFY_DAILY_BUDGET),
     identifyMinuteWindow: Array.isArray(raw.identifyMinuteWindow)
       ? raw.identifyMinuteWindow
-          .filter((timestamp): timestamp is number => typeof timestamp === "number" && Number.isFinite(timestamp))
+          .filter((timestamp): timestamp is number =>
+            typeof timestamp === "number"
+            && Number.isFinite(timestamp)
+            && timestamp >= nowMs - 60_000
+            && timestamp <= nowMs + 60_000)
           .map((timestamp) => Math.max(0, Math.floor(timestamp)))
-          .slice(-2)
+          .slice(-IDENTIFY_MINUTE_BUDGET)
       : [],
     ...(pendingBudgetSummary ? { pendingBudgetSummary } : {}),
   };
@@ -733,7 +737,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         return { accepted: false, reason: "daily_budget" };
       }
       const nowMs = now();
-      const recent = state.quota.identifyMinuteWindow.filter((timestamp) => timestamp >= nowMs - 60_000);
+      const recent = state.quota.identifyMinuteWindow.filter((timestamp) =>
+        timestamp >= nowMs - 60_000 && timestamp <= nowMs + 60_000);
       if (recent.length >= IDENTIFY_MINUTE_BUDGET) {
         incrementDrop(state.quota, "rate_limited");
         writeState(args.stateFilePath, state);

@@ -244,8 +244,11 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     analytics.identifyAccount("user_789")
 
     XCTAssertEqual(sink.identities.count, 2)
-    XCTAssertEqual(sink.resetIdentityCount, 2)
-    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+    XCTAssertEqual(sink.resetIdentityCount, 1)
+    XCTAssertEqual(
+      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+      "ade_user_6c9c79d93890a390c5bfa238afe37331"
+    )
   }
 
   func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
@@ -296,6 +299,54 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertNotEqual(resetAnonymousID, anonymousID)
     XCTAssertNotEqual(resetAnonymousID, "ade_user_5d0609d39586fed6fd2b684efd3d059c")
     XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testDirectIdentityResetClearsAnonymousAndIdentifiedKeysTogether() {
+    let defaults = makeDefaults()
+    defaults.set("anonymous", forKey: DirectPostHogProductAnalyticsSink.installationIDDefaultsKey)
+    defaults.set(
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+      forKey: ProductAnalytics.identifiedAccountHashDefaultsKey
+    )
+    let sink = DirectPostHogProductAnalyticsSink(defaults: defaults)
+
+    sink.resetIdentity()
+
+    XCTAssertNil(defaults.string(forKey: DirectPostHogProductAnalyticsSink.installationIDDefaultsKey))
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testDirectAccountSwitchRotatesAnonymousIdentityAndKeepsNewAccountHash() throws {
+    let defaults = makeDefaults()
+    let factory = ProductAnalyticsTestTransportFactory()
+    let sink = DirectPostHogProductAnalyticsSink(
+      defaults: defaults,
+      transportFactory: { factory.make() }
+    )
+    sink.configure(projectToken: "phc_public_123", host: nil, enabled: true)
+    let analytics = ProductAnalytics(defaults: defaults, sink: sink)
+
+    analytics.captureScreen(.work)
+    let firstAnonymousID = try distinctID(
+      from: XCTUnwrap(factory.transports.first?.requests.first)
+    )
+    analytics.identifyAccount("user_123")
+    analytics.identifyAccount("user_456")
+    analytics.captureScreen(.settings)
+
+    let requests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(requests.count, 4)
+    let secondIdentify = try payload(from: requests[2])
+    let secondProperties = try XCTUnwrap(secondIdentify["properties"] as? [String: Any])
+    XCTAssertNotEqual(secondProperties["$anon_distinct_id"] as? String, firstAnonymousID)
+    XCTAssertEqual(
+      try distinctID(from: requests[3]),
+      "ade_user_6c9c79d93890a390c5bfa238afe37331"
+    )
+    XCTAssertEqual(
+      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+      "ade_user_6c9c79d93890a390c5bfa238afe37331"
+    )
   }
 
   func testOutcomeSanitizerRejectsArbitraryValuesAndDropsExtraFields() throws {

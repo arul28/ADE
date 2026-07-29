@@ -147,6 +147,44 @@ export function isMarketingCtaPosition(
   return typeof value === "string" && ALLOWED_CTA_POSITIONS.has(value);
 }
 
+type AnalyticsAttributeTarget = {
+  getAttribute(name: string): string | null;
+};
+
+export type MarketingAnalyticsClickTarget = {
+  closest(selector: string): AnalyticsAttributeTarget | null;
+};
+
+export type MarketingAnalyticsClickCaptures = {
+  captureCta(
+    ctaLabel: MarketingCtaLabel,
+    screen: MarketingScreen,
+    position: MarketingCtaPosition,
+  ): void;
+  captureFeature(feature: MarketingFeature, screen?: MarketingScreen): void;
+};
+
+export function routeMarketingAnalyticsClick(
+  target: MarketingAnalyticsClickTarget,
+  pathname: string,
+  captures: MarketingAnalyticsClickCaptures,
+): "cta" | "feature" | null {
+  const screen = normalizeMarketingScreen(pathname) ?? undefined;
+  const ctaTarget = target.closest(`[${ANALYTICS_CTA_ATTRIBUTE}]`);
+  const ctaLabel = ctaTarget?.getAttribute(ANALYTICS_CTA_ATTRIBUTE);
+  const ctaPosition = ctaTarget?.getAttribute(ANALYTICS_CTA_POSITION_ATTRIBUTE);
+  if (isMarketingCtaLabel(ctaLabel) && isMarketingCtaPosition(ctaPosition) && screen) {
+    captures.captureCta(ctaLabel, screen, ctaPosition);
+    return "cta";
+  }
+
+  const featureTarget = target.closest(`[${ANALYTICS_FEATURE_ATTRIBUTE}]`);
+  const feature = featureTarget?.getAttribute(ANALYTICS_FEATURE_ATTRIBUTE);
+  if (!isMarketingFeature(feature)) return null;
+  captures.captureFeature(feature, screen);
+  return "feature";
+}
+
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 type DropReason = "daily_cap" | "event_cap" | "key_cap" | "duplicate" | "transport";

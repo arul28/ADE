@@ -317,6 +317,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   func resetIdentity() {
     lock.withLock {
       defaults.removeObject(forKey: Self.installationIDDefaultsKey)
+      defaults.removeObject(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey)
     }
   }
 
@@ -696,10 +697,7 @@ final class ProductAnalytics {
       let previousHash = defaults.string(forKey: Self.identifiedAccountHashDefaultsKey)
       guard previousHash != userHash else { return IdentityTransition() }
 
-      var transition = IdentityTransition(shouldReset: previousHash != nil)
-      if previousHash != nil {
-        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
-      }
+      var transition = IdentityTransition()
       var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
       guard reserve(
         name: Self.identifyEventName,
@@ -711,6 +709,10 @@ final class ProductAnalytics {
         persist(currentBudget)
         return transition
       }
+      transition.shouldReset = previousHash != nil
+      if previousHash != nil {
+        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
+      }
       defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
       budget = currentBudget
       persist(currentBudget)
@@ -719,7 +721,12 @@ final class ProductAnalytics {
     }
 
     if transition.shouldReset {
-      sink.resetIdentity()
+      lock.withLock {
+        sink.resetIdentity()
+        if let userHash = transition.userHash {
+          defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
+        }
+      }
     }
     for pendingEvent in transition.pendingEvents {
       var eventProperties = pendingEvent.properties
@@ -735,14 +742,11 @@ final class ProductAnalytics {
   }
 
   func resetAccountIdentity() {
-    let hadIdentity = lock.withLock {
+    lock.withLock {
       guard defaults.string(forKey: Self.identifiedAccountHashDefaultsKey) != nil else {
-        return false
+        return
       }
       defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
-      return true
-    }
-    if hadIdentity {
       sink.resetIdentity()
     }
   }

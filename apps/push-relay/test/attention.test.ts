@@ -1583,6 +1583,8 @@ describe("account Attention contract", () => {
   });
 
   it("never exposes a cursor before its item, tombstone, or acknowledgment rows", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
     const directory = mkdtempSync(join(tmpdir(), "ade-attention-atomic-"));
     const path = join(directory, "relay.sqlite");
     const database = new SqliteD1Database(path);

@@ -167,7 +167,7 @@ export function AutoUpdateControl() {
         setInstallRequested(false);
         // The main process logs updater failures.
       });
-  }, [snapshot.version]);
+  }, [snapshot.currentVersion, snapshot.version]);
 
   const handleSkewUpdateCheck = useCallback(() => {
     setSnapshot((current) => current.status === "idle"

@@ -9,6 +9,7 @@ import {
   MARKETING_CTA_POSITIONS,
   MARKETING_SCREENS,
   normalizeMarketingScreen,
+  routeMarketingAnalyticsClick,
   type PostHogCapturePayload,
   type StorageLike,
 } from "./marketingAnalytics.ts";
@@ -77,6 +78,28 @@ test("normalizes only allowlisted pathnames and ignores the OG renderer", () => 
   assert.equal(normalizeMarketingScreen("/download/"), MARKETING_SCREENS.DOWNLOAD);
   assert.equal(normalizeMarketingScreen("/_og"), null);
   assert.equal(normalizeMarketingScreen("/anything/private"), MARKETING_SCREENS.NOT_FOUND);
+});
+
+test("routes an annotated browser CTA once without duplicating its feature event", () => {
+  const captured: string[] = [];
+  const attributes = new Map([
+    ["data-ade-analytics-cta", MARKETING_CTA_LABELS.DOWNLOAD_MAC],
+    ["data-ade-analytics-position", MARKETING_CTA_POSITIONS.HERO],
+    ["data-ade-analytics-feature", MARKETING_FEATURES.DOWNLOAD_MAC],
+  ]);
+  const annotatedTarget = {
+    closest(selector: string) {
+      return selector === "[data-ade-analytics-cta]" || selector === "[data-ade-analytics-feature]"
+        ? { getAttribute: (name: string) => attributes.get(name) ?? null }
+        : null;
+    },
+  };
+
+  assert.equal(routeMarketingAnalyticsClick(annotatedTarget, "/", {
+    captureCta: (label, screen, position) => captured.push(`cta:${label}:${screen}:${position}`),
+    captureFeature: (feature, screen) => captured.push(`feature:${feature}:${screen}`),
+  }), "cta");
+  assert.deepEqual(captured, ["cta:download_for_mac:home:hero"]);
 });
 
 test("manual payload contains only anonymous allowlisted properties", () => {
