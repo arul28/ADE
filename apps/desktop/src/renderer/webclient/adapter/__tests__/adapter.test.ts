@@ -1073,7 +1073,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("treats subscription snapshots as history and emits only genuinely live chat events", async () => {
+  it("replays reconnect snapshots without duplicating already-delivered chat events", async () => {
     fake.descriptors = descriptors(["chat.getSummary"]);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -1108,9 +1108,11 @@ describe("createAdeWebAdapter", () => {
     fake.emitChat({ ...unrelatedEvent });
 
     expect(received.map((payload) => [payload.sessionId, payload.event])).toEqual([
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-source" })],
       ["chat-restarted", expect.objectContaining({ marker: "live-before-restart" })],
       ["chat-unrelated", expect.objectContaining({ marker: "old-unrelated" })],
       ["chat-restarted", expect.objectContaining({ marker: "live-after-restart" })],
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-after-restart" })],
     ]);
     adapter.dispose();
   });

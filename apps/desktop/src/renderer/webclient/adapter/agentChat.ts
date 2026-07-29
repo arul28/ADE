@@ -13,12 +13,12 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 
-// The browser gets ordered history through chat.getChatEventHistory and only
-// uses chat_subscribe for events that arrive after subscription. Keep the
-// server snapshot bounded even though the adapter deliberately does not emit
-// it as live input: remote hosts serialize that response before later
-// summary/model commands. Older history remains available through
-// getChatEventHistoryPage when the user scrolls back.
+// The browser gets authoritative ordered history through
+// chat.getChatEventHistory. chat_subscribe snapshots still matter as bounded
+// reconnect recovery when the host cannot resume from the prior sequence.
+// The adapter dedupes that replay, while the renderer inserts recovered rows
+// chronologically rather than appending them after the real tail. Older
+// history remains available through getChatEventHistoryPage on scrollback.
 const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
 const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
@@ -72,10 +72,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       sessionId,
       { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },
       {
-        // History hydration has its own authoritative ordered API. Re-emitting
-        // a subscription snapshot here turns old transcript rows into "live"
-        // arrivals and can append a completed turn after the real tail.
-        snapshot: () => undefined,
+        // A non-resumed reconnect snapshot is the only payload carrying events
+        // missed while the host was unavailable or its replay ring overflowed.
+        // emitChatEvent removes overlap with already-delivered live rows; the
+        // renderer's history merge preserves chronological transcript order.
+        snapshot: (snapshot) => {
+          snapshot.events.forEach((payload) => emitChatEvent(payload));
+        },
         event: (payload) => {
           emitChatEvent(payload);
         },
