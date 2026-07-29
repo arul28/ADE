@@ -109,6 +109,20 @@ enum ADEDeepLinkURLParsing {
     return !containsControlCharacter(trimmed)
   }
 
+  static func isValidScopeComponent(_ value: String?) -> Bool {
+    guard let value else { return false }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          trimmed.count <= 512,
+          trimmed == value,
+          !trimmed.contains(where: \.isWhitespace),
+          !trimmed.contains("/"),
+          !trimmed.contains("\\") else {
+      return false
+    }
+    return !containsControlCharacter(trimmed)
+  }
+
   static func isValidRepoRelativePath(_ value: String?) -> Bool {
     guard let value, !value.isEmpty, value.count <= 1024 else { return false }
     if value.hasPrefix("/") || value.hasSuffix("/") || value.contains("\\") { return false }

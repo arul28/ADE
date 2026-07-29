@@ -63,6 +63,7 @@ final class DeepLinkRouter {
       //   `ade://pr/<n>`                       (compact local link)
       //   `ade://pr/<owner>/<repo>/<number>`   (repo-scoped local link)
       // Anything else is ignored so a malformed link can't crash navigation.
+      guard hasValidOptionalPrScope(url) else { return }
       if pathComponents.count >= 3 {
         let owner = pathComponents[0]
         let repo = pathComponents[1]
@@ -434,7 +435,7 @@ final class DeepLinkRouter {
       return nil
     }
     let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["accountmachinekey"]
-    guard ADEDeepLinkURLParsing.isValidOpaqueId(value) else { return nil }
+    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
     return value
   }
 
@@ -443,8 +444,24 @@ final class DeepLinkRouter {
       return nil
     }
     let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["event"]
-    guard ADEDeepLinkURLParsing.isValidOpaqueId(value) else { return nil }
+    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
     return value
+  }
+
+  private func hasValidOptionalPrScope(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return false
+    }
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
+    if let accountMachineKey = query["accountmachinekey"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
+      return false
+    }
+    if let eventId = query["event"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(eventId) {
+      return false
+    }
+    return true
   }
 
   private func prDetailTab(from rawValue: String?) -> PrDetailTab? {
@@ -501,18 +518,18 @@ final class DeepLinkRouter {
       return nil
     }
     if let accountMachineKey = query["accountmachinekey"],
-       !ADEDeepLinkURLParsing.isValidOpaqueId(accountMachineKey) {
+       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
       return nil
     }
     if let itemId = query["item"],
-       !ADEDeepLinkURLParsing.isValidOpaqueId(itemId) {
+       !ADEDeepLinkURLParsing.isValidScopeComponent(itemId) {
       return nil
     }
     let rawEvent = query["event"]
     let event = ADEDeepLinkURLParsing.nonNegativeInteger(rawEvent)
     let eventId: String?
     if event == nil, let rawEvent {
-      guard ADEDeepLinkURLParsing.isValidOpaqueId(rawEvent) else { return nil }
+      guard ADEDeepLinkURLParsing.isValidScopeComponent(rawEvent) else { return nil }
       eventId = rawEvent
     } else {
       eventId = nil
