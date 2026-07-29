@@ -766,7 +766,7 @@ func makeWorkAdeCardModel(from payload: AgentChatAdeCardPayload) -> WorkAdeCardM
     navTarget: makeWorkAdeCardNavTarget(from: payload.navTarget),
     actions: actions,
     durationMs: payload.durationMs,
-    degradedReason: payload.degradedReason,
+    degradedReason: optionalString(payload.degradedReason),
     isStale: payload.stale,
     rowsTruncated: payload.rowsTruncated.map { max(0, $0) },
     fallbackText: fallbackText,

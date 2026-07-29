@@ -100,6 +100,28 @@ describe("computerUseArtifactBrokerService", () => {
     ]);
   });
 
+  it("lists legacy lane-owned artifacts that have lane_id but no owner link", () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    db.run(
+      `insert into computer_use_artifacts(
+         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+         original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+         lane_id, created_at
+       ) values ('lane-only', 'project-1', 'screenshot', 'manual', 'ade-cli', null, null,
+         'Lane only', null, '.ade/artifacts/computer-use/lane-only.png', 'file', 'image/png',
+         '{}', 'lane-1', '2026-03-12T14:00:00.000Z')`,
+    );
+
+    expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-1" }))
+      .toEqual([expect.objectContaining({ id: "lane-only", laneId: "lane-1" })]);
+    expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-2" })).toEqual([]);
+  });
+
   it("reads image previews only from the project artifact directory", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -391,6 +413,36 @@ describe("computerUseArtifactBrokerService", () => {
       fileRemoved: true,
     });
     expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it("keeps shared stored bytes when surviving records use an equivalent URI spelling", () => {
+    const canonicalProjectRoot = fs.realpathSync(projectRoot);
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot: canonicalProjectRoot,
+      logger: createLogger(),
+    });
+    const first = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Shared aliases", text: "hello" }],
+    }).artifacts[0]!;
+    const filePath = path.join(canonicalProjectRoot, first.uri);
+    const second = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      inputs: [{ kind: "console_logs", title: "Shared aliases again", path: filePath }],
+    }).artifacts[0]!;
+    db.run(
+      "update computer_use_artifacts set uri = ? where id = ?",
+      [`ade-artifact://project/${first.uri}`, second.id],
+    );
+
+    expect(broker.deleteArtifacts({ artifactId: first.id }).deleted[0]).toMatchObject({
+      artifactId: first.id,
+      fileRemoved: false,
+    });
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(broker.listArtifacts({ artifactId: second.id })[0]?.availability).toBe("available");
   });
 
   it("removes rows for records whose file was already deleted", () => {

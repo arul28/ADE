@@ -1495,4 +1495,24 @@ describe("ade_card (TUI)", () => {
     expect(body).toContain("report.md");
     expect(body).toContain("+4 more");
   });
+
+  it("counts emitter-truncated rows and rows hidden by the local cap", () => {
+    const body = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          rows: Array.from({ length: 7 }, (_, index) => ({
+            icon: "file",
+            text: `report-${index + 1}.md`,
+          })),
+          rowsTruncated: 3,
+        })),
+      ],
+    }).at(-1)!.body;
+
+    expect(body).toContain("report-5.md");
+    expect(body).not.toContain("report-6.md");
+    expect(body).toContain("+5 more");
+  });
 });

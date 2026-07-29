@@ -2093,6 +2093,123 @@ function resolveLaneWorktreePath(runtime: AdeRuntime, laneId: string | null | un
   return null;
 }
 
+function canonicalAuthorizationPath(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function resolveAuthorizedComputerUseIngestRoot(
+  runtime: AdeRuntime,
+  session: SessionState,
+  toolArgs: Record<string, unknown>,
+): { laneId: string | null; root: string } {
+  const requestedLaneId = asOptionalTrimmedString(toolArgs.laneId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const projectWideAuthorized = session.identity.role === "cto" && isUserClientSession(session);
+  if (!projectWideAuthorized && requestedLaneId && requestedLaneId !== sessionLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "laneId must match the caller's authorized chat-session lane",
+    );
+  }
+  const authorizedLaneId = requestedLaneId ?? sessionLaneId;
+  const authorizedRoot = authorizedLaneId
+    ? resolveLaneWorktreePath(runtime, authorizedLaneId)
+    : projectWideAuthorized
+      ? runtime.projectRoot
+      : null;
+  if (!authorizedRoot) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "Computer-use ingestion requires an authorized lane worktree.",
+    );
+  }
+  const callerRoot = asOptionalTrimmedString(toolArgs.callerRoot);
+  if (callerRoot && !path.isAbsolute(callerRoot)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+  }
+  if (
+    callerRoot
+    && canonicalAuthorizationPath(callerRoot) !== canonicalAuthorizationPath(authorizedRoot)
+  ) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "callerRoot must match the server-authorized lane worktree",
+    );
+  }
+  return { laneId: authorizedLaneId, root: canonicalAuthorizationPath(authorizedRoot) };
+}
+
+function isProjectWideProofMaintenanceAuthorized(session: SessionState): boolean {
+  return session.identity.role === "cto" && isUserClientSession(session);
+}
+
+function resolveAuthorizedProofOwners(
+  runtime: AdeRuntime,
+  session: SessionState,
+): ComputerUseArtifactOwner[] {
+  const owners: ComputerUseArtifactOwner[] = [];
+  const add = (kind: ComputerUseArtifactOwner["kind"], id: string | null | undefined) => {
+    const normalizedId = asOptionalTrimmedString(id);
+    if (!normalizedId) return;
+    if (owners.some((owner) => owner.kind === kind && owner.id === normalizedId)) return;
+    owners.push({ kind, id: normalizedId, relation: "attached_to" });
+  };
+  add("chat_session", session.identity.chatSessionId);
+  add("lane", resolveChatSessionLaneId(runtime, session));
+  add("automation_run", session.identity.runId);
+  return owners;
+}
+
+function validateComputerUseOwnerClaims(
+  runtime: AdeRuntime,
+  session: SessionState,
+  toolArgs: Record<string, unknown>,
+): void {
+  if (isProjectWideProofMaintenanceAuthorized(session)) return;
+  const authorized = resolveAuthorizedProofOwners(runtime, session);
+  const assertAuthorized = (kind: string | null, id: string | null) => {
+    if (!kind || !id) return;
+    const normalizedKind = kind === "chat" ? "chat_session" : kind === "pr" ? "github_pr" : kind;
+    // Publishing proof to an explicitly named PR or Linear issue is a
+    // legitimate cross-surface operation. Local ownership must still come
+    // from the authenticated session context.
+    if (normalizedKind === "github_pr" || normalizedKind === "linear_issue") return;
+    if (!authorized.some((owner) => owner.kind === normalizedKind && owner.id === id)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        "Proof owner claims must match the caller's authenticated chat, lane, or automation run.",
+      );
+    }
+  };
+  assertAuthorized(asOptionalTrimmedString(toolArgs.ownerKind), asOptionalTrimmedString(toolArgs.ownerId));
+  assertAuthorized("lane", asOptionalTrimmedString(toolArgs.laneId));
+  assertAuthorized("chat_session", asOptionalTrimmedString(toolArgs.chatSessionId));
+  assertAuthorized("automation_run", asOptionalTrimmedString(toolArgs.automationRunId));
+  for (const entry of Array.isArray(toolArgs.owners) ? toolArgs.owners : []) {
+    const owner = safeObject(entry);
+    assertAuthorized(asOptionalTrimmedString(owner.kind), asOptionalTrimmedString(owner.id));
+  }
+}
+
+function artifactMatchesAuthorizedOwners(
+  artifact: {
+    laneId?: string | null;
+    links?: Array<{ ownerKind?: string; ownerId?: string }>;
+  } | null | undefined,
+  owners: ComputerUseArtifactOwner[],
+): boolean {
+  return Boolean(
+    owners.some((owner) => owner.kind === "lane" && owner.id === artifact?.laneId)
+    || artifact?.links?.some((link) =>
+      owners.some((owner) => owner.kind === link.ownerKind && owner.id === link.ownerId)),
+  );
+}
+
 function branchNameForPrTitle(ref: string | null | undefined): string {
   let value = (ref ?? "").trim();
   value = value.replace(/^refs\/heads\//, "");
@@ -3397,6 +3514,7 @@ async function runTool(args: {
     metadata: Record<string, unknown>;
     toolArgs: Record<string, unknown>;
   }) => {
+    validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
@@ -4392,16 +4510,23 @@ async function runTool(args: {
     if (inputs.length === 0) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide inputs for computer-use ingestion.");
     }
-    // Relative `input.path` values come from an agent whose cwd is its lane
-    // worktree, not the project root. Prefer an explicit callerRoot, then the
-    // caller's lane worktree, and only then the project root.
-    const callerRoot = asOptionalTrimmedString(toolArgs.callerRoot)
-      ?? resolveLaneWorktreePath(
-        runtime,
-        asOptionalTrimmedString(toolArgs.laneId) ?? resolveChatSessionLaneId(runtime, session),
-      );
-    if (callerRoot && !path.isAbsolute(callerRoot)) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+    const authorized = resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
+    validateComputerUseOwnerClaims(runtime, session, toolArgs);
+    for (const input of inputs) {
+      const localPath = asOptionalTrimmedString(input.path)
+        ?? (() => {
+          const uri = asOptionalTrimmedString(input.uri);
+          return uri && !/^https?:\/\//i.test(uri) ? uri : null;
+        })();
+      if (!localPath || !path.isAbsolute(localPath)) continue;
+      try {
+        resolvePathWithinRoot(authorized.root, localPath, { allowMissing: true });
+      } catch {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "Artifact paths must stay inside the server-authorized lane worktree",
+        );
+      }
     }
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
@@ -4410,7 +4535,7 @@ async function runTool(args: {
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
-      ...(callerRoot ? { callerRoot } : {}),
+      callerRoot: authorized.root,
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),
         title: asOptionalTrimmedString(entry.title),
@@ -4429,10 +4554,43 @@ async function runTool(args: {
   }
 
   if (name === "list_computer_use_artifacts") {
+    const projectWideAuthorized = isProjectWideProofMaintenanceAuthorized(session);
+    const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+    const requestedOwnerKind = asOptionalTrimmedString(toolArgs.ownerKind) as ComputerUseArtifactOwner["kind"] | null;
+    const requestedOwnerId = asOptionalTrimmedString(toolArgs.ownerId);
+    if (!projectWideAuthorized && !authorizedOwners.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Proof listing requires an authenticated owner scope.");
+    }
+    if (
+      !projectWideAuthorized
+      && (requestedOwnerKind || requestedOwnerId)
+      && !authorizedOwners.some((owner) => owner.kind === requestedOwnerKind && owner.id === requestedOwnerId)
+    ) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "The requested proof owner is not authorized for this caller.");
+    }
+    if (!projectWideAuthorized) {
+      const limit = Math.max(1, Math.min(200, Math.floor(asNumber(toolArgs.limit, 50))));
+      const kind = asOptionalTrimmedString(toolArgs.kind) as any;
+      const artifacts = new Map<string, any>();
+      const owners = requestedOwnerKind && requestedOwnerId
+        ? [{ kind: requestedOwnerKind, id: requestedOwnerId }]
+        : authorizedOwners;
+      for (const owner of owners) {
+        for (const artifact of runtime.computerUseArtifactBrokerService.listArtifacts({
+          ownerKind: owner.kind,
+          ownerId: owner.id,
+          kind,
+          limit,
+        })) {
+          artifacts.set(artifact.id, artifact);
+        }
+      }
+      return { artifacts: [...artifacts.values()].slice(0, limit) };
+    }
     return {
       artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
-        ownerKind: asOptionalTrimmedString(toolArgs.ownerKind) as any,
-        ownerId: asOptionalTrimmedString(toolArgs.ownerId),
+        ownerKind: requestedOwnerKind as any,
+        ownerId: requestedOwnerId,
         kind: asOptionalTrimmedString(toolArgs.kind) as any,
         limit: asNumber(toolArgs.limit, 50),
       }),
@@ -4449,24 +4607,73 @@ async function runTool(args: {
     if (!ids.length) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide artifactId or artifactIds to delete.");
     }
+    if (!isProjectWideProofMaintenanceAuthorized(session)) {
+      const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+      if (!authorizedOwners.length) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Proof deletion requires an authenticated owner scope.");
+      }
+      for (const artifactId of ids) {
+        const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0] ?? null;
+        if (artifact && !artifactMatchesAuthorizedOwners(artifact, authorizedOwners)) {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Artifact is not owned by this caller.");
+        }
+      }
+    }
     return runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds: ids });
   }
 
   if (name === "list_broken_computer_use_artifacts") {
+    const requestedLimit = Math.max(1, Math.min(2000, Math.floor(asNumber(toolArgs.limit, 200))));
+    const broken = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({
+      limit: isProjectWideProofMaintenanceAuthorized(session) ? requestedLimit : 2000,
+    });
+    if (!isProjectWideProofMaintenanceAuthorized(session)) {
+      const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+      if (!authorizedOwners.length) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof listing requires an authenticated owner scope.");
+      }
+      return {
+        broken: broken.filter((entry) => {
+          const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId: entry.artifactId })[0] ?? null;
+          return artifactMatchesAuthorizedOwners(artifact, authorizedOwners);
+        }).slice(0, requestedLimit),
+      };
+    }
     return {
-      broken: runtime.computerUseArtifactBrokerService.listBrokenArtifacts({
-        limit: asNumber(toolArgs.limit, 200),
-      }),
+      broken,
     };
   }
 
   if (name === "prune_broken_computer_use_artifacts") {
-    return runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts();
+    if (isProjectWideProofMaintenanceAuthorized(session)) {
+      return runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts();
+    }
+    const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+    if (!authorizedOwners.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof pruning requires an authenticated owner scope.");
+    }
+    const artifactIds = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({ limit: 2000 })
+      .filter((entry) => {
+        const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId: entry.artifactId })[0] ?? null;
+        return artifactMatchesAuthorizedOwners(artifact, authorizedOwners);
+      })
+      .map((entry) => entry.artifactId);
+    return artifactIds.length
+      ? runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds })
+      : { deleted: [], missing: [], failed: [], freedBytes: 0 };
   }
 
   if (name === "recover_computer_use_artifact") {
+    const artifactId = assertNonEmptyString(toolArgs.artifactId, "artifactId");
+    if (!isProjectWideProofMaintenanceAuthorized(session)) {
+      const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+      const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0] ?? null;
+      if (!authorizedOwners.length || (artifact && !artifactMatchesAuthorizedOwners(artifact, authorizedOwners))) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Artifact is not owned by this caller.");
+      }
+    }
     return runtime.computerUseArtifactBrokerService.recoverArtifact({
-      artifactId: assertNonEmptyString(toolArgs.artifactId, "artifactId"),
+      artifactId,
     });
   }
 

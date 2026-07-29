@@ -116,15 +116,18 @@ export function renderAdeCardBody(card: AdeCardPayload): string {
     lines.push(adeCardBoxRow(statusMeta.join(" · ")));
   }
 
-  const rows = (card.rows ?? []).slice(0, 5);
+  const allRows = card.rows ?? [];
+  const rows = allRows.slice(0, 5);
+  const hiddenRows = Math.max(0, card.rowsTruncated ?? 0)
+    + Math.max(0, allRows.length - rows.length);
   if (rows.length) {
     lines.push(adeCardBoxRow(""));
     for (const row of rows) {
       const rowGlyph = row.icon ? ADE_CARD_ROW_GLYPHS[row.icon] ?? "·" : "·";
       lines.push(adeCardBoxRow(`${rowGlyph} ${row.text}`, row.detail?.trim() ?? ""));
     }
-    if ((card.rowsTruncated ?? 0) > 0) {
-      lines.push(adeCardBoxRow(`+${card.rowsTruncated} more`));
+    if (hiddenRows > 0) {
+      lines.push(adeCardBoxRow(`+${hiddenRows} more`));
     }
   }
 

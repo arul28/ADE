@@ -250,15 +250,17 @@ describe("PR chat cards", () => {
     expect(card.fallbackText).toContain("detail unavailable");
   });
 
-  it("keeps a card rich when only one of the two fetches failed", () => {
+  it("keeps partial rows while marking a one-endpoint failure as degraded", () => {
     const card = buildPrCiCard({
       pr: pr({ checksStatus: "passing" }),
       runs: [],
       checks: [check("Vercel")],
       fetchError: "HTTP 403: API rate limit exceeded",
     });
-    expect(card.degradedReason).toBeUndefined();
+    expect(card.degradedReason).toContain("403");
     expect(card.rows?.[0]?.text).toBe("Vercel");
+    expect(card.actions).toEqual([{ id: "retry", label: "Retry", kind: "primary" }]);
+    expect(card.fallbackText).toContain("job detail unavailable in part");
   });
 
   it("counts the rows it dropped instead of silently capping at three", () => {

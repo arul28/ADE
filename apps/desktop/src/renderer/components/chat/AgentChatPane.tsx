@@ -7393,7 +7393,21 @@ export function AgentChatPane({
     if (!isTileActive) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
-      if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
+      const belongsToSelectedChat = event.owner?.kind === "chat_session"
+        && event.owner.id === selectedSessionId;
+      // Global/CLI deletes can arrive after their owner links are gone, so the
+      // event may not carry an owner. Optimistically remove the matching id
+      // from this drawer, then force an authoritative snapshot refresh.
+      if (event.type === "artifact-deleted" && (event.owner == null || belongsToSelectedChat)) {
+        setComputerUseSnapshot((current) => current
+          ? {
+              ...current,
+              artifacts: current.artifacts.filter((artifact) => artifact.id !== event.artifactId),
+              recentArtifacts: current.recentArtifacts.filter((artifact) => artifact.id !== event.artifactId),
+            }
+          : current);
+        void refreshComputerUseSnapshot(selectedSessionId, { force: true });
+      } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
     });

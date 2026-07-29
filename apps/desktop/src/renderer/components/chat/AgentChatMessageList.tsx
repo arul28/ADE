@@ -5217,6 +5217,8 @@ type EventRowProps = {
   settledQueueRecoveryIds?: Set<string>;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
   turnProof?: ComputerUseArtifactView[];
+  /** Proof captured after this row but outside a completed turn window. */
+  inlineProof?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
 };
@@ -5266,6 +5268,7 @@ const EventRow = React.memo(function EventRow({
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
   turnProof,
+  inlineProof,
   resolveProofThumbnailSrc,
   onOpenProofDrawer,
 }: EventRowProps) {
@@ -5370,6 +5373,16 @@ const EventRow = React.memo(function EventRow({
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           sessionId={sessionId}
+        />
+      ) : null}
+      {inlineProof?.length ? (
+        <ChatProofFilmstrip
+          artifacts={inlineProof}
+          title="Proof added"
+          defaultOpen={false}
+          resolveThumbnailSrc={resolveProofThumbnailSrc}
+          onOpenAll={onOpenProofDrawer}
+          onOpenArtifact={onOpenProofDrawer}
         />
       ) : null}
     </div>
@@ -6179,37 +6192,87 @@ function AgentChatMessageListMain({
     return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
   }, [allowLocalProofArtifactProtocol]);
 
-  const turnProofByRowKey = useMemo(() => {
-    const map = new Map<string, ComputerUseArtifactView[]>();
-    if (!proofArtifacts.length) return map;
+  const turnProofTimeline = useMemo(() => {
+    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
+    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
+    if (!proofArtifacts.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
     const stamped = proofArtifacts
       .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
       .filter((entry) => Number.isFinite(entry.at))
       .sort((left, right) => left.at - right.at);
-    if (!stamped.length) return map;
+    if (!stamped.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
     const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
       const at = Date.parse(env.timestamp);
       return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
     }, Number.POSITIVE_INFINITY);
-    if (!Number.isFinite(loadedTranscriptStart)) return map;
-    let windowStart = loadedTranscriptStart;
-    let firstWindow = true;
-    for (const env of allGroupedRows) {
-      if (env.event.type !== "done") continue;
-      const endMs = Date.parse(env.timestamp);
-      if (!Number.isFinite(endMs)) continue;
-      const captured = stamped
-        .filter((entry) => (
-          (firstWindow ? entry.at >= windowStart : entry.at > windowStart)
-          && entry.at <= endMs
-        ))
-        .map((entry) => entry.artifact);
-      if (captured.length > 0) map.set(env.key, captured);
-      windowStart = endMs;
-      firstWindow = false;
+    if (!Number.isFinite(loadedTranscriptStart)) {
+      return {
+        byDoneRowKey,
+        inlineByRowKey,
+        // With no loaded rows, an older page means this is not the transcript
+        // boundary. Do not pull unknown historic proof into the visible tail.
+        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
+      };
     }
-    return map;
-  }, [allGroupedRows, proofArtifacts]);
+    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
+    const assignedIds = new Set<string>();
+    let turnStartMs: number | null = null;
+    for (const env of allGroupedRows) {
+      const rowMs = Date.parse(env.timestamp);
+      if (!Number.isFinite(rowMs)) continue;
+      if (
+        turnStartMs == null
+        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
+      ) {
+        turnStartMs = rowMs;
+      }
+      if (env.event.type !== "done") continue;
+      const endMs = rowMs;
+      const startMs = turnStartMs ?? endMs;
+      const captured = visibleStamped
+        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
+        .map((entry) => entry.artifact);
+      if (captured.length > 0) {
+        byDoneRowKey.set(env.key, captured);
+        for (const artifact of captured) assignedIds.add(artifact.id);
+      }
+      turnStartMs = null;
+    }
+
+    const visibleRows = groupedRows
+      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    const unanchored: ComputerUseArtifactView[] = [];
+    for (const entry of visibleStamped) {
+      if (assignedIds.has(entry.artifact.id)) continue;
+      let anchorKey: string | null = null;
+      for (const row of visibleRows) {
+        if (row.at > entry.at) break;
+        anchorKey = row.row.key;
+      }
+      if (!anchorKey) {
+        unanchored.push(entry.artifact);
+        continue;
+      }
+      const existing = inlineByRowKey.get(anchorKey) ?? [];
+      existing.push(entry.artifact);
+      inlineByRowKey.set(anchorKey, existing);
+    }
+
+    return {
+      byDoneRowKey,
+      inlineByRowKey,
+      unanchored,
+    };
+  }, [allGroupedRows, groupedRows, hasOlderHistory, proofArtifacts]);
+  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
+  const inlineProofByRowKey = turnProofTimeline.inlineByRowKey;
+  const unanchoredProofArtifacts = turnProofTimeline.unanchored;
 
   const handleReviewChanges = useCallback(() => {
     if (!turnSummary?.changedFileCount) return;
@@ -6944,6 +7007,7 @@ function AgentChatMessageListMain({
     const turnProof = envelope.event.type === "done"
       ? turnProofByRowKey.get(envelope.key)
       : undefined;
+    const inlineProof = inlineProofByRowKey.get(envelope.key);
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
@@ -6968,6 +7032,7 @@ function AgentChatMessageListMain({
           turnEndDurationMs={turnEndDurationMs}
           turnToolEntries={turnToolEntries}
           turnProof={turnProof}
+          inlineProof={inlineProof}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
@@ -7021,6 +7086,8 @@ function AgentChatMessageListMain({
         turnEndDurationMs={turnEndDurationMs}
         turnToolEntries={turnToolEntries}
         turnProof={turnProof}
+        inlineProof={inlineProof}
+        resolveProofThumbnailSrc={resolveProofThumbnailSrc}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
@@ -7060,7 +7127,7 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -7102,6 +7169,18 @@ function AgentChatMessageListMain({
   // End-of-turn dividers now render inline at each `done` row (DoneTurnDivider),
   // so there is no separate bottom divider.
   const turnDivider = null;
+  const trailingProof = unanchoredProofArtifacts.length > 0 ? (
+    <div className="w-full max-w-[var(--chat-content-width,52rem)]">
+      <ChatProofFilmstrip
+        artifacts={unanchoredProofArtifacts}
+        title="Proof added"
+        defaultOpen={false}
+        resolveThumbnailSrc={resolveProofThumbnailSrc}
+        onOpenAll={onOpenProofDrawer}
+        onOpenArtifact={onOpenProofDrawer}
+      />
+    </div>
+  ) : null;
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
@@ -7172,10 +7251,9 @@ function AgentChatMessageListMain({
               ) : null}
             </div>
           ) : null}
-          {/* Proof is no longer a thread footer: it renders inline at the point
-              of capture as an `ade_card` row, so an empty transcript is empty
-              even when the chat owns artifacts. */}
-          {rows.length === 0 && !streamingIndicator ? (
+          {/* Proof with no following turn completion is a chronological tail
+              row, not the old permanently pinned footer. */}
+          {rows.length === 0 && !streamingIndicator && !trailingProof ? (
             null
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
@@ -7191,6 +7269,7 @@ function AgentChatMessageListMain({
                 {/* Bottom spacer fills remaining scroll area */}
                 <div style={{ height: bottomSpacerHeight }} aria-hidden />
               </div>
+              {trailingProof}
               {streamingIndicator}
               {turnDivider}
             </div>
@@ -7198,6 +7277,7 @@ function AgentChatMessageListMain({
             /* ── Non-virtualized path: render all rows (small conversation) ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
+              {trailingProof}
               {streamingIndicator}
               {turnDivider}
             </div>

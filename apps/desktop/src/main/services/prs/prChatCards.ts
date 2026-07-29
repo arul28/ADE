@@ -189,9 +189,10 @@ export function buildPrCiCard(args: {
       ? "success"
       : "accent";
   const total = progress.passed + progress.failed + progress.running + progress.queued + other;
-  // Only a zero-count card is actually degraded — if the jobs call failed but
-  // the checks call answered (or vice versa) we still have real detail to show.
-  const degraded = total === 0 && fetchError != null;
+  // A partial response is still degraded: the surviving endpoint's rows remain
+  // useful, but they are not the complete job inventory. Keep the warning and
+  // Retry action alongside those rows instead of presenting them as complete.
+  const degraded = fetchError != null;
 
   return {
     cardId: `pr-ci:${pr.id}:${episode}`,
@@ -220,7 +221,7 @@ export function buildPrCiCard(args: {
       : {}),
     navTarget: prNavTarget(pr, "checks"),
     fallbackText: degraded
-      ? `PR #${pr.githubPrNumber} checks are ${pr.checksStatus}; job detail unavailable (${fetchError}).`
+      ? `PR #${pr.githubPrNumber} checks are ${pr.checksStatus}; job detail unavailable in part (${fetchError}).`
       : `PR #${pr.githubPrNumber} ${title.toLowerCase()}.`,
   };
 }

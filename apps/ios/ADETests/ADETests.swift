@@ -7480,6 +7480,53 @@ final class ADETests: XCTestCase {
     XCTAssertNil(recovered.degradedReason)
     XCTAssertEqual(recovered.isStale, false)
     XCTAssertEqual(recovered.rowsTruncated, 0)
+
+    let blankReasonPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks passed",
+        "degradedReason": "  \\n  "
+      }
+      """.utf8)
+    )
+    XCTAssertNil(makeWorkAdeCardModel(from: blankReasonPayload).degradedReason)
+  }
+
+  func testAdeCardFailureSummaryCountsOnlyLocallyOmittedFailures() throws {
+    let payload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks failed",
+        "rows": [
+          {"icon": "fail", "text": "failure-1"},
+          {"icon": "fail", "text": "failure-2"},
+          {"icon": "fail", "text": "failure-3"},
+          {"icon": "fail", "text": "failure-4"},
+          {"icon": "fail", "text": "failure-5"},
+          {"icon": "fail", "text": "failure-6"},
+          {"icon": "pass", "text": "passing-1"},
+          {"icon": "pass", "text": "passing-2"}
+        ],
+        "rowsTruncated": 3
+      }
+      """.utf8)
+    )
+    let card = makeWorkAdeCardModel(from: payload)
+
+    XCTAssertEqual(workAdeCardVisibleRows(card).map(\.text), [
+      "failure-1", "failure-2", "failure-3", "failure-4",
+    ])
+    XCTAssertEqual(workAdeCardHiddenRowCount(card), 5)
   }
 
   func testAdeCardPreservesKnownProgressAcrossDegradedZeroUpdate() throws {

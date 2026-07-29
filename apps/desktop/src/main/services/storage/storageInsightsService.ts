@@ -806,7 +806,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     for (const [proofPath, label] of [
-      [layout.artifactsDir, "Proof and recordings"],
+      [path.join(layout.artifactsDir, "computer-use"), "Proof and recordings"],
       [path.join(layout.adeDir, "attachments"), "Attachments"],
     ] as const) {
       add("proof_attachments", (await makeItem({
@@ -1028,11 +1028,14 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         return { valid: null, reason: "Links cannot be used in a cleanup path." };
       }
       // Same jail the broker and the `ade-artifact://` handler enforce.
-      const proofRoots = [layout.artifactsDir, path.join(layout.adeDir, "attachments")];
+      const proofRoots = [
+        path.join(layout.artifactsDir, "computer-use"),
+        path.join(layout.adeDir, "attachments"),
+      ];
       if (!proofRoots.some((root) => isSameOrWithin(root, targetPath))) {
         return { valid: null, reason: "This path is not proof or attachment storage." };
       }
-      label = isSameOrWithin(layout.artifactsDir, targetPath) ? "Proof and recordings" : "Attachments";
+      label = isSameOrWithin(proofRoots[0], targetPath) ? "Proof and recordings" : "Attachments";
     } else {
       return { valid: null, reason: "This cleanup target is not supported." };
     }

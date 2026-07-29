@@ -237,6 +237,19 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // without a chat binding at CTO role; session-bound agents must never read
   // or mutate this private composer state through `ade actions`.
   chat: ["listPromptStashes", "createPromptStash", "deletePromptStash"],
+  // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
+  // Session-bound agents use the dedicated RPC tools, which derive an owner
+  // and filesystem jail from their authenticated chat context.
+  computer_use_artifacts: [
+    "deleteArtifacts",
+    "getOwnerSnapshot",
+    "ingest",
+    "listArtifacts",
+    "listBrokenArtifacts",
+    "pruneBrokenArtifacts",
+    "recoverArtifact",
+    "updateArtifactReview",
+  ],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {

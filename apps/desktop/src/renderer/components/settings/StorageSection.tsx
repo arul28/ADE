@@ -1494,7 +1494,7 @@ function CategoryCardBody({
                     icon={<Archive size={13} />}
                     onClick={() =>
                       onRequestCleanup({
-                        title: `Remove ${entry.item.label.toLowerCase()}`,
+                        title: `Remove ${entry.item.label}`,
                         intro:
                           "These are the screenshots, recordings, and files agents attached as proof. Removing them deletes the files and the entries in every chat's proof drawer. Nothing else is affected.",
                         targets: [entry.target],
@@ -1506,7 +1506,7 @@ function CategoryCardBody({
             ))}
             {cleanable.length === 0 ? (
               <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.45 }}>
-                Proof storage is in use but cannot be removed from here.
+                Proof storage is in use but cannot be removed from here. Open the proof drawer in a chat to delete individual items.
               </div>
             ) : null}
           </div>

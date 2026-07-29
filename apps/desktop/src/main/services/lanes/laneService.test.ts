@@ -3303,7 +3303,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(fs.existsSync(sharedFile)).toBe(false);
   });
 
-  it("keeps a proof file when a surviving artifact row references the same URI", async () => {
+  it("keeps a proof file when a surviving artifact row uses an equivalent URI spelling", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     const { db, service, repoRoot } = await setupWithLane({ teardown: fake, events });
@@ -3319,18 +3319,18 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     fs.mkdirSync(path.dirname(artifactFile), { recursive: true });
     fs.writeFileSync(artifactFile, "shared");
 
-    const insertArtifact = (id: string, laneId: string) => {
+    const insertArtifact = (id: string, laneId: string, uri: string) => {
       db.run(
         `insert into computer_use_artifacts(
            id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
            original_type, title, description, uri, storage_kind, mime_type, metadata_json,
            lane_id, created_at
          ) values (?, 'proj-delete', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', ?, ?)`,
-        [id, id, relativeUri, laneId, "2026-03-12T14:00:00.000Z"],
+        [id, id, uri, laneId, "2026-03-12T14:00:00.000Z"],
       );
     };
-    insertArtifact("art-deleted", "lane-child");
-    insertArtifact("art-survivor", "lane-parent");
+    insertArtifact("art-deleted", "lane-child", relativeUri);
+    insertArtifact("art-survivor", "lane-parent", `ade-artifact://project/${relativeUri}`);
 
     await service.delete({ laneId: "lane-child", deleteBranch: false });
 
@@ -3338,6 +3338,57 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(remaining).toContain("art-survivor");
     expect(remaining).not.toContain("art-deleted");
     expect(fs.existsSync(artifactFile)).toBe(true);
+  });
+
+  it("reports only proof files actually removed when lane cleanup partially fails", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service, repoRoot } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async () => ({ exitCode: 0, stdout: "", stderr: "" }) as any);
+
+    const artifactsDir = path.join(repoRoot, ".ade", "artifacts", "computer-use");
+    const removedFile = path.join(artifactsDir, "removed.png");
+    const failedFile = path.join(artifactsDir, "failed.png");
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.writeFileSync(removedFile, "removed");
+    fs.writeFileSync(failedFile, "failed");
+    for (const [id, uri] of [
+      ["removed", ".ade/artifacts/computer-use/removed.png"],
+      ["failed", ".ade/artifacts/computer-use/failed.png"],
+    ]) {
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, 'proj-delete', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', 'lane-child', ?)`,
+        [id, id, uri, "2026-03-12T14:00:00.000Z"],
+      );
+    }
+    const originalRmSync = fs.rmSync;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((candidate, options) => {
+      if (path.resolve(String(candidate)) === fs.realpathSync(failedFile)) {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return originalRmSync(candidate, options);
+    }) as typeof fs.rmSync);
+
+    try {
+      await service.delete({ laneId: "lane-child", deleteBranch: false });
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    const last = events[events.length - 1];
+    expect(last.progress.steps.find((step: any) => step.name === "database_cleanup")?.detail)
+      .toBe("1 of 2 proof file(s) removed; see logs");
+    expect(fs.existsSync(removedFile)).toBe(false);
+    expect(fs.existsSync(failedFile)).toBe(true);
   });
 
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {

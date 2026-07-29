@@ -150,6 +150,7 @@ function renderMessageList(
     onRetryOlderHistory?: () => void;
     onReturnToLatest?: () => void;
     proofArtifacts?: ComputerUseArtifactView[];
+    allowLocalProofArtifactProtocol?: boolean;
     onOpenProofDrawer?: () => void;
   },
 ) {
@@ -175,6 +176,7 @@ function renderMessageList(
         onRetryOlderHistory={options?.onRetryOlderHistory}
         onReturnToLatest={options?.onReturnToLatest}
         proofArtifacts={options?.proofArtifacts}
+        allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
       />
       <LocationProbe />
@@ -453,15 +455,15 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
-  // Proof used to be appended after every row as a permanent thread footer, so
-  // it never appeared where the capture happened. It is now an inline
-  // chronological `ade_card` row plus a chip on the turn rule; the footer is
-  // gone from BOTH render paths.
-  it("no longer pins collected proof to the bottom of the thread", () => {
+  // Proof used to be appended after every row as a permanently open thread
+  // footer. With no transcript rows it is now a compact chronological capture
+  // row that starts collapsed.
+  it("renders proof attached to an empty chat as a collapsed capture row", () => {
     const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
 
     expect(screen.queryByText("Proof collected in this chat")).toBeNull();
     expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("chips proof onto the turn rule of the turn that captured it", () => {
@@ -509,6 +511,115 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(screen.getByRole("button", { name: /1 proof/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /2 proof/ })).toBeNull();
+  });
+
+  it("keeps proof captured after the latest done event visible at the transcript tail", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "Finish first.", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:01:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        },
+      ],
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+    );
+
+    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps idle proof before a later turn and never attributes it to that turn", () => {
+    renderMessageList(
+      [
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:00.000Z",
+          event: { type: "user_message", text: "First turn.", turnId: "turn-1" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:01:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:03:00.000Z",
+          event: { type: "user_message", text: "Later turn.", turnId: "turn-2" },
+        },
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:04:00.000Z",
+          event: { type: "done", turnId: "turn-2", status: "completed" },
+        },
+      ],
+      { proofArtifacts: [{ ...transcriptProofArtifact, createdAt: "2026-03-17T10:02:00.000Z" }] },
+    );
+
+    const proof = screen.getByRole("button", { name: /Proof added/ });
+    const laterTurn = screen.getByText("Later turn.");
+    expect(proof.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
+  });
+
+  it("does not render trailing proof from outside the loaded history window", () => {
+    renderMessageList([], {
+      hasOlderHistory: true,
+      proofArtifacts: [transcriptProofArtifact],
+    });
+
+    expect(screen.queryByRole("button", { name: /Proof added/ })).toBeNull();
+  });
+
+  it("renders broken timeline proof as an amber missing state", () => {
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      }],
+      {
+        proofArtifacts: [{
+          ...transcriptProofArtifact,
+          availability: "missing_file",
+          createdAt: "2026-03-17T10:00:00.000Z",
+        }],
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
+    expect(screen.getByText("Missing proof")).toBeTruthy();
+    expect(document.querySelector('[data-chat-proof-broken="true"]')).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("resolves proof thumbnails in the non-virtualized transcript path", () => {
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      }],
+      {
+        allowLocalProofArtifactProtocol: true,
+        proofArtifacts: [{
+          ...transcriptProofArtifact,
+          kind: "screenshot",
+          mimeType: "image/png",
+          uri: ".ade/artifacts/proof.png",
+          createdAt: "2026-03-17T10:00:00.000Z",
+        }],
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
+    expect(screen.getByRole("img", { name: transcriptProofArtifact.title }).getAttribute("src"))
+      .toBe("ade-artifact://project/.ade/artifacts/proof.png");
   });
 
   it("keeps turn file-change summaries visible without a session id", () => {

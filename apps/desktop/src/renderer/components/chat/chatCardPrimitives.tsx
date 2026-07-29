@@ -6,6 +6,7 @@ import {
   Cube,
   Prohibit,
   SpinnerGap,
+  WarningCircle,
   XCircle,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
@@ -419,17 +420,34 @@ export function ChatProofFilmstrip({
       {open ? (
         <div className="mt-2.5 flex gap-1.5 overflow-x-auto">
           {artifacts.map((artifact) => {
-            const src = resolveThumbnailSrc?.(artifact) ?? null;
+            const broken = artifact.availability != null && artifact.availability !== "available";
+            const src = broken ? null : (resolveThumbnailSrc?.(artifact) ?? null);
             return (
               <button
                 key={artifact.id}
                 type="button"
                 title={artifact.title || artifact.uri || artifact.id}
                 onClick={() => onOpenArtifact?.(artifact)}
-                className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
+                data-chat-proof-broken={broken ? "true" : undefined}
+                className={cn(
+                  "w-24 shrink-0 overflow-hidden rounded-[7px] border bg-black/25 transition-colors",
+                  broken
+                    ? "border-amber-200/[0.16] bg-amber-300/[0.04] hover:border-amber-200/30"
+                    : "border-white/[0.07] hover:border-white/[0.16]",
+                )}
               >
                 {src ? (
                   <img src={src} alt={artifact.title || "Proof"} className="aspect-[16/10] w-full object-cover" />
+                ) : broken ? (
+                  <span
+                    className={cn(
+                      "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-amber-200/60",
+                      CHAT_CARD_MICRO_TEXT,
+                    )}
+                  >
+                    <WarningCircle size={14} weight="duotone" aria-hidden />
+                    Missing proof
+                  </span>
                 ) : (
                   <span
                     className={cn(

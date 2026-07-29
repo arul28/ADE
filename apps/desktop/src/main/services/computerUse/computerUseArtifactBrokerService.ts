@@ -387,10 +387,7 @@ export function createComputerUseArtifactBrokerService(args: {
    * `.ade/artifacts`.
    */
   const relativeResolutionRoots = (callerRoot: string | null): string[] => {
-    const roots: string[] = [];
-    if (callerRoot) roots.push(path.resolve(callerRoot));
-    if (!roots.includes(path.resolve(projectRoot))) roots.push(path.resolve(projectRoot));
-    return roots;
+    return [path.resolve(callerRoot ?? projectRoot)];
   };
 
   const resolveStoredUri = (
@@ -890,20 +887,18 @@ export function createComputerUseArtifactBrokerService(args: {
         const filePath = resolveArtifactFilePath(record);
         let fileRemoved = false;
         let freedBytes = 0;
-        const sharedReference = record.storageKind === "file"
-          ? db.get<{ id: string }>(
+        const sharedReference = filePath && record.storageKind === "file"
+          ? readArtifactRows(
               `
-                select id
+                select ${ARTIFACT_SELECT_COLUMNS}
                 from computer_use_artifacts
                 where project_id = ?
                   and storage_kind = 'file'
-                  and uri = ?
                   and id <> ?
-                limit 1
               `,
-              [projectId, record.uri, artifactId],
-            )
-          : null;
+              [projectId, artifactId],
+            ).some((candidate) => resolveArtifactFilePath(candidate) === filePath)
+          : false;
         if (filePath && !sharedReference) {
           try {
             const stat = fs.statSync(filePath);
@@ -1092,23 +1087,25 @@ export function createComputerUseArtifactBrokerService(args: {
       if (ownerKind && ownerId) {
         artifacts = readArtifactRows(
           `
-            select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
+            select distinct a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
                    a.original_type, a.title, a.description, a.uri, a.storage_kind, a.mime_type,
                    a.metadata_json, a.lane_id, a.created_at
             from computer_use_artifacts a
-            inner join computer_use_artifact_links l
+            left join computer_use_artifact_links l
               on l.artifact_id = a.id
+             and l.project_id = ?
             where a.project_id = ?
-              and l.project_id = ?
-              and l.owner_kind = ?
-              and l.owner_id = ?
+              and (
+                (l.owner_kind = ? and l.owner_id = ?)
+                or (? = 'lane' and a.lane_id = ?)
+              )
               ${args.kind ? "and a.artifact_kind = ?" : ""}
             order by a.created_at desc
             limit ?
           `,
           args.kind
-            ? [projectId, projectId, ownerKind, ownerId, args.kind, limit]
-            : [projectId, projectId, ownerKind, ownerId, limit],
+            ? [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, args.kind, limit]
+            : [projectId, projectId, ownerKind, ownerId, ownerKind, ownerId, limit],
         );
       } else {
         artifacts = readArtifactRows(

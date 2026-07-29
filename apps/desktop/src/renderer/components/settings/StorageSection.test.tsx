@@ -370,6 +370,25 @@ describe("StorageSection", () => {
     expect(screen.getByText(/This is your project's live data/)).toBeTruthy();
   });
 
+  it("preserves ADE casing in proof cleanup and directs blocked cleanup to the proof drawer", async () => {
+    installAdeMock();
+    render(<StorageSection />);
+
+    const proofRow = (await screen.findByText("Proof and recordings")).parentElement!.parentElement!.parentElement!;
+    fireEvent.click(within(proofRow).getByRole("button", { name: "Remove…" }));
+    expect(await screen.findByRole("dialog", { name: "Remove Proof and recordings" })).toBeTruthy();
+    cleanup();
+
+    installAdeMock();
+    const blockedSnapshot = makeSnapshot();
+    const proof = blockedSnapshot.categories.find((category) => category.id === "proof_attachments")!;
+    proof.items = [];
+    vi.mocked(window.ade.storage.getSnapshot).mockResolvedValue(blockedSnapshot);
+    render(<StorageSection />);
+
+    expect(await screen.findByText(/Open the proof drawer in a chat to delete individual items/)).toBeTruthy();
+  });
+
   it("runs the cleanup flow: previews then removes the same targets and reports freed space", async () => {
     const { cleanupPreview, cleanup: cleanupFn } = installAdeMock();
     render(<StorageSection />);

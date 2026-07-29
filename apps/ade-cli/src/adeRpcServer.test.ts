@@ -1288,6 +1288,78 @@ describe("adeRpcServer", () => {
     }
   });
 
+  it("scopes proof lifecycle tools to the authenticated chat and lane owners", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-1", laneId: "lane-1" } as any);
+    const owned = {
+      id: "owned-proof",
+      laneId: "lane-1",
+      links: [],
+    };
+    const foreign = {
+      id: "foreign-proof",
+      links: [{ ownerKind: "chat_session", ownerId: "chat-2" }],
+    };
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts.mockImplementation((args: any) => {
+      if (args.artifactId === owned.id) return [owned];
+      if (args.artifactId === foreign.id) return [foreign];
+      if (args.ownerKind === "chat_session" && args.ownerId === "chat-1") return [owned];
+      return [];
+    });
+    fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts = vi.fn(() => ({
+      deleted: [],
+      missing: [],
+      failed: [],
+      freedBytes: 0,
+    }));
+    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts = vi.fn(() => []);
+    fixture.runtime.computerUseArtifactBrokerService.recoverArtifact = vi.fn();
+    fixture.runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts = vi.fn();
+    await initialize(handler, {
+      callerId: "chat-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+    });
+
+    const foreignOwnerIngest = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      inputs: [{ kind: "screenshot", title: "Foreign owner", path: "proof.png" }],
+      owners: [{ kind: "chat_session", id: "chat-2" }],
+    });
+    expect(foreignOwnerIngest.isError).toBe(true);
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+
+    await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      inputs: [{ kind: "screenshot", title: "Published proof", path: "proof.png" }],
+      owners: [{ kind: "github_pr", id: "https://github.com/arul28/ADE/pull/933" }],
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledTimes(1);
+
+    const listed = await callTool(handler, "list_computer_use_artifacts", {});
+    expect(listed.structuredContent.artifacts).toEqual([owned]);
+
+    const foreignList = await callTool(handler, "list_computer_use_artifacts", {
+      ownerKind: "chat_session",
+      ownerId: "chat-2",
+    });
+    expect(foreignList.isError).toBe(true);
+
+    const foreignDelete = await callTool(handler, "delete_computer_use_artifacts", {
+      artifactId: foreign.id,
+    });
+    expect(foreignDelete.isError).toBe(true);
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).not.toHaveBeenCalled();
+
+    await callTool(handler, "delete_computer_use_artifacts", { artifactId: owned.id });
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: [owned.id],
+    });
+  });
+
   it("caps a session-bound CTO caller and scopes lifecycle actions to its own session", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
       const { runtime } = createRuntime();
@@ -1759,10 +1831,14 @@ describe("adeRpcServer", () => {
   it("auto-links computer-use ingestion to standalone chat sessions", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    const laneRoot = runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
 
     await initialize(handler, {
       callerId: "chat-session-1",
       role: "agent",
+      chatSessionId: "chat-session-1",
     });
 
     await callTool(handler, "ingest_computer_use_artifacts", {
@@ -1772,7 +1848,7 @@ describe("adeRpcServer", () => {
         {
           kind: "screenshot",
           title: "Chat proof",
-          path: "/tmp/chat-proof.png",
+          path: path.join(laneRoot, "chat-proof.png"),
         },
       ],
     });
@@ -1796,9 +1872,15 @@ describe("adeRpcServer", () => {
   it("forwards the caller's root so relative capture paths resolve in the agent's lane worktree", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    const laneRoot = path.join(fixture.runtime.projectRoot, ".ade", "worktrees", "lane-a");
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
 
-    await initialize(handler, { callerId: "chat-session-1", role: "agent" });
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
     await callTool(handler, "ingest_computer_use_artifacts", {
       backendStyle: "manual",
       backendName: "ade-cli",
@@ -1807,15 +1889,21 @@ describe("adeRpcServer", () => {
     });
 
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
-      expect.objectContaining({ callerRoot: laneRoot }),
+      expect.objectContaining({ callerRoot: fs.realpathSync(laneRoot) }),
     );
   });
 
   it("rejects a relative caller root, which would resolve differently on each side", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
 
-    await initialize(handler, { callerId: "chat-session-1", role: "agent" });
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
     const response = await callTool(handler, "ingest_computer_use_artifacts", {
       backendStyle: "manual",
       backendName: "ade-cli",
@@ -1825,6 +1913,42 @@ describe("adeRpcServer", () => {
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("absolute");
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+  });
+
+  it("rejects caller roots and lane ids outside the server-authorized chat lane", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    const lane2Root = fixture.runtime.laneService.getLaneWorktreePath("lane-2");
+    fs.mkdirSync(lane2Root, { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+
+    for (const args of [
+      {
+        callerRoot: lane2Root,
+        inputs: [{ kind: "screenshot", title: "Wrong root", path: "shots/proof.png" }],
+      },
+      {
+        laneId: "lane-2",
+        inputs: [{ kind: "screenshot", title: "Wrong lane", path: "shots/proof.png" }],
+      },
+      {
+        inputs: [{ kind: "screenshot", title: "Wrong absolute path", path: path.join(lane2Root, "proof.png") }],
+      },
+    ]) {
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        ...args,
+      });
+      expect(response.isError).toBe(true);
+    }
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
   });
 

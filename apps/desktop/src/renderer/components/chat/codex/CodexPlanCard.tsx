@@ -121,6 +121,11 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
               clickEvent.stopPropagation();
               setLiveOpen((v) => !v);
             }}
+            onKeyDown={(keyboardEvent) => {
+              if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+                keyboardEvent.stopPropagation();
+              }
+            }}
             className="inline-flex items-center gap-1 rounded text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 transition-colors hover:text-fg/80"
             aria-expanded={liveOpen}
           >

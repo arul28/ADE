@@ -4119,22 +4119,11 @@ struct WorkAdeCardView: View {
   /// Cap the detail list: the transcript row is a summary, and the full list
   /// lives behind the card's nav target.
   private var visibleRows: [WorkAdeCardRow] {
-    let candidates: [WorkAdeCardRow]
-    if card.variant == "pr_ci" {
-      // Mobile's selected checks treatment is failures-only. A green run stays
-      // one line; failed checks earn the small amount of transcript space.
-      candidates = card.rows.filter { $0.icon == .fail || $0.tone == .warning }
-    } else {
-      candidates = card.rows
-    }
-    return Array(candidates.prefix(4))
+    workAdeCardVisibleRows(card)
   }
 
   private var hiddenRowCount: Int {
-    if card.variant == "pr_ci" {
-      return card.rowsTruncated ?? 0
-    }
-    return (card.rowsTruncated ?? 0) + max(0, card.rows.count - visibleRows.count)
+    workAdeCardHiddenRowCount(card)
   }
 
   private var detailRows: some View {
@@ -4236,6 +4225,22 @@ struct WorkAdeCardView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
   }
+}
+
+func workAdeCardVisibleRows(_ card: WorkAdeCardModel) -> [WorkAdeCardRow] {
+  Array(workAdeCardCandidateRows(card).prefix(4))
+}
+
+func workAdeCardHiddenRowCount(_ card: WorkAdeCardModel) -> Int {
+  let candidates = workAdeCardCandidateRows(card)
+  return (card.rowsTruncated ?? 0) + max(0, candidates.count - workAdeCardVisibleRows(card).count)
+}
+
+private func workAdeCardCandidateRows(_ card: WorkAdeCardModel) -> [WorkAdeCardRow] {
+  guard card.variant == "pr_ci" else { return card.rows }
+  // Mobile's selected checks treatment is failures-only. A green run stays
+  // one line; failed checks earn the small amount of transcript space.
+  return card.rows.filter { $0.icon == .fail || $0.tone == .warning }
 }
 
 func workAdeCardToneColor(_ tone: WorkAdeCardTone) -> Color {

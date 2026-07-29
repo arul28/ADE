@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import type { AdeDb } from "../state/kvDb";
 import type {
@@ -13,6 +14,7 @@ import type {
 } from "../../../shared/types";
 import { buildAdeGitignore, ADE_LAYOUT_DEFINITIONS, resolveAdeLayout, type AdeLayoutPaths } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
+import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
 
 type RepairOptions = {
@@ -462,20 +464,66 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
     };
 
     if (options.packs) {
+      const artifactIdsUnderArtifactsDir = (() => {
+        try {
+          const rows = args.db.all<{ id: string; uri: string }>(
+            "select id, uri from computer_use_artifacts where project_id = ? and storage_kind = 'file'",
+            [args.projectId],
+          );
+          return rows.flatMap((row) => {
+            const rawUri = typeof row.uri === "string" ? row.uri.trim() : "";
+            if (!rawUri || /^https?:\/\//i.test(rawUri)) return [];
+            let candidate = rawUri;
+            try {
+              if (/^ade-artifact:\/\/project(?:\/|$)/i.test(candidate)) {
+                candidate = decodeURIComponent(new URL(candidate).pathname.replace(/^\/+/, ""));
+              } else if (/^file:\/\//i.test(candidate)) {
+                candidate = fileURLToPath(candidate);
+              }
+              const absolute = path.resolve(
+                path.isAbsolute(candidate) ? candidate : path.join(args.projectRoot, candidate),
+              );
+              resolvePathWithinRoot(repair.paths.artifactsDir, absolute, { allowMissing: true });
+              return [row.id];
+            } catch {
+              return [];
+            }
+          });
+        } catch (error) {
+          args.logger?.warn("ade.project.clear_local_data.artifact_scope_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new Error("Could not safely identify proof records stored under .ade/artifacts.");
+        }
+      })();
       rmrf(repair.paths.artifactsDir);
       // Removing `.ade/artifacts` without the rows leaves every proof record
-      // pointing at bytes that no longer exist — the inverse of the orphan a
-      // lane delete used to create. Drop the records with the files.
-      try {
-        args.db.run(
-          "delete from computer_use_artifact_links where artifact_id in (select id from computer_use_artifacts where project_id = ?)",
-          [args.projectId],
-        );
-        args.db.run("delete from computer_use_artifacts where project_id = ?", [args.projectId]);
-      } catch (error) {
-        args.logger?.warn("ade.project.clear_local_data.artifact_rows_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+      // pointing at bytes that no longer exist. Delete only records whose
+      // canonical file path was inside that removed root; attachment-backed
+      // records remain valid because `.ade/attachments` is managed separately.
+      if (artifactIdsUnderArtifactsDir.length) {
+        const placeholders = artifactIdsUnderArtifactsDir.map(() => "?").join(", ");
+        try {
+          args.db.run("begin immediate");
+          args.db.run(
+            `delete from computer_use_artifact_links where artifact_id in (${placeholders})`,
+            artifactIdsUnderArtifactsDir,
+          );
+          args.db.run(
+            `delete from computer_use_artifacts where project_id = ? and id in (${placeholders})`,
+            [args.projectId, ...artifactIdsUnderArtifactsDir],
+          );
+          args.db.run("commit");
+        } catch (error) {
+          try {
+            args.db.run("rollback");
+          } catch {
+            // Surface the original row-cleanup failure.
+          }
+          args.logger?.warn("ade.project.clear_local_data.artifact_rows_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     }
     if (options.logs) rmrf(repair.paths.logsDir);

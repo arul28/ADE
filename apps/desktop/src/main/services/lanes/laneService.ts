@@ -3056,27 +3056,26 @@ export function createLaneService({
    */
   const collectLaneArtifactFilePaths = (laneId: string): string[] => {
     const artifactsDir = resolveAdeLayout(projectRoot).artifactsDir;
-    let rows: Array<{ uri: string | null }> = [];
+    let ownedIds: Set<string>;
+    let rows: Array<{ id: string; uri: string | null }>;
     try {
-      rows = db.all<{ uri: string | null }>(
+      ownedIds = new Set(db.all<{ id: string }>(
         `
           with lane_owned_artifacts as (
             ${LANE_OWNED_ARTIFACT_IDS_SQL}
           )
-          select distinct candidate.uri
-          from computer_use_artifacts candidate
-          where candidate.storage_kind = 'file'
-            and candidate.id in (select id from lane_owned_artifacts)
-            and not exists (
-              select 1
-              from computer_use_artifacts survivor
-              where survivor.project_id = candidate.project_id
-                and survivor.storage_kind = 'file'
-                and survivor.uri = candidate.uri
-                and survivor.id not in (select id from lane_owned_artifacts)
-            )
+          select id from lane_owned_artifacts
         `,
         [projectId, laneId, laneId, laneId],
+      ).map((row) => row.id));
+      rows = db.all<{ id: string; uri: string | null }>(
+        `
+          select id, uri
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+        `,
+        [projectId],
       );
     } catch (error) {
       logger.warn("lane.delete.artifact_paths_query_failed", {
@@ -3085,37 +3084,45 @@ export function createLaneService({
       });
       return [];
     }
-    const paths: string[] = [];
-    for (const row of rows) {
-      const uri = typeof row.uri === "string" ? row.uri.trim() : "";
-      if (!uri || /^https?:\/\//i.test(uri)) continue;
+    const resolveJailedArtifactPath = (rawUri: string | null): string | null => {
+      const uri = typeof rawUri === "string" ? rawUri.trim() : "";
+      if (!uri || /^https?:\/\//i.test(uri)) return null;
       let relative = uri;
       if (/^ade-artifact:\/\/project(?:\/|$)/i.test(relative)) {
         try {
           relative = decodeURIComponent(new URL(relative).pathname.replace(/^\/+/, ""));
         } catch {
-          continue;
+          return null;
         }
       }
       const absolute = path.resolve(path.isAbsolute(relative) ? relative : path.join(projectRoot, relative));
-      // Realpath, not a lexical prefix check. `uri` is a CRR-replicated column,
-      // so a paired peer can write it; a directory symlink under the artifacts
-      // dir would otherwise let this unlink walk straight out of the jail.
-      let jailed: string;
       try {
-        jailed = resolvePathWithinRoot(artifactsDir, absolute, { allowMissing: true });
+        return resolvePathWithinRoot(artifactsDir, absolute, { allowMissing: true });
       } catch {
-        continue;
+        return null;
       }
-      paths.push(jailed);
+    };
+    const survivorPaths = new Set(
+      rows
+        .filter((row) => !ownedIds.has(row.id))
+        .map((row) => resolveJailedArtifactPath(row.uri))
+        .filter((candidate): candidate is string => Boolean(candidate)),
+    );
+    const paths = new Set<string>();
+    for (const row of rows) {
+      if (!ownedIds.has(row.id)) continue;
+      const jailed = resolveJailedArtifactPath(row.uri);
+      if (jailed && !survivorPaths.has(jailed)) paths.add(jailed);
     }
-    return paths;
+    return [...paths];
   };
 
-  const removeLaneArtifactFiles = (laneId: string, filePaths: string[]): void => {
+  const removeLaneArtifactFiles = (laneId: string, filePaths: string[]): number => {
+    let removed = 0;
     for (const filePath of filePaths) {
       try {
         fs.rmSync(filePath, { force: true });
+        removed += 1;
       } catch (error) {
         logger.warn("lane.delete.artifact_file_remove_failed", {
           laneId,
@@ -3124,6 +3131,7 @@ export function createLaneService({
         });
       }
     }
+    return removed;
   };
 
   const cleanupLaneDatabaseRows = (laneId: string): void => {
@@ -6296,10 +6304,11 @@ export function createLaneService({
             }
             throw error;
           }
-          removeLaneArtifactFiles(laneId, laneArtifactFiles);
-          return laneArtifactFiles.length
-            ? { detail: `${laneArtifactFiles.length} proof file(s) removed` }
-            : undefined;
+          const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+          if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
+          return removedProofFiles === laneArtifactFiles.length
+            ? { detail: `${removedProofFiles} proof file(s) removed` }
+            : { detail: `${removedProofFiles} of ${laneArtifactFiles.length} proof file(s) removed; see logs` };
         });
 
         invalidateLaneListCache();
