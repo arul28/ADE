@@ -931,6 +931,52 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     stop();
   });
 
+  it("does not let a read that was in flight across a disconnect resurrect the machine", async () => {
+    vi.useFakeTimers();
+    const pendingReads: Array<(value: { result: unknown }) => void> = [];
+    const snapshots: { emit: ((next: unknown) => void) | null } = { emit: null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(
+          () => new Promise<{ result: unknown }>((resolve) => pendingReads.push(resolve)),
+        ),
+        getConnectionSnapshot: vi.fn(async () => snapshot("connected")),
+        onConnectionSnapshotChanged: vi.fn((listener: (next: unknown) => void) => {
+          snapshots.emit = listener;
+          return () => { snapshots.emit = null; };
+        }),
+      },
+    } as unknown as typeof window.ade;
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+    seedMachine();
+
+    // Machine drops while its lane/session read is still in flight, and stays
+    // down past the grace window.
+    snapshots.emit?.(snapshot("connecting"));
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(isOnline()).toBe(false);
+
+    // The read finally lands. It must not flip the machine back on: nothing
+    // would hide it again until an unrelated snapshot happened to fire.
+    pendingReads.splice(0).forEach((resolve, index) => resolve({
+      result: index % 2 === 0 ? { lanes: [] } : { sessions: [] },
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(isOnline()).toBe(false);
+
+    stop();
+  });
+
   it("keeps a first snapshot that resolves after the coalesced refresh has already run", async () => {
     vi.useFakeTimers();
     const pending: { release: (() => void) | null } = { release: null };
@@ -968,6 +1014,51 @@ describe("reconnect grace before a machine leaves the sidebar", () => {
     expect(isOnline()).toBe(false);
 
     stop();
+  });
+
+  it("keeps the pending first snapshot when overlapping consumers change scope", async () => {
+    vi.useFakeTimers();
+    const pending: { release: (() => void) | null } = { release: null };
+    window.ade = {
+      remoteRuntime: {
+        callAction: vi.fn(() => new Promise(() => {})),
+        getConnectionSnapshot: vi.fn(() => new Promise((resolve) => {
+          pending.release = () => resolve(snapshot("connecting"));
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const first = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    // A project-tab transition: the new consumer mounts and retargets the shared
+    // runtime before the old one's effect cleanup runs, so refCount never hits
+    // zero and no second snapshot read is issued. The in-flight one is all there
+    // is — and connections are machine-global, so the scope change does not make
+    // it stale.
+    const second = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-b",
+      repoDisplayName: "Repo B",
+      repoOriginUrl: "git@github.com:acme/repo-b.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    first();
+    await vi.advanceTimersByTimeAsync(500);
+    seedMachine();
+    pending.release?.();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(isOnline()).toBe(true);
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(isOnline()).toBe(false);
+
+    second();
   });
 
   it("restores a machine that reconnects inside the grace window without ever hiding it", async () => {

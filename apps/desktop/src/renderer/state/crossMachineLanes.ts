@@ -706,6 +706,14 @@ function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null 
   return project?.gitOriginUrl ?? null;
 }
 
+/** Live connection truth, as of the newest snapshot this runtime has seen. */
+function isMachineConnectedNow(machineId: string): boolean {
+  return runtime.connections.some(
+    (connection) => connection.state === "connected"
+      && connection.target.id === machineId,
+  );
+}
+
 async function readMachine(
   machineId: string,
   machineName: string,
@@ -747,7 +755,12 @@ async function readMachine(
       targetId,
       projectId,
       binding,
-      online: true,
+      // Confirm reachable, never resurrect. Reachability is owned by the
+      // connection snapshot and its grace window; a read that was in flight
+      // across a disconnect must not flip a machine the window already hid back
+      // on — nothing would hide it again until the next snapshot happens to
+      // fire. Omitting the flag retains whatever the snapshot path decided.
+      ...(isMachineConnectedNow(machineId) ? { online: true } : {}),
       lanes: decodeForeignLanes(laneResult.result),
       sessions: reconcileCrossMachineOptimisticSessions(
         binding,
@@ -1063,10 +1076,14 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     // the shared runtime immediately; rejecting the new scope would leave it
     // permanently unsubscribed once the previous effect cleans up.
     runtime.generation += 1;
-    runtime.lifecycle += 1;
-    // The new scope wipes every machine slice, so a deadline carried over from
-    // the old one could hide a machine with no grace at all the moment it
-    // reappears here.
+    // Deliberately NOT a `lifecycle` bump. Connections are machine-global, so a
+    // scope change does not invalidate an in-flight first snapshot — and with
+    // ref-counted consumers overlapping across a project-tab transition,
+    // `refCount` never reaches zero, so no second snapshot read is coming.
+    // Discarding it would leave `runtime.connections` empty for good.
+    // The new scope does wipe every machine slice, though, so a deadline carried
+    // over from the old one could hide a machine with no grace at all the moment
+    // it reappears here.
     resetReachabilityGrace();
     rootAppStoreApi.getState().applyCrossMachineLaneScope(scope.scopeKey);
   }
