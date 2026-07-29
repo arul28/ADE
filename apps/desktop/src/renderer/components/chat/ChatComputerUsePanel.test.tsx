@@ -130,7 +130,10 @@ describe("proof rendering", () => {
   it("distinguishes an unavailable preview from a deleted stored file", async () => {
     vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
 
-    render(<ChatProofTimeline artifacts={[artifact(5)]} />);
+    render(<ChatComputerUsePanel
+      snapshot={snapshotOf([artifact(5)])}
+      onRefresh={vi.fn()}
+    />);
 
     expect(await screen.findByText(/preview is unavailable, but the stored proof is still attached/i)).toBeTruthy();
     expect(screen.queryByText(/stored file has since been deleted/i)).toBeNull();

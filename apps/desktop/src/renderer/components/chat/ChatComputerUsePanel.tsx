@@ -457,16 +457,19 @@ function DrawerProofTile({
   onDelete: (artifact: ComputerUseArtifactView) => void;
   onRecover: (artifact: ComputerUseArtifactView) => void;
 }) {
-  const { containerRef, preview, loading } = useVisibleArtifactPreview(
+  const { containerRef, preview, loading, loaded } = useVisibleArtifactPreview(
     artifact,
     allowLocalArtifactProtocol,
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [mediaFailed, setMediaFailed] = useState(false);
-  const broken = isBrokenArtifact(artifact) || mediaFailed;
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
   const externalUrl = externalArtifactUrl(artifact.uri);
+  const storedFileMissing = isBrokenArtifact(artifact);
+  const previewUnavailable = !storedFileMissing
+    && (mediaFailed || (loaded && !preview && (image || video)));
+  const hasPreviewProblem = storedFileMissing || previewUnavailable;
   const recoverable = typeof artifact.metadata?.sourcePath === "string";
 
   useEffect(() => {
@@ -485,13 +488,14 @@ function DrawerProofTile({
       <div
         className={cn(
           "relative overflow-hidden rounded-lg border bg-black/22",
-          broken
+          hasPreviewProblem
             ? "border-amber-200/[0.11] bg-amber-300/[0.03]"
             : "border-white/[0.07]",
         )}
       >
-        {broken ? (
-          // Broken items shrink to a short strip instead of an empty box.
+        {hasPreviewProblem ? (
+          // Missing or unpreviewable items shrink to a short strip instead of
+          // wasting the drawer rail on an empty thumbnail.
           <div className="flex h-14 items-center justify-center px-2">
             <WarningCircle size={15} weight="duotone" className="text-amber-200/45" />
           </div>
@@ -538,7 +542,7 @@ function DrawerProofTile({
               <ArrowSquareOut size={10} weight="bold" />
             </button>
           ) : null}
-          {broken && recoverable ? (
+          {storedFileMissing && recoverable ? (
             <button
               type="button"
               aria-label={`Locate ${artifact.title} in its lane`}
@@ -566,7 +570,7 @@ function DrawerProofTile({
         <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
           {relativeTime(artifact.createdAt)}
         </div>
-        {broken ? (
+        {hasPreviewProblem ? (
           <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
             {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
           </div>
