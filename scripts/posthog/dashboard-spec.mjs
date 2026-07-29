@@ -1,8 +1,11 @@
 export const MANAGED_TAG = "ade-managed";
 export const SPEC_VERSION_TAG = "ade-spec:v1";
+export const SYSTEM_EVENTS = Object.freeze(["$identify"]);
 
 export const EVENTS = Object.freeze({
+  APP_INSTALLED: "ade_app_installed",
   APP_OPENED: "ade_app_opened",
+  ACTIVATED: "ade_activated",
   SCREEN_VIEWED: "ade_screen_viewed",
   PROJECT_OPENED: "ade_project_opened",
   FEATURE_USED: "ade_feature_used",
@@ -16,10 +19,12 @@ export const EVENTS = Object.freeze({
   UPDATE_INSTALL_DID_NOT_LAND: "ade_update_install_did_not_land",
   UPDATE_AUTO_APPLIED: "ade_update_auto_applied",
   UPDATE_AUTO_APPLY_CANCELLED: "ade_update_auto_apply_cancelled",
+  UPDATE_PROMPTED: "ade_update_prompted",
   BRAIN_RECOVERED: "ade_brain_recovered",
   PUBLISH_FAILING: "ade_publish_failing",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
+  MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
   MARKETING_FEATURE_USED: "ade_marketing_feature_used",
   MARKETING_ERROR: "ade_marketing_error",
   MARKETING_ANALYTICS_BUDGET: "ade_marketing_analytics_budget",
@@ -30,16 +35,12 @@ export const EVENTS = Object.freeze({
   MOBILE_ANALYTICS_BUDGET: "ade_mobile_analytics_budget",
 });
 
-const ALL_INGESTED_EVENTS = Object.freeze(Object.values(EVENTS));
-// PostHog series letters are A..Z, so the catalog cannot exceed 26 events
-// without a different addressing scheme. Fail loudly here rather than emitting
-// a formula containing "[" that PostHog would silently reject.
-if (ALL_INGESTED_EVENTS.length > 26) {
-  throw new Error(
-    `Event catalog has ${ALL_INGESTED_EVENTS.length} events; the volume insight formula only addresses 26 (A..Z).`,
-  );
-}
-const ALL_INGESTED_EVENTS_FORMULA = ALL_INGESTED_EVENTS
+const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
+const INGESTED_EVENT_CHUNKS = Object.freeze(
+  Array.from({ length: Math.ceil(ALL_INGESTED_EVENTS.length / 26) }, (_, index) =>
+    Object.freeze(ALL_INGESTED_EVENTS.slice(index * 26, (index + 1) * 26))),
+);
+const eventFormula = (events) => events
   .map((_, index) => String.fromCharCode("A".charCodeAt(0) + index))
   .join("+");
 
@@ -62,6 +63,12 @@ export const PROPERTIES = Object.freeze({
   DROPPED_COUNT: "dropped_count",
   DROP_REASON: "drop_reason",
   SUMMARY_KIND: "summary_kind",
+  INSTALL_SOURCE: "install_source",
+  TRIGGER: "trigger",
+  TIME_SINCE_INSTALL_SECONDS: "time_since_install_seconds",
+  USER_ACTION: "user_action",
+  CTA_LABEL: "cta_label",
+  POSITION: "position",
 });
 
 const dateRange = (dateFrom) => ({ date_from: dateFrom, explicitDate: false });
@@ -196,23 +203,26 @@ export const dashboardSpec = Object.freeze({
         ),
         insight(
           "first-value-funnel",
-          "Desktop/web first-value funnel",
-          "Desktop or hosted-web app open → project open → work-session start → successful feature use within seven days. Native-phone and TUI engagement are reported separately because they do not emit this complete sequence under one anonymous identity.",
+          "Install to activation funnel",
+          "Fresh desktop install → project open → first completed work session within seven days. Existing installations are intentionally not backfilled as new installs.",
           funnel({
             series: [
-              eventNode(EVENTS.APP_OPENED, "Opened ADE", {
-                properties: [eventProperty(PROPERTIES.SURFACE, ["desktop", "web"])],
-              }),
-              eventNode(EVENTS.PROJECT_OPENED, "Opened a project", {
-                properties: [eventProperty(PROPERTIES.SURFACE, ["desktop", "web"])],
-              }),
-              eventNode(EVENTS.WORK_SESSION_STARTED, "Started work", {
-                properties: [eventProperty(PROPERTIES.SURFACE, ["desktop", "web"])],
-              }),
-              eventNode(EVENTS.FEATURE_USED, "Used a feature", {
-                properties: [eventProperty(PROPERTIES.SURFACE, ["desktop", "web"])],
-              }),
+              eventNode(EVENTS.APP_INSTALLED, "Installed ADE"),
+              eventNode(EVENTS.PROJECT_OPENED, "Opened a project"),
+              eventNode(EVENTS.ACTIVATED, "Completed first work session"),
             ],
+          }),
+        ),
+        insight(
+          "activation-time",
+          "Average time to activation",
+          "Average seconds from fresh install to the first completed work session.",
+          trends({
+            series: [eventNode(EVENTS.ACTIVATED, "Time to activation", {
+              math: "avg",
+              mathProperty: PROPERTIES.TIME_SINCE_INSTALL_SECONDS,
+            })],
+            interval: "week",
           }),
         ),
         insight(
@@ -411,8 +421,8 @@ export const dashboardSpec = Object.freeze({
               eventNode(EVENTS.MARKETING_SCREEN_VIEWED, "Viewed the homepage", {
                 properties: [eventProperty(PROPERTIES.SCREEN, "home")],
               }),
-              eventNode(EVENTS.MARKETING_FEATURE_USED, "Clicked Get started", {
-                properties: [eventProperty(PROPERTIES.FEATURE, "get_started")],
+              eventNode(EVENTS.MARKETING_CTA_CLICKED, "Clicked Get started", {
+                properties: [eventProperty(PROPERTIES.CTA_LABEL, "get_started_free")],
               }),
             ],
           }),
@@ -434,11 +444,11 @@ export const dashboardSpec = Object.freeze({
           "Marketing CTA interest",
           "Unique anonymous visitors using each allowlisted public-site call to action over the last 30 days.",
           trends({
-            series: [eventNode(EVENTS.MARKETING_FEATURE_USED, "CTA visitors", { math: "dau" })],
+            series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "CTA visitors", { math: "dau" })],
             dateFrom: "-30d",
             interval: "month",
             display: "ActionsBarValue",
-            breakdown: PROPERTIES.FEATURE,
+            breakdown: PROPERTIES.CTA_LABEL,
           }),
         ),
         insight(
@@ -528,7 +538,19 @@ export const dashboardSpec = Object.freeze({
               eventNode(EVENTS.UPDATE_QUIT_ESCALATED, "Update quit escalated"),
               eventNode(EVENTS.UPDATE_INSTALL_DID_NOT_LAND, "Update did not land"),
               eventNode(EVENTS.UPDATE_AUTO_APPLIED, "Update auto-applied"),
+              eventNode(EVENTS.UPDATE_PROMPTED, "Manual update decision"),
             ],
+            interval: "day",
+            dateFrom: "-30d",
+          }),
+        ),
+        insight(
+          "update-prompt-decisions",
+          "Manual update prompt decisions",
+          "Accepted, deferred, and dismissed decisions for downloaded desktop updates.",
+          trends({
+            series: [eventNode(EVENTS.UPDATE_PROMPTED, "Update decisions")],
+            breakdown: PROPERTIES.USER_ACTION,
             interval: "day",
             dateFrom: "-30d",
           }),
@@ -571,15 +593,27 @@ export const dashboardSpec = Object.freeze({
         ),
         insight(
           "monthly-analytics-volume",
-          "30-day ingested analytics volume",
-          "PostHog's actual ingested count across ADE's closed 26-event catalog. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance. This is an instrumentation health view, not the account billing meter: stray or abusive events sent with the public project token are outside this chart.",
+          "30-day ingested analytics volume · events 1–26",
+          "First segment of PostHog's actual ingested count across ADE's closed event catalog. Add this value to the companion segment for the total. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance.",
           trends({
-            series: ALL_INGESTED_EVENTS.map((event) => eventNode(event, event)),
-            formula: ALL_INGESTED_EVENTS_FORMULA,
+            series: INGESTED_EVENT_CHUNKS[0].map((event) => eventNode(event, event)),
+            formula: eventFormula(INGESTED_EVENT_CHUNKS[0]),
             interval: "month",
             dateFrom: "-30d",
             display: "BoldNumber",
             goalLines: [{ label: "PostHog free allowance", value: 1_000_000 }],
+          }),
+        ),
+        insight(
+          "monthly-analytics-volume-overflow",
+          "30-day ingested analytics volume · remaining events",
+          "Companion segment for the remaining ADE events, including pseudonymous identify calls. Add this value to events 1–26 for the total.",
+          trends({
+            series: INGESTED_EVENT_CHUNKS[1].map((event) => eventNode(event, event)),
+            formula: eventFormula(INGESTED_EVENT_CHUNKS[1]),
+            interval: "month",
+            dateFrom: "-30d",
+            display: "BoldNumber",
           }),
         ),
       ],

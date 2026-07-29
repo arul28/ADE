@@ -16049,6 +16049,7 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      productAnalyticsService: brainProductAnalytics,
       getAccountDirectoryHealth,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();

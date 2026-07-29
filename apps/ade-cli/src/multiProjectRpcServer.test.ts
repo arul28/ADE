@@ -491,6 +491,10 @@ describe("multi-project RPC server", () => {
   it("reconciles account-owned client trust on sign-out and account switch", async () => {
     const { registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();
+    const productAnalyticsService = {
+      identifyAccount: vi.fn(),
+      resetAccountIdentity: vi.fn(),
+    };
     const reconcileAccountOwnership = vi.fn();
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";
@@ -499,6 +503,7 @@ describe("multi-project RPC server", () => {
         serverVersion: "test",
         projectRegistry: registry,
         accountAuthService,
+        productAnalyticsService,
         reconcileAccountOwnership,
       });
       await handler({
@@ -515,6 +520,7 @@ describe("multi-project RPC server", () => {
         params: { action: "signOut", args: {} },
       });
       expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+      expect(productAnalyticsService.resetAccountIdentity).toHaveBeenCalledTimes(1);
 
       (accountAuthService.pollLogin as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         status: "signed_in",
@@ -534,6 +540,7 @@ describe("multi-project RPC server", () => {
         params: { action: "pollLogin", args: { sessionId: "test-session" } },
       });
       expect(reconcileAccountOwnership).toHaveBeenLastCalledWith("account-b");
+      expect(productAnalyticsService.identifyAccount).toHaveBeenCalledWith("account-b");
 
       (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
         signedIn: true,

@@ -2,7 +2,11 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Container } from "./Container";
 import { LINKS } from "../lib/links";
-import { MARKETING_FEATURES } from "../lib/marketingAnalytics";
+import {
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
+  MARKETING_FEATURES,
+} from "../lib/marketingAnalytics";
 
 export function SiteFooter() {
   const year = new Date().getFullYear();
@@ -33,16 +37,16 @@ export function SiteFooter() {
             <div>
               <div className="text-sm font-semibold text-fg">Product</div>
               <div className="mt-3 flex flex-col gap-2 text-sm">
-                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releasesLatest} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC} target="_blank" rel="noreferrer">
+                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releasesLatest} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for Mac
                 </a>
-                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} target="_blank" rel="noreferrer">
+                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for iOS
                 </a>
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_FEATURES}>
                   Features
                 </Link>
-                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#quickstart" data-ade-analytics-feature={MARKETING_FEATURES.GET_STARTED}>
+                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#quickstart" data-ade-analytics-feature={MARKETING_FEATURES.GET_STARTED} data-ade-analytics-cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER}>
                   Get Started
                 </Link>
               </div>

@@ -1421,6 +1421,16 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  const detectInstallSource = (): "development" | "homebrew" | "direct_download" => {
+    if (!app.isPackaged) return "development";
+    if (/(?:homebrew|caskroom)/i.test(process.execPath)) return "homebrew";
+    return "direct_download";
+  };
+  productAnalyticsService.captureInternal({
+    event: "ade_app_installed",
+    surface: "desktop",
+    properties: { install_source: detectInstallSource() },
+  });
   productAnalyticsService.capture({
     event: "ade_app_opened",
     surface: "desktop",

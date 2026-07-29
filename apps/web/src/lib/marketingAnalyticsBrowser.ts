@@ -3,6 +3,8 @@ import {
   MARKETING_ERROR_KINDS,
   type MarketingErrorKind,
   type MarketingFeature,
+  type MarketingCtaLabel,
+  type MarketingCtaPosition,
   type MarketingScreen,
   normalizeMarketingScreen,
   type PostHogCapturePayload,
@@ -157,6 +159,14 @@ export function captureMarketingScreen(screen: MarketingScreen): void {
 
 export function captureMarketingFeature(feature: MarketingFeature, screen?: MarketingScreen): void {
   analytics?.captureFeature(feature, screen);
+}
+
+export function captureMarketingCta(
+  ctaLabel: MarketingCtaLabel,
+  screen: MarketingScreen,
+  position: MarketingCtaPosition,
+): void {
+  analytics?.captureCta(ctaLabel, screen, position);
 }
 
 export function captureMarketingError(errorKind: MarketingErrorKind): void {

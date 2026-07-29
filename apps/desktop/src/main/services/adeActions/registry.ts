@@ -3853,7 +3853,10 @@ export function getAdeActionDomainServices(
   const automationsEnabled = areAutomationsEnabledForPackagedState(Boolean(runtime.isPackaged));
   return {
     account: runtime.accountAuthService
-      ? toService(createAccountActionDomainService(runtime.accountAuthService))
+      ? toService(createAccountActionDomainService(
+          runtime.accountAuthService,
+          runtime.productAnalyticsService ?? undefined,
+        ))
       : null,
     attention: toService(buildAttentionDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),

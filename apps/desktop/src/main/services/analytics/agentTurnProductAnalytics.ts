@@ -31,6 +31,18 @@ export function captureAgentTurnSettledAnalytics(args: {
     },
   });
 
+  if (event.status === "completed") {
+    analytics.captureInternal({
+      event: "ade_activated",
+      surface: "api",
+      projectId,
+      sessionId: event.sessionId,
+      properties: {
+        trigger: "work_session_completed",
+      },
+    });
+  }
+
   if (event.status !== "failed") return;
   analytics.captureInternal({
     event: "ade_error",

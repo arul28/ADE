@@ -225,6 +225,79 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     }
   }
 
+  func testIdentifyUsesCrossSurfaceHashDeduplicatesAndCapsAccountChanges() {
+    let (analytics, sink, defaults) = makeAnalytics()
+
+    analytics.identifyAccount(" user_123 ")
+    analytics.identifyAccount("user_123")
+
+    XCTAssertEqual(sink.identities, [
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+    ])
+    XCTAssertEqual(sink.resetIdentityCount, 0)
+    XCTAssertEqual(
+      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+
+    analytics.identifyAccount("user_456")
+    analytics.identifyAccount("user_789")
+
+    XCTAssertEqual(sink.identities.count, 2)
+    XCTAssertEqual(sink.resetIdentityCount, 2)
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
+    let defaults = makeDefaults()
+    let factory = ProductAnalyticsTestTransportFactory()
+    let sink = DirectPostHogProductAnalyticsSink(
+      defaults: defaults,
+      transportFactory: { factory.make() }
+    )
+    sink.configure(projectToken: "phc_public_123", host: nil, enabled: true)
+    let analytics = ProductAnalytics(defaults: defaults, sink: sink)
+
+    analytics.captureScreen(.work)
+    let anonymousID = try distinctID(
+      from: XCTUnwrap(factory.transports.first?.requests.first)
+    )
+    analytics.identifyAccount("user_123")
+    analytics.captureScreen(.lanes)
+
+    let requests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(requests.count, 3)
+    let identifyPayload = try payload(from: requests[1])
+    XCTAssertEqual(identifyPayload["event"] as? String, "$identify")
+    XCTAssertEqual(
+      identifyPayload["distinct_id"] as? String,
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+    let identifyProperties = try XCTUnwrap(identifyPayload["properties"] as? [String: Any])
+    XCTAssertEqual(identifyProperties["$anon_distinct_id"] as? String, anonymousID)
+    XCTAssertEqual(identifyProperties["$geoip_disable"] as? Bool, true)
+    XCTAssertNil(identifyProperties["email"])
+    XCTAssertFalse(String(data: try XCTUnwrap(requests[1].httpBody), encoding: .utf8)?.contains("user_123") == true)
+    let setProperties = try XCTUnwrap(identifyProperties["$set"] as? [String: Any])
+    XCTAssertEqual(setProperties["plan"] as? String, "free")
+    XCTAssertEqual(setProperties["platform"] as? String, "ios")
+    XCTAssertNotNil(setProperties["app_version"] as? String)
+    XCTAssertEqual(
+      try distinctID(from: requests[2]),
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+
+    analytics.resetAccountIdentity()
+    analytics.captureScreen(.settings)
+
+    let resetRequests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(resetRequests.count, 4)
+    let resetAnonymousID = try distinctID(from: resetRequests[3])
+    XCTAssertNotEqual(resetAnonymousID, anonymousID)
+    XCTAssertNotEqual(resetAnonymousID, "ade_user_5d0609d39586fed6fd2b684efd3d059c")
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
   func testOutcomeSanitizerRejectsArbitraryValuesAndDropsExtraFields() throws {
     let defaults = makeDefaults()
     let factory = ProductAnalyticsTestTransportFactory()
@@ -460,11 +533,15 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
   }
 
   private func distinctID(from request: URLRequest) throws -> String {
+    let payload = try payload(from: request)
+    return try XCTUnwrap(payload["distinct_id"] as? String)
+  }
+
+  private func payload(from request: URLRequest) throws -> [String: Any] {
     let body = try XCTUnwrap(request.httpBody)
-    let payload = try XCTUnwrap(
+    return try XCTUnwrap(
       JSONSerialization.jsonObject(with: body) as? [String: Any]
     )
-    return try XCTUnwrap(payload["distinct_id"] as? String)
   }
 }
 
@@ -476,12 +553,22 @@ private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
 
   private(set) var events: [Event] = []
   private(set) var enabledStates: [Bool] = []
+  private(set) var identities: [String] = []
+  private(set) var resetIdentityCount = 0
 
   var isConfigured: Bool { true }
   var canCapture: Bool { true }
 
   func capture(event: String, properties: [String: Any]) {
     events.append(Event(name: event, properties: properties))
+  }
+
+  func identify(userHash: String) {
+    identities.append(userHash)
+  }
+
+  func resetIdentity() {
+    resetIdentityCount += 1
   }
 
   func setEnabled(_ enabled: Bool) {

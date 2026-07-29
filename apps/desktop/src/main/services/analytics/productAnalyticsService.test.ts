@@ -70,6 +70,7 @@ describe("productAnalyticsService", () => {
     vi.stubEnv("VITEST", "false");
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ADE_DISABLE_PRODUCT_ANALYTICS", "0");
+    vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "1");
   });
 
   afterEach(() => {
@@ -404,7 +405,7 @@ describe("productAnalyticsService", () => {
     });
     expect(configured.messages).toHaveLength(0);
     expect(JSON.parse(fs.readFileSync(path.join(configured.root, "analytics.json"), "utf8"))).toMatchObject({
-      version: 1,
+      version: 2,
       enabled: false,
     });
     const unconfiguredRestart = makeHarness({ root: configured.root, token: "" });
@@ -415,6 +416,19 @@ describe("productAnalyticsService", () => {
     });
     fs.rmSync(unconfigured.root, { recursive: true, force: true });
     fs.rmSync(configured.root, { recursive: true, force: true });
+  });
+
+  it("is inert in development unless analytics is explicitly enabled", () => {
+    vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "0");
+    const harness = makeHarness();
+    expect(harness.service.captureInternal({
+      event: "ade_app_installed",
+      surface: "desktop",
+      properties: { install_source: "development" },
+    })).toEqual({ accepted: false, reason: "disabled" });
+    expect(harness.messages).toHaveLength(0);
+    expect(fs.existsSync(path.join(harness.root, "analytics.json"))).toBe(false);
+    fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
   it("drops queued transport work immediately when the user opts out", () => {
@@ -529,6 +543,105 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("captures install and activation milestones only once across restarts", () => {
+    let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    const first = makeHarness({ now: () => nowMs });
+
+    expect(first.service.captureInternal({
+      event: "ade_app_installed",
+      surface: "desktop",
+      properties: { install_source: "direct_download" },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    nowMs += 91_000;
+    expect(first.service.captureInternal({
+      event: "ade_activated",
+      surface: "api",
+      properties: { trigger: "work_session_completed", time_since_install_seconds: 999_999 },
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    const activation = first.messages[1] as { properties: Record<string, unknown> };
+    expect(activation.properties.time_since_install_seconds).toBe(91);
+
+    const restarted = makeHarness({ root: first.root, messages: first.messages, now: () => nowMs });
+    expect(restarted.service.captureInternal({
+      event: "ade_app_installed",
+      surface: "desktop",
+      properties: { install_source: "homebrew" },
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    expect(restarted.service.captureInternal({
+      event: "ade_activated",
+      surface: "api",
+      properties: { trigger: "work_session_completed" },
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    expect(first.messages).toHaveLength(2);
+    expect(restarted.service.getStatus().droppedToday).toBe(0);
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
+  it("migrates legacy analytics state without backfilling false install or activation events", () => {
+    const first = makeHarness();
+    first.service.capture({ event: "ade_app_opened", surface: "desktop" });
+    const statePath = path.join(first.root, "analytics.json");
+    const legacy = JSON.parse(fs.readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    legacy.version = 1;
+    delete legacy.anonymousId;
+    delete legacy.identifiedUserHash;
+    delete legacy.installedAtMs;
+    delete legacy.installCapturedAtMs;
+    delete legacy.activatedAtMs;
+    fs.writeFileSync(statePath, `${JSON.stringify(legacy)}\n`);
+
+    const restarted = makeHarness({ root: first.root, messages: first.messages });
+    expect(restarted.service.captureInternal({
+      event: "ade_app_installed",
+      surface: "desktop",
+      properties: { install_source: "direct_download" },
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    expect(restarted.service.captureInternal({
+      event: "ade_activated",
+      surface: "api",
+      properties: { trigger: "work_session_completed" },
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
+  it("identifies a known account pseudonymously and rotates identity on sign-out", () => {
+    const harness = makeHarness();
+    harness.service.capture({ event: "ade_app_opened", surface: "desktop" });
+    const anonymousId = harness.messages[0]?.distinctId;
+
+    expect(harness.service.identifyAccount("clerk_user_private_123")).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    const identify = harness.messages[1] as {
+      distinctId: string;
+      event: string;
+      properties: Record<string, unknown>;
+    };
+    expect(identify.event).toBe("$identify");
+    expect(identify.distinctId).toMatch(/^ade_user_[0-9a-f]{32}$/);
+    expect(identify.properties).toMatchObject({
+      $anon_distinct_id: anonymousId,
+      $set: { plan: "free", platform: process.platform, app_version: "1.2.3" },
+      $geoip_disable: true,
+    });
+    expect(JSON.stringify(identify)).not.toContain("clerk_user_private_123");
+    expect(harness.service.identifyAccount("clerk_user_private_123")).toEqual({
+      accepted: false,
+      reason: "duplicate",
+    });
+
+    harness.service.capture({ event: "ade_screen_viewed", surface: "desktop" });
+    expect(harness.messages[2]?.distinctId).toBe(identify.distinctId);
+    expect(harness.service.resetAccountIdentity()).toBe(true);
+    harness.service.capture({ event: "ade_project_opened", surface: "desktop" });
+    expect(harness.messages[3]?.distinctId).toMatch(/^ade_[0-9a-f]{32}$/);
+    expect(harness.messages[3]?.distinctId).not.toBe(anonymousId);
+    expect(harness.messages[3]?.distinctId).not.toBe(identify.distinctId);
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("rejects personal keys and invalid explicit ingestion hosts", () => {
     const personalKey = makeHarness({ token: "phx_personal_admin_key" });
     expect(personalKey.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
@@ -614,7 +727,7 @@ describe("product analytics producers", () => {
       event: settledEvent({ status: "failed", sessionId: "session-2" }),
     });
 
-    expect(captures).toHaveLength(3);
+    expect(captures).toHaveLength(4);
     expect(captures[0]).toEqual({
       event: "ade_work_session_completed",
       surface: "api",
@@ -630,10 +743,14 @@ describe("product analytics producers", () => {
       },
     });
     expect(captures[1]).toMatchObject({
+      event: "ade_activated",
+      properties: { trigger: "work_session_completed" },
+    });
+    expect(captures[2]).toMatchObject({
       event: "ade_work_session_completed",
       properties: { feature: "chat", outcome: "failure" },
     });
-    expect(captures[2]).toMatchObject({
+    expect(captures[3]).toMatchObject({
       event: "ade_error",
       sessionId: "session-2",
       properties: { feature: "chat", error_kind: "other", recoverable: true },

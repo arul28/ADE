@@ -3,11 +3,16 @@ import { useLocation } from "react-router-dom";
 
 import {
   ANALYTICS_FEATURE_ATTRIBUTE,
+  ANALYTICS_CTA_ATTRIBUTE,
+  ANALYTICS_CTA_POSITION_ATTRIBUTE,
+  isMarketingCtaLabel,
+  isMarketingCtaPosition,
   isMarketingFeature,
   normalizeMarketingScreen,
 } from "../lib/marketingAnalytics";
 import {
   captureMarketingAppOpened,
+  captureMarketingCta,
   captureMarketingFeature,
   captureMarketingScreen,
   captureUnhandledRejection,
@@ -29,12 +34,21 @@ export function MarketingAnalyticsBridge() {
     captureMarketingAppOpened();
 
     const onClick = (event: MouseEvent) => {
+      const ctaTarget = event.target instanceof Element
+        ? event.target.closest<HTMLElement>(`[${ANALYTICS_CTA_ATTRIBUTE}]`)
+        : null;
+      const ctaLabel = ctaTarget?.getAttribute(ANALYTICS_CTA_ATTRIBUTE);
+      const ctaPosition = ctaTarget?.getAttribute(ANALYTICS_CTA_POSITION_ATTRIBUTE);
+      const screen = normalizeMarketingScreen(window.location.pathname) ?? undefined;
+      if (isMarketingCtaLabel(ctaLabel) && isMarketingCtaPosition(ctaPosition) && screen) {
+        captureMarketingCta(ctaLabel, screen, ctaPosition);
+        return;
+      }
       const target = event.target instanceof Element
         ? event.target.closest<HTMLElement>(`[${ANALYTICS_FEATURE_ATTRIBUTE}]`)
         : null;
       const feature = target?.getAttribute(ANALYTICS_FEATURE_ATTRIBUTE);
       if (!isMarketingFeature(feature)) return;
-      const screen = normalizeMarketingScreen(window.location.pathname) ?? undefined;
       captureMarketingFeature(feature, screen);
     };
     const onError = () => captureWindowError();

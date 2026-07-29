@@ -2,7 +2,11 @@ import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, BookOpen, Download, Github, Smartphone } from "lucide-react";
 import { CopyButton } from "../CopyButton";
 import { LINKS } from "../../lib/links";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import {
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
+  MARKETING_FEATURES,
+} from "../../lib/marketingAnalytics";
 
 const BREW_INSTALL_CMD = "brew install --cask arul28/ade/ade";
 
@@ -85,6 +89,8 @@ export function Lede() {
           <a
             href={LINKS.releasesLatest}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.HERO}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-5 py-3 text-[14px] font-medium text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
@@ -94,6 +100,8 @@ export function Lede() {
           <a
             href={LINKS.testflight}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.HERO}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-5 py-3 text-[14px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"

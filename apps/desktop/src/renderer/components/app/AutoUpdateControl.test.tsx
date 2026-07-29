@@ -80,6 +80,8 @@ function installAdeMock(args: {
   updateCheckForUpdates?: () => Promise<void>;
 } = {}) {
   const updateCheckForUpdates = vi.fn(args.updateCheckForUpdates ?? (async () => undefined));
+  const updateQuitAndInstall = vi.fn(async () => true);
+  const capture = vi.fn(async () => ({ accepted: true, reason: "accepted" as const }));
   const openExternal = vi.fn(async () => undefined);
   const updateDismissInstalledNotice = vi.fn(async () => undefined);
   let updateListener: ((snapshot: AutoUpdateSnapshot) => void) | null = null;
@@ -93,7 +95,8 @@ function installAdeMock(args: {
       updateGetState: vi.fn(async () => args.snapshot ?? idleSnapshot),
       updateCheckForUpdates,
       updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
-      updateQuitAndInstall: vi.fn(async () => true),
+      updateQuitAndInstall,
+      analytics: { capture },
       updateDismissInstalledNotice,
       onUpdateEvent: vi.fn((listener: (snapshot: AutoUpdateSnapshot) => void) => {
         updateListener = listener;
@@ -105,6 +108,8 @@ function installAdeMock(args: {
   });
   return {
     updateCheckForUpdates,
+    updateQuitAndInstall,
+    capture,
     openExternal,
     updateDismissInstalledNotice,
     emitUpdate(snapshot: AutoUpdateSnapshot) {
@@ -182,6 +187,34 @@ describe("AutoUpdateControl", () => {
 
     expect(await screen.findByText("Install update v1.3.0")).toBeTruthy();
     expect(screen.queryByText("Update required")).toBeNull();
+  });
+
+  it("records accepted and deferred manual update decisions", async () => {
+    const readySnapshot = { ...idleSnapshot, status: "ready" as const, version: "1.3.0" };
+    const mock = installAdeMock({ snapshot: readySnapshot });
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    render(<AutoUpdateControl />);
+    const install = await screen.findByRole("button", { name: /install update v1\.3\.0/i });
+    fireEvent.click(install);
+    await waitFor(() => {
+      expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+        properties: expect.objectContaining({ user_action: "deferred" }),
+      }));
+    });
+
+    fireEvent.click(install);
+    await waitFor(() => {
+      expect(mock.updateQuitAndInstall).toHaveBeenCalledTimes(1);
+    });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      event: "ade_update_prompted",
+      properties: {
+        from_version: "1.2.0",
+        to_version: "1.3.0",
+        user_action: "accepted",
+      },
+    }));
   });
 
   it("keeps update failures visible and shows capacity recovery details", async () => {

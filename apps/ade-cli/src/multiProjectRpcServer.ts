@@ -101,6 +101,10 @@ export type MultiProjectRpcHandlerOptions = {
     "capabilities" | "call" | "streamEvents" | "dispose"
   > & Partial<Pick<PersonalChatScope, "activitySummary">>;
   accountAuthService?: AccountAuthService;
+  productAnalyticsService?: {
+    identifyAccount(userId: string | null | undefined): unknown;
+    resetAccountIdentity(): unknown;
+  };
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   getRuntimeStatus?: () => {
     syncPort: number | null;
@@ -1205,6 +1209,7 @@ export function createMultiProjectRpcRequestHandler(
       }
       const response = await callAccountAction({
         service: accountAuthService,
+        analytics: options.productAnalyticsService,
         action,
         actionArgs: isRecord(params.args) ? params.args : {},
       });

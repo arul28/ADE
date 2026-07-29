@@ -7,6 +7,15 @@ type ProductAnalyticsLifecycleArgs = {
   screen: string;
 };
 
+const KEY_ANALYTICS_SCREENS = new Set([
+  "project",
+  "lanes",
+  "work",
+  "prs",
+  "settings",
+  "onboarding",
+]);
+
 function captureHostedWebStartup(screen?: string): void {
   const analytics = window.ade.analytics;
   if (!analytics) return;
@@ -19,7 +28,7 @@ function captureHostedWebStartup(screen?: string): void {
     dedupeKey: "web_app_opened",
     minimumIntervalMs: 5 * 60_000,
   }).catch(() => undefined);
-  if (screen) {
+  if (screen && KEY_ANALYTICS_SCREENS.has(screen)) {
     void analytics.capture({
       event: "ade_screen_viewed",
       properties: {
@@ -44,6 +53,7 @@ export function useProductAnalyticsLifecycle({
   const [consentRequired, setConsentRequired] = useState(false);
 
   useEffect(() => {
+    if (!KEY_ANALYTICS_SCREENS.has(screen)) return;
     const analytics = window.ade.analytics;
     if (!analytics) return;
     const routeKind = isWebClientMode() ? "web" : "desktop";

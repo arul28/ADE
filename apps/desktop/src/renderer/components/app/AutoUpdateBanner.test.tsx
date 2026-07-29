@@ -16,6 +16,7 @@ function snapshot(overrides: Partial<AutoUpdateSnapshot>): AutoUpdateSnapshot {
 function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
   const updateQuitAndInstall = vi.fn(async () => true);
   const updateCancelAutoApply = vi.fn(async () => true);
+  const capture = vi.fn(async () => ({ accepted: true, reason: "accepted" as const }));
   // Mutable so the initial (async) getState read can't clobber an already-emitted
   // state when its promise settles late.
   let current = initial;
@@ -26,6 +27,7 @@ function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
       updateGetState: vi.fn(async () => current),
       updateQuitAndInstall,
       updateCancelAutoApply,
+      analytics: { capture },
       onUpdateEvent: vi.fn((cb: (s: AutoUpdateSnapshot) => void) => {
         listener = cb;
         return () => {
@@ -37,6 +39,7 @@ function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
   return {
     updateQuitAndInstall,
     updateCancelAutoApply,
+    capture,
     emit(next: AutoUpdateSnapshot) {
       current = next;
       act(() => listener?.(next));
@@ -101,6 +104,14 @@ describe("AutoUpdateBanner", () => {
     await waitFor(() => {
       expect(mock.updateQuitAndInstall).toHaveBeenCalledTimes(1);
     });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      event: "ade_update_prompted",
+      properties: {
+        from_version: "1.2.34",
+        to_version: "1.2.35",
+        user_action: "accepted",
+      },
+    }));
   });
 
   it("shows the parked retry copy", async () => {
@@ -124,6 +135,9 @@ describe("AutoUpdateBanner", () => {
     await waitFor(() => {
       expect(screen.queryByText(/1\.2\.35 is ready/)).toBeNull();
     });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      properties: expect.objectContaining({ user_action: "dismissed" }),
+    }));
 
     // A newer staged version has a different signature, so the banner returns.
     mock.emit(snapshot({ status: "ready", version: "1.2.36" }));
@@ -150,6 +164,9 @@ describe("AutoUpdateBanner", () => {
     await waitFor(() => {
       expect(mock.updateCancelAutoApply).toHaveBeenCalledTimes(1);
     });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      properties: expect.objectContaining({ user_action: "deferred" }),
+    }));
 
     // Clearing the pending state removes the toast.
     mock.emit(snapshot({ status: "ready", version: "1.2.35" }));

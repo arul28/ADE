@@ -103,6 +103,8 @@ function createRuntime() {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     productAnalyticsService: {
       capture: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      identifyAccount: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      resetAccountIdentity: vi.fn(() => true),
       getStatus: vi.fn(() => ({ configured: true, enabled: true, effective: true })),
       setEnabled: vi.fn(),
       flush: vi.fn(async () => true),
@@ -3784,6 +3786,7 @@ describe("adeRpcServer", () => {
       expiresAt: "2026-07-15T10:00:00.000Z",
       source: "env-token",
     });
+    expect(fixture.runtime.productAnalyticsService.identifyAccount).toHaveBeenCalledWith("user_123");
   });
 
   it("rejects product analytics capture from agent-run identities", async () => {

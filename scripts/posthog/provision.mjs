@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import {
   dashboardSpec,
   EVENTS,
+  SYSTEM_EVENTS,
   MANAGED_TAG,
   PROPERTIES,
   SPEC_VERSION_TAG,
@@ -108,7 +109,7 @@ export function validateDashboardSpec(spec = dashboardSpec) {
   assertUnique(spec.dashboards, "key", "Dashboard spec");
   assertUnique(spec.dashboards, "name", "Dashboard spec");
 
-  const allowedEvents = new Set(Object.values(EVENTS));
+  const allowedEvents = new Set([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
   const allowedProperties = new Set(Object.values(PROPERTIES));
   const insightKeys = [];
 

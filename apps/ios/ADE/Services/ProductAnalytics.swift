@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -107,6 +108,8 @@ protocol ProductAnalyticsSink: AnyObject {
   var isConfigured: Bool { get }
   var canCapture: Bool { get }
   func capture(event: String, properties: [String: Any])
+  func identify(userHash: String)
+  func resetIdentity()
   func setEnabled(_ enabled: Bool)
   func flush()
 }
@@ -220,6 +223,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       requestedEnabled = enabled
       if !enabled {
         defaults.removeObject(forKey: Self.installationIDDefaultsKey)
+        defaults.removeObject(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey)
       }
     }
   }
@@ -239,15 +243,6 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
         return
       }
 
-      let installationID: String
-      if let existing = defaults.string(forKey: Self.installationIDDefaultsKey),
-         UUID(uuidString: existing) != nil {
-        installationID = existing.lowercased()
-      } else {
-        installationID = UUID().uuidString.lowercased()
-        defaults.set(installationID, forKey: Self.installationIDDefaultsKey)
-      }
-
       privateProperties["surface"] = "mobile"
       privateProperties["platform"] = "ios"
       privateProperties["$process_person_profile"] = false
@@ -255,7 +250,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
       let payload: [String: Any] = [
         "api_key": configuration.projectToken,
-        "distinct_id": installationID,
+        "distinct_id": identifiedAccountHash() ?? installationID(),
         "event": event,
         "properties": privateProperties,
         "uuid": UUID().uuidString.lowercased(),
@@ -279,6 +274,52 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
     }
   }
 
+  func identify(userHash: String) {
+    lock.withLock {
+      guard requestedEnabled,
+            Self.isValidUserHash(userHash),
+            let configuration else {
+        return
+      }
+      let payload: [String: Any] = [
+        "api_key": configuration.projectToken,
+        "distinct_id": userHash,
+        "event": "$identify",
+        "properties": [
+          "$anon_distinct_id": installationID(),
+          "$set": [
+            "plan": "free",
+            "platform": "ios",
+            "app_version": Self.appVersion(),
+          ],
+          "$geoip_disable": true,
+        ],
+        "uuid": UUID().uuidString.lowercased(),
+      ]
+      guard JSONSerialization.isValidJSONObject(payload),
+            let body = try? JSONSerialization.data(withJSONObject: payload) else {
+        return
+      }
+      var request = URLRequest(
+        url: configuration.endpoint,
+        cachePolicy: .reloadIgnoringLocalCacheData,
+        timeoutInterval: 5
+      )
+      request.httpMethod = "POST"
+      request.httpBody = body
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      let activeTransport = transport ?? transportFactory()
+      transport = activeTransport
+      activeTransport.send(request)
+    }
+  }
+
+  func resetIdentity() {
+    lock.withLock {
+      defaults.removeObject(forKey: Self.installationIDDefaultsKey)
+    }
+  }
+
   func setEnabled(_ enabled: Bool) {
     lock.withLock {
       requestedEnabled = enabled
@@ -288,6 +329,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       // A future opt-in receives a fresh anonymous installation id. This keeps
       // the opt-out boundary from linking pre- and post-consent activity.
       defaults.removeObject(forKey: Self.installationIDDefaultsKey)
+      defaults.removeObject(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey)
     }
   }
 
@@ -420,6 +462,44 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
     guard !value.isEmpty, !value.contains("$(") else { return nil }
     return value
   }
+
+  private func installationID() -> String {
+    if let existing = defaults.string(forKey: Self.installationIDDefaultsKey),
+       UUID(uuidString: existing) != nil {
+      return existing.lowercased()
+    }
+    let installationID = UUID().uuidString.lowercased()
+    defaults.set(installationID, forKey: Self.installationIDDefaultsKey)
+    return installationID
+  }
+
+  private func identifiedAccountHash() -> String? {
+    guard let value = defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+          Self.isValidUserHash(value) else {
+      return nil
+    }
+    return value
+  }
+
+  private static func isValidUserHash(_ value: String) -> Bool {
+    value.range(
+      of: #"^ade_user_[0-9a-f]{32}$"#,
+      options: .regularExpression
+    ) != nil
+  }
+
+  private static func appVersion(bundle: Bundle = .main) -> String {
+    guard let raw = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+      return "unknown"
+    }
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty,
+          value.count <= 64,
+          value.range(of: #"^[A-Za-z0-9._+-]+$"#, options: .regularExpression) != nil else {
+      return "unknown"
+    }
+    return value
+  }
 }
 
 /// The only analytics entry point in the iOS app.
@@ -432,10 +512,13 @@ final class ProductAnalytics {
   static let shared = ProductAnalytics()
 
   static let enabledDefaultsKey = "ade.analytics.enabled"
+  static let identifiedAccountHashDefaultsKey = "ade.analytics.identified-account-hash.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
 
   private static let budgetDefaultsKey = "ade.analytics.daily-budget.v2"
+  private static let identifyEventName = "$identify"
+  private static let identifyDailyLimit = 2
   private static let eventLimits: [ADEAnalyticsEventName: Int] = [
     .appOpened: 3,
     .screenViewed: 10,
@@ -464,6 +547,12 @@ final class ProductAnalytics {
   private struct PendingEvent {
     let name: ADEAnalyticsEventName
     let properties: [String: Any]
+  }
+
+  private struct IdentityTransition {
+    var pendingEvents: [PendingEvent] = []
+    var shouldReset = false
+    var userHash: String?
   }
 
   private let defaults: UserDefaults
@@ -595,6 +684,69 @@ final class ProductAnalytics {
     )
   }
 
+  func identifyAccount(_ userId: String) {
+    let normalizedUserId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard sink.canCapture,
+          !normalizedUserId.isEmpty,
+          normalizedUserId.count <= 4_096 else {
+      return
+    }
+    let userHash = Self.accountHash(normalizedUserId)
+    let transition = lock.withLock { () -> IdentityTransition in
+      let previousHash = defaults.string(forKey: Self.identifiedAccountHashDefaultsKey)
+      guard previousHash != userHash else { return IdentityTransition() }
+
+      var transition = IdentityTransition(shouldReset: previousHash != nil)
+      if previousHash != nil {
+        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
+      }
+      var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
+      guard reserve(
+        name: Self.identifyEventName,
+        limit: Self.identifyDailyLimit,
+        in: &currentBudget
+      ) else {
+        recordDailyBudgetDrop(in: &currentBudget)
+        budget = currentBudget
+        persist(currentBudget)
+        return transition
+      }
+      defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
+      budget = currentBudget
+      persist(currentBudget)
+      transition.userHash = userHash
+      return transition
+    }
+
+    if transition.shouldReset {
+      sink.resetIdentity()
+    }
+    for pendingEvent in transition.pendingEvents {
+      var eventProperties = pendingEvent.properties
+      eventProperties["surface"] = "mobile"
+      eventProperties["platform"] = "ios"
+      eventProperties["$process_person_profile"] = false
+      eventProperties["$geoip_disable"] = true
+      sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
+    }
+    if let userHash = transition.userHash {
+      sink.identify(userHash: userHash)
+    }
+  }
+
+  func resetAccountIdentity() {
+    let hadIdentity = lock.withLock {
+      guard defaults.string(forKey: Self.identifiedAccountHashDefaultsKey) != nil else {
+        return false
+      }
+      defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
+      return true
+    }
+    if hadIdentity {
+      sink.resetIdentity()
+    }
+  }
+
   func flush() {
     sink.flush()
   }
@@ -608,43 +760,7 @@ final class ProductAnalytics {
 
     let pendingEvents = lock.withLock { () -> [PendingEvent] in
       var pendingEvents: [PendingEvent] = []
-      var currentBudget: DailyBudget
-      let currentDay = Self.utcDay(for: now())
-
-      if let inMemory = budget, inMemory.day == currentDay {
-        currentBudget = inMemory
-      } else if let stored = loadPersistedBudget(), stored.day == currentDay {
-        currentBudget = stored
-        budget = stored
-      } else {
-        let previousBudget = budget ?? loadPersistedBudget()
-        currentBudget = DailyBudget(
-          day: currentDay,
-          total: 0,
-          counts: [:],
-          dropped: 0,
-          dropReasons: [:]
-        )
-        budget = currentBudget
-        foregroundDeduplicationKeys.removeAll(keepingCapacity: true)
-
-        if let previousBudget,
-           previousBudget.total > 0 || previousBudget.dropped > 0,
-           reserve(.analyticsBudget, in: &currentBudget) {
-          let dominantReason = previousBudget.dropReasons
-            .max { lhs, rhs in
-              lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
-            }?.key ?? DropReason.none.rawValue
-          pendingEvents.append(PendingEvent(
-            name: .analyticsBudget,
-            properties: [
-              "sent_count": min(max(previousBudget.total, 0), Self.dailyEventLimit),
-              "dropped_count": min(max(previousBudget.dropped, 0), 9_999),
-              "drop_reason": dominantReason,
-            ]
-          ))
-        }
-      }
+      var currentBudget = currentDailyBudget(pendingEvents: &pendingEvents)
 
       if let foregroundDeduplicationKey,
          foregroundDeduplicationKeys.contains(foregroundDeduplicationKey) {
@@ -654,12 +770,7 @@ final class ProductAnalytics {
       }
 
       guard reserve(event, in: &currentBudget) else {
-        let reason = DropReason.dailyBudget
-        currentBudget.dropped = min(currentBudget.dropped + 1, 9_999)
-        currentBudget.dropReasons[reason.rawValue, default: 0] = min(
-          currentBudget.dropReasons[reason.rawValue, default: 0] + 1,
-          9_999
-        )
+        recordDailyBudgetDrop(in: &currentBudget)
         budget = currentBudget
         persist(currentBudget)
         return pendingEvents
@@ -685,14 +796,66 @@ final class ProductAnalytics {
   }
 
   private func reserve(_ event: ADEAnalyticsEventName, in budget: inout DailyBudget) -> Bool {
-    let eventCount = budget.counts[event.rawValue, default: 0]
+    reserve(name: event.rawValue, limit: Self.eventLimits[event] ?? 0, in: &budget)
+  }
+
+  private func reserve(name: String, limit: Int, in budget: inout DailyBudget) -> Bool {
+    let eventCount = budget.counts[name, default: 0]
     guard budget.total < Self.dailyEventLimit,
-          eventCount < (Self.eventLimits[event] ?? 0) else {
+          eventCount < limit else {
       return false
     }
     budget.total += 1
-    budget.counts[event.rawValue] = eventCount + 1
+    budget.counts[name] = eventCount + 1
     return true
+  }
+
+  private func currentDailyBudget(pendingEvents: inout [PendingEvent]) -> DailyBudget {
+    let currentDay = Self.utcDay(for: now())
+    if let inMemory = budget, inMemory.day == currentDay {
+      return inMemory
+    }
+    if let stored = loadPersistedBudget(), stored.day == currentDay {
+      budget = stored
+      return stored
+    }
+
+    let previousBudget = budget ?? loadPersistedBudget()
+    var currentBudget = DailyBudget(
+      day: currentDay,
+      total: 0,
+      counts: [:],
+      dropped: 0,
+      dropReasons: [:]
+    )
+    budget = currentBudget
+    foregroundDeduplicationKeys.removeAll(keepingCapacity: true)
+    if let previousBudget,
+       previousBudget.total > 0 || previousBudget.dropped > 0,
+       reserve(.analyticsBudget, in: &currentBudget) {
+      let dominantReason = previousBudget.dropReasons
+        .max { lhs, rhs in
+          lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
+        }?.key ?? DropReason.none.rawValue
+      pendingEvents.append(PendingEvent(
+        name: .analyticsBudget,
+        properties: [
+          "sent_count": min(max(previousBudget.total, 0), Self.dailyEventLimit),
+          "dropped_count": min(max(previousBudget.dropped, 0), 9_999),
+          "drop_reason": dominantReason,
+        ]
+      ))
+    }
+    return currentBudget
+  }
+
+  private func recordDailyBudgetDrop(in budget: inout DailyBudget) {
+    let reason = DropReason.dailyBudget
+    budget.dropped = min(budget.dropped + 1, 9_999)
+    budget.dropReasons[reason.rawValue, default: 0] = min(
+      budget.dropReasons[reason.rawValue, default: 0] + 1,
+      9_999
+    )
   }
 
   private func loadPersistedBudget() -> DailyBudget? {
@@ -722,6 +885,20 @@ final class ProductAnalytics {
     let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty, !value.contains("$(") else { return nil }
     return value
+  }
+
+  private static func accountHash(_ userId: String) -> String {
+    let digest = SHA256.hash(
+      data: Data("ade-product-analytics-account-v1:\(userId)".utf8)
+    )
+    let hexDigits = Array("0123456789abcdef")
+    let hexadecimal = digest.flatMap { byte in
+      [
+        hexDigits[Int(byte >> 4)],
+        hexDigits[Int(byte & 0x0f)],
+      ]
+    }
+    return "ade_user_\(String(hexadecimal.prefix(32)))"
   }
 }
 

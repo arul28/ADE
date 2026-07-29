@@ -29,6 +29,8 @@ declare const __ADE_POSTHOG_PROJECT_TOKEN__: string | undefined;
 declare const __ADE_POSTHOG_HOST__: string | undefined;
 
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
+const IDENTIFY_DAILY_BUDGET = 3;
+const IDENTIFY_MINUTE_BUDGET = 2;
 const STATE_LOCK_STALE_MS = 5_000;
 const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -46,13 +48,20 @@ type ProductAnalyticsQuotaState = {
   minuteWindows: Partial<Record<ProductAnalyticsEventName, number[]>>;
   dedupe: Record<string, number>;
   droppedByReason: Record<string, number>;
+  identifyAccepted: number;
+  identifyMinuteWindow: number[];
   pendingBudgetSummary?: PendingBudgetSummary;
 };
 
 type ProductAnalyticsState = {
-  version: 1;
+  version: 2;
   installationId: string;
+  anonymousId: string;
+  identifiedUserHash: string | null;
   hashSalt: string;
+  installedAtMs: number;
+  installCapturedAtMs: number | null;
+  activatedAtMs: number | null;
   enabled: boolean;
   /** Oldest usage-ledger timestamp that may be exported under current consent. */
   enabledSinceMs: number | null;
@@ -130,6 +139,8 @@ function freshQuotaState(nowMs: number): ProductAnalyticsQuotaState {
     minuteWindows: {},
     dedupe: {},
     droppedByReason: {},
+    identifyAccepted: 0,
+    identifyMinuteWindow: [],
   };
 }
 
@@ -196,15 +207,28 @@ function normalizeQuotaState(value: unknown, nowMs: number): ProductAnalyticsQuo
     minuteWindows,
     dedupe: Object.fromEntries(dedupeEntries),
     droppedByReason,
+    identifyAccepted: finiteCount(raw.identifyAccepted, 3),
+    identifyMinuteWindow: Array.isArray(raw.identifyMinuteWindow)
+      ? raw.identifyMinuteWindow
+          .filter((timestamp): timestamp is number => typeof timestamp === "number" && Number.isFinite(timestamp))
+          .map((timestamp) => Math.max(0, Math.floor(timestamp)))
+          .slice(-2)
+      : [],
     ...(pendingBudgetSummary ? { pendingBudgetSummary } : {}),
   };
 }
 
 function createInitialState(nowMs: number): ProductAnalyticsState {
+  const installationId = `ade_${randomBytes(16).toString("hex")}`;
   return {
-    version: 1,
-    installationId: `ade_${randomBytes(16).toString("hex")}`,
+    version: 2,
+    installationId,
+    anonymousId: installationId,
+    identifiedUserHash: null,
     hashSalt: randomBytes(32).toString("hex"),
+    installedAtMs: nowMs,
+    installCapturedAtMs: null,
+    activatedAtMs: null,
     enabled: true,
     enabledSinceMs: nowMs,
     quota: freshQuotaState(nowMs),
@@ -223,19 +247,49 @@ function createFailClosedState(nowMs: number): ProductAnalyticsState {
 
 function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | null {
   if (!value || typeof value !== "object") return null;
-  const parsed = value as Partial<ProductAnalyticsState>;
+  const parsed = value as Omit<Partial<ProductAnalyticsState>, "version"> & { version?: number };
   if (
     parsed.version !== 1
-    || typeof parsed.installationId !== "string"
+    && parsed.version !== 2
+  ) return null;
+  if (
+    typeof parsed.installationId !== "string"
     || !/^ade_[0-9a-f]{32}$/i.test(parsed.installationId)
   ) return null;
   const enabled = parsed.enabled !== false;
+  const migratedLegacyState = parsed.version === 1;
+  const anonymousId = !migratedLegacyState
+    && typeof parsed.anonymousId === "string"
+    && /^ade_[0-9a-f]{32}$/i.test(parsed.anonymousId)
+    ? parsed.anonymousId
+    : parsed.installationId;
+  const identifiedUserHash = !migratedLegacyState
+    && typeof parsed.identifiedUserHash === "string"
+    && /^ade_user_[0-9a-f]{32}$/i.test(parsed.identifiedUserHash)
+    ? parsed.identifiedUserHash
+    : null;
+  const installedAtMs = !migratedLegacyState
+    && typeof parsed.installedAtMs === "number"
+    && Number.isFinite(parsed.installedAtMs)
+    ? Math.max(0, Math.min(nowMs, Math.floor(parsed.installedAtMs)))
+    : nowMs;
+  const milestone = (candidate: unknown): number | null =>
+    typeof candidate === "number" && Number.isFinite(candidate)
+      ? Math.max(installedAtMs, Math.min(nowMs, Math.floor(candidate)))
+      : null;
   return {
-    version: 1,
+    version: 2,
     installationId: parsed.installationId,
+    anonymousId,
+    identifiedUserHash,
     hashSalt: typeof parsed.hashSalt === "string" && /^[0-9a-f]{64}$/i.test(parsed.hashSalt)
       ? parsed.hashSalt
       : randomBytes(32).toString("hex"),
+    installedAtMs,
+    // Existing v1 installations must not be mislabeled as fresh installs or
+    // newly activated merely because they upgraded to the v2 analytics state.
+    installCapturedAtMs: migratedLegacyState ? nowMs : milestone(parsed.installCapturedAtMs),
+    activatedAtMs: migratedLegacyState ? nowMs : milestone(parsed.activatedAtMs),
     enabled,
     enabledSinceMs: enabled
       ? (typeof parsed.enabledSinceMs === "number" && Number.isFinite(parsed.enabledSinceMs)
@@ -572,6 +626,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
 
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
+    || (
+      process.env.NODE_ENV === "development"
+      && process.env.ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT !== "1"
+    )
     || process.env.NODE_ENV === "test"
     || process.env.VITEST === "true";
 
@@ -615,7 +673,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       currentState.quota.minuteWindows.ade_analytics_budget = [now()];
       writeState(args.stateFilePath, currentState);
       posthog.capture({
-        distinctId: currentState.installationId,
+        distinctId: currentState.identifiedUserHash ?? currentState.anonymousId,
         event: "ade_analytics_budget",
         properties: {
           surface: "api",
@@ -648,6 +706,126 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       .update(`${state.hashSalt}:${kind}:${normalized}`)
       .digest("hex")
       .slice(0, 24);
+  };
+
+  const identifyAccount = (userId: string | null | undefined): ProductAnalyticsCaptureResult => {
+    const normalizedUserId = typeof userId === "string" && userId.length <= MAX_LOCAL_IDENTIFIER_LENGTH
+      ? userId.trim()
+      : "";
+    if (!normalizedUserId) return { accepted: false, reason: "invalid_event" };
+    if (!token || !host) return { accepted: false, reason: "not_configured" };
+    if (isRuntimeDisabled() || isLocallyOptedOut()) return { accepted: false, reason: "disabled" };
+
+    const userHash = `ade_user_${createHash("sha256")
+      .update(`ade-product-analytics-account-v1:${normalizedUserId}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    let release: (() => void) | null = null;
+    try {
+      release = tryAcquireStateLock(args.stateFilePath);
+      if (!release) return { accepted: false, reason: "rate_limited" };
+      state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+      if (!state.enabled) return { accepted: false, reason: "disabled" };
+      if (state.identifiedUserHash === userHash) return { accepted: false, reason: "duplicate" };
+      if (state.quota.accepted >= dailyBudget || state.quota.identifyAccepted >= IDENTIFY_DAILY_BUDGET) {
+        incrementDrop(state.quota, "daily_budget");
+        writeState(args.stateFilePath, state);
+        return { accepted: false, reason: "daily_budget" };
+      }
+      const nowMs = now();
+      const recent = state.quota.identifyMinuteWindow.filter((timestamp) => timestamp >= nowMs - 60_000);
+      if (recent.length >= IDENTIFY_MINUTE_BUDGET) {
+        incrementDrop(state.quota, "rate_limited");
+        writeState(args.stateFilePath, state);
+        return { accepted: false, reason: "rate_limited" };
+      }
+      const posthog = ensureClient(state);
+      if (!posthog) return { accepted: false, reason: "disabled" };
+      emitPendingBudgetSummary(state, posthog);
+      if (state.quota.accepted >= dailyBudget) {
+        incrementDrop(state.quota, "daily_budget");
+        writeState(args.stateFilePath, state);
+        return { accepted: false, reason: "daily_budget" };
+      }
+
+      const previousAnonymousId = state.anonymousId;
+      const previousIdentifiedUserHash = state.identifiedUserHash;
+      // Never merge two real accounts when a machine changes users without an
+      // intervening renderer reset. Start the new account from a fresh,
+      // content-free anonymous identity.
+      if (previousIdentifiedUserHash && previousIdentifiedUserHash !== userHash) {
+        state.anonymousId = `ade_${randomBytes(16).toString("hex")}`;
+      }
+      const anonymousId = state.anonymousId;
+      state.identifiedUserHash = userHash;
+      state.quota.accepted += 1;
+      state.quota.identifyAccepted += 1;
+      recent.push(nowMs);
+      state.quota.identifyMinuteWindow = recent;
+      writeState(args.stateFilePath, state);
+      try {
+        posthog.capture({
+          distinctId: userHash,
+          event: "$identify",
+          properties: {
+            $anon_distinct_id: anonymousId,
+            $set: {
+              plan: "free",
+              platform: process.platform,
+              app_version: appVersion,
+            },
+            $geoip_disable: true,
+          },
+          uuid: randomUUID(),
+        });
+      } catch (error) {
+        state.anonymousId = previousAnonymousId;
+        state.identifiedUserHash = previousIdentifiedUserHash;
+        state.quota.accepted = Math.max(0, state.quota.accepted - 1);
+        state.quota.identifyAccepted = Math.max(0, state.quota.identifyAccepted - 1);
+        recent.pop();
+        state.quota.identifyMinuteWindow = recent;
+        incrementDrop(state.quota, "transport_error");
+        writeState(args.stateFilePath, state);
+        args.logger.debug("product_analytics.identify_failed", {
+          errorKind: error instanceof Error ? error.name : "unknown",
+        });
+        return { accepted: false, reason: "transport_error" };
+      }
+      return { accepted: true, reason: "accepted" };
+    } catch (error) {
+      args.logger.debug("product_analytics.identify_state_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+      return { accepted: false, reason: "transport_error" };
+    } finally {
+      release?.();
+    }
+  };
+
+  const resetAccountIdentity = (): boolean => {
+    if (!fs.existsSync(args.stateFilePath)) return false;
+    let release: (() => void) | null = null;
+    try {
+      release = tryAcquireStateLock(args.stateFilePath);
+      if (!release) return false;
+      state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+      if (!state.identifiedUserHash) return false;
+      state = {
+        ...state,
+        anonymousId: `ade_${randomBytes(16).toString("hex")}`,
+        identifiedUserHash: null,
+      };
+      writeState(args.stateFilePath, state);
+      return true;
+    } catch (error) {
+      args.logger.debug("product_analytics.identity_reset_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+      return false;
+    } finally {
+      release?.();
+    }
   };
 
   const captureImpl = (
@@ -694,6 +872,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       if (!allowInternal && INTERNAL_ONLY_EVENTS.has(input.event)) return drop("invalid_event");
       if (!["desktop", "mobile", "tui", "web", "api"].includes(input.surface)) {
         return drop("invalid_surface");
+      }
+      if (input.event === "ade_app_installed" && state.installCapturedAtMs != null) {
+        return { accepted: false, reason: "duplicate" };
+      }
+      if (input.event === "ade_activated" && state.activatedAtMs != null) {
+        return { accepted: false, reason: "duplicate" };
       }
 
       const posthog = ensureClient(state);
@@ -744,6 +928,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         $process_person_profile: false,
         $geoip_disable: true,
       };
+      if (input.event === "ade_activated") {
+        properties.time_since_install_seconds = Math.max(
+          0,
+          Math.floor((nowMs - state.installedAtMs) / 1_000),
+        );
+      }
       const projectId = opaqueId("project", input.projectId);
       const sessionId = opaqueId("session", input.sessionId);
       if (projectId) properties.project_id = projectId;
@@ -759,6 +949,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const uuid = input.clientEventId?.length === 36 && RANDOM_UUID_VALUE.test(input.clientEventId)
         ? input.clientEventId.toLowerCase()
         : randomUUID();
+      const previousInstallCapturedAtMs = state.installCapturedAtMs;
+      const previousActivatedAtMs = state.activatedAtMs;
+      if (input.event === "ade_app_installed") state.installCapturedAtMs = nowMs;
+      if (input.event === "ade_activated") state.activatedAtMs = nowMs;
       state.quota.accepted += 1;
       state.quota.acceptedByEvent[input.event] = (state.quota.acceptedByEvent[input.event] ?? 0) + 1;
       recent.push(nowMs);
@@ -779,7 +973,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       writeState(args.stateFilePath, state);
       try {
         posthog.capture({
-          distinctId: state.installationId,
+          distinctId: state.identifiedUserHash ?? state.anonymousId,
           event: input.event,
           properties,
           ...(timestamp ? { timestamp } : {}),
@@ -797,6 +991,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         recent.pop();
         if (recent.length === 0) delete state.quota.minuteWindows[input.event]; else state.quota.minuteWindows[input.event] = recent;
         if (dedupeKey) delete state.quota.dedupe[dedupeKey];
+        state.installCapturedAtMs = previousInstallCapturedAtMs;
+        state.activatedAtMs = previousActivatedAtMs;
         incrementDrop(state.quota, "transport_error");
         writeState(args.stateFilePath, state);
         return { accepted: false, reason: "transport_error" };
@@ -968,6 +1164,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   return {
     capture,
     captureInternal,
+    identifyAccount,
+    resetAccountIdentity,
     flush,
     getStatus,
     setEnabled,
@@ -979,6 +1177,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     },
     hashProjectId: (value: string) => opaqueId("project", value),
     installationIdForTesting: () => state.installationId,
+    identifiedUserHashForTesting: () => state.identifiedUserHash,
   };
 }
 

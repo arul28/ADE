@@ -9,7 +9,7 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "July 13, 2026";
+const EFFECTIVE_DATE = "July 29, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -26,11 +26,12 @@ const sections: Section[] = [
     ],
   },
   {
-    title: "Anonymous product analytics",
+    title: "Privacy-bounded product analytics",
     body: [
-      "Configured ADE desktop and runtime surfaces use default-on, anonymous, allowlisted product analytics with an accessible opt-out. Native iOS and browser surfaces ask for consent before collecting analytics. These events help understand activation, retention, feature adoption, and reliability by describing the product surface, a normalized screen or feature category, an allowlisted action or outcome, coarse runtime metadata, and quota health. Random or installation-salted identifiers support retention analysis without an ADE account or person profile.",
+      "Configured ADE desktop and runtime surfaces use default-on, allowlisted product analytics with an accessible opt-out. The public website asks for consent first. Native iOS analytics is default-on when configured. These events help understand activation, retention, feature adoption, reliability, and quota health.",
+      "Desktop and runtime events start with a random installation identity. If you sign in to an ADE account, ADE sends one PostHog identify request that links that anonymous history to a one-way hash of your account ID and sets only plan, platform, and app version. ADE does not send your account ID, email, name, identity provider, or access token to analytics. Signing out rotates the anonymous analytics identity.",
       "Analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, session titles, raw error messages, or stack traces. ADE does not use analytics session recordings, automatic click or page capture, surveys, advertising profiles, or PostHog feature flags.",
-      "Every applicable surface provides a durable control to withdraw consent or opt out. Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
+      "Desktop, runtime, hosted web, and the public website provide durable analytics controls. Native iOS analytics is covered by the platform-level choices described below. Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
     ],
   },
   {
@@ -52,7 +53,7 @@ const sections: Section[] = [
           "A local database and app caches containing the synced project records, file data, chat data, and UI snapshots needed for the mobile features you use.",
         ],
       },
-      "The iOS app has no ADE account system and does not put source code, files, prompts, pairing payloads, or machine addresses into analytics. When analytics is configured, the app asks before collecting and keeps the withdrawal control in Settings. Operational sync traffic flows only to the ADE machine you paired with or through ADE's connectivity relay when needed.",
+      "The iOS app does not put source code, files, prompts, pairing payloads, or machine addresses into analytics. When analytics is configured, its allowlisted, quota-bounded analytics is default-on. Operational sync traffic flows only to the ADE machine you paired with or through ADE's connectivity relay when needed.",
     ],
   },
   {
@@ -77,7 +78,7 @@ const sections: Section[] = [
           "GitHub — desktop releases are distributed through GitHub Releases.",
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
-          "PostHog — receives anonymous, manually selected product events when analytics is enabled. Person profiles, autocapture, replay, surveys, and feature flags are disabled for ADE analytics.",
+          "PostHog — receives manually selected product events when analytics is enabled. ADE creates a pseudonymous person profile only after desktop/runtime account sign-in; autocapture, replay, surveys, and feature flags are disabled.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
         ],
@@ -88,9 +89,9 @@ const sections: Section[] = [
   {
     title: "Retention",
     body: [
-      "Unpairing an iOS device clears its saved machine profile and pairing credentials, but synced project data, caches, analytics preference, and local quota counters can remain in the app container until you remove the app's data. iOS analytics opt-out cancels pending requests and removes the anonymous analytics identifier; opting in later creates a new identifier. Because iOS Keychain items can survive an uninstall on some systems, unpair before uninstalling when you want to clear pairing credentials explicitly.",
-      "Desktop and runtime analytics state — including its anonymous installation identifier, identifier-hashing salt, preference, and quota counters — is stored under the machine's .ade/secrets directory until you delete that state. Opting out immediately stops analytics transmission and discards queued events, but retains that local state so toggling cannot reset quota limits. Computer project data otherwise remains on your local disk and is yours to keep, move, or delete.",
-      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. To request earlier deletion or ask what can be associated with your anonymous installation, email arulsharma1028@gmail.com. Because ADE has no analytics account or person profile, we may need information from your installation and may be unable to associate an anonymous historical event with you. Data sent to AI providers is governed by each provider's retention policy.",
+      "Unpairing an iOS device clears its saved machine profile and pairing credentials, but synced project data, caches, the anonymous analytics identifier, and local quota counters can remain in the app container until you remove the app's data. Because iOS Keychain items can survive an uninstall on some systems, unpair before uninstalling when you want to clear pairing credentials explicitly.",
+      "Desktop and runtime analytics state — including its anonymous installation identifier, pseudonymous signed-in identity hash, install and activation milestones, identifier-hashing salt, preference, and quota counters — is stored under the machine's .ade/secrets directory until you delete that state. Opting out immediately stops analytics transmission and discards queued events, but retains that local state so toggling cannot reset quota limits. Computer project data otherwise remains on your local disk and is yours to keep, move, or delete.",
+      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. To request earlier deletion or ask what can be associated with your installation or pseudonymous account profile, email arulsharma1028@gmail.com. We may need information from your installation or account to locate applicable records. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {

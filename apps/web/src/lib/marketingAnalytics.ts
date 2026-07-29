@@ -1,6 +1,7 @@
 export const MARKETING_ANALYTICS_EVENTS = {
   APP_OPENED: "ade_marketing_app_opened",
   SCREEN_VIEWED: "ade_marketing_screen_viewed",
+  CTA_CLICKED: "ade_marketing_cta_clicked",
   FEATURE_USED: "ade_marketing_feature_used",
   ERROR: "ade_marketing_error",
   ANALYTICS_BUDGET: "ade_marketing_analytics_budget",
@@ -53,6 +54,25 @@ export const MARKETING_FEATURES = {
 
 export type MarketingFeature = (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];
 
+export const MARKETING_CTA_LABELS = {
+  DOWNLOAD_MAC: "download_for_mac",
+  DOWNLOAD_IOS: "download_for_ios",
+  GET_STARTED_FREE: "get_started_free",
+  OPEN_WEB_CLIENT: "open_web_client",
+} as const;
+
+export type MarketingCtaLabel = (typeof MARKETING_CTA_LABELS)[keyof typeof MARKETING_CTA_LABELS];
+
+export const MARKETING_CTA_POSITIONS = {
+  HERO: "hero",
+  NAVBAR: "navbar",
+  FOOTER: "footer",
+  DOWNLOAD_PAGE: "download_page",
+} as const;
+
+export type MarketingCtaPosition =
+  (typeof MARKETING_CTA_POSITIONS)[keyof typeof MARKETING_CTA_POSITIONS];
+
 export const MARKETING_ERROR_KINDS = {
   WINDOW_ERROR: "window_error",
   UNHANDLED_REJECTION: "unhandled_rejection",
@@ -61,19 +81,23 @@ export const MARKETING_ERROR_KINDS = {
 export type MarketingErrorKind = (typeof MARKETING_ERROR_KINDS)[keyof typeof MARKETING_ERROR_KINDS];
 
 export const ANALYTICS_FEATURE_ATTRIBUTE = "data-ade-analytics-feature";
+export const ANALYTICS_CTA_ATTRIBUTE = "data-ade-analytics-cta";
+export const ANALYTICS_CTA_POSITION_ATTRIBUTE = "data-ade-analytics-position";
 
 export const MARKETING_ANALYTICS_LIMITS = Object.freeze({
   daily: 40,
   perEvent: {
     [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 1,
     [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 12,
-    [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 20,
+    [MARKETING_ANALYTICS_EVENTS.CTA_CLICKED]: 12,
+    [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 16,
     [MARKETING_ANALYTICS_EVENTS.ERROR]: 3,
     [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 1,
   },
   perKey: {
     [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 1,
     [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 2,
+    [MARKETING_ANALYTICS_EVENTS.CTA_CLICKED]: 3,
     [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 3,
     [MARKETING_ANALYTICS_EVENTS.ERROR]: 1,
     [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 1,
@@ -81,6 +105,7 @@ export const MARKETING_ANALYTICS_LIMITS = Object.freeze({
   dedupeMs: {
     [MARKETING_ANALYTICS_EVENTS.APP_OPENED]: 86_400_000,
     [MARKETING_ANALYTICS_EVENTS.SCREEN_VIEWED]: 30_000,
+    [MARKETING_ANALYTICS_EVENTS.CTA_CLICKED]: 1_500,
     [MARKETING_ANALYTICS_EVENTS.FEATURE_USED]: 1_500,
     [MARKETING_ANALYTICS_EVENTS.ERROR]: 60_000,
     [MARKETING_ANALYTICS_EVENTS.ANALYTICS_BUDGET]: 86_400_000,
@@ -98,6 +123,8 @@ const SCREEN_BY_PATH: Readonly<Record<string, MarketingScreen | null>> = Object.
 });
 
 const ALLOWED_FEATURES = new Set<string>(Object.values(MARKETING_FEATURES));
+const ALLOWED_CTA_LABELS = new Set<string>(Object.values(MARKETING_CTA_LABELS));
+const ALLOWED_CTA_POSITIONS = new Set<string>(Object.values(MARKETING_CTA_POSITIONS));
 
 export function normalizeMarketingScreen(pathname: string): MarketingScreen | null {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
@@ -108,6 +135,16 @@ export function normalizeMarketingScreen(pathname: string): MarketingScreen | nu
 
 export function isMarketingFeature(value: string | null | undefined): value is MarketingFeature {
   return typeof value === "string" && ALLOWED_FEATURES.has(value);
+}
+
+export function isMarketingCtaLabel(value: string | null | undefined): value is MarketingCtaLabel {
+  return typeof value === "string" && ALLOWED_CTA_LABELS.has(value);
+}
+
+export function isMarketingCtaPosition(
+  value: string | null | undefined,
+): value is MarketingCtaPosition {
+  return typeof value === "string" && ALLOWED_CTA_POSITIONS.has(value);
 }
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -266,6 +303,18 @@ export class MarketingAnalytics {
       MARKETING_ANALYTICS_EVENTS.FEATURE_USED,
       { action: "clicked", feature, ...(screen ? { screen } : {}) },
       feature,
+    );
+  }
+
+  captureCta(
+    ctaLabel: MarketingCtaLabel,
+    screen: MarketingScreen,
+    position: MarketingCtaPosition,
+  ): CaptureDisposition {
+    return this.capture(
+      MARKETING_ANALYTICS_EVENTS.CTA_CLICKED,
+      { action: "clicked", cta_label: ctaLabel, screen, position },
+      `${ctaLabel}:${screen}:${position}`,
     );
   }
 

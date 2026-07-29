@@ -3,6 +3,7 @@ import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { dismissToast, showToast } from "./toast/toastStore";
+import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 
@@ -66,6 +67,7 @@ export function AutoUpdateBanner() {
   }, [signature]);
 
   const handleRestart = useCallback(() => {
+    captureUpdatePromptDecision(snapshot, "accepted");
     setRestarting(true);
     void window.ade.updateQuitAndInstall()
       .then((started) => {
@@ -74,9 +76,10 @@ export function AutoUpdateBanner() {
       .catch(() => {
         setRestarting(false);
       });
-  }, []);
+  }, [snapshot]);
 
   const handleCancelAutoApply = useCallback(() => {
+    captureUpdatePromptDecision(snapshot, "deferred");
     cancelRequestedRef.current = true;
     dismissToast(AUTO_APPLY_TOAST_ID);
     void window.ade.updateCancelAutoApply?.().then(
@@ -89,7 +92,7 @@ export function AutoUpdateBanner() {
         cancelRequestedRef.current = false;
       },
     );
-  }, []);
+  }, [snapshot]);
 
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.
@@ -143,7 +146,10 @@ export function AutoUpdateBanner() {
       </button>
       <button
         type="button"
-        onClick={() => setDismissedSignature(signature)}
+        onClick={() => {
+          captureUpdatePromptDecision(snapshot, "dismissed");
+          setDismissedSignature(signature);
+        }}
         className="shrink-0 text-amber-900/70 hover:text-amber-900"
         title="Dismiss until the next update"
         aria-label="Dismiss update banner"
