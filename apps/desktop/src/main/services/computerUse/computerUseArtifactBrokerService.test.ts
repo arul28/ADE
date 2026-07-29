@@ -167,6 +167,7 @@ describe("computerUseArtifactBrokerService", () => {
           backend: {
             name: "agent-browser",
           },
+          callerRoot: path.dirname(blockedPath),
           inputs: [
             {
               kind: "console_logs",
@@ -298,6 +299,53 @@ describe("computerUseArtifactBrokerService", () => {
     expect(stored.uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
     expect(fs.existsSync(path.join(projectRoot, stored.uri))).toBe(true);
     expect(broker.listArtifacts({ artifactId: stored.id })[0]?.availability).toBe("available");
+  });
+
+  it("imports proof from a server-authorized attached lane root", () => {
+    const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-proof-"));
+    try {
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+      });
+      fs.mkdirSync(path.join(attachedLaneRoot, "shots"), { recursive: true });
+      fs.writeFileSync(
+        path.join(attachedLaneRoot, "shots", "proof.png"),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, base_ref, branch_ref, worktree_path, attached_root_path, status, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "attached-lane",
+          "project-1",
+          "Attached lane",
+          "main",
+          "feature/attached",
+          attachedLaneRoot,
+          attachedLaneRoot,
+          "active",
+          "2026-03-12T14:00:00.000Z",
+        ],
+      );
+
+      const ingested = broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        callerRoot: attachedLaneRoot,
+        owners: [{ kind: "lane", id: "attached-lane" }],
+        inputs: [{ kind: "screenshot", title: "Attached proof", path: "shots/proof.png" }],
+      });
+
+      expect(broker.listArtifacts({ artifactId: ingested.artifacts[0]!.id })[0]?.availability)
+        .toBe("available");
+    } finally {
+      fs.rmSync(attachedLaneRoot, { recursive: true, force: true });
+    }
   });
 
   it("throws instead of persisting a record when the capture file is not found", () => {
@@ -645,6 +693,63 @@ describe("computerUseArtifactBrokerService", () => {
     const recovered = broker.recoverArtifact({ artifactId: "owned-legacy" });
     expect(recovered.availability).toBe("available");
     expect(fs.readFileSync(path.join(projectRoot, recovered.uri), "utf8")).toBe("lane-a");
+  });
+
+  it("recovers proof from an attached lane root outside the project", () => {
+    const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-recovery-"));
+    try {
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+      });
+      fs.mkdirSync(path.join(attachedLaneRoot, "shots"), { recursive: true });
+      fs.writeFileSync(
+        path.join(attachedLaneRoot, "shots", "proof.png"),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, base_ref, branch_ref, worktree_path, attached_root_path, status, created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "attached-lane",
+          "project-1",
+          "Attached lane",
+          "main",
+          "feature/attached",
+          attachedLaneRoot,
+          attachedLaneRoot,
+          "active",
+          "2026-03-12T14:00:00.000Z",
+        ],
+      );
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, ?, 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, ?, ?, ?)`,
+        [
+          "attached-broken",
+          "project-1",
+          "Attached broken proof",
+          "shots/proof.png",
+          JSON.stringify({ sourcePath: "shots/proof.png", callerRoot: attachedLaneRoot }),
+          "attached-lane",
+          "2026-03-12T14:00:00.000Z",
+        ],
+      );
+
+      const recovered = broker.recoverArtifact({ artifactId: "attached-broken" });
+      expect(recovered.availability).toBe("available");
+      expect(fs.existsSync(path.join(projectRoot, recovered.uri))).toBe(true);
+    } finally {
+      fs.rmSync(attachedLaneRoot, { recursive: true, force: true });
+    }
   });
 
   it("prunes broken records that cannot be recovered", () => {

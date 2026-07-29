@@ -395,6 +395,7 @@ export function createComputerUseArtifactBrokerService(args: {
     kind: ComputerUseArtifactKind,
     title: string,
     callerRoot: string | null,
+    requestImportRoots: string[],
   ): ResolvedStoredArtifact => {
     const directUri = toOptionalString(input.uri);
     if (directUri && isHttpUrl(directUri)) {
@@ -464,7 +465,7 @@ export function createComputerUseArtifactBrokerService(args: {
       } catch {
         // Fall through to external import handling.
       }
-      if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
+      if (!isAllowedExternalArtifactSource(absolutePath, [...allowedImportRoots, ...requestImportRoots])) {
         throw new Error(`Artifact path is outside allowed import roots: ${absolutePath}`);
       }
       const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
@@ -614,21 +615,7 @@ export function createComputerUseArtifactBrokerService(args: {
    * caller's path and root in metadata, so a capture that was never imported
    * can be re-imported as long as its lane worktree still exists.
    */
-  const resolveArtifactLaneRoots = (record: ComputerUseArtifactRecord): string[] => {
-    const laneIds = new Set<string>();
-    if (record.laneId) laneIds.add(record.laneId);
-    for (const link of readLinkRows([record.id])) {
-      if (link.ownerKind === "lane") {
-        laneIds.add(link.ownerId);
-        continue;
-      }
-      if (link.ownerKind !== "chat_session") continue;
-      const session = db.get<{ lane_id: string | null }>(
-        "select lane_id from terminal_sessions where id = ? limit 1",
-        [link.ownerId],
-      );
-      if (session?.lane_id) laneIds.add(session.lane_id);
-    }
+  const resolveLaneRoots = (laneIds: Set<string>): string[] => {
     if (!laneIds.size) return [];
 
     const placeholders = [...laneIds].map(() => "?").join(", ");
@@ -647,6 +634,24 @@ export function createComputerUseArtifactBrokerService(args: {
         .filter((root): root is string => Boolean(root))
         .map((root) => path.resolve(root)),
     )).sort();
+  };
+
+  const resolveArtifactLaneRoots = (record: ComputerUseArtifactRecord): string[] => {
+    const laneIds = new Set<string>();
+    if (record.laneId) laneIds.add(record.laneId);
+    for (const link of readLinkRows([record.id])) {
+      if (link.ownerKind === "lane") {
+        laneIds.add(link.ownerId);
+        continue;
+      }
+      if (link.ownerKind !== "chat_session") continue;
+      const session = db.get<{ lane_id: string | null }>(
+        "select lane_id from terminal_sessions where id = ? limit 1",
+        [link.ownerId],
+      );
+      if (session?.lane_id) laneIds.add(session.lane_id);
+    }
+    return resolveLaneRoots(laneIds);
   };
 
   const resolveCandidateAcrossRoots = (
@@ -999,6 +1004,10 @@ export function createComputerUseArtifactBrokerService(args: {
       const owners = dedupeOwners(request.owners ?? []);
       const callerRoot = toOptionalString(request.callerRoot);
       const laneId = resolveLaneIdForOwners(owners);
+      // The broker accepts extra roots only from its own lane table. The RPC
+      // supplies `callerRoot` after authenticating it, but callers cannot turn
+      // an arbitrary path into an import root merely by placing it in metadata.
+      const requestImportRoots = laneId ? resolveLaneRoots(new Set([laneId])) : [];
       // Resolve every input before persisting any of them. `resolveStoredUri`
       // now throws (missing file, non-importable type, denied source), and a
       // half-committed batch would leave the agent's retry inserting the
@@ -1014,7 +1023,7 @@ export function createComputerUseArtifactBrokerService(args: {
         for (const input of request.inputs) {
           const kind = normalizeInputKind(input);
           const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
-          const stored = resolveStoredUri(input, kind, title, callerRoot);
+          const stored = resolveStoredUri(input, kind, title, callerRoot, requestImportRoots);
           if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
           resolved.push({ input, kind, title, stored });
         }
@@ -1170,7 +1179,8 @@ export function createComputerUseArtifactBrokerService(args: {
         );
       }
       const sourcePath = source.path;
-      if (!isAllowedExternalArtifactSource(sourcePath, allowedImportRoots)
+      const artifactLaneRoots = resolveArtifactLaneRoots(record);
+      if (!isAllowedExternalArtifactSource(sourcePath, [...allowedImportRoots, ...artifactLaneRoots])
         || isDeniedArtifactSource(sourcePath, deniedImportRoots)) {
         throw new Error(`Artifact path is outside allowed import roots: ${sourcePath}`);
       }

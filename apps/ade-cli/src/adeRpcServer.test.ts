@@ -1941,6 +1941,36 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("infers the lane scope for standalone ade proof attach calls", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    const callerRoot = path.join(laneRoot, "packages", "app");
+    fs.mkdirSync(callerRoot, { recursive: true });
+
+    await initialize(handler, {
+      callerId: "ade-cli:4242",
+      role: "agent",
+    });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot,
+      inputs: [{ kind: "screenshot", title: "Standalone proof", path: path.join(callerRoot, "proof.png") }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerRoot: fs.realpathSync(callerRoot),
+        owners: expect.arrayContaining([
+          expect.objectContaining({ kind: "lane", id: "lane-1" }),
+        ]),
+      }),
+    );
+  });
+
   it("rejects a relative caller root, which would resolve differently on each side", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

@@ -2111,23 +2111,43 @@ function isPathWithinAuthorizedRoot(root: string, candidate: string): boolean {
   }
 }
 
-function resolveAuthorizedComputerUseIngestRoot(
+async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
   toolArgs: Record<string, unknown>,
-): { laneId: string | null; root: string } {
+): Promise<{ laneId: string | null; root: string; callerRoot: string }> {
   const requestedLaneId = asOptionalTrimmedString(toolArgs.laneId);
   const sessionLaneId = resolveChatSessionLaneId(runtime, session);
   const projectWideAuthorized = session.identity.role === "cto" && isUserClientSession(session);
+  const callerRoot = asOptionalTrimmedString(toolArgs.callerRoot);
+  if (callerRoot && !path.isAbsolute(callerRoot)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+  }
   if (!projectWideAuthorized && requestedLaneId && requestedLaneId !== sessionLaneId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
       "laneId must match the caller's authorized chat-session lane",
     );
   }
-  const authorizedLaneId = requestedLaneId ?? sessionLaneId;
+  const inferredLane = !requestedLaneId
+    && !sessionLaneId
+    && callerRoot
+    && isUnboundAdeCliCaller(session)
+    ? (await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []))
+        .flatMap((lane) => {
+          const roots = [lane.worktreePath, lane.attachedRootPath]
+            .map((root) => asOptionalTrimmedString(root))
+            .filter((root): root is string => Boolean(root))
+            .map((root) => canonicalAuthorizationPath(root));
+          return roots
+            .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
+            .map((root) => ({ laneId: lane.id, root }));
+        })
+        .sort((left, right) => right.root.length - left.root.length)[0] ?? null
+    : null;
+  const authorizedLaneId = requestedLaneId ?? sessionLaneId ?? inferredLane?.laneId ?? null;
   const authorizedRoot = authorizedLaneId
-    ? resolveLaneWorktreePath(runtime, authorizedLaneId)
+    ? inferredLane?.root ?? resolveLaneWorktreePath(runtime, authorizedLaneId)
     : projectWideAuthorized
       ? runtime.projectRoot
       : null;
@@ -2137,20 +2157,21 @@ function resolveAuthorizedComputerUseIngestRoot(
       "Computer-use ingestion requires an authorized lane worktree.",
     );
   }
-  const callerRoot = asOptionalTrimmedString(toolArgs.callerRoot);
-  if (callerRoot && !path.isAbsolute(callerRoot)) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
-  }
   if (
     callerRoot
-    && canonicalAuthorizationPath(callerRoot) !== canonicalAuthorizationPath(authorizedRoot)
+    && !isPathWithinAuthorizedRoot(authorizedRoot, callerRoot)
   ) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "callerRoot must match the server-authorized lane worktree",
+      "callerRoot must be inside the server-authorized lane worktree",
     );
   }
-  return { laneId: authorizedLaneId, root: canonicalAuthorizationPath(authorizedRoot) };
+  const canonicalRoot = canonicalAuthorizationPath(authorizedRoot);
+  return {
+    laneId: authorizedLaneId,
+    root: canonicalRoot,
+    callerRoot: canonicalAuthorizationPath(callerRoot ?? canonicalRoot),
+  };
 }
 
 function isProjectWideProofMaintenanceAuthorized(session: SessionState): boolean {
@@ -4536,7 +4557,7 @@ async function runTool(args: {
     if (inputs.length === 0) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide inputs for computer-use ingestion.");
     }
-    const authorized = resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
+    const authorized = await resolveAuthorizedComputerUseIngestRoot(runtime, session, toolArgs);
     validateComputerUseOwnerClaims(runtime, session, toolArgs);
     for (const input of inputs) {
       const localPath = asOptionalTrimmedString(input.path)
@@ -4564,7 +4585,7 @@ async function runTool(args: {
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
-      callerRoot: authorized.root,
+      callerRoot: authorized.callerRoot,
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),
         title: asOptionalTrimmedString(entry.title),
@@ -4577,7 +4598,10 @@ async function runTool(args: {
         rawType: asOptionalTrimmedString(entry.rawType),
         ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
       })),
-      owners: resolveComputerUseOwners(session, toolArgs),
+      owners: resolveComputerUseOwners(session, {
+        ...toolArgs,
+        ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
+      }),
     });
     return result;
   }
