@@ -98,7 +98,17 @@ a saved machine.
 ## Host version compatibility
 
 ADE Mobile treats the machine connection as the recovery path for updates, so a
-new mobile app must still connect to older brains. The phone reads
+new mobile app must still connect to older brains inside the supported wire
+range. Protocol versions are strict integers and the accepted interval is
+`syncProtocolMinSupported...syncProtocolVersion` (currently `1...1`). A host
+outside that interval returns or triggers a typed
+`protocol_version_mismatch`; the phone stops retrying and says whether to
+update the Mac or the iPhone. The host's typed error carries the received,
+minimum, and current versions plus `updateTarget`, and the host closes with
+code `4406` only after attempting that uncompressed error frame. This hard
+version boundary is separate from additive feature compatibility.
+
+Inside the supported range, the phone reads
 `features.mobileCompatibility` from `hello_ok` when a host advertises it:
 `full` means every required mobile command is present, while `limited` means the
 phone remains connected but gates missing host actions locally. Older brains
@@ -432,6 +442,9 @@ apps/ios/
     ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
     │                                # reconciliation, partial-detail retention
     ├── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
+    ├── SyncEnvelopeChunkAssemblerTests.swift # bidirectional frame budget,
+    │                                          # reassembly bounds/expiry,
+    │                                          # compression + version matrices
     ├── SyncRecoveryPolicyTests.swift # reconnect/backoff, path-change, and
     │                                 # roam-trigger (failover vs upgrade) policy
     ├── SyncTransportSelectionTests.swift # single-race candidate plan, relay
@@ -742,8 +755,10 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    converge there. Overlapping wake-ups are coalesced, delayed path tasks carry
    a connection-generation guard, and an automatic reconnect never tears down
    an already-live connection. The socket declares the
-   `chunkedEnvelopes` capability and sets a 32 MiB
-   `maximumMessageSize` receive budget.
+   `chunkedEnvelopes` capability, offers zlib-wrapped `deflate` in
+   `hello.compression`, and sets a 32 MiB `maximumMessageSize` receive
+   budget. The phone does not use either new wire behavior until the host
+   confirms it in `hello_ok`, so an older host stays on the exact legacy path.
    Relay candidates first append `ready=2`. A new Worker sends `accepted/v2`
    before bridge setup and `ready/v2` only after both pipe and validated local
    listener exist; iOS sends no ADE hello before `ready`. The two frames carry
@@ -783,6 +798,13 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `hello_ok.connectionTransport` is the host-observed post-authentication
    `direct | relay` result. Connection diagnostics and Relay policy use that
    value when present instead of trusting how the candidate URL was labelled.
+   A current host also returns
+   `compression: { codec: "deflate", thresholdBytes: 512 }` when it accepted
+   the offer, and
+   `features.chunkedEnvelopes: { enabled: true, maxFrameBytes: 737280 }` when
+   it accepted bidirectional chunk framing. The selection-bearing `hello_ok`
+   itself remains on the legacy encoder; selected behavior starts with later
+   envelopes.
 4. If no active project is selected, show the Hub (all-projects roster
    home) instead of hydrating lane/file/PR surfaces against the wrong row.
    The Hub subscribes to the roster feed (`roster_subscribe`) to render
@@ -815,7 +837,7 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    attempt restores the prior or newer completed status instead of leaving the
    domain stuck in `hydrating` or overwriting a newer result.
 6. Enter continuous bidirectional sync. Inbound processing runs off
-   the main actor: envelope JSON parse, gunzip, payload JSON parse,
+   the main actor: envelope JSON parse, gzip/deflate decompression, payload JSON parse,
    chunked-envelope reassembly, and changeset decode + apply all run
    in detached tasks (the SQLite connection is FULLMUTEX). The receive
    loop awaits frames in order, so application order is unchanged —
@@ -952,20 +974,28 @@ Implemented envelope types on iOS:
 | `chat_subscribe` / `chat_event` / `chat_history` | Phone → runtime / runtime → phone | Agent chat transcript streaming and cursor-paged scrollback. `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. Explicit full-snapshot subscribes omit `sinceSeq`; rapid duplicates are coalesced for five seconds or until the snapshot ack arrives. A full-snapshot request starts a five-second acknowledgement watchdog; unanswered requests are resent twice regardless of project scope, then the chat renders an explicit error with Retry instead of an empty transcript. The initial tail is capped at 256 KiB and the ack carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`; near-top scroll requests continuous 256 KiB `chat_history` pages against the existing subscription until the transcript head, preserving the visible scroll anchor as pages prepend. Ordinary project-chat subscriptions stay warm for 120 seconds after leaving a detail screen (at most four pending inactive chats), and reopening synchronously cancels eviction even while offline. Personal and cross-project scopes still unsubscribe immediately so their routing scope can be cleared safely. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. Cross-project transcript scope remains an additive protocol capability for controller reads, but Hub navigation always activates the tapped chat's owning project before opening it. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
 | `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended. Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. Additive lifecycle fields carry `settledAt`, `statusNote`, `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`, and `exitCode`; disk readers return nulls against legacy databases that do not have those columns. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
-| `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
+| `envelope_chunk` | Bidirectional after negotiation | Slice of an oversized encoded envelope (>720 KiB). The phone sends chunks only after `hello_ok.features.chunkedEnvelopes.enabled`; both sides reassemble by `chunkId`/`index` before normal decompression/decode. `SyncEnvelopeChunkAssembler` allows at most eight sets / 512 parts, a 128-byte id, and 32 MiB aggregate decoded buffering; it rejects inconsistent totals and expires incomplete sets after 30 seconds |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
-Protocol version 1 is additive. The phone decodes the common envelope and its
-string `type`, then ignores types it does not implement. In particular,
-desktop-only `rpc_*` and `fwd_*` envelopes do not fail or disconnect an iOS
-client. `hello_ok.features` is also read additively: missing flags resolve to
-unsupported/limited behavior, so an older host or a newer host advertising
-desktop-only flags does not break the mobile handshake.
+Protocol types are additive within the supported integer version interval. The
+phone decodes the common envelope and its string `type`, then ignores types it
+does not implement. In particular, desktop-only `rpc_*` and `fwd_*` envelopes
+do not fail or disconnect an iOS client. `hello_ok.features` is also read
+additively: missing flags resolve to unsupported/limited behavior, so an older
+host or a newer host advertising desktop-only flags does not break the mobile
+handshake. A version outside the interval is not additive: it produces
+`SyncProtocolVersionMismatchError` and update-targeted UI rather than a silent
+drop.
 
-Gzip decompression uses the system `zlib` module. `unwrapSyncCommandResponse`
-turns a raw response dict into either the `result` value or throws an
-`NSError` with `ADEErrorCode` when `ok: false`.
+Compression uses the shipped system `zlib` module for both zlib-wrapped
+deflate and legacy gzip. A phone offers only `deflate`; after the host selects
+it, payloads of at least 512 bytes are
+deflated and base64-encoded in both directions. When the host omits the
+selection, iOS keeps its legacy gzip-at-4-KiB behavior byte-for-byte. No codec
+dependency or static dictionary is added. `unwrapSyncCommandResponse` turns a
+raw response dict into either the `result` value or throws an `NSError` with
+`ADEErrorCode` when `ok: false`.
 
 ### Offline behavior
 
@@ -1989,6 +2019,9 @@ different machine's cached limits.
 | Xcode project setup | Implemented |
 | Native SQLite3 + pure-SQL CRR | Implemented |
 | WebSocket client | Implemented |
+| Negotiated deflate with byte-identical legacy gzip fallback | Implemented |
+| Bidirectional chunked envelopes with bounded 30 s reassembly | Implemented |
+| Typed protocol version floor/mismatch guidance | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
 | Account launch gate + account machine directory | Implemented; sign-in is the primary PIN-less path, while signed-out launches can continue with QR + PIN, Nearby + PIN, or advanced SSH pairing |
