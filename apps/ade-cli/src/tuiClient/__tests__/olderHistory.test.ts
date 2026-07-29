@@ -270,6 +270,32 @@ describe("mergeHydratedTuiHistory", () => {
 
     expect(merged).toEqual([older, originalPrompt]);
   });
+
+  it("caps a large hydrated merge while preserving the chronological newest tail", () => {
+    const existingCount = TUI_LOADED_EVENT_CAP + 25;
+    const existing = Array.from({ length: existingCount }, (_, index) => {
+      const sequence = index + 1;
+      return envelope(sequence, {
+        timestamp: new Date(Date.UTC(2026, 0, 1) + sequence).toISOString(),
+      });
+    });
+    const snapshotTail = existing.slice(-TUI_SNAPSHOT_DISPLAY_CAP);
+    const pending = Array.from({ length: 10 }, (_, index) => {
+      const sequence = existingCount + index + 1;
+      return envelope(sequence, {
+        timestamp: new Date(Date.UTC(2026, 0, 1) + sequence).toISOString(),
+      });
+    });
+
+    const merged = mergeHydratedTuiHistory(snapshotTail, existing, pending);
+
+    expect(merged).toHaveLength(TUI_LOADED_EVENT_CAP);
+    expect(merged[0]?.sequence).toBe(existingCount + pending.length - TUI_LOADED_EVENT_CAP + 1);
+    expect(merged.at(-1)?.sequence).toBe(existingCount + pending.length);
+    expect(merged.every((entry, index) => (
+      index === 0 || entry.sequence === (merged[index - 1]?.sequence ?? 0) + 1
+    ))).toBe(true);
+  });
 });
 
 describe("splitSnapshotForDisplay", () => {

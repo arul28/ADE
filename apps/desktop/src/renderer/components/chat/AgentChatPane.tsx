@@ -72,6 +72,7 @@ import type {
 } from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
   mergeAgentChatLiveEvents,
 } from "../../../shared/chatHistoryMerge";
@@ -6066,6 +6067,9 @@ export function AgentChatPane({
     }
     if (loadedHistoryRef.current.has(sessionId)) return;
     loadedHistoryRef.current.add(sessionId);
+    const historyArrivalWatermark = captureAgentChatHistoryArrivalWatermark(
+      eventsBySessionRef.current[sessionId] ?? [],
+    );
 
     try {
       // Prefer the main-process snapshot API which merges the in-memory event
@@ -6163,7 +6167,9 @@ export function AgentChatPane({
       // monotonic within a single provider run; Claude fallback/resume can
       // restart them while keeping the same ADE chat id.
       const existing = eventsBySessionRef.current[sessionId] ?? [];
-      let merged = mergeChatHistorySnapshot(parsed, existing);
+      let merged = mergeChatHistorySnapshot(parsed, existing, {
+        arrivalWatermark: historyArrivalWatermark,
+      });
       const selectedHistory = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId;
       const maxHistoryEvents = selectedHistory
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
@@ -12838,6 +12844,9 @@ export function AgentChatPane({
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}
                       sessionId={renderedSessionId}
+                      transcriptCollapseCacheKey={subagentView
+                        ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
+                        : undefined}
                       onInsertDraft={insertComposerDraft}
                       onRevealChatTerminal={revealChatTerminal}
                       turnDiffSummaries={selectedTurnDiffSummaries}

@@ -5755,6 +5755,14 @@ type TranscriptCollapseCache = {
 const MAX_TRANSCRIPT_COLLAPSE_CACHE_ENTRIES = 8;
 const transcriptCollapseCacheBySessionId = new Map<string, TranscriptCollapseCache>();
 
+export function resetTranscriptCollapseCacheForTests(): void {
+  transcriptCollapseCacheBySessionId.clear();
+}
+
+export function getTranscriptCollapseCacheKeysForTests(): string[] {
+  return [...transcriptCollapseCacheBySessionId.keys()];
+}
+
 function readTranscriptCollapseCache(sessionId: string | null | undefined): TranscriptCollapseCache {
   if (!sessionId) return { events: [], rows: [], context: null };
   const cached = transcriptCollapseCacheBySessionId.get(sessionId);
@@ -5799,6 +5807,7 @@ function AgentChatMessageListMain({
   pendingApprovalIds,
   laneId,
   sessionId,
+  transcriptCollapseCacheKey,
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
@@ -5845,6 +5854,8 @@ function AgentChatMessageListMain({
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
   sessionId?: string | null;
+  /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
+  transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
   /** True when older transcript pages exist above the loaded events. */
   hasOlderHistory?: boolean;
@@ -5881,9 +5892,19 @@ function AgentChatMessageListMain({
   // Carries the CollapseTranscriptContext alongside events/rows so appended
   // subagent progress/result events can index back into the previous rows and
   // mutate the anchor by its stored rowIndex (see collapseChatTranscriptRows).
-  const collapseCacheRef = useRef<TranscriptCollapseCache>(
-    readTranscriptCollapseCache(sessionId),
-  );
+  const resolvedTranscriptCollapseCacheKey = transcriptCollapseCacheKey ?? sessionId;
+  const collapseCacheStateRef = useRef<{
+    key: string | null | undefined;
+    cache: TranscriptCollapseCache;
+  } | null>(null);
+  let collapseCacheState = collapseCacheStateRef.current;
+  if (!collapseCacheState || collapseCacheState.key !== resolvedTranscriptCollapseCacheKey) {
+    collapseCacheState = {
+      key: resolvedTranscriptCollapseCacheKey,
+      cache: readTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey),
+    };
+    collapseCacheStateRef.current = collapseCacheState;
+  }
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
   const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
@@ -6026,7 +6047,7 @@ function AgentChatMessageListMain({
   }, []);
 
   const rows = useMemo(() => {
-    const cached = collapseCacheRef.current;
+    const cached = collapseCacheState.cache;
     const { rows: nextRows, context } = collapseChatTranscriptEventsIncrementalWithContext(
       events,
       cached.events,
@@ -6034,10 +6055,10 @@ function AgentChatMessageListMain({
       cached.context,
     );
     const nextCache = { events, rows: nextRows, context };
-    collapseCacheRef.current = nextCache;
-    writeTranscriptCollapseCache(sessionId, nextCache);
+    collapseCacheState.cache = nextCache;
+    writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
-  }, [events, sessionId]);
+  }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
   const assistantTurnCopyByRowKey = useMemo(() => {
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
     for (const info of deriveAssistantTurnCopyMap(rows).values()) {

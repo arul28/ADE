@@ -2,6 +2,17 @@ import type { AgentChatEventEnvelope } from "./types/chat";
 
 export type AgentChatEventIdentity = (entry: AgentChatEventEnvelope) => string;
 
+export interface AgentChatHistorySnapshotMergeOptions {
+  /**
+   * Identity keys already resident when the asynchronous history read began.
+   * Existing entries absent from this watermark arrived while hydration was in
+   * flight and must survive even when their timestamp sorts inside the
+   * authoritative snapshot range.
+   */
+  arrivalWatermark?: ReadonlySet<string>;
+  identityKey?: AgentChatEventIdentity;
+}
+
 const agentChatEventIdentityCache = new WeakMap<AgentChatEventEnvelope, string>();
 
 /**
@@ -14,6 +25,18 @@ export function agentChatEventIdentityKey(entry: AgentChatEventEnvelope): string
   const key = `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
   agentChatEventIdentityCache.set(entry, key);
   return key;
+}
+
+/**
+ * Capture the identities already resident at the start of an asynchronous
+ * history read so reconciliation can distinguish stale pre-read replay rows
+ * from events received while that read was in flight.
+ */
+export function captureAgentChatHistoryArrivalWatermark(
+  events: readonly AgentChatEventEnvelope[],
+  identityKey: AgentChatEventIdentity = agentChatEventIdentityKey,
+): ReadonlySet<string> {
+  return new Set(events.map(identityKey));
 }
 
 function isAtOrAfter(
@@ -114,15 +137,18 @@ export function mergeAgentChatLiveEvents(
  * are chronologically at or after the snapshot tail. That final check is
  * load-bearing: runtime subscription replay can otherwise append an old turn
  * after a completed latest turn and make the composer look active again.
+ * Entries absent from an optional arrival watermark are the explicit exception:
+ * they arrived during hydration and must not be discarded by the stale snapshot.
  */
 export function mergeAgentChatHistorySnapshot(
   snapshot: AgentChatEventEnvelope[],
   existing: AgentChatEventEnvelope[],
-  identityKey: AgentChatEventIdentity = agentChatEventIdentityKey,
+  options: AgentChatHistorySnapshotMergeOptions = {},
 ): AgentChatEventEnvelope[] {
   if (!existing.length) return snapshot;
   if (!snapshot.length) return existing;
 
+  const identityKey = options.identityKey ?? agentChatEventIdentityKey;
   const existingByKey = new Map<string, AgentChatEventEnvelope>();
   const existingIndexByKey = new Map<string, number>();
   for (let index = 0; index < existing.length; index += 1) {
@@ -173,9 +199,24 @@ export function mergeAgentChatHistorySnapshot(
       .slice(0, firstOverlapIndex)
       .filter((entry) => !snapshotKeys.has(identityKey(entry)))
     : [];
-  const merged = olderPrefix.length || liveTail.length
+  const baseMerged = olderPrefix.length || liveTail.length
     ? [...olderPrefix, ...normalizedSnapshot, ...liveTail]
     : normalizedSnapshot;
+  const baseKeys = new Set(baseMerged.map(identityKey));
+  const arrivalWatermark = options.arrivalWatermark;
+  const inFlightEvents = arrivalWatermark
+    ? existing.filter((entry) => {
+      const key = identityKey(entry);
+      return (
+        !snapshotKeys.has(key)
+        && !baseKeys.has(key)
+        && !arrivalWatermark.has(key)
+      );
+    })
+    : [];
+  const merged = inFlightEvents.length
+    ? orderAgentChatEventsChronologically([...baseMerged, ...inFlightEvents])
+    : baseMerged;
 
   if (
     merged.length === existing.length

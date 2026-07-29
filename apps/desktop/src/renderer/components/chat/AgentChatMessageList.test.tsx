@@ -83,7 +83,9 @@ import {
   deriveTurnModelState,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
+  getTranscriptCollapseCacheKeysForTests,
   reconcileMeasuredScrollTop,
+  resetTranscriptCollapseCacheForTests,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
   shouldStickToBottomAfterScroll,
@@ -135,6 +137,7 @@ function renderMessageList(
     initialState?: Record<string, unknown>;
     showStreamingIndicator?: boolean;
     sessionId?: string | null;
+    transcriptCollapseCacheKey?: string | null;
     laneId?: string | null;
     onInsertDraft?: (text: string) => void;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -161,6 +164,7 @@ function renderMessageList(
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionId={options?.sessionId}
+        transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
         onInsertDraft={options?.onInsertDraft}
         onRevealChatTerminal={options?.onRevealChatTerminal}
@@ -339,6 +343,7 @@ const MINIMAP_TRANSCRIPT: AgentChatEventEnvelope[] = [
 const originalAde = globalThis.window.ade;
 
 beforeEach(() => {
+  resetTranscriptCollapseCacheForTests();
   globalThis.window.ade = {
     ...(originalAde ?? {}),
     files: {
@@ -2095,6 +2100,60 @@ describe("AgentChatMessageList transcript rendering", () => {
     renderMessageList(events, { sessionId: "collapse-session" });
     expect(screen.getByTestId("user-message-collapsible-body").getAttribute("data-collapsed")).toBe("false");
     expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
+  });
+
+  it("isolates nested transcript collapse caches from the real session cache", () => {
+    const sessionId = "collapse-cache-parent";
+    const parentEvents = userMessageEvents(["Parent transcript"], sessionId);
+    const nestedEvents = userMessageEvents(["Nested subagent transcript"], sessionId);
+    const nestedCacheKey = `subagent:${sessionId}:task-1`;
+
+    const parent = renderMessageList(parentEvents, { sessionId });
+    parent.unmount();
+    const nested = renderMessageList(nestedEvents, {
+      sessionId,
+      transcriptCollapseCacheKey: nestedCacheKey,
+    });
+    nested.unmount();
+
+    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([sessionId, nestedCacheKey]);
+
+    renderMessageList(parentEvents, { sessionId });
+    expect(screen.getByText("Parent transcript")).toBeTruthy();
+    expect(screen.queryByText("Nested subagent transcript")).toBeNull();
+    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([nestedCacheKey, sessionId]);
+  });
+
+  it("does not refresh collapse-cache LRU recency on an ordinary rerender", () => {
+    const firstSessionId = "collapse-lru-a";
+    const firstEvents = userMessageEvents(["First"], firstSessionId);
+    const first = render(
+      <MemoryRouter>
+        <AgentChatMessageList events={firstEvents} sessionId={firstSessionId} />
+      </MemoryRouter>,
+    );
+    for (const suffix of ["b", "c", "d", "e", "f", "g", "h"]) {
+      const sessionId = `collapse-lru-${suffix}`;
+      renderMessageList(userMessageEvents([suffix], sessionId), { sessionId });
+    }
+    expect(getTranscriptCollapseCacheKeysForTests()[0]).toBe(firstSessionId);
+
+    first.rerender(
+      <MemoryRouter>
+        <AgentChatMessageList
+          events={firstEvents}
+          sessionId={firstSessionId}
+          showStreamingIndicator
+        />
+      </MemoryRouter>,
+    );
+    renderMessageList(userMessageEvents(["i"], "collapse-lru-i"), {
+      sessionId: "collapse-lru-i",
+    });
+
+    const cacheKeys = getTranscriptCollapseCacheKeysForTests();
+    expect(cacheKeys).not.toContain(firstSessionId);
+    expect(cacheKeys).toContain("collapse-lru-b");
   });
 
   it("leaves a short user prompt uncollapsed", () => {

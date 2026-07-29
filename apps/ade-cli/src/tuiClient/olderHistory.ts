@@ -146,7 +146,7 @@ export function mergeDetachedTuiHistoryTail(
   const combined = mergeAgentChatHistorySnapshot(
     [...snapshotTail],
     [...snapshotTail, ...bufferedLiveEvents],
-    tuiEventDedupKey,
+    { identityKey: tuiEventDedupKey },
   );
   return dedupeTuiEvents(
     orderAgentChatEventsChronologically(combined),
@@ -167,11 +167,11 @@ export function mergeHydratedTuiHistory(
   const merged = mergeAgentChatHistorySnapshot(
     [...snapshotTail],
     [...existing, ...pending],
-    tuiEventDedupKey,
+    { identityKey: tuiEventDedupKey },
   );
   return dedupeTuiEvents(
     orderAgentChatEventsChronologically(merged),
-    Math.max(TUI_LOADED_EVENT_CAP, snapshotTail.length, existing.length + pending.length),
+    Math.min(TUI_LOADED_EVENT_CAP, Math.max(1, merged.length)),
   );
 }
 
