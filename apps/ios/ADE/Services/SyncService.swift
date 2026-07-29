@@ -273,10 +273,33 @@ func adeJSONData(withJSONObject object: Any, options: JSONSerialization.WritingO
 /// Byte-for-byte counterpart of
 /// `apps/desktop/src/shared/sync/adoptChannelCrypto.ts`.
 enum AdoptChannelCrypto {
+  enum Aead: String, CaseIterable {
+    case chacha20Poly1305 = "chacha20-poly1305"
+    case aes256Gcm = "aes-256-gcm"
+  }
+
   static let context = "ade-adopt-v1"
   static let helloOkContext = "ade-adopt-v1-hellook"
   static let challengeTimeoutNanoseconds: UInt64 = 3_000_000_000
   static let maximumClockSkewMilliseconds: Double = 120_000
+  static let supportedAeads = Aead.allCases
+
+  static func resolveHostAead(_ value: Any?) throws -> Aead {
+    guard let value else {
+      // Hosts predating AEAD negotiation omitted the field and used ChaCha.
+      return .chacha20Poly1305
+    }
+    guard let rawValue = value as? String,
+          let aead = Aead(rawValue: rawValue),
+          supportedAeads.contains(aead) else {
+      throw NSError(
+        domain: "ADE.AdoptChannel",
+        code: 7,
+        userInfo: [NSLocalizedDescriptionKey: "The host selected an unsupported adoption cipher."]
+      )
+    }
+    return aead
+  }
 
   static func decodeCanonicalBase64(_ value: String, expectedBytes: Int? = nil) -> Data? {
     guard !value.isEmpty,
@@ -315,16 +338,21 @@ enum AdoptChannelCrypto {
     nonce: String,
     clientEphemeralPublicKey: String,
     hostEphemeralPublicKey: String,
-    timestampMilliseconds: Int64
+    timestampMilliseconds: Int64,
+    aead: Aead? = nil
   ) -> String {
-    [
+    var fields = [
       context,
       hostDeviceId,
       nonce,
       clientEphemeralPublicKey,
       hostEphemeralPublicKey,
       String(timestampMilliseconds),
-    ].joined(separator: "|")
+    ]
+    if let aead {
+      fields.append(aead.rawValue)
+    }
+    return fields.joined(separator: "|")
   }
 
   static func helloAAD(hostDeviceId: String, clientDeviceId: String) -> Data {
@@ -357,12 +385,38 @@ enum AdoptChannelCrypto {
     )
   }
 
-  static func seal(_ plaintext: Data, key: SymmetricKey, aad: Data) throws -> String {
-    let box = try ChaChaPoly.seal(plaintext, using: key, authenticating: aad)
-    return box.combined.base64EncodedString()
+  static func seal(
+    _ plaintext: Data,
+    key: SymmetricKey,
+    aad: Data,
+    aead: Aead = .chacha20Poly1305
+  ) throws -> String {
+    switch aead {
+    case .chacha20Poly1305:
+      return try ChaChaPoly.seal(
+        plaintext,
+        using: key,
+        authenticating: aad
+      ).combined.base64EncodedString()
+    case .aes256Gcm:
+      let box = try AES.GCM.seal(plaintext, using: key, authenticating: aad)
+      guard let combined = box.combined else {
+        throw NSError(
+          domain: "ADE.AdoptChannel",
+          code: 3,
+          userInfo: [NSLocalizedDescriptionKey: "The sealed adoption payload is malformed."]
+        )
+      }
+      return combined.base64EncodedString()
+    }
   }
 
-  static func unseal(_ blobBase64: String, key: SymmetricKey, aad: Data) throws -> Data {
+  static func unseal(
+    _ blobBase64: String,
+    key: SymmetricKey,
+    aad: Data,
+    aead: Aead = .chacha20Poly1305
+  ) throws -> Data {
     guard let combined = decodeCanonicalBase64(blobBase64), combined.count >= 28 else {
       throw NSError(
         domain: "ADE.AdoptChannel",
@@ -370,8 +424,14 @@ enum AdoptChannelCrypto {
         userInfo: [NSLocalizedDescriptionKey: "The sealed adoption payload is malformed."]
       )
     }
-    let box = try ChaChaPoly.SealedBox(combined: combined)
-    return try ChaChaPoly.open(box, using: key, authenticating: aad)
+    switch aead {
+    case .chacha20Poly1305:
+      let box = try ChaChaPoly.SealedBox(combined: combined)
+      return try ChaChaPoly.open(box, using: key, authenticating: aad)
+    case .aes256Gcm:
+      let box = try AES.GCM.SealedBox(combined: combined)
+      return try AES.GCM.open(box, using: key, authenticating: aad)
+    }
   }
 }
 
@@ -4935,6 +4995,7 @@ final class SyncService: ObservableObject {
   private struct AccountAdoptionChallengeSession {
     let key: SymmetricKey
     let hostDeviceId: String
+    let aead: AdoptChannelCrypto.Aead
   }
 
   private func accountAdoptionRoutes(
@@ -5046,6 +5107,7 @@ final class SyncService: ObservableObject {
         "v": 1,
         "nonce": nonceBase64,
         "clientEphemeralPublicKey": clientEphemeralPublicKey,
+        "supportedAeads": AdoptChannelCrypto.supportedAeads.map(\.rawValue),
       ])
     }
     guard isCurrentCandidate() else {
@@ -5063,6 +5125,13 @@ final class SyncService: ObservableObject {
           ),
           let signatureBase64 = payload["signature"] as? String,
           let signature = AdoptChannelCrypto.decodeCanonicalBase64(signatureBase64, expectedBytes: 64) else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    let responseAead = payload["aead"]
+    let aead: AdoptChannelCrypto.Aead
+    do {
+      aead = try AdoptChannelCrypto.resolveHostAead(responseAead)
+    } catch {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
     }
     let timestampValue = timestampNumber.doubleValue
@@ -5087,7 +5156,8 @@ final class SyncService: ObservableObject {
       nonce: nonceBase64,
       clientEphemeralPublicKey: clientEphemeralPublicKey,
       hostEphemeralPublicKey: hostEphemeralPublicKeyBase64,
-      timestampMilliseconds: timestampMilliseconds
+      timestampMilliseconds: timestampMilliseconds,
+      aead: responseAead == nil ? nil : aead
     )
     guard signingPublicKey.isValidSignature(signature, for: Data(canonical.utf8)) else {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
@@ -5099,7 +5169,8 @@ final class SyncService: ObservableObject {
           hostPublicKeyRaw: hostEphemeralPublicKey,
           nonce: nonce
         ),
-        hostDeviceId: hostDeviceId
+        hostDeviceId: hostDeviceId,
+        aead: aead
       )
     } catch {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
@@ -5178,7 +5249,8 @@ final class SyncService: ObservableObject {
           aad: AdoptChannelCrypto.helloAAD(
             hostDeviceId: challenge.hostDeviceId,
             clientDeviceId: deviceId
-          )
+          ),
+          aead: challenge.aead
         ),
       ]
     } else {
@@ -5213,7 +5285,8 @@ final class SyncService: ObservableObject {
         aad: AdoptChannelCrypto.helloOkAAD(
           hostDeviceId: challenge.hostDeviceId,
           clientDeviceId: deviceId
-        )
+        ),
+        aead: challenge.aead
       )
       guard let payload = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
         throw NSError(domain: "ADE.AdoptChannel", code: 5)

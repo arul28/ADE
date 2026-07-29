@@ -49,6 +49,16 @@ returned per-device secret and DPoP key for direct reconnects, and adds a fresh
 in-memory account token to every later Relay hello. The account token is never
 saved with the machine.
 
+For that sealed adoption, iOS advertises the AEADs its CryptoKit runtime
+supports (`chacha20-poly1305` and `aes-256-gcm`). The host selects the first
+mutual option, echoes it in `account_challenge_ok`, and signs the selected AEAD
+with the ephemeral-key challenge so an on-path peer cannot downgrade it. The
+phone uses that same AEAD for both the sealed account hello and the sealed
+paired credentials in `hello_ok`. A legacy host that omits `aead` remains
+compatible through the original ChaCha20-Poly1305 path; a host with no mutual
+cipher fails before the phone releases any account credential and asks for ADE
+to be updated on both devices.
+
 Device-bound machine trust and account transport authorization are separate.
 Signing out, switching accounts, or confirmed session loss closes an active
 Relay socket, removes account-directory visibility, and blocks every saved
@@ -218,7 +228,8 @@ apps/ios/
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
 │   │   └── SyncService.swift        # WebSocket client, command routing,
-│   │                                # PIN pairing, scoped projection
+│   │                                # PIN + sealed account adoption,
+│   │                                # scoped projection
 │   │                                # revisions, lane presence, logical-offset
 │   │                                # terminal snapshots, gap recovery,
 │   │                                # reliable input/resize,
@@ -804,6 +815,7 @@ Implemented envelope types on iOS:
 | Type | Direction | Purpose |
 |---|---|---|
 | `hello` / `hello_ok` / `hello_error` | Bidirectional | Handshake |
+| `account_challenge` / `account_challenge_ok` / `account_challenge_error` | Phone → runtime / runtime → phone | Signed X25519 challenge and AEAD negotiation before sealed same-account adoption |
 | `pairing_request` / `pairing_result` | Phone → runtime / runtime → phone | 6-digit PIN pairing |
 | `project_catalog_request` / `project_catalog` | Phone → runtime / runtime → phone | Refresh recent/available machine projects |
 | `project_switch_request` / `project_switch_result` | Phone → runtime / runtime → phone | Prepare a sync connection for a selected machine project |

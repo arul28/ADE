@@ -165,6 +165,7 @@ import {
   decodeCanonicalBase64,
   deriveAdoptSessionKey,
   generateX25519EphemeralKeyPair,
+  negotiateAdoptChannelAead,
   seal,
   signEd25519,
   supportedAdoptChannelAeads,
@@ -588,6 +589,7 @@ type PeerState = {
   framesReceived: number;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
+  reportedIncompatibleAdoptCipher: boolean;
   adoptChallenge: {
     sessionKey: Buffer;
     nonce: string;
@@ -3246,6 +3248,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remotePort,
       transportOrigin,
       relayAuthorization: null,
+      reportedIncompatibleAdoptCipher: false,
       adoptChallenge: null,
       subscribedSessionIds: new Set(),
       pendingTerminalSnapshots: new Map(),
@@ -6586,18 +6589,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           return;
         }
         const hostSupportedAeads = supportedAdoptChannelAeads();
-        const negotiatedAead = challenge.supportedAeads?.find(
-          (aead): aead is AdoptChannelAead =>
-            hostSupportedAeads.includes(aead as AdoptChannelAead),
+        const adoptAead = negotiateAdoptChannelAead(
+          challenge.supportedAeads,
+          hostSupportedAeads,
         );
-        if (challenge.supportedAeads !== null && !negotiatedAead) {
+        if (!adoptAead) {
+          if (!peer.reportedIncompatibleAdoptCipher) {
+            peer.reportedIncompatibleAdoptCipher = true;
+            args.logger.warn("sync_host.account_challenge_cipher_incompatible", {
+              remoteAddress: peer.remoteAddress,
+              transportOrigin: peer.transportOrigin,
+              clientAdvertisedAeads: challenge.supportedAeads !== null,
+              clientAeadCount: challenge.supportedAeads?.length ?? 0,
+              hostSupportedAeads,
+            });
+          }
           send(peer.ws, "account_challenge_error", {
             message:
-              "No compatible account adoption cipher is available. Update ADE on both Macs.",
+              "No compatible account adoption cipher is available. Update ADE on both devices.",
           }, envelope.requestId);
           return;
         }
-        const adoptAead = negotiatedAead ?? "chacha20-poly1305";
         // A well-formed challenge only triggers one public signature and is the
         // normal adoption operation, so it feeds no cooldown at all. Signing
         // load is already bounded by the per-connection single-active-challenge
@@ -6620,7 +6632,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
             hostEphemeralPublicKey,
             ts,
-            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
+            ...(challenge.supportedAeads !== null ? { aead: adoptAead } : {}),
           });
           const sessionKey = deriveAdoptSessionKey({
             privateKey: hostEphemeral.privateKey,
@@ -6640,7 +6652,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ts,
             hostEphemeralPublicKey,
             signature: signEd25519(identity.privateKey, canonical).toString("base64"),
-            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
+            ...(challenge.supportedAeads !== null ? { aead: adoptAead } : {}),
           }, envelope.requestId);
         } catch (error) {
           peer.adoptChallenge = null;
@@ -6868,7 +6880,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             clientDeviceId: sealedAuth.deviceId,
             aead: challenge.aead,
           };
-        } catch {
+        } catch (error) {
+          const errorCode =
+            error !== null
+            && typeof error === "object"
+            && "code" in error
+            && typeof error.code === "string"
+              ? error.code
+              : null;
+          args.logger.warn("sync_host.account_sealed_open_failed", {
+            remoteAddress: peer.remoteAddress,
+            transportOrigin: peer.transportOrigin,
+            aead: challenge.aead,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+            errorCode,
+          });
           rejectSealedHello("The sealed account credentials could not be opened.");
           return;
         }
