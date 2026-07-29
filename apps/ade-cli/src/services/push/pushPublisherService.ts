@@ -1887,14 +1887,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
-    handleSessionAttentionResolved(scopeKey: string, sessionId: string): void {
+    handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {
       if (disposed || !sessionId) return;
       const run = runs.get(sessionId);
-      if (!run || run.scopeKey !== scopeKey) return;
+      if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
       if (run.phase !== "waiting_for_input" && run.phase !== "waiting_for_approval") return;
       run.phase = "running";
       run.itemId = null;
       markRunUpdated(run);
+      pendingAlerts = pendingAlerts.filter(
+        (alert) =>
+          alert.dedupeKey !== `alert:${sessionId}:approval`
+          && alert.dedupeKey !== `alert:${sessionId}:question`,
+      );
       clearAlertDedupe(`alert:${sessionId}:approval`);
       clearAlertDedupe(`alert:${sessionId}:question`);
       scheduleFlush(true);

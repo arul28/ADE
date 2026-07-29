@@ -60,6 +60,7 @@ function createService(options?: {
     ensureResumeTargets: vi.fn().mockResolvedValue(undefined),
     enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     getRuntimeState: vi.fn(() => "idle"),
+    setSessionRuntimeState: vi.fn(),
     listTerminals: vi.fn().mockReturnValue([]),
     activeForChat: vi.fn().mockReturnValue(null),
     ...options?.ptyService,
@@ -2235,7 +2236,10 @@ describe("createSyncRemoteCommandService", () => {
 });
 
 describe("session lifecycle remote commands", () => {
-  function createLifecycleService() {
+  function createLifecycleService(options?: {
+    pushPublisherService?: Record<string, unknown>;
+    session?: Record<string, unknown>;
+  }) {
     const sessionService = {
       settleSession: vi.fn(() => true),
       unsettleSession: vi.fn(() => true),
@@ -2247,9 +2251,12 @@ describe("session lifecycle remote commands", () => {
       wakeSessions: vi.fn(() => ["session-1"]),
       setSettleOverride: vi.fn(() => true),
       clearWokeMarker: vi.fn(() => true),
-      get: vi.fn(() => ({ id: "session-1", toolType: "codex-chat" })),
+      get: vi.fn(() => options?.session ?? ({ id: "session-1", toolType: "codex-chat" })),
     };
-    const { service } = createService({ sessionService });
+    const { service } = createService({
+      sessionService,
+      ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
+    });
     return { service, sessionService };
   }
 
@@ -2264,6 +2271,26 @@ describe("session lifecycle remote commands", () => {
     await expect(service.execute(makePayload("session.unsettleSession", { sessionId: "session-1" })))
       .resolves.toEqual({ ok: true, sessionId: "session-1" });
     expect(sessionService.unsettleSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("resolves push attention when dismissing an explicit CLI ask", async () => {
+    const handleSessionAttentionResolved = vi.fn();
+    const { service, sessionService } = createLifecycleService({
+      pushPublisherService: { handleSessionAttentionResolved },
+      session: {
+        id: "session-1",
+        toolType: "codex",
+        attentionRequestedAt: "2026-07-29T21:00:00.000Z",
+      },
+    });
+
+    await expect(service.execute(makePayload("session.settleSession", {
+      sessionId: "session-1",
+      dismissPendingInput: true,
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
+
+    expect(handleSessionAttentionResolved).toHaveBeenCalledWith(null, "session-1");
+    expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
   });
 
   it("normalizes the snooze deadline and rejects unparseable ones", async () => {
