@@ -244,11 +244,22 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     analytics.identifyAccount("user_789")
 
     XCTAssertEqual(sink.identities.count, 2)
-    XCTAssertEqual(sink.resetIdentityCount, 1)
-    XCTAssertEqual(
-      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
-      "ade_user_6c9c79d93890a390c5bfa238afe37331"
-    )
+    XCTAssertEqual(sink.resetIdentityCount, 2)
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testQuotaSuppressedAccountSwitchClearsPriorIdentity() {
+    let (analytics, sink, defaults) = makeAnalytics()
+
+    analytics.identifyAccount("account_one")
+    analytics.identifyAccount("account_two")
+    analytics.identifyAccount("account_three")
+    analytics.captureScreen(.work)
+
+    XCTAssertEqual(sink.identities.count, 2)
+    XCTAssertEqual(sink.resetIdentityCount, 2)
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+    XCTAssertEqual(sink.events.last?.name, "ade_mobile_screen_viewed")
   }
 
   func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {

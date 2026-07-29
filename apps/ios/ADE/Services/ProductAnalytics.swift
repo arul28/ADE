@@ -699,6 +699,13 @@ final class ProductAnalytics {
 
       var transition = IdentityTransition()
       var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
+      // Detach the prior account before reserving the new identify. A quota
+      // rejection must leave subsequent events anonymous rather than assigned
+      // to the account that just signed out.
+      transition.shouldReset = previousHash != nil
+      if previousHash != nil {
+        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
+      }
       guard reserve(
         name: Self.identifyEventName,
         limit: Self.identifyDailyLimit,
@@ -708,10 +715,6 @@ final class ProductAnalytics {
         budget = currentBudget
         persist(currentBudget)
         return transition
-      }
-      transition.shouldReset = previousHash != nil
-      if previousHash != nil {
-        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
       }
       defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
       budget = currentBudget

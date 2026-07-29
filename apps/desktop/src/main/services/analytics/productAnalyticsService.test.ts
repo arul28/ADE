@@ -30,6 +30,7 @@ function makeHarness(options: {
   root?: string;
   messages?: Array<Record<string, unknown>>;
   appVersion?: string;
+  runtimeMode?: string;
   captureClientMessage?: ProductAnalyticsClient["capture"];
 } = {}) {
   const root = options.root ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-product-analytics-"));
@@ -49,7 +50,7 @@ function makeHarness(options: {
     stateFilePath: path.join(root, "analytics.json"),
     logger: { debug: vi.fn(), warn: vi.fn() } as never,
     appVersion: options.appVersion ?? "1.2.3",
-    runtimeMode: "test_harness",
+    runtimeMode: options.runtimeMode ?? "test_harness",
     projectToken: options.token ?? "phc_test_project_token",
     dailyBudget: options.dailyBudget,
     now: options.now,
@@ -431,6 +432,20 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("recognizes the unpackaged desktop runtime as development when NODE_ENV is unset", () => {
+    vi.stubEnv("NODE_ENV", "");
+    vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "0");
+    const harness = makeHarness({ runtimeMode: "desktop_development" });
+
+    expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: false,
+      reason: "disabled",
+    });
+    expect(harness.messages).toHaveLength(0);
+    expect(fs.existsSync(path.join(harness.root, "analytics.json"))).toBe(false);
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("drops queued transport work immediately when the user opts out", () => {
     const harness = makeHarness();
     expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" }).accepted).toBe(true);
@@ -640,6 +655,54 @@ describe("productAnalyticsService", () => {
     expect(harness.messages[3]?.distinctId).not.toBe(anonymousId);
     expect(harness.messages[3]?.distinctId).not.toBe(identify.distinctId);
     fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it.each([
+    { quota: "daily", expectedReason: "daily_budget" },
+    { quota: "minute", expectedReason: "rate_limited" },
+  ] as const)("clears the prior account when a switched identify hits the $quota quota", ({
+    quota,
+    expectedReason,
+  }) => {
+    const nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    const first = makeHarness({ now: () => nowMs });
+    expect(first.service.identifyAccount("account_one").accepted).toBe(true);
+    const priorIdentity = first.messages[0]?.distinctId;
+    const statePath = path.join(first.root, "analytics.json");
+    const persisted = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      identifiedUserHash: string | null;
+      quota: {
+        identifyAccepted: number;
+        identifyMinuteWindow: number[];
+      };
+    };
+    if (quota === "daily") {
+      persisted.quota.identifyAccepted = 3;
+      persisted.quota.identifyMinuteWindow = [];
+    } else {
+      persisted.quota.identifyAccepted = 1;
+      persisted.quota.identifyMinuteWindow = [nowMs - 1_000, nowMs];
+    }
+    fs.writeFileSync(statePath, `${JSON.stringify(persisted)}\n`);
+
+    const restarted = makeHarness({
+      root: first.root,
+      messages: first.messages,
+      now: () => nowMs,
+    });
+    expect(restarted.service.identifyAccount("account_two")).toEqual({
+      accepted: false,
+      reason: expectedReason,
+    });
+    expect(restarted.service.identifiedUserHashForTesting()).toBeNull();
+    expect(restarted.service.capture({
+      event: "ade_screen_viewed",
+      surface: "desktop",
+      properties: { screen: "work" },
+    }).accepted).toBe(true);
+    expect(first.messages.at(-1)?.distinctId).toMatch(/^ade_[0-9a-f]{32}$/);
+    expect(first.messages.at(-1)?.distinctId).not.toBe(priorIdentity);
+    fs.rmSync(first.root, { recursive: true, force: true });
   });
 
   it("normalizes persisted identify quotas and rejects timestamps outside the active minute", () => {

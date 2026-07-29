@@ -631,7 +631,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
     || (
-      process.env.NODE_ENV === "development"
+      (
+        process.env.NODE_ENV === "development"
+        || args.runtimeMode === "desktop_development"
+      )
       && process.env.ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT !== "1"
     )
     || process.env.NODE_ENV === "test"
@@ -731,6 +734,14 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       state = rollQuotaDay(readState(args.stateFilePath, now()), now());
       if (!state.enabled) return { accepted: false, reason: "disabled" };
       if (state.identifiedUserHash === userHash) return { accepted: false, reason: "duplicate" };
+      // Detach the prior account before attempting the new identify. If the
+      // identify is then suppressed by a quota or transport failure, later
+      // events remain anonymous instead of leaking into the prior account.
+      if (state.identifiedUserHash) {
+        state.anonymousId = `ade_${randomBytes(16).toString("hex")}`;
+        state.identifiedUserHash = null;
+        writeState(args.stateFilePath, state);
+      }
       if (state.quota.accepted >= dailyBudget || state.quota.identifyAccepted >= IDENTIFY_DAILY_BUDGET) {
         incrementDrop(state.quota, "daily_budget");
         writeState(args.stateFilePath, state);
@@ -755,12 +766,6 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
 
       const previousAnonymousId = state.anonymousId;
       const previousIdentifiedUserHash = state.identifiedUserHash;
-      // Never merge two real accounts when a machine changes users without an
-      // intervening renderer reset. Start the new account from a fresh,
-      // content-free anonymous identity.
-      if (previousIdentifiedUserHash && previousIdentifiedUserHash !== userHash) {
-        state.anonymousId = `ade_${randomBytes(16).toString("hex")}`;
-      }
       const anonymousId = state.anonymousId;
       state.identifiedUserHash = userHash;
       state.quota.accepted += 1;
