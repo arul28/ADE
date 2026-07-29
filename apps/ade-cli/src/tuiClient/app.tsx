@@ -271,7 +271,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
-import { advanceOlderHistoryCursor, mergeDetachedTuiHistoryTail, prependOlderTuiHistory, resolveSnapshotHistoryCursor, shouldRequestOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP, TUI_SNAPSHOT_DISPLAY_CAP, type OlderHistoryStatus } from "./olderHistory";
+import { advanceOlderHistoryCursor, mergeDetachedTuiHistoryTail, mergeHydratedTuiHistory, prependOlderTuiHistory, resolveSnapshotHistoryCursor, shouldRequestOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP, TUI_SNAPSHOT_DISPLAY_CAP, type OlderHistoryStatus } from "./olderHistory";
 import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
 import {
   EMPTY_BRACKETED_PASTE_STATE,
@@ -3693,10 +3693,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       );
     }
     if (existing.length === 0 && pending.length === 0) return displayEvents;
-    return dedupeTuiEvents(
-      [...displayEvents, ...existing, ...pending],
-      Math.max(TUI_LOADED_EVENT_CAP, displayEvents.length, existing.length + pending.length),
-    );
+    return mergeHydratedTuiHistory(displayEvents, existing, pending);
   }, []);
 
   const commitActiveSessionEvents = useCallback((

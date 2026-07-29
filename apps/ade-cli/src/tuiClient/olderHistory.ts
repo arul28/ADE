@@ -1,4 +1,8 @@
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
+import {
+  mergeAgentChatHistorySnapshot,
+  orderAgentChatEventsChronologically,
+} from "../../../desktop/src/shared/chatHistoryMerge";
 import { dedupeTuiEvents, tuiEventDedupKey } from "./eventDedup";
 
 /**
@@ -139,10 +143,35 @@ export function mergeDetachedTuiHistoryTail(
   snapshotTail: readonly AgentChatEventEnvelope[],
   bufferedLiveEvents: readonly AgentChatEventEnvelope[],
 ): AgentChatEventEnvelope[] {
-  const combined = [...snapshotTail, ...bufferedLiveEvents];
+  const combined = mergeAgentChatHistorySnapshot(
+    [...snapshotTail],
+    [...snapshotTail, ...bufferedLiveEvents],
+    tuiEventDedupKey,
+  );
   return dedupeTuiEvents(
-    combined,
+    orderAgentChatEventsChronologically(combined),
     Math.min(TUI_LOADED_EVENT_CAP, Math.max(1, combined.length)),
+  );
+}
+
+/**
+ * Reconcile a refreshed authoritative tail with cached scrollback and events
+ * received while hydration was in flight. Older cached rows stay before the
+ * tail; replayed historical rows are never appended after it.
+ */
+export function mergeHydratedTuiHistory(
+  snapshotTail: readonly AgentChatEventEnvelope[],
+  existing: readonly AgentChatEventEnvelope[],
+  pending: readonly AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  const merged = mergeAgentChatHistorySnapshot(
+    [...snapshotTail],
+    [...existing, ...pending],
+    tuiEventDedupKey,
+  );
+  return dedupeTuiEvents(
+    orderAgentChatEventsChronologically(merged),
+    Math.max(TUI_LOADED_EVENT_CAP, snapshotTail.length, existing.length + pending.length),
   );
 }
 

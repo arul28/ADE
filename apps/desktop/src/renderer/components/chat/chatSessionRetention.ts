@@ -178,7 +178,10 @@ export function releaseRetainedChatSession(sessionId: string): boolean {
  */
 export function retainChatSession(
   sessionId: string | null | undefined,
-  options?: { ttlMs?: number },
+  options?: {
+    ttlMs?: number;
+    subscribe?: ChatSessionRetentionHost["subscribe"];
+  },
 ): boolean {
   const host = retentionHost;
   if (!host || !sessionId) return false;
@@ -202,7 +205,8 @@ export function retainChatSession(
 
   let unsubscribe: () => void;
   try {
-    unsubscribe = host.subscribe((envelope) => {
+    const subscribe = options?.subscribe ?? host.subscribe;
+    unsubscribe = subscribe((envelope) => {
       if (!envelope || envelope.sessionId !== sessionId) return;
       // A released entry can still see one in-flight envelope if the bridge
       // dispatches after unsubscribe; dropping it is correct (the pane that

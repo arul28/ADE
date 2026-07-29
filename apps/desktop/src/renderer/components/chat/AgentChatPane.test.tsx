@@ -50,7 +50,9 @@ import {
   resolveChatHistoryMissAction,
   resolveMergedSnapshotHistoryCursor,
   resolveNextSelectedSessionId,
+  resolveChatComposerSessionId,
   resolveRenderedChatSessionId,
+  resolveUnchangedHistoryTurnActive,
   resetChatBootModelRefreshMemoForTests,
   resolveSnapshotHistoryCursor,
   selectAgentChatSessionViewEvictions,
@@ -68,6 +70,10 @@ import {
   writeChatCompanionUiState,
 } from "./chatCompanionUiState";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import {
+  isChatSessionRetained,
+  releaseAllRetainedChatSessions,
+} from "./chatSessionRetention";
 import { findUserMessageForTurn, isParentUserMessage } from "./chatTurnState";
 
 vi.mock("../terminals/TerminalView", () => {
@@ -967,6 +973,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  releaseAllRetainedChatSessions();
   invalidateAgentChatSessionListCache();
   invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
@@ -7674,6 +7681,31 @@ describe("AgentChatPane submit recovery", () => {
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
   });
 
+  it("subscribes to live chat events before reading the authoritative history snapshot", async () => {
+    const session = buildSession("session-handoff", {
+      title: "Gap-free handoff",
+    });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+
+    renderPane(session);
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.onEvent).toHaveBeenCalled();
+      expect(window.ade.agentChat.getEventHistory).toHaveBeenCalled();
+    });
+    expect(vi.mocked(window.ade.agentChat.onEvent).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(window.ade.agentChat.getEventHistory).mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("hydrates a visible inactive grid tile without requiring a click", async () => {
     const session = buildSession("grid-inactive-chat", {
       title: "Grid inactive chat",
@@ -8435,6 +8467,39 @@ describe("deriveRuntimeState", () => {
   });
 });
 
+describe("resolveUnchangedHistoryTurnActive", () => {
+  const promptOnly: AgentChatEventEnvelope[] = [{
+    sessionId: "session-1",
+    timestamp: "2026-07-29T12:00:00.000Z",
+    event: { type: "user_message", text: "ship it" },
+  }];
+
+  it("clears summary-derived running state when the same history settles", () => {
+    expect(resolveUnchangedHistoryTurnActive(
+      promptOnly,
+      false,
+      buildSession("session-1", { status: "active" }),
+    )).toBe(true);
+    expect(resolveUnchangedHistoryTurnActive(
+      promptOnly,
+      false,
+      buildSession("session-1", { status: "idle" }),
+    )).toBe(false);
+  });
+
+  it("preserves real transcript running evidence over a stale settled summary", () => {
+    expect(resolveUnchangedHistoryTurnActive(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-07-29T12:00:01.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      }],
+      undefined,
+      buildSession("session-1", { status: "idle" }),
+    )).toBe(true);
+  });
+});
+
 describe("mergeChatHistorySnapshot", () => {
   function envelope(
     timestamp: string,
@@ -8485,6 +8550,25 @@ describe("mergeChatHistorySnapshot", () => {
       "snapshot last",
       "same millisecond tail",
     ]);
+  });
+
+  it("drops a replayed old turn that arrived after the authoritative completed tail", () => {
+    const older = envelope("2026-04-30T23:10:00.000Z", 10, "older scrollback");
+    const completedTail = envelope("2026-04-30T23:25:10.427Z", 146, "completed tail");
+    const replayedOldTurn = envelope("2026-04-30T23:14:47.751Z", 11, "replayed old turn");
+    const refreshedTail = envelope("2026-04-30T23:25:10.427Z", 146, "completed tail");
+
+    const merged = mergeChatHistorySnapshot(
+      [refreshedTail],
+      [older, completedTail, replayedOldTurn],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "older scrollback",
+      "completed tail",
+    ]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(completedTail);
   });
 
   it("preserves existing event object identity when a recovery snapshot is unchanged", () => {
@@ -8842,6 +8926,17 @@ describe("resolveRenderedChatSessionId", () => {
       appliedInitialSessionId: null,
       selectedSessionId: null,
     })).toBeNull();
+  });
+});
+
+describe("resolveChatComposerSessionId", () => {
+  it("withholds controls while the transcript leads the internal selection", () => {
+    expect(resolveChatComposerSessionId("incoming", "outgoing")).toBeNull();
+  });
+
+  it("enables controls only for the transcript that is actually visible", () => {
+    expect(resolveChatComposerSessionId("incoming", "incoming")).toBe("incoming");
+    expect(resolveChatComposerSessionId(null, null)).toBeNull();
   });
 });
 
@@ -9557,6 +9652,44 @@ describe("AgentChatPane per-chat runtime routing", () => {
       expect.objectContaining({ sessionId: "chat-on-a" }),
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("captures the concrete active binding when retaining a hidden chat", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("retained-chat-on-a", { laneId: "lane-a", title: "Retained local chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory(session.sessionId) });
+
+    const view = renderPane(session);
+    await waitFor(() => expect(window.ade.agentChat.onEvent).toHaveBeenCalled());
+    vi.mocked(window.ade.agentChat.onEvent).mockClear();
+
+    view.unmount();
+
+    expect(window.ade.agentChat.onEvent).toHaveBeenCalledWith(
+      expect.any(Function),
+      machineA,
+    );
+    expect(isChatSessionRetained(session.sessionId)).toBe(true);
+  });
+
+  it("immediately adopts a cleanup handoff when routing changes while visible", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("visible-routing-change", { laneId: "lane-a", title: "Visible routing change" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory(session.sessionId) });
+
+    renderPane(session);
+    const onEvent = vi.mocked(window.ade.agentChat.onEvent);
+    await waitFor(() => expect(onEvent).toHaveBeenCalled());
+    const callsBeforeRoutingChange = onEvent.mock.calls.length;
+
+    act(() => {
+      useAppStore.setState({
+        projectBinding: { ...machineA },
+      });
+    });
+
+    await waitFor(() => expect(onEvent.mock.calls.length).toBeGreaterThan(callsBeforeRoutingChange));
+    expect(isChatSessionRetained(session.sessionId)).toBe(false);
   });
 
   it("passes the effective remote project binding to prompt stashes when the chat pin is null", async () => {

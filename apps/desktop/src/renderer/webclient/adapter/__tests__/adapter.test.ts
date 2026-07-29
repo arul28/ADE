@@ -932,13 +932,7 @@ describe("createAdeWebAdapter", () => {
         modelId: "openai/gpt-5.6",
       },
     } as SyncChatEventPayload;
-    fake.emitChatSnapshot("chat-visible-oldest", {
-      sessionId: "chat-visible-oldest",
-      capturedAt: "2026-07-20T00:02:01.000Z",
-      truncated: false,
-      resumed: true,
-      events: [done],
-    });
+    fake.emitChat(done);
 
     expect(received).toEqual([done]);
     adapter.dispose();
@@ -1079,7 +1073,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("accepts a restarted project chat seq without duplicating a non-resumed snapshot replay", async () => {
+  it("treats subscription snapshots as history and emits only genuinely live chat events", async () => {
     fake.descriptors = descriptors(["chat.getSummary"]);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -1114,11 +1108,9 @@ describe("createAdeWebAdapter", () => {
     fake.emitChat({ ...unrelatedEvent });
 
     expect(received.map((payload) => [payload.sessionId, payload.event])).toEqual([
-      ["chat-restarted", expect.objectContaining({ marker: "snapshot-source" })],
       ["chat-restarted", expect.objectContaining({ marker: "live-before-restart" })],
       ["chat-unrelated", expect.objectContaining({ marker: "old-unrelated" })],
       ["chat-restarted", expect.objectContaining({ marker: "live-after-restart" })],
-      ["chat-restarted", expect.objectContaining({ marker: "snapshot-after-restart" })],
     ]);
     adapter.dispose();
   });

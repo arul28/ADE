@@ -5746,6 +5746,38 @@ type PendingChatEventAnchor = {
   lastEventsLength: number;
 };
 
+type TranscriptCollapseCache = {
+  events: AgentChatEventEnvelope[];
+  rows: TranscriptRenderEnvelope[];
+  context: CollapseTranscriptResult["context"] | null;
+};
+
+const MAX_TRANSCRIPT_COLLAPSE_CACHE_ENTRIES = 8;
+const transcriptCollapseCacheBySessionId = new Map<string, TranscriptCollapseCache>();
+
+function readTranscriptCollapseCache(sessionId: string | null | undefined): TranscriptCollapseCache {
+  if (!sessionId) return { events: [], rows: [], context: null };
+  const cached = transcriptCollapseCacheBySessionId.get(sessionId);
+  if (!cached) return { events: [], rows: [], context: null };
+  transcriptCollapseCacheBySessionId.delete(sessionId);
+  transcriptCollapseCacheBySessionId.set(sessionId, cached);
+  return cached;
+}
+
+function writeTranscriptCollapseCache(
+  sessionId: string | null | undefined,
+  cached: TranscriptCollapseCache,
+): void {
+  if (!sessionId) return;
+  transcriptCollapseCacheBySessionId.delete(sessionId);
+  transcriptCollapseCacheBySessionId.set(sessionId, cached);
+  while (transcriptCollapseCacheBySessionId.size > MAX_TRANSCRIPT_COLLAPSE_CACHE_ENTRIES) {
+    const oldest = transcriptCollapseCacheBySessionId.keys().next().value;
+    if (typeof oldest !== "string") break;
+    transcriptCollapseCacheBySessionId.delete(oldest);
+  }
+}
+
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
@@ -5849,15 +5881,9 @@ function AgentChatMessageListMain({
   // Carries the CollapseTranscriptContext alongside events/rows so appended
   // subagent progress/result events can index back into the previous rows and
   // mutate the anchor by its stored rowIndex (see collapseChatTranscriptRows).
-  const collapseCacheRef = useRef<{
-    events: AgentChatEventEnvelope[];
-    rows: TranscriptRenderEnvelope[];
-    context: CollapseTranscriptResult["context"] | null;
-  }>({
-    events: [],
-    rows: [],
-    context: null,
-  });
+  const collapseCacheRef = useRef<TranscriptCollapseCache>(
+    readTranscriptCollapseCache(sessionId),
+  );
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
   const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
@@ -6007,9 +6033,11 @@ function AgentChatMessageListMain({
       cached.rows,
       cached.context,
     );
-    collapseCacheRef.current = { events, rows: nextRows, context };
+    const nextCache = { events, rows: nextRows, context };
+    collapseCacheRef.current = nextCache;
+    writeTranscriptCollapseCache(sessionId, nextCache);
     return nextRows;
-  }, [events]);
+  }, [events, sessionId]);
   const assistantTurnCopyByRowKey = useMemo(() => {
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
     for (const info of deriveAssistantTurnCopyMap(rows).values()) {

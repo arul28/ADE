@@ -6928,6 +6928,7 @@ describe("per-chat runtime routing", () => {
 
   it("streams a pinned This Mac chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T18:02:00.500Z"));
     try {
       const { bridge, invoke, on } = await mountBridge(machineB);
       let streamAttempt = 0;
@@ -7254,7 +7255,7 @@ describe("per-chat runtime routing", () => {
         {
           id: "target-b",
           projectId: "project-b",
-          request: { cursor: 0, limit: 200 },
+          request: { cursor: 0, limit: 200, replay: false },
         },
         {
           id: "target-b",
@@ -7264,7 +7265,7 @@ describe("per-chat runtime routing", () => {
         {
           id: "target-b",
           projectId: "project-b",
-          request: { cursor: 0, limit: 200 },
+          request: { cursor: 0, limit: 200, replay: false },
         },
       ]);
       expect(callback).toHaveBeenCalledWith(oldEnvelope);

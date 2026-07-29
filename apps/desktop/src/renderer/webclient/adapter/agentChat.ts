@@ -13,11 +13,12 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 
-// The browser gets the current chat tail through both chat_subscribe and
-// chat.getChatEventHistory. Keep each initial payload small: remote hosts
-// serialize those responses ahead of later summary/model commands. Older
-// history remains available through getChatEventHistoryPage when the user
-// scrolls back.
+// The browser gets ordered history through chat.getChatEventHistory and only
+// uses chat_subscribe for events that arrive after subscription. Keep the
+// server snapshot bounded even though the adapter deliberately does not emit
+// it as live input: remote hosts serialize that response before later
+// summary/model commands. Older history remains available through
+// getChatEventHistoryPage when the user scrolls back.
 const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
 const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
@@ -71,9 +72,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       sessionId,
       { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },
       {
-        snapshot: (payload) => {
-          for (const event of payload.events) emitChatEvent(event as SyncChatEventPayload);
-        },
+        // History hydration has its own authoritative ordered API. Re-emitting
+        // a subscription snapshot here turns old transcript rows into "live"
+        // arrivals and can append a completed turn after the real tail.
+        snapshot: () => undefined,
         event: (payload) => {
           emitChatEvent(payload);
         },

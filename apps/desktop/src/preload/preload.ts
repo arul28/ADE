@@ -2966,9 +2966,19 @@ function subscribeAgentChatEvents(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cursor = 0;
     let eventEpoch: string | null = null;
+    let replaySuppressed = pin.kind === "remote";
+    const startedAtMs = pin.kind === "local" ? Date.now() : 0;
     let consecutiveFailures = 0;
     const seenLocalEventIds = new Set<number>();
     const dispatchPinnedLocalEvent = (event: RemoteRuntimeBufferedEvent): void => {
+      const eventTime = Date.parse(event.timestamp);
+      if (
+        startedAtMs > 0
+        && Number.isFinite(eventTime)
+        && eventTime < startedAtMs - 1_000
+      ) {
+        return;
+      }
       if (seenLocalEventIds.has(event.id)) return;
       seenLocalEventIds.add(event.id);
       while (seenLocalEventIds.size > 1_000) {
@@ -2993,7 +3003,11 @@ function subscribeAgentChatEvents(
     const poll = async (): Promise<void> => {
       let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
       try {
-        const request = { cursor, limit: 200 };
+        const request = {
+          cursor,
+          limit: 200,
+          ...(replaySuppressed && cursor === 0 ? { replay: false } : {}),
+        } satisfies RemoteRuntimeStreamEventsRequest;
         const batch = await ipcRenderer.invoke(
           pin.kind === "remote"
             ? IPC.remoteRuntimeStreamEvents
@@ -3016,12 +3030,14 @@ function subscribeAgentChatEvents(
           eventEpoch = batchEpoch;
           if (epochChanged) {
             cursor = 0;
+            replaySuppressed = pin.kind === "remote";
             delay = 0;
             resetForEpochChange = true;
           }
         }
         if (!resetForEpochChange) {
           cursor = Number.isFinite(batch.nextCursor) ? Math.max(0, Math.floor(batch.nextCursor)) : cursor;
+          if (request.replay === false) replaySuppressed = false;
           for (const event of batch.events ?? []) {
             if (pin.kind === "local") {
               dispatchPinnedLocalEvent(event);
@@ -3162,12 +3178,17 @@ function subscribePinnedProjectRuntimeEvents<T>(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let cursor = 0;
   let eventEpoch: string | null = null;
+  let replaySuppressed = true;
   let consecutiveFailures = 0;
 
   const poll = async (): Promise<void> => {
     let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
     try {
-      const request = { cursor, limit: 200 };
+      const request = {
+        cursor,
+        limit: 200,
+        ...(replaySuppressed && cursor === 0 ? { replay: false } : {}),
+      } satisfies RemoteRuntimeStreamEventsRequest;
       const batch = await ipcRenderer.invoke(
         pin.kind === "remote"
           ? IPC.remoteRuntimeStreamEvents
@@ -3190,6 +3211,7 @@ function subscribePinnedProjectRuntimeEvents<T>(
         eventEpoch = batchEpoch;
         if (epochChanged) {
           cursor = 0;
+          replaySuppressed = true;
           delay = 0;
           resetForEpochChange = true;
         }
@@ -3198,6 +3220,7 @@ function subscribePinnedProjectRuntimeEvents<T>(
         cursor = Number.isFinite(batch.nextCursor)
           ? Math.max(0, Math.floor(batch.nextCursor))
           : cursor;
+        if (request.replay === false) replaySuppressed = false;
         for (const event of batch.events ?? []) {
           const payload = decode(event.payload);
           if (!payload) continue;

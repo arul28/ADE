@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, CaretRight, CircleNotch, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
@@ -71,6 +71,10 @@ import type {
   OrchestrationContextItem,
 } from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import {
+  mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
+  mergeAgentChatLiveEvents,
+} from "../../../shared/chatHistoryMerge";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
@@ -128,6 +132,7 @@ export {
   resolveMergedSnapshotHistoryCursor,
   resolveSnapshotHistoryCursor,
 } from "./chatHistoryWindow";
+export { mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot } from "../../../shared/chatHistoryMerge";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -1175,6 +1180,27 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
+function deriveTranscriptTurnActive(events: AgentChatEventEnvelope[]): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!.event;
+    if (event.type === "done") return false;
+    if (event.type === "status") return event.turnStatus === "started";
+  }
+  return false;
+}
+
+export function resolveUnchangedHistoryTurnActive(
+  events: AgentChatEventEnvelope[],
+  cachedDerivedTurnActive: boolean | undefined,
+  summary: AgentChatSessionSummary | null | undefined,
+): boolean {
+  return resolveTurnActive(
+    events,
+    cachedDerivedTurnActive ?? deriveTranscriptTurnActive(events),
+    summary,
+  );
+}
+
 type AgentChatSessionViewCache = {
   events: AgentChatEventEnvelope[];
   turnActive: boolean;
@@ -1219,6 +1245,20 @@ function readAgentChatSessionViewCache(sessionId: string | null | undefined): Ag
   agentChatSessionViewCacheBySessionId.delete(sessionId);
   agentChatSessionViewCacheBySessionId.set(sessionId, cached);
   return cached;
+}
+
+function updateAgentChatSessionViewCacheHistoryCursor(
+  sessionId: string,
+  historyCursor: number | null,
+): void {
+  const cached = peekAgentChatSessionViewCache(sessionId);
+  if (!cached || cached.historyCursor === historyCursor) return;
+  removeAgentChatSessionViewCache(sessionId);
+  agentChatSessionViewCacheBySessionId.set(sessionId, {
+    ...cached,
+    historyCursor,
+    cachedAtMs: Date.now(),
+  });
 }
 
 function writeAgentChatSessionViewCache(
@@ -1966,19 +2006,10 @@ function appendRetainedChatSessionEvents(
   if (!envelopes.length) return;
   const cached = peekAgentChatSessionViewCache(sessionId);
   if (!cached) return;
-  const seen = new Set<string>();
-  for (const entry of cached.events) seen.add(chatEventDedupKey(entry));
-  const fresh: AgentChatEventEnvelope[] = [];
-  for (const envelope of envelopes) {
-    const key = chatEventDedupKey(envelope);
-    // Dedupes against the batch itself too — the bridge can redeliver.
-    if (seen.has(key)) continue;
-    seen.add(key);
-    fresh.push(envelope);
-  }
-  if (!fresh.length) return;
+  const combined = mergeAgentChatLiveEvents(cached.events, envelopes);
+  if (combined === cached.events) return;
   const merged = trimChatEventHistory(
-    [...cached.events, ...fresh],
+    combined,
     MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS,
     MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES,
   );
@@ -2087,66 +2118,6 @@ function hasMatchingCommittedUserMessage(
   return events.some((event) => isMatchingOptimisticUserMessage(event, optimistic));
 }
 
-export function mergeChatHistorySnapshot(
-  parsed: AgentChatEventEnvelope[],
-  existing: AgentChatEventEnvelope[],
-): AgentChatEventEnvelope[] {
-  if (!existing.length) return parsed;
-  if (!parsed.length) return existing;
-
-  const existingByKey = new Map<string, AgentChatEventEnvelope>();
-  const existingIndexByKey = new Map<string, number>();
-  for (let index = 0; index < existing.length; index += 1) {
-    const entry = existing[index]!;
-    const key = chatEventDedupKey(entry);
-    if (!existingByKey.has(key)) existingByKey.set(key, entry);
-    if (!existingIndexByKey.has(key)) existingIndexByKey.set(key, index);
-  }
-  const parsedKeys = new Set<string>();
-  const normalizedParsed = parsed.map((entry) => {
-    const key = chatEventDedupKey(entry);
-    parsedKeys.add(key);
-    return existingByKey.get(key) ?? entry;
-  });
-  let firstOverlapIndex = -1;
-  for (const entry of parsed) {
-    const index = existingIndexByKey.get(chatEventDedupKey(entry)) ?? -1;
-    if (index >= 0 && (firstOverlapIndex < 0 || index < firstOverlapIndex)) {
-      firstOverlapIndex = index;
-    }
-  }
-  const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
-  let overlapIndex = -1;
-  for (let index = existing.length - 1; index >= 0; index -= 1) {
-    if (chatEventDedupKey(existing[index]!) === lastParsedKey) {
-      overlapIndex = index;
-      break;
-    }
-  }
-
-  const tailCandidates = overlapIndex >= 0
-    ? existing.slice(overlapIndex + 1)
-    : existing.filter((entry) => {
-        const entryTime = Date.parse(entry.timestamp);
-        const parsedTime = Date.parse(parsed[parsed.length - 1]!.timestamp);
-        if (Number.isFinite(entryTime) && Number.isFinite(parsedTime)) {
-          return entryTime > parsedTime;
-        }
-        return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
-      });
-  const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
-  const olderPrefix = firstOverlapIndex > 0
-    ? existing.slice(0, firstOverlapIndex).filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)))
-    : [];
-  const merged = olderPrefix.length || tail.length
-    ? [...olderPrefix, ...normalizedParsed, ...tail]
-    : normalizedParsed;
-  if (merged.length === existing.length && merged.every((entry, index) => entry === existing[index])) {
-    return existing;
-  }
-  return merged;
-}
-
 /**
  * Prepend an older transcript page to the in-memory event list, dropping
  * page entries that already exist at the seam (the hydrated tail merges the
@@ -2177,6 +2148,14 @@ export function resolveRenderedChatSessionId(args: {
     return args.initialSessionId;
   }
   return args.selectedSessionId;
+}
+
+/** Keep interactive composer controls scoped to the transcript on screen. */
+export function resolveChatComposerSessionId(
+  renderedSessionId: string | null,
+  selectedSessionId: string | null,
+): string | null {
+  return renderedSessionId === selectedSessionId ? selectedSessionId : null;
 }
 
 export type ChatHistoryMissAction =
@@ -3873,6 +3852,11 @@ export function AgentChatPane({
     appliedInitialSessionId: appliedInitialSessionIdRef.current,
     selectedSessionId,
   });
+  // The transcript can lead the internal selection by one render during a
+  // prop-driven switch. Until both ids agree, do not expose controls that
+  // could target the outgoing chat over the incoming transcript.
+  const composerSessionId = resolveChatComposerSessionId(renderedSessionId, selectedSessionId);
+  const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
   const selectedSession = useMemo(
@@ -4607,7 +4591,7 @@ export function AgentChatPane({
   );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
-  const selectedPendingInputs = selectedSessionId ? (pendingInputsBySession[selectedSessionId] ?? []) : [];
+  const selectedPendingInputs = composerSessionId ? (pendingInputsBySession[composerSessionId] ?? []) : [];
   const pendingInput = selectedPendingInputs[0] ?? null;
   const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
     isOrchestrationPlanApprovalRequest(entry.request),
@@ -4619,9 +4603,11 @@ export function AgentChatPane({
     }
     return pendingInput.request;
   })();
-  const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
-  const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
-  const selectedCodexGoalPending = selectedSessionId ? (codexGoalPendingBySession[selectedSessionId] === true) : false;
+  const selectedSessionAwaitingInput =
+    Boolean(pendingInput)
+    || (Boolean(composerSessionId) && selectedSession?.awaitingInput === true);
+  const turnActive = composerSessionId ? (turnActiveBySession[composerSessionId] ?? false) : false;
+  const selectedCodexGoalPending = composerSessionId ? (codexGoalPendingBySession[composerSessionId] === true) : false;
   const setCodexGoalFromPanel = useCallback(async (sessionId: string, nextObjective: string) => {
     const objective = nextObjective.replace(/\s*[\r\n]+\s*/g, " ").trim();
     if (!objective) return;
@@ -6191,9 +6177,6 @@ export function AgentChatPane({
         maxHistoryBytes,
       );
 
-      const derived = deriveRuntimeState(merged);
-      const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
-        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
       const historyCursor = usedSnapshotPath
         ? resolveMergedSnapshotHistoryCursor({
           snapshotCursor: snapshotHistoryCursor,
@@ -6208,6 +6191,30 @@ export function AgentChatPane({
       // detached marker BEFORE caching — the merged window is cacheable again.
       detachedHistorySessionsRef.current.delete(sessionId);
       missingHistorySessionsRef.current.delete(sessionId);
+      delete detachedLiveEventsBySessionRef.current[sessionId];
+      applyOlderHistoryCursor(sessionId, historyCursor);
+      setSyncPendingBySession((prev) => (prev[sessionId] ? { ...prev, [sessionId]: false } : prev));
+      setOlderHistoryErrorBySession((prev) => (
+        prev[sessionId] ? { ...prev, [sessionId]: null } : prev
+      ));
+      const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
+        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+      if (merged === existing) {
+        updateAgentChatSessionViewCacheHistoryCursor(sessionId, historyCursor);
+        const nextTurnActive = resolveUnchangedHistoryTurnActive(
+          existing,
+          peekAgentChatSessionViewCache(sessionId)?.turnActive,
+          sessionSummary,
+        );
+        setTurnActiveBySession((prev) => (
+          prev[sessionId] === nextTurnActive
+            ? prev
+            : { ...prev, [sessionId]: nextTurnActive }
+        ));
+        return;
+      }
+
+      const derived = deriveRuntimeState(merged);
       writeAgentChatSessionViewCache(
         sessionId,
         merged,
@@ -6216,13 +6223,7 @@ export function AgentChatPane({
         maxHistoryEvents,
         detachedHistorySessionsRef.current.has(sessionId),
       );
-      delete detachedLiveEventsBySessionRef.current[sessionId];
-      setSyncPendingBySession((prev) => (prev[sessionId] ? { ...prev, [sessionId]: false } : prev));
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
-      applyOlderHistoryCursor(sessionId, historyCursor);
-      setOlderHistoryErrorBySession((prev) => (
-        prev[sessionId] ? { ...prev, [sessionId]: null } : prev
-      ));
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({
         ...prev,
@@ -6409,7 +6410,11 @@ export function AgentChatPane({
   // unmounts, so no timer outlives the view that scheduled it.
   useEffect(() => () => cancelOlderHistoryRetryWaits(), [cancelOlderHistoryRetryWaits, selectedSessionId]);
 
-  useEffect(() => {
+  // Prop-driven chat switches already render the incoming transcript from
+  // `renderedSessionId`. Apply the matching session/composer state before the
+  // browser paints so controls from the outgoing chat can never share that
+  // frame (for example, an active Stop button over a settled transcript).
+  useLayoutEffect(() => {
     if (lockSessionId) {
       pendingSelectedSessionIdRef.current = null;
       draftSelectionLockedRef.current = false;
@@ -6417,14 +6422,14 @@ export function AgentChatPane({
     }
   }, [lockSessionId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!lockedSingleSessionMode || !lockSessionId || initialSessionSummary?.sessionId !== lockSessionId) return;
     setSessions([initialSessionSummary]);
     draftSelectionLockedRef.current = false;
     setSelectedSessionId(lockSessionId);
   }, [initialSessionSummary, lockSessionId, lockedSingleSessionMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextInitialSessionId = initialSessionId ?? null;
     if (!nextInitialSessionId) {
       appliedInitialSessionIdRef.current = null;
@@ -6459,7 +6464,7 @@ export function AgentChatPane({
     setSelectedSessionId(null);
   }, [forceDraft, lockSessionId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     syncComposerToSession(selectedSession);
   }, [
     selectedSession?.sessionId,
@@ -6881,10 +6886,20 @@ export function AgentChatPane({
   // unrelated re-renders.
   useEffect(() => {
     if (!isTileVisible || !selectedSessionId) return undefined;
+    // A routing dependency can change while the pane stays visible. Its prior
+    // cleanup briefly hands the old binding to retention; adopt it immediately
+    // so the visible pane never leaves a second, stale subscription behind.
+    adoptRetainedSession(selectedSessionId);
+    // Capture the concrete outgoing binding. `chatRuntimePin` is intentionally
+    // null for the active project, but retention must remain attached to that
+    // project after the window switches elsewhere.
+    const retainedBinding = chatRuntimePin ?? projectBinding;
     return () => {
-      retainChatSession(selectedSessionId);
+      retainChatSession(selectedSessionId, {
+        subscribe: (listener) => window.ade.agentChat.onEvent(listener, retainedBinding),
+      });
     };
-  }, [isTileVisible, selectedSessionId]);
+  }, [chatRuntimePin, isTileVisible, projectBinding, selectedSessionId]);
 
   useEffect(() => {
     if (!isTileVisible || !selectedSessionId) return undefined;
@@ -7081,18 +7096,12 @@ export function AgentChatPane({
 
     for (const [sessionId, sessionQueue] of queuedBySession) {
       const sessionEvents = eventsBySessionRef.current[sessionId] ?? [];
-      const sessionEventKeys = new Set(sessionEvents.map(chatEventDedupKey));
-      const freshEvents: AgentChatEventEnvelope[] = [];
-      for (const envelope of sessionQueue) {
-        const envelopeKey = chatEventDedupKey(envelope);
-        if (sessionEventKeys.has(envelopeKey)) continue;
-        sessionEventKeys.add(envelopeKey);
-        freshEvents.push(envelope);
-      }
-      if (!freshEvents.length) continue;
       if (detachedHistorySessionsRef.current.has(sessionId)) {
+        const detachedEvents = detachedLiveEventsBySessionRef.current[sessionId] ?? [];
+        const combined = mergeAgentChatLiveEvents(detachedEvents, sessionQueue);
+        if (combined === detachedEvents) continue;
         const liveEvents = trimChatEventHistory(
-          [...(detachedLiveEventsBySessionRef.current[sessionId] ?? []), ...freshEvents],
+          combined,
           MAX_BACKGROUND_CHAT_SESSION_EVENTS,
           MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
         );
@@ -7104,8 +7113,10 @@ export function AgentChatPane({
         touchedSessionIds.add(sessionId);
         continue;
       }
+      const combined = mergeAgentChatLiveEvents(sessionEvents, sessionQueue);
+      if (combined === sessionEvents) continue;
       const updated = trimChatEventHistory(
-        [...sessionEvents, ...freshEvents],
+        combined,
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
           ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
           : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
@@ -7190,7 +7201,7 @@ export function AgentChatPane({
     });
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       // Liveness stamp for the active-turn stall detector — recorded before any
@@ -11820,7 +11831,7 @@ export function AgentChatPane({
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
-            busy={busy || projectTransitionBlocksChat}
+            busy={busy || projectTransitionBlocksChat || chatSelectionTransitioning}
             sessionProvider={sessionProvider}
             interactionMode={interactionMode}
             claudePermissionMode={claudePermissionMode}
@@ -12110,7 +12121,7 @@ export function AgentChatPane({
             onSendSteerInterrupt={selectedSession?.provider === "claude" ? () => {
               void submit("interrupt");
             } : undefined}
-            sessionId={selectedSessionId}
+            sessionId={composerSessionId}
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && workDraftKind === "chat" && !lockSessionId && !initialSessionId && selectedSessionId == null,
             )}

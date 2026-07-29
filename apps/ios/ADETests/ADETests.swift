@@ -5681,6 +5681,33 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(history.map(\.id), [earlier.id, delayedInsert.id, later.id])
   }
 
+  @MainActor
+  func testReplayedOldPromptCannotMoveAfterCompletedChatTail() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let originalPrompt = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:01.000Z",
+      event: .userMessage(text: "Original prompt", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+    let completed = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:03.000Z",
+      event: .done(turnId: "turn-1", status: .completed, model: nil, modelId: nil, usage: nil, costUsd: nil),
+      sequence: 3,
+      provenance: nil
+    )
+
+    service.mergeChatEventHistory(sessionId: "session-1", events: [originalPrompt, completed])
+    service.recordChatEventEnvelope(originalPrompt)
+
+    XCTAssertEqual(
+      service.chatEventHistory(sessionId: "session-1").map(\.id),
+      [originalPrompt.id, completed.id]
+    )
+  }
+
   func testChatCommandRequestPayloadsEncodeExpectedShapes() throws {
     let subscribe = try jsonDictionary(from: AgentChatSubscriptionRequest(sessionId: "session-1"))
     XCTAssertEqual(subscribe["sessionId"] as? String, "session-1")
