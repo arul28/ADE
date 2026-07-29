@@ -1396,16 +1396,23 @@ export class LocalRuntimeConnectionPool {
   async callSync<T>(
     method: string,
     params: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     const entry = await this.connect();
-    return await entry.client.call(method, params) as T;
+    return await entry.client.call(method, params, options) as T;
   }
 
   async callAttention<T>(
     action: string,
     args: Record<string, unknown> = {},
   ): Promise<T> {
-    return await this.callSync<T>("attention.call", { action, args });
+    // An Attention snapshot poll that inherits the ten-minute runtime budget
+    // pins the renderer on "syncing" long after the account stream has wedged.
+    return await this.callSync<T>(
+      "attention.call",
+      { action, args },
+      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+    );
   }
 
   async callActionForRoot(

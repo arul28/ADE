@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -6985,6 +6985,10 @@ app.whenReady().then(async () => {
     onOutput: handleAttentionNotchOutput,
     onRefreshRequested: requestAttentionNotchRefresh,
   });
+  powerMonitor?.on?.("lock-screen", () => attentionNotchHelper?.setScreenAwake(false));
+  powerMonitor?.on?.("suspend", () => attentionNotchHelper?.setScreenAwake(false));
+  powerMonitor?.on?.("unlock-screen", () => attentionNotchHelper?.setScreenAwake(true));
+  powerMonitor?.on?.("resume", () => attentionNotchHelper?.setScreenAwake(true));
 
   attentionIpcBridge = registerIpc({
     getCtx: () => {

@@ -363,6 +363,142 @@ describe("useAttentionSync", () => {
     expect(attentionStore.getState().syncStatus).toBe("error");
   });
 
+  it("times out a wedged snapshot as retryable degradation and allows a later refresh", async () => {
+    vi.useFakeTimers();
+    const getSnapshot = vi.fn()
+      .mockImplementationOnce(() => new Promise<AttentionSnapshot>(() => {}))
+      .mockResolvedValueOnce({
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        scope: "machine",
+        revision: 1,
+        generatedAt: "2026-07-28T14:01:00.000Z",
+        items: [],
+        tombstones: [],
+      } satisfies AttentionSnapshot);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot,
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+      },
+    });
+
+    const timedOutRefresh = refreshAttentionSnapshot();
+    expect(attentionStore.getState().syncStatus).toBe("syncing");
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    await timedOutRefresh;
+
+    expect(attentionStore.getState()).toMatchObject({
+      syncStatus: "error",
+      syncError: "Attention took too long to respond. Retry to restore live updates.",
+      availability: {
+        state: "degraded",
+        recovery: "retry",
+      },
+    });
+
+    await refreshAttentionSnapshot();
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
+    expect(attentionStore.getState()).toMatchObject({
+      syncStatus: "ready",
+      syncError: null,
+      revision: 1,
+    });
+  });
+
+  it("uses relaxed hidden presence cadence and sends immediately when visible again", async () => {
+    publishAccountStatus({
+      signedIn: true,
+      userId: "user-presence-cadence",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    const addEventListenerSpy = vi.spyOn(document, "addEventListener");
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const reportPresence = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async (): Promise<AttentionSnapshot> => ({
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "account",
+            revision: 0,
+            generatedAt: "2026-07-28T14:01:00.000Z",
+            items: [],
+            tombstones: [],
+          })),
+          acknowledge: vi.fn(),
+          reportPresence,
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => {
+      expect(reportPresence).toHaveBeenCalled();
+      expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 30_000)).toBe(true);
+      const visibilityChangeCalls = addEventListenerSpy.mock.calls
+        .filter((call) => call[0] === "visibilitychange");
+      expect(visibilityChangeCalls.length).toBeGreaterThanOrEqual(2);
+    });
+    const visibilityChangeListener = addEventListenerSpy.mock.calls
+      .filter((call) => call[0] === "visibilitychange")[1]?.[1];
+    expect(typeof visibilityChangeListener).toBe("function");
+    const mountPresenceCount = reportPresence.mock.calls.length;
+    const hiddenSchedulesBefore = setTimeoutSpy.mock.calls
+      .filter((call) => call[1] === 120_000)
+      .length;
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    act(() => {
+      (visibilityChangeListener as EventListener)(new Event("visibilitychange"));
+    });
+    expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount);
+    expect(setTimeoutSpy.mock.calls.filter((call) => call[1] === 120_000))
+      .toHaveLength(hiddenSchedulesBefore + 1);
+
+    const visibleSchedulesBefore = setTimeoutSpy.mock.calls
+      .filter((call) => call[1] === 30_000)
+      .length;
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    act(() => {
+      (visibilityChangeListener as EventListener)(new Event("visibilitychange"));
+    });
+    await waitFor(() => {
+      expect(reportPresence).toHaveBeenCalledTimes(mountPresenceCount + 1);
+    });
+    expect(setTimeoutSpy.mock.calls.filter((call) => call[1] === 30_000))
+      .toHaveLength(visibleSchedulesBefore + 1);
+  });
+
   it("keeps an in-flight account A preference fetch out of account B's notch stream", async () => {
     publishAccountStatus({
       signedIn: true,

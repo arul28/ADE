@@ -303,7 +303,7 @@ describe("AttentionNotchHelper", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("requests account refreshes only while the native notch is enabled", () => {
+  it("reconciles refresh cadence across surface, screen, and enabled state", () => {
     vi.useFakeTimers();
     try {
       const child = fakeChild();
@@ -315,6 +315,7 @@ describe("AttentionNotchHelper", () => {
         onOutput: vi.fn(),
         onRefreshRequested,
         refreshIntervalMs: 1_000,
+        idleRefreshIntervalMs: 4_000,
         platform: "darwin",
       });
 
@@ -328,8 +329,28 @@ describe("AttentionNotchHelper", () => {
         soundsEnabled: false,
       });
       child.emit("spawn");
-      vi.advanceTimersByTime(2_100);
+      vi.advanceTimersByTime(3_999);
+      expect(onRefreshRequested).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+
+      (child.stdout as PassThrough).write(
+        `${JSON.stringify({ type: "surface", displayId: 1, surface: "menu_bar" })}\n`,
+      );
+      vi.advanceTimersByTime(999);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
       expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+
+      helper.setScreenAwake(false);
+      vi.advanceTimersByTime(3_999);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+      vi.advanceTimersByTime(1);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(3);
+
+      helper.setScreenAwake(true);
+      vi.advanceTimersByTime(1_000);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(4);
 
       helper.updateSettings({
         enabled: false,
@@ -340,8 +361,8 @@ describe("AttentionNotchHelper", () => {
         celebrationsEnabled: false,
         soundsEnabled: false,
       });
-      vi.advanceTimersByTime(2_000);
-      expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+      vi.advanceTimersByTime(8_000);
+      expect(onRefreshRequested).toHaveBeenCalledTimes(4);
       helper.dispose();
     } finally {
       vi.useRealTimers();
@@ -363,6 +384,7 @@ describe("AttentionNotchHelper", () => {
         onOutput: vi.fn(),
         onRefreshRequested,
         refreshIntervalMs: 1_000,
+        idleRefreshIntervalMs: 1_000,
         restartDelayMs: 100,
         platform: "darwin",
       });
