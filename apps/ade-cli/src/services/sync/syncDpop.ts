@@ -19,6 +19,7 @@ export const SYNC_DPOP_CONTEXT = "ade-dpop-v1";
 export const SYNC_DPOP_MAX_SKEW_SECONDS = 120;
 export const SYNC_DPOP_NONCE_TTL_MS = 10 * 60 * 1000;
 const SYNC_DPOP_NONCE_CACHE_MAX = 4096;
+const SYNC_DPOP_NONCES_PER_DEVICE_MAX = 256;
 const X963_UNCOMPRESSED_LENGTH = 65;
 
 export function buildSyncDpopChallenge(args: {
@@ -66,7 +67,16 @@ export function publicKeyFromX963Base64(publicKey: string): KeyObject | null {
 
 export type SyncDpopVerification =
   | { ok: true }
-  | { ok: false; reason: "invalid_key" | "invalid_signature" | "stale_timestamp" | "replayed_nonce" | "invalid_proof" };
+  | {
+      ok: false;
+      reason:
+        | "invalid_key"
+        | "invalid_signature"
+        | "stale_timestamp"
+        | "replayed_nonce"
+        | "nonce_cache_saturated"
+        | "invalid_proof";
+    };
 
 export function verifySyncDpopProof(args: {
   publicKeyX963Base64: string;
@@ -74,8 +84,8 @@ export function verifySyncDpopProof(args: {
   secret: string;
   proof: SyncDpopProof;
   nowSeconds?: number;
-  /** Returns true when the nonce was already seen (and records it otherwise). */
-  checkAndRecordNonce?: (nonce: string) => boolean;
+  /** Returns true for a replay, "saturated" when no safe slot remains, or false after recording. */
+  checkAndRecordNonce?: (nonce: string) => boolean | "saturated";
 }): SyncDpopVerification {
   const nonce = typeof args.proof.nonce === "string" ? args.proof.nonce.trim() : "";
   const signature = typeof args.proof.signature === "string" ? args.proof.signature.trim() : "";
@@ -111,7 +121,11 @@ export function verifySyncDpopProof(args: {
   if (!verified) return { ok: false, reason: "invalid_signature" };
   // Only burn the nonce after the signature checks out, so an attacker cannot
   // spend a victim's nonce with a garbage signature.
-  if (args.checkAndRecordNonce?.(nonce)) {
+  const nonceVerdict = args.checkAndRecordNonce?.(nonce);
+  if (nonceVerdict === "saturated") {
+    return { ok: false, reason: "nonce_cache_saturated" };
+  }
+  if (nonceVerdict) {
     return { ok: false, reason: "replayed_nonce" };
   }
   return { ok: true };
@@ -179,35 +193,69 @@ export function syncDpopFailureMessage(reason: string): string {
       return "This device's clock is too far from this machine's. Fix the date and time on both, then try again.";
     case "replayed_nonce":
       return "This device's security proof had already been used. Try connecting again.";
+    case "nonce_cache_saturated":
+      return "This machine is handling too many recent security proofs. Wait a moment, then try again.";
     default:
       return "This device could not prove it holds the security key this machine has on record. Pair it again.";
   }
 }
 
-/** Bounded nonce replay cache keyed by `deviceId:nonce`. */
-export function createSyncDpopNonceCache(args?: { ttlMs?: number; maxEntries?: number }) {
+/**
+ * Nonce replay cache partitioned by device id. Each device has its own bounded
+ * budget, so a valid proof flood from one paired device cannot evict another
+ * device's replay history inside the timestamp-skew window.
+ */
+export function createSyncDpopNonceCache(args?: {
+  ttlMs?: number;
+  maxEntries?: number;
+  maxEntriesPerDevice?: number;
+}) {
   const ttlMs = args?.ttlMs ?? SYNC_DPOP_NONCE_TTL_MS;
   const maxEntries = args?.maxEntries ?? SYNC_DPOP_NONCE_CACHE_MAX;
-  const seen = new Map<string, number>();
+  const maxEntriesPerDevice =
+    args?.maxEntriesPerDevice ?? SYNC_DPOP_NONCES_PER_DEVICE_MAX;
+  const seenByDevice = new Map<string, Map<string, number>>();
+  let entryCount = 0;
 
   const prune = (now: number): void => {
-    for (const [key, expiresAt] of seen) {
-      if (expiresAt <= now) seen.delete(key);
-    }
-    while (seen.size > maxEntries) {
-      const oldest = seen.keys().next().value;
-      if (oldest == null) break;
-      seen.delete(oldest);
+    for (const [deviceId, seen] of seenByDevice) {
+      for (const [nonce, expiresAt] of seen) {
+        if (expiresAt <= now) {
+          seen.delete(nonce);
+          entryCount -= 1;
+        }
+      }
+      if (seen.size === 0) seenByDevice.delete(deviceId);
     }
   };
 
   return {
     /** Returns true when the nonce was already seen; records it otherwise. */
-    checkAndRecord(deviceId: string, nonce: string, now = Date.now()): boolean {
+    checkAndRecord(
+      deviceId: string,
+      nonce: string,
+      now = Date.now(),
+    ): boolean | "saturated" {
       prune(now);
-      const key = `${deviceId}:${nonce}`;
-      if (seen.has(key)) return true;
-      seen.set(key, now + ttlMs);
+      let seen = seenByDevice.get(deviceId);
+      if (seen?.has(nonce)) return true;
+      if (seen && seen.size >= maxEntriesPerDevice) {
+        const oldest = seen.keys().next().value;
+        if (oldest != null) {
+          seen.delete(oldest);
+          entryCount -= 1;
+        }
+      } else if (entryCount >= maxEntries) {
+        // Never evict another device's active replay history to admit a new
+        // nonce. Failing closed preserves the security property under flood.
+        return "saturated";
+      }
+      if (!seen) {
+        seen = new Map();
+        seenByDevice.set(deviceId, seen);
+      }
+      seen.set(nonce, now + ttlMs);
+      entryCount += 1;
       return false;
     },
   };
