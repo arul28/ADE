@@ -1,13 +1,19 @@
 import type {
+  SyncApplicationCompressionCodec,
   SyncEnvelope,
   SyncEnvelopeChunkPayload,
   SyncMobileProjectSummary,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
+import { SYNC_APPLICATION_COMPRESSION_CODECS } from "../../../shared/types/sync";
 
 export const SYNC_PROTOCOL_VERSION = 1;
+export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
+export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
+export const ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
+export const MAX_ENVELOPE_CHUNK_ID_BYTES = 128;
 
 export type EncodeEnvelopeInput = {
   type: SyncEnvelope["type"];
@@ -15,6 +21,52 @@ export type EncodeEnvelopeInput = {
   requestId?: string | null;
   payload?: unknown;
 };
+
+export class BrowserSyncProtocolVersionMismatchError extends Error {
+  readonly code = "protocol_version_mismatch";
+  readonly updateTarget: "client" | "host";
+
+  constructor(readonly receivedVersion: number) {
+    const supported = SYNC_PROTOCOL_MIN_SUPPORTED === SYNC_PROTOCOL_VERSION
+      ? String(SYNC_PROTOCOL_VERSION)
+      : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
+    const updateTarget = receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED ? "host" : "client";
+    super(updateTarget === "host"
+      ? `Update ADE on your Mac. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
+      : `Update ADE in this browser. The Mac uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
+    this.name = "BrowserSyncProtocolVersionMismatchError";
+    this.updateTarget = updateTarget;
+  }
+}
+
+export function isBrowserSyncProtocolVersionSupported(
+  value: unknown,
+  minSupportedVersion = SYNC_PROTOCOL_MIN_SUPPORTED,
+  currentVersion = SYNC_PROTOCOL_VERSION,
+): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= minSupportedVersion
+    && value <= currentVersion;
+}
+
+export function availableBrowserSyncApplicationCompressionCodecs(): SyncApplicationCompressionCodec[] {
+  if (
+    typeof CompressionStream !== "function"
+    || typeof DecompressionStream !== "function"
+  ) {
+    return [];
+  }
+  return SYNC_APPLICATION_COMPRESSION_CODECS.filter((codec) => {
+    try {
+      new CompressionStream(codec);
+      new DecompressionStream(codec);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
 
 function normalizeOptionalString(value: string | null | undefined): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -44,14 +96,30 @@ function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
   return result;
 }
 
-async function gunzipWithCap(compressed: Uint8Array): Promise<Uint8Array> {
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof btoa === "function") {
+    let binary = "";
+    const chunkBytes = 32 * 1024;
+    for (let offset = 0; offset < bytes.length; offset += chunkBytes) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkBytes));
+    }
+    return btoa(binary);
+  }
+  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
+  throw new Error("No base64 encoder is available.");
+}
+
+async function decompressWithCap(
+  compressed: Uint8Array,
+  codec: SyncApplicationCompressionCodec | "gzip",
+): Promise<Uint8Array> {
   if (compressed.byteLength > MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES) {
     throw new Error(`Compressed sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
   }
   if (typeof DecompressionStream !== "function") {
-    throw new Error("This browser does not support gzip sync envelopes.");
+    throw new Error(`This browser does not support ${codec} sync envelopes.`);
   }
-  const transform = new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
+  const transform = new DecompressionStream(codec) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(compressed);
@@ -79,6 +147,21 @@ async function gunzipWithCap(compressed: Uint8Array): Promise<Uint8Array> {
   return concatBytes(chunks, total);
 }
 
+async function compress(
+  uncompressed: Uint8Array,
+  codec: SyncApplicationCompressionCodec,
+): Promise<Uint8Array> {
+  if (typeof CompressionStream !== "function") {
+    throw new Error(`This browser does not support ${codec} sync envelopes.`);
+  }
+  const transform = new CompressionStream(codec) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
+  const source = Uint8Array.from(uncompressed).buffer;
+  const compressed = await new Response(
+    new Blob([source]).stream().pipeThrough(transform),
+  ).arrayBuffer();
+  return new Uint8Array(compressed);
+}
+
 export function encodeEnvelopeText(envelope: EncodeEnvelopeInput): string {
   const requestId = normalizeOptionalString(envelope.requestId);
   const projectId = normalizeOptionalString(envelope.projectId);
@@ -93,6 +176,74 @@ export function encodeEnvelopeText(envelope: EncodeEnvelopeInput): string {
   } as SyncEnvelope);
 }
 
+export async function encodeEnvelopeTextWithCompression(
+  envelope: EncodeEnvelopeInput,
+  negotiation: {
+    codec: SyncApplicationCompressionCodec;
+    thresholdBytes: number;
+  } | null,
+): Promise<string> {
+  if (!negotiation) return encodeEnvelopeText(envelope);
+  const payloadJson = JSON.stringify(envelope.payload ?? null);
+  const payloadBytes = new TextEncoder().encode(payloadJson);
+  if (payloadBytes.byteLength < negotiation.thresholdBytes) {
+    return encodeEnvelopeText(envelope);
+  }
+  const requestId = normalizeOptionalString(envelope.requestId);
+  const projectId = normalizeOptionalString(envelope.projectId);
+  const compressed = await compress(payloadBytes, negotiation.codec);
+  return JSON.stringify({
+    version: SYNC_PROTOCOL_VERSION,
+    type: envelope.type,
+    ...(projectId ? { projectId } : {}),
+    requestId,
+    compression: negotiation.codec,
+    payloadEncoding: "base64",
+    payload: bytesToBase64(compressed),
+    uncompressedBytes: payloadBytes.byteLength,
+  } as SyncEnvelope);
+}
+
+export async function encodeEnvelopeFrames(
+  envelope: EncodeEnvelopeInput,
+  options: {
+    compression: {
+      codec: SyncApplicationCompressionCodec;
+      thresholdBytes: number;
+    } | null;
+    maxFrameBytes: number | null;
+  },
+): Promise<string[]> {
+  const text = await encodeEnvelopeTextWithCompression(envelope, options.compression);
+  const maxFrameBytes = options.maxFrameBytes;
+  const raw = new TextEncoder().encode(text);
+  if (!maxFrameBytes || raw.byteLength <= maxFrameBytes) return [text];
+  if (maxFrameBytes <= 1_024) throw new Error("Invalid sync frame budget.");
+
+  const partBytes = Math.max(16 * 1024, Math.floor(((maxFrameBytes - 1_024) * 3) / 4));
+  const total = Math.ceil(raw.byteLength / partBytes);
+  const chunkId = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const frames: string[] = [];
+  for (let index = 0; index < total; index += 1) {
+    const frame = encodeEnvelopeText({
+      type: "envelope_chunk",
+      requestId: envelope.requestId,
+      payload: {
+        chunkId,
+        index,
+        total,
+        part: bytesToBase64(raw.subarray(index * partBytes, Math.min(raw.byteLength, (index + 1) * partBytes))),
+      } satisfies SyncEnvelopeChunkPayload,
+    });
+    if (new TextEncoder().encode(frame).byteLength > maxFrameBytes) {
+      throw new Error("Could not fit a sync chunk inside the negotiated frame budget.");
+    }
+    frames.push(frame);
+  }
+  return frames;
+}
+
 export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
   let decoded: unknown;
   try {
@@ -104,10 +255,18 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
     throw new Error("Invalid sync envelope JSON.");
   }
   const envelope = decoded as SyncEnvelope;
-  if (envelope.version !== SYNC_PROTOCOL_VERSION) {
-    throw new Error(`Unsupported sync protocol version: ${String((decoded as { version?: unknown }).version ?? "unknown")}`);
+  const receivedVersion = (decoded as { version?: unknown }).version;
+  if (
+    typeof receivedVersion === "number"
+    && Number.isInteger(receivedVersion)
+    && !isBrowserSyncProtocolVersionSupported(receivedVersion)
+  ) {
+    throw new BrowserSyncProtocolVersionMismatchError(receivedVersion);
   }
-  if (envelope.compression === "gzip") {
+  if (!isBrowserSyncProtocolVersionSupported(receivedVersion)) {
+    throw new Error(`Invalid sync protocol version: ${String(receivedVersion ?? "unknown")}`);
+  }
+  if (envelope.compression === "gzip" || envelope.compression === "deflate") {
     if (envelope.payloadEncoding !== "base64" || typeof envelope.payload !== "string") {
       throw new Error("Compressed sync envelopes must use base64 payload encoding.");
     }
@@ -117,7 +276,10 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
     ) {
       throw new Error(`Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
     }
-    const uncompressed = await gunzipWithCap(base64ToBytes(envelope.payload));
+    const uncompressed = await decompressWithCap(
+      base64ToBytes(envelope.payload),
+      envelope.compression,
+    );
     if (
       typeof envelope.uncompressedBytes === "number"
       && envelope.uncompressedBytes !== uncompressed.byteLength
@@ -144,51 +306,102 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
 export function parseEnvelopeChunkPayload(payload: unknown): SyncEnvelopeChunkPayload | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const value = payload as Partial<SyncEnvelopeChunkPayload>;
-  const chunkId = typeof value.chunkId === "string" && value.chunkId.trim() ? value.chunkId : null;
+  const chunkId = typeof value.chunkId === "string"
+    && value.chunkId.trim()
+    && new TextEncoder().encode(value.chunkId).byteLength <= MAX_ENVELOPE_CHUNK_ID_BYTES
+    ? value.chunkId
+    : null;
   const index = typeof value.index === "number" && Number.isInteger(value.index) && value.index >= 0 ? value.index : null;
   const total = typeof value.total === "number" && Number.isInteger(value.total) && value.total > 0 ? value.total : null;
   const part = typeof value.part === "string" ? value.part : null;
-  if (!chunkId || index == null || total == null || !part || index >= total) return null;
+  if (!chunkId || index == null || total == null || part == null || index >= total) return null;
   return { chunkId, index, total, part };
 }
 
-export function createEnvelopeChunkAssembler(options: { maxConcurrentChunks?: number; maxTotalParts?: number } = {}) {
+export function createEnvelopeChunkAssembler(options: {
+  maxConcurrentChunks?: number;
+  maxTotalParts?: number;
+  maxEnvelopeBytes?: number;
+  maxBufferedBytes?: number;
+  timeoutMs?: number;
+} = {}) {
   const maxConcurrentChunks = options.maxConcurrentChunks ?? 8;
   const maxTotalParts = options.maxTotalParts ?? 512;
-  const chunks = new Map<string, { total: number; parts: Map<number, string> }>();
+  const maxEnvelopeBytes = options.maxEnvelopeBytes ?? 32 * 1024 * 1024;
+  const maxBufferedBytes = options.maxBufferedBytes ?? maxEnvelopeBytes;
+  const timeoutMs = options.timeoutMs ?? ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS;
+  let bufferedBytes = 0;
+  const chunks = new Map<string, {
+    total: number;
+    parts: Map<number, Uint8Array>;
+    bytes: number;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
+  const remove = (chunkId: string): void => {
+    const entry = chunks.get(chunkId);
+    if (!entry) return;
+    clearTimeout(entry.timeout);
+    bufferedBytes -= entry.bytes;
+    chunks.delete(chunkId);
+  };
   return {
     add(payload: SyncEnvelopeChunkPayload): string | null {
       if (payload.total > maxTotalParts) return null;
+      let decoded: Uint8Array;
+      try {
+        decoded = base64ToBytes(payload.part);
+      } catch {
+        remove(payload.chunkId);
+        return null;
+      }
+      if (decoded.byteLength > maxEnvelopeBytes) {
+        remove(payload.chunkId);
+        return null;
+      }
       let entry = chunks.get(payload.chunkId);
       if (!entry) {
         while (chunks.size >= maxConcurrentChunks) {
           const oldest = chunks.keys().next().value;
           if (oldest == null) break;
-          chunks.delete(oldest);
+          remove(oldest);
         }
-        entry = { total: payload.total, parts: new Map() };
+        const timeout = setTimeout(() => remove(payload.chunkId), timeoutMs);
+        entry = { total: payload.total, parts: new Map(), bytes: 0, timeout };
         chunks.set(payload.chunkId, entry);
       }
       if (entry.total !== payload.total) {
-        chunks.delete(payload.chunkId);
+        remove(payload.chunkId);
         return null;
       }
-      entry.parts.set(payload.index, payload.part);
+      const previous = entry.parts.get(payload.index);
+      const nextBytes = entry.bytes - (previous?.byteLength ?? 0) + decoded.byteLength;
+      const nextBufferedBytes = bufferedBytes
+        - (previous?.byteLength ?? 0)
+        + decoded.byteLength;
+      if (nextBytes > maxEnvelopeBytes || nextBufferedBytes > maxBufferedBytes) {
+        remove(payload.chunkId);
+        return null;
+      }
+      entry.parts.set(payload.index, decoded);
+      entry.bytes = nextBytes;
+      bufferedBytes = nextBufferedBytes;
       if (entry.parts.size < entry.total) return null;
-      chunks.delete(payload.chunkId);
+      remove(payload.chunkId);
       const bytes: Uint8Array[] = [];
       let totalBytes = 0;
       for (let index = 0; index < entry.total; index += 1) {
         const part = entry.parts.get(index);
         if (!part) return null;
-        const decoded = base64ToBytes(part);
-        bytes.push(decoded);
-        totalBytes += decoded.byteLength;
+        bytes.push(part);
+        totalBytes += part.byteLength;
       }
       return new TextDecoder().decode(concatBytes(bytes, totalBytes));
     },
     reset(): void {
-      chunks.clear();
+      for (const chunkId of chunks.keys()) remove(chunkId);
+    },
+    pendingCount(): number {
+      return chunks.size;
     },
   };
 }

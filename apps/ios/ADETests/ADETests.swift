@@ -352,6 +352,169 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSyncPreprocessReportsTypedVersionSkew() {
+    for (version, target) in [(0, "host"), (2, "client")] {
+      let envelope = """
+      {"version":\(version),"type":"hello_ok","compression":"none","payloadEncoding":"json","payload":{}}
+      """
+      XCTAssertThrowsError(try syncPreprocessIncoming(envelope)) { error in
+        XCTAssertEqual(
+          error as? SyncProtocolVersionMismatchError,
+          SyncProtocolVersionMismatchError(
+            receivedVersion: version,
+            currentVersion: 1,
+            minSupportedVersion: 1,
+            updateTarget: target
+          )
+        )
+      }
+    }
+  }
+
+  func testSyncProtocolVersionFloorAcceptsTheWholeSupportedInterval() {
+    XCTAssertTrue(syncProtocolVersionIsSupported(1, minSupportedVersion: 1, currentVersion: 2))
+    XCTAssertTrue(syncProtocolVersionIsSupported(2, minSupportedVersion: 1, currentVersion: 2))
+    XCTAssertFalse(syncProtocolVersionIsSupported(0, minSupportedVersion: 1, currentVersion: 2))
+    XCTAssertFalse(syncProtocolVersionIsSupported(3, minSupportedVersion: 1, currentVersion: 2))
+  }
+
+  func testSyncPreprocessRejectsNonIntegralAndBooleanVersions() {
+    for version in ["1.5", "true"] {
+      let envelope = """
+      {"version":\(version),"type":"hello_ok","compression":"none","payloadEncoding":"json","payload":{}}
+      """
+      XCTAssertThrowsError(try syncPreprocessIncoming(envelope)) { error in
+        XCTAssertNil(error as? SyncProtocolVersionMismatchError)
+        XCTAssertTrue(error.localizedDescription.contains("Invalid sync protocol version"))
+      }
+    }
+  }
+
+  func testSyncProtocolMismatchMessageNamesTheDeviceToUpdate() {
+    let versions: [String: Any] = [
+      "receivedVersion": 2,
+      "currentVersion": 1,
+      "minSupportedVersion": 1,
+    ]
+    XCTAssertTrue(syncProtocolMismatchMessage(
+      versions.merging(["updateTarget": "host"]) { _, right in right }
+    ).contains("Update ADE on your Mac"))
+    XCTAssertTrue(syncProtocolMismatchMessage(
+      versions.merging(["updateTarget": "client"]) { _, right in right }
+    ).contains("Update ADE on this iPhone"))
+  }
+
+  func testSyncPreprocessDecodesNodeDeflateFixture() throws {
+    // Produced by Node 22's zlib.deflateSync from the JSON payload below.
+    let encodedPayload = "eJyrVipJrShRslJKLsovLlbIzC3ISc1NzStJLMnMz1MYFRxUgkq1APjvqcA="
+    let envelope = """
+    {"version":1,"type":"chat_event","requestId":"node-deflate","compression":"deflate","payloadEncoding":"base64","payload":"\(encodedPayload)","uncompressedBytes":431}
+    """
+
+    let decoded = try XCTUnwrap(syncPreprocessIncoming(envelope))
+    let payload = try XCTUnwrap(decoded.payload as? [String: Any])
+    XCTAssertEqual(
+      payload["text"] as? String,
+      String(repeating: "cross implementation ", count: 20)
+    )
+  }
+
+  func testSyncEncoderUsesNegotiatedDeflateAndKeepsLegacyGzip() throws {
+    let payload = ["text": String(repeating: "ios outbound ", count: 1_000)]
+    let negotiated = try syncEncodeEnvelopeText(
+      type: "chat_event",
+      requestId: "ios-deflate",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: .deflate,
+      compressionThresholdBytes: 512
+    )
+    let negotiatedEnvelope = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(negotiated.utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(negotiatedEnvelope["compression"] as? String, "deflate")
+    let decodedNegotiated = try XCTUnwrap(
+      syncPreprocessIncoming(negotiated)?.payload as? [String: Any]
+    )
+    XCTAssertEqual(decodedNegotiated["text"] as? String, payload["text"])
+
+    let legacy = try syncEncodeEnvelopeText(
+      type: "chat_event",
+      requestId: "ios-gzip",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: .gzip,
+      compressionThresholdBytes: 4 * 1024
+    )
+    let legacyEnvelope = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(legacy.utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(legacyEnvelope["compression"] as? String, "gzip")
+  }
+
+  @MainActor
+  func testSyncHelloNegotiationPreservesLegacyAndRejectsUnsupportedSelections() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    defer { service.disconnect(clearCredentials: false) }
+    let brain = [
+      "deviceId": "wire-host",
+      "deviceName": "Mac Studio",
+    ]
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "features": [String: Any](),
+    ])
+    var wire = service.negotiatedWireTransportForTesting()
+    XCTAssertNil(wire.compressionCodec)
+    XCTAssertEqual(wire.compressionThresholdBytes, 4 * 1024)
+    XCTAssertFalse(wire.chunkedEnvelopes)
+    XCTAssertEqual(wire.maxFrameBytes, 720 * 1024)
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "compression": ["codec": "gzip", "thresholdBytes": 1],
+      "features": [
+        "chunkedEnvelopes": ["enabled": true, "maxFrameBytes": 1_024],
+      ],
+    ])
+    wire = service.negotiatedWireTransportForTesting()
+    XCTAssertNil(wire.compressionCodec, "iOS offered deflate only; a host cannot select gzip.")
+    XCTAssertEqual(wire.compressionThresholdBytes, 4 * 1024)
+    XCTAssertFalse(wire.chunkedEnvelopes, "An invalid frame budget must not enable outbound chunks.")
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "compression": ["codec": "deflate", "thresholdBytes": 512],
+      "features": [
+        "chunkedEnvelopes": ["enabled": true, "maxFrameBytes": 64 * 1024],
+      ],
+    ])
+    wire = service.negotiatedWireTransportForTesting()
+    XCTAssertEqual(wire.compressionCodec, "deflate")
+    XCTAssertEqual(wire.compressionThresholdBytes, 512)
+    XCTAssertTrue(wire.chunkedEnvelopes)
+    XCTAssertEqual(wire.maxFrameBytes, 64 * 1024)
+  }
+
+  func testSyncPreprocessRejectsMalformedOrUnsupportedCompressionMetadata() {
+    let invalidEnvelopes = [
+      """
+      {"version":1,"type":"chat_event","compression":"brotli","payloadEncoding":"base64","payload":"e30="}
+      """,
+      """
+      {"version":1,"type":"chat_event","compression":"deflate","payloadEncoding":"json","payload":{}}
+      """,
+      """
+      {"version":1,"type":"chat_event","compression":"none","payloadEncoding":"base64","payload":"e30="}
+      """,
+    ]
+
+    for envelope in invalidEnvelopes {
+      XCTAssertThrowsError(try syncPreprocessIncoming(envelope))
+    }
+  }
+
   func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 

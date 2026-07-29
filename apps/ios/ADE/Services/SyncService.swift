@@ -1,4 +1,5 @@
 import Combine
+import CoreFoundation
 import CryptoKit
 import Foundation
 import Network
@@ -1567,6 +1568,133 @@ struct SyncPreprocessedEnvelope {
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
 private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
+private let maxSyncEnvelopeChunkIdBytes = 128
+enum SyncWireCompressionCodec: String {
+  case gzip
+  case deflate
+}
+private let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
+private let syncApplicationCompressionThresholdBytes = 512
+private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
+private let syncDefaultMaxFrameBytes = 720 * 1024
+private let syncProtocolVersion = 1
+private let syncProtocolMinSupported = 1
+
+struct SyncProtocolVersionMismatchError: LocalizedError, Equatable {
+  let receivedVersion: Int
+  let currentVersion: Int
+  let minSupportedVersion: Int
+  let updateTarget: String
+
+  var errorDescription: String? {
+    updateTarget == "host"
+      ? "Update ADE on your Mac. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      : "Update ADE on this iPhone. The Mac uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+  }
+}
+
+func syncProtocolMismatchMessage(_ payload: [String: Any]) -> String {
+  let target = payload["updateTarget"] as? String
+  let received = (payload["receivedVersion"] as? NSNumber)?.intValue
+  let current = (payload["currentVersion"] as? NSNumber)?.intValue
+  let minimum = (payload["minSupportedVersion"] as? NSNumber)?.intValue
+  let versions: String
+  if let received, let current, let minimum {
+    versions = " Protocol \(received) is incompatible with \(minimum)-\(current)."
+  } else {
+    versions = ""
+  }
+  return target == "host"
+    ? "Update ADE on your Mac to connect this iPhone.\(versions)"
+    : "Update ADE on this iPhone to connect to your Mac.\(versions)"
+}
+
+func syncProtocolVersionNumber(_ value: Any?) -> Int? {
+  guard let number = value as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID() else {
+    return nil
+  }
+  let double = number.doubleValue
+  guard double.isFinite,
+        double.rounded(.towardZero) == double,
+        double >= Double(Int.min),
+        double <= Double(Int.max) else {
+    return nil
+  }
+  return Int(double)
+}
+
+func syncProtocolVersionIsSupported(
+  _ version: Int,
+  minSupportedVersion: Int = syncProtocolMinSupported,
+  currentVersion: Int = syncProtocolVersion
+) -> Bool {
+  version >= minSupportedVersion && version <= currentVersion
+}
+
+func syncDecodeEnvelopePayload(
+  _ envelope: [String: Any],
+  maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> Any {
+  let compression = envelope["compression"] as? String ?? "none"
+  switch compression {
+  case "gzip", "deflate":
+    guard envelope["payloadEncoding"] as? String == "base64",
+          let base64 = envelope["payload"] as? String,
+          let compressed = Data(base64Encoded: base64) else {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Compressed sync envelopes must use base64 payload encoding."]
+      )
+    }
+    let declaredBytes: Int?
+    if let rawDeclaredBytes = envelope["uncompressedBytes"] {
+      guard let parsedDeclaredBytes = syncProtocolVersionNumber(rawDeclaredBytes),
+            parsedDeclaredBytes >= 0,
+            parsedDeclaredBytes <= maxUncompressedBytes else {
+        throw NSError(
+          domain: "ADE",
+          code: 10,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid compressed sync envelope size."]
+        )
+      }
+      declaredBytes = parsedDeclaredBytes
+    } else {
+      declaredBytes = nil
+    }
+    let inflated: Data
+    if compression == "deflate" {
+      inflated = try inflateZlib(compressed, maxOutputBytes: maxUncompressedBytes)
+    } else {
+      inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
+    }
+    if let declaredBytes, declaredBytes != inflated.count {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Decoded sync envelope size does not match declared uncompressedBytes."]
+      )
+    }
+    return try JSONSerialization.jsonObject(with: inflated, options: [])
+  case "none":
+    if let payloadEncoding = envelope["payloadEncoding"] as? String,
+       payloadEncoding != "json" {
+      throw NSError(
+        domain: "ADE",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "Uncompressed sync envelopes must use JSON payload encoding."]
+      )
+    }
+    return envelope["payload"] ?? NSNull()
+  default:
+    throw NSError(
+      domain: "ADE",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported sync envelope compression: \(compression)"]
+    )
+  }
+}
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -1574,17 +1702,135 @@ func syncPreprocessIncoming(
 ) throws -> SyncPreprocessedEnvelope? {
   guard let data = text.data(using: .utf8) else { return nil }
   guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+  guard let version = syncProtocolVersionNumber(envelope["version"]) else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid sync protocol version."]
+    )
+  }
+  if !syncProtocolVersionIsSupported(version) {
+    throw SyncProtocolVersionMismatchError(
+      receivedVersion: version,
+      currentVersion: syncProtocolVersion,
+      minSupportedVersion: syncProtocolMinSupported,
+      updateTarget: version < syncProtocolMinSupported ? "host" : "client"
+    )
+  }
   let type = envelope["type"] as? String ?? ""
   let requestId = envelope["requestId"] as? String
-  let payload: Any
-  let compression = envelope["compression"] as? String ?? "none"
-  if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
-    let inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
-    payload = try JSONSerialization.jsonObject(with: inflated, options: [])
-  } else {
-    payload = envelope["payload"] ?? NSNull()
-  }
+  let payload = try syncDecodeEnvelopePayload(
+    envelope,
+    maxUncompressedBytes: maxUncompressedBytes
+  )
   return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
+}
+
+func syncEncodeEnvelopeText(
+  type: String,
+  requestId: String?,
+  projectId: String?,
+  payload: Any,
+  compressionCodec: SyncWireCompressionCodec,
+  compressionThresholdBytes: Int
+) throws -> String {
+  let payloadData = try adeJSONData(withJSONObject: payload)
+  var envelope: [String: Any]
+  if payloadData.count >= compressionThresholdBytes {
+    envelope = [
+      "version": syncProtocolVersion,
+      "type": type,
+      "compression": compressionCodec.rawValue,
+      "payloadEncoding": "base64",
+      "payload": (
+        compressionCodec == .deflate
+          ? deflateZlib(payloadData)
+          : gzip(payloadData)
+      ).base64EncodedString(),
+      "uncompressedBytes": payloadData.count,
+    ]
+  } else {
+    envelope = [
+      "version": syncProtocolVersion,
+      "type": type,
+      "compression": "none",
+      "payloadEncoding": "json",
+      "payload": payload,
+    ]
+  }
+  if let requestId, !requestId.isEmpty {
+    envelope["requestId"] = requestId
+  }
+  if let projectId, !projectId.isEmpty {
+    envelope["projectId"] = projectId
+  }
+  let data = try adeJSONData(withJSONObject: envelope)
+  guard let text = String(data: data, encoding: .utf8) else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Could not encode the sync envelope."]
+    )
+  }
+  return text
+}
+
+func syncEncodeEnvelopeFrames(
+  type: String,
+  requestId: String?,
+  projectId: String?,
+  payload: Any,
+  compressionCodec: SyncWireCompressionCodec,
+  compressionThresholdBytes: Int,
+  chunkedEnvelopes: Bool,
+  maxFrameBytes: Int
+) throws -> [String] {
+  let text = try syncEncodeEnvelopeText(
+    type: type,
+    requestId: requestId,
+    projectId: projectId,
+    payload: payload,
+    compressionCodec: compressionCodec,
+    compressionThresholdBytes: compressionThresholdBytes
+  )
+  guard chunkedEnvelopes,
+        maxFrameBytes > 1_024,
+        text.utf8.count > maxFrameBytes else {
+    return [text]
+  }
+
+  let raw = Data(text.utf8)
+  let partBytes = max(16 * 1024, ((maxFrameBytes - 1_024) * 3) / 4)
+  let total = Int(ceil(Double(raw.count) / Double(partBytes)))
+  let chunkId = UUID().uuidString
+  var frames: [String] = []
+  frames.reserveCapacity(total)
+  for index in 0..<total {
+    let start = index * partBytes
+    let end = min(raw.count, start + partBytes)
+    let frame = try syncEncodeEnvelopeText(
+      type: "envelope_chunk",
+      requestId: requestId,
+      projectId: nil,
+      payload: [
+        "chunkId": chunkId,
+        "index": index,
+        "total": total,
+        "part": raw.subdata(in: start..<end).base64EncodedString(),
+      ],
+      compressionCodec: .gzip,
+      compressionThresholdBytes: Int.max
+    )
+    guard frame.utf8.count <= maxFrameBytes else {
+      throw NSError(
+        domain: "ADE",
+        code: 4,
+        userInfo: [NSLocalizedDescriptionKey: "Could not fit a sync chunk inside the negotiated frame budget."]
+      )
+    }
+    frames.append(frame)
+  }
+  return frames
 }
 
 func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayload {
@@ -1698,6 +1944,7 @@ struct SyncEnvelopeChunkAssembler {
 
   private struct PartialChunk {
     let total: Int
+    let createdAt: TimeInterval
     var parts: [Int: Part] = [:]
     var decodedBytes = 0
     var encodedBytes = 0
@@ -1708,13 +1955,31 @@ struct SyncEnvelopeChunkAssembler {
   private let maxConcurrentChunks = 8
   private let maxTotalParts = 512
   private let maxEnvelopeBytes: Int
+  private let maxBufferedBytes: Int
 
-  init(maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes) {
+  init(
+    maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes,
+    maxBufferedBytes: Int? = nil
+  ) {
     self.maxEnvelopeBytes = max(1, maxEnvelopeBytes)
+    self.maxBufferedBytes = max(1, maxBufferedBytes ?? maxEnvelopeBytes)
   }
 
-  mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
-    guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+  mutating func add(
+    chunkId: String,
+    index: Int,
+    total: Int,
+    part: String,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> String? {
+    guard total > 0,
+          index >= 0,
+          index < total,
+          total <= maxTotalParts,
+          !chunkId.isEmpty,
+          chunkId.utf8.count <= maxSyncEnvelopeChunkIdBytes else {
+      return nil
+    }
     let encodedBytes = part.utf8.count
     let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
     guard decodedUpperBound <= maxEnvelopeBytes,
@@ -1728,7 +1993,7 @@ struct SyncEnvelopeChunkAssembler {
         arrivalOrder.removeFirst()
         buffers.removeValue(forKey: oldest)
       }
-      buffers[chunkId] = PartialChunk(total: total)
+      buffers[chunkId] = PartialChunk(total: total, createdAt: now)
       arrivalOrder.append(chunkId)
     }
     guard var buffer = buffers[chunkId], buffer.total == total else {
@@ -1742,7 +2007,13 @@ struct SyncEnvelopeChunkAssembler {
     }
     let nextDecodedBytes = buffer.decodedBytes + decodedPart.count
     let nextEncodedBytes = buffer.encodedBytes + encodedBytes
-    guard nextDecodedBytes <= maxEnvelopeBytes, nextEncodedBytes <= maxEnvelopeBytes * 2 else {
+    let previouslyBufferedPartBytes = buffer.parts[index]?.data.count ?? 0
+    let nextBufferedBytes = buffers.values.reduce(0) { $0 + $1.decodedBytes }
+      - previouslyBufferedPartBytes
+      + decodedPart.count
+    guard nextDecodedBytes <= maxEnvelopeBytes,
+          nextEncodedBytes <= maxEnvelopeBytes * 2,
+          nextBufferedBytes <= maxBufferedBytes else {
       buffers.removeValue(forKey: chunkId)
       arrivalOrder.removeAll { $0 == chunkId }
       return nil
@@ -1768,6 +2039,35 @@ struct SyncEnvelopeChunkAssembler {
   mutating func reset() {
     buffers.removeAll()
     arrivalOrder.removeAll()
+  }
+
+  var pendingCount: Int {
+    buffers.count
+  }
+
+  var nextExpirationUptime: TimeInterval? {
+    buffers.values.map(\.createdAt).min().map {
+      $0 + syncEnvelopeChunkReassemblyTimeoutSeconds
+    }
+  }
+
+  @discardableResult
+  mutating func expireStale(
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> Int {
+    let stale = buffers.compactMap { chunkId, buffer in
+      now - buffer.createdAt >= syncEnvelopeChunkReassemblyTimeoutSeconds
+        ? chunkId
+        : nil
+    }
+    for chunkId in stale {
+      buffers.removeValue(forKey: chunkId)
+    }
+    if !stale.isEmpty {
+      let staleIds = Set(stale)
+      arrivalOrder.removeAll { staleIds.contains($0) }
+    }
+    return stale.count
   }
 }
 
@@ -3301,6 +3601,7 @@ final class SyncService: ObservableObject {
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
+  private var envelopeChunkExpiryTask: Task<Void, Never>?
   private var transportProbeTask: Task<Void, Never>?
   /// cr-sqlite site id of the project DB the connected host currently serves
   /// (lowercased), from hello_ok's serverDbSiteId. Nil for older hosts.
@@ -3364,6 +3665,10 @@ final class SyncService: ObservableObject {
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
+  private var supportsChunkedEnvelopes = false
+  private var negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
+  private var negotiatedCompressionCodec: SyncWireCompressionCodec?
+  private var negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
   private var relayAuthorizationLease: SyncRelayAuthorizationLease?
   private var relayReauthorizationTask: Task<Void, Never>?
   private var relayReauthorizationTaskId: UUID?
@@ -5474,7 +5779,9 @@ final class SyncService: ObservableObject {
   ) -> Error {
     let errorPayload = payload as? [String: Any]
     let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    let message = code == "protocol_version_mismatch"
+      ? syncProtocolMismatchMessage(errorPayload ?? [:])
+      : (errorPayload?["message"] as? String) ?? "Authentication failed."
     if code == "relay_account_required" {
       return syncRelayAuthorizationRequirementForHostRejection(
         relayAccountOwnerId: relayAccountOwnerId,
@@ -13726,6 +14033,7 @@ final class SyncService: ObservableObject {
           requestId: requestId,
           payload: [
             "peer": currentPeerMetadata(connectionAttempt: connectionAttempt),
+            "compression": syncApplicationCompressionCodecs,
             "auth": auth,
           ]
         )
@@ -13857,7 +14165,7 @@ final class SyncService: ObservableObject {
     payload: Any
   ) throws -> String {
     let envelope: [String: Any] = [
-      "version": 1,
+      "version": syncProtocolVersion,
       "type": type,
       "requestId": requestId,
       "compression": "none",
@@ -13874,7 +14182,9 @@ final class SyncService: ObservableObject {
   private func candidateHelloError(_ payload: Any, profile: HostConnectionProfile) -> Error {
     let errorPayload = payload as? [String: Any]
     let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    let message = code == "protocol_version_mismatch"
+      ? syncProtocolMismatchMessage(errorPayload ?? [:])
+      : (errorPayload?["message"] as? String) ?? "Authentication failed."
     if code == "relay_account_required" {
       return syncRelayAuthorizationRequirementForHostRejection(
         relayAccountOwnerId: profile.relayAccountOwnerId,
@@ -14523,6 +14833,7 @@ final class SyncService: ObservableObject {
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "hello", requestId: requestId, payload: [
         "peer": self.currentPeerMetadata(),
+        "compression": syncApplicationCompressionCodecs,
         "auth": auth,
       ])
     }
@@ -14820,6 +15131,22 @@ final class SyncService: ObservableObject {
       pairedDeviceId: nil,
       expectedHostIdentity: expectedHostIdentity,
       connectAttemptGeneration: connectAttemptGeneration
+    )
+  }
+
+  func negotiatedWireTransportForTesting() -> (
+    compressionCodec: String?,
+    compressionThresholdBytes: Int,
+    chunkedEnvelopes: Bool,
+    maxFrameBytes: Int
+  ) {
+    (
+      negotiatedCompressionCodec?.rawValue,
+      negotiatedCompressionCodec == nil
+        ? compressionThresholdBytes
+        : negotiatedCompressionThresholdBytes,
+      supportsChunkedEnvelopes,
+      negotiatedMaxFrameBytes
     )
   }
 
@@ -15491,6 +15818,26 @@ final class SyncService: ObservableObject {
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
+       chunking["enabled"] as? Bool == true,
+       let frameBytes = (chunking["maxFrameBytes"] as? NSNumber)?.intValue,
+       frameBytes > 1_024 {
+      supportsChunkedEnvelopes = true
+      negotiatedMaxFrameBytes = min(syncDefaultMaxFrameBytes, frameBytes)
+    } else {
+      supportsChunkedEnvelopes = false
+      negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
+    }
+    if let compression = payload["compression"] as? [String: Any],
+       compression["codec"] as? String == SyncWireCompressionCodec.deflate.rawValue,
+       let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
+       threshold > 0 {
+      negotiatedCompressionCodec = .deflate
+      negotiatedCompressionThresholdBytes = threshold
+    } else {
+      negotiatedCompressionCodec = nil
+      negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
+    }
     if supportsTerminalInputAcknowledgements,
        let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
       terminalInputAcknowledgementRetryWindowMilliseconds = max(
@@ -15777,6 +16124,21 @@ final class SyncService: ObservableObject {
     handleSocketFailure(task, error: error)
   }
 
+  private func scheduleEnvelopeChunkExpiry() {
+    envelopeChunkExpiryTask?.cancel()
+    guard let expiresAt = envelopeChunkAssembler.nextExpirationUptime else {
+      envelopeChunkExpiryTask = nil
+      return
+    }
+    let delay = max(0, expiresAt - ProcessInfo.processInfo.systemUptime)
+    envelopeChunkExpiryTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard !Task.isCancelled, let self else { return }
+      self.envelopeChunkAssembler.expireStale()
+      self.scheduleEnvelopeChunkExpiry()
+    }
+  }
+
   private func handleIncoming(_ pre: SyncPreprocessedEnvelope) async throws {
     let type = pre.type
     let requestId = pre.requestId
@@ -15796,7 +16158,14 @@ final class SyncService: ObservableObject {
             let index = dict["index"] as? Int,
             let total = dict["total"] as? Int,
             let part = dict["part"] as? String else { return }
-      if let reassembled = envelopeChunkAssembler.add(chunkId: chunkId, index: index, total: total, part: part) {
+      let reassembled = envelopeChunkAssembler.add(
+        chunkId: chunkId,
+        index: index,
+        total: total,
+        part: part
+      )
+      scheduleEnvelopeChunkExpiry()
+      if let reassembled {
         // The reassembled envelope can be tens of megabytes — decode it off
         // the main actor like any first-class frame.
         let nested = try await Task.detached(priority: .userInitiated) {
@@ -15842,7 +16211,9 @@ final class SyncService: ObservableObject {
     case "hello_error":
       let errorPayload = payload as? [String: Any]
       let code = (errorPayload?["code"] as? String) ?? "auth_failed"
-      let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+      let message = code == "protocol_version_mismatch"
+        ? syncProtocolMismatchMessage(errorPayload ?? [:])
+        : (errorPayload?["message"] as? String) ?? "Authentication failed."
       if code == "relay_account_required" {
         connectionState = .error
         let profile = activeHostProfile ?? loadProfile()
@@ -16404,43 +16775,29 @@ final class SyncService: ObservableObject {
     #endif
     guard let socket else { return false }
     let sendSocket = socket
-    guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return false }
+    let compressionCodec = negotiatedCompressionCodec
+    let activeCompressionThreshold = compressionCodec == nil
+      ? compressionThresholdBytes
+      : negotiatedCompressionThresholdBytes
+    let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
+      ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId)
+    guard let frames = try? syncEncodeEnvelopeFrames(
+      type: type,
+      requestId: requestId,
+      projectId: projectId,
+      payload: payload,
+      compressionCodec: compressionCodec ?? .gzip,
+      compressionThresholdBytes: activeCompressionThreshold,
+      chunkedEnvelopes: supportsChunkedEnvelopes,
+      maxFrameBytes: negotiatedMaxFrameBytes
+    ) else { return false }
 
-    var envelope: [String: Any]
-    if payloadData.count >= compressionThresholdBytes {
-      envelope = [
-        "version": 1,
-        "type": type,
-        "compression": "gzip",
-        "payloadEncoding": "base64",
-        "payload": gzip(payloadData).base64EncodedString(),
-        "uncompressedBytes": payloadData.count,
-      ]
-    } else {
-      envelope = [
-        "version": 1,
-        "type": type,
-        "compression": "none",
-        "payloadEncoding": "json",
-        "payload": payload,
-      ]
-    }
-    if let requestId, !requestId.isEmpty {
-      envelope["requestId"] = requestId
-    }
-    if let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
-      ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId) {
-      envelope["projectId"] = projectId
-    }
-
-    guard let data = try? adeJSONData(withJSONObject: envelope),
-          let text = String(data: data, encoding: .utf8)
-    else { return false }
-
-    sendSocket.send(.string(text)) { error in
-      if let error {
-        Task { @MainActor in
-          self.handleSocketFailure(sendSocket, error: error)
+    for frame in frames {
+      sendSocket.send(.string(frame)) { error in
+        if let error {
+          Task { @MainActor in
+            self.handleSocketFailure(sendSocket, error: error)
+          }
         }
       }
     }
@@ -16657,6 +17014,12 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
+    envelopeChunkExpiryTask?.cancel()
+    envelopeChunkExpiryTask = nil
+    supportsChunkedEnvelopes = false
+    negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
+    negotiatedCompressionCodec = nil
+    negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
     connectionGeneration &+= 1
     // Requests are owned by the socket generation that sent them. Retire only
     // that generation: a stale project-switch request must not remain armed
@@ -16815,15 +17178,6 @@ final class SyncService: ObservableObject {
       "transport_probe_failed trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
     )
     beginAutomaticTransportRecovery(recoveryError)
-  }
-
-  private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
-    let compression = envelope["compression"] as? String ?? "none"
-    if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
-      let data = try gunzip(compressed, maxOutputBytes: maxUncompressedSyncEnvelopeBytes)
-      return try JSONSerialization.jsonObject(with: data, options: [])
-    }
-    return envelope["payload"] ?? NSNull()
   }
 
   private func makeRequestId() -> String {
@@ -19085,6 +19439,14 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 }
 
 private func gzip(_ data: Data) -> Data {
+  deflateWire(data, windowBits: MAX_WBITS + 16)
+}
+
+private func deflateZlib(_ data: Data) -> Data {
+  deflateWire(data, windowBits: MAX_WBITS)
+}
+
+private func deflateWire(_ data: Data, windowBits: Int32) -> Data {
   guard !data.isEmpty else { return data }
 
   var stream = z_stream()
@@ -19096,7 +19458,7 @@ private func gzip(_ data: Data) -> Data {
     &stream,
     Z_DEFAULT_COMPRESSION,
     Z_DEFLATED,
-    MAX_WBITS + 16,
+    windowBits,
     8,
     Z_DEFAULT_STRATEGY,
     ZLIB_VERSION,
@@ -19127,6 +19489,21 @@ private func gzip(_ data: Data) -> Data {
 }
 
 private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvelopeBytes) throws -> Data {
+  try inflateWire(data, windowBits: MAX_WBITS + 32, maxOutputBytes: maxOutputBytes)
+}
+
+private func inflateZlib(
+  _ data: Data,
+  maxOutputBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> Data {
+  try inflateWire(data, windowBits: MAX_WBITS, maxOutputBytes: maxOutputBytes)
+}
+
+private func inflateWire(
+  _ data: Data,
+  windowBits: Int32,
+  maxOutputBytes: Int
+) throws -> Data {
   guard !data.isEmpty else { return data }
 
   var stream = z_stream()
@@ -19134,9 +19511,9 @@ private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvel
   var output = Data()
   let chunkSize = 16_384
 
-  status = inflateInit2_(&stream, MAX_WBITS + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+  status = inflateInit2_(&stream, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
   guard status == Z_OK else {
-    throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start gzip decoder."])
+    throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start compressed sync decoder."])
   }
   defer { inflateEnd(&stream) }
 

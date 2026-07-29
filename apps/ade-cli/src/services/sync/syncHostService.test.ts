@@ -73,7 +73,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, negotiateSyncApplicationCompression, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import {
@@ -255,6 +255,13 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("selects deflate only when the peer explicitly offers it", () => {
+    expect(negotiateSyncApplicationCompression(undefined)).toBeNull();
+    expect(negotiateSyncApplicationCompression([])).toBeNull();
+    expect(negotiateSyncApplicationCompression(["zstd-dict-v1", "gzip"])).toBeNull();
+    expect(negotiateSyncApplicationCompression(["zstd-dict-v1", "deflate"])).toBe("deflate");
+  });
+
   it("reports the host-observed connection transport", () => {
     expect(syncConnectionTransportForOrigin("direct")).toBe("direct");
     expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");
@@ -285,6 +292,15 @@ describe("buildSyncHostHelloOkPayload", () => {
     };
 
     expect(buildSyncHostHelloOkPayload({ ...base, peer }).features.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("chunkedEnvelopes");
+    expect(buildSyncHostHelloOkPayload({
+      ...base,
+      peer,
+      chunkedEnvelopes: true,
+    }).features.chunkedEnvelopes).toEqual({
+      enabled: true,
+      maxFrameBytes: DEFAULT_SYNC_MAX_FRAME_BYTES,
+    });
     expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("compactInvalidationV1");
     expect(buildSyncHostHelloOkPayload({
       ...base,
@@ -788,6 +804,88 @@ describe("buildChangesetBatchPayload", () => {
 });
 
 describe("brain project actions fallback handler", () => {
+  it("switches fallback responses to deflate only after hello negotiation", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const credentials = new EncryptedFileCredentialStore({
+      secretsDir,
+      keyMaterialProvider: () => null,
+    });
+    credentials.setSync("test.bootstrap", "bootstrap-token");
+    const projects = Array.from({ length: 30 }, (_, index) => createDiscoveryProject({
+      id: `project-${index}`,
+      displayName: `Project ${index} ${"catalog-data ".repeat(20)}`,
+    }));
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: credentials,
+      bootstrapTokenKey: "test.bootstrap",
+      pairingSecretsPath: path.join(secretsDir, "pairings.json"),
+      pinPath: path.join(secretsDir, "pin.json"),
+      localDeviceIdPath: path.join(secretsDir, "device-id"),
+      localSiteIdPath: path.join(secretsDir, "site-id"),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "compression-hello",
+        payload: {
+          peer: {
+            deviceId: "ios-compression-device",
+            deviceName: "Compression iPhone",
+            platform: "iOS",
+            deviceType: "phone",
+            siteId: "ios-compression-site",
+            dbVersion: 0,
+          },
+          auth: { kind: "bootstrap", token: "bootstrap-token" },
+          compression: ["deflate"],
+        },
+      }));
+      const hello = await waitForEnvelope(envelopes, "hello_ok", "compression-hello");
+      expect(hello.compression).toBe("gzip");
+      expect(hello.payload).toMatchObject({
+        compression: { codec: "deflate", thresholdBytes: 512 },
+      });
+
+      client.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "compressed-catalog",
+        payload: {},
+      }));
+      const catalog = await waitForEnvelope(envelopes, "project_catalog", "compressed-catalog");
+      expect(catalog.compression).toBe("deflate");
+      expect((catalog.payload as SyncProjectCatalogPayload).projects).toHaveLength(projects.length);
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it.each(["close", "account-switch"] as const)(
     "cancels deferred Relay verification on peer %s before fallback authentication commits",
     async (mode) => {
@@ -4122,6 +4220,74 @@ describe("createSyncHostService LAN discovery", () => {
         code: 4003,
         reason: "Authentication timed out",
       });
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore close failures
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it.each([
+    [0, "client"],
+    [2, "host"],
+  ] as const)("returns a typed error immediately for protocol version %i", async (version, updateTarget) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      authTimeoutMs: 15_000,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      const startedAt = Date.now();
+      const response = new Promise<ParsedSyncEnvelope>((resolve, reject) => {
+        client!.once("message", (raw) => {
+          try {
+            resolve(parseSyncEnvelope(wsDataToText(raw)));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        client!.once("close", (code, reason) => {
+          resolve({ code, reason: reason.toString("utf8") });
+        });
+      });
+      client.send(JSON.stringify({
+        version,
+        type: "hello",
+        requestId: `mismatch-${version}`,
+        compression: "none",
+        payloadEncoding: "json",
+        payload: {},
+      }));
+
+      const mismatch = await response;
+      expect(mismatch.type).toBe("hello_error");
+      expect(mismatch.requestId).toBe(`mismatch-${version}`);
+      expect(mismatch.payload).toMatchObject({
+        code: "protocol_version_mismatch",
+        receivedVersion: version,
+        currentVersion: 1,
+        minSupportedVersion: 1,
+        updateTarget,
+      });
+      expect(await closed).toEqual({
+        code: SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
+        reason: "Sync protocol version mismatch",
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
       try {
         client?.close();

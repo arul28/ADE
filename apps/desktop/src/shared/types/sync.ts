@@ -51,7 +51,8 @@ export type ApplyRemoteChangesResult = {
   rebuiltFts: boolean;
 };
 
-export type SyncProtocolVersion = 1;
+/** Any integer in the runtime's advertised supported version interval. */
+export type SyncProtocolVersion = number;
 
 /** Additive hello capability for in-place ADE Relay account reauthorization. */
 export const SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY = "relayReauthorizeV1" as const;
@@ -114,7 +115,17 @@ export type SyncRelayClientReady = {
   v: typeof SYNC_RELAY_READY_VERSION;
 };
 
-export type SyncCompressionCodec = "none" | "gzip";
+/**
+ * Wire-level payload compression. `gzip` is the legacy, implicitly enabled
+ * codec retained for peers that predate negotiation; `deflate` is used only
+ * after both sides explicitly negotiate it in hello/hello_ok.
+ */
+export type SyncCompressionCodec = "none" | "gzip" | "deflate";
+export const SYNC_APPLICATION_COMPRESSION_CODECS = ["deflate"] as const;
+export type SyncApplicationCompressionCodec =
+  (typeof SYNC_APPLICATION_COMPRESSION_CODECS)[number];
+export const SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES = 512;
+export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
@@ -517,6 +528,14 @@ export type SyncFeatureFlags = {
     enabled: boolean;
   };
   /**
+   * Bidirectional oversized-envelope framing. The host returns this only to a
+   * peer that declared the matching hello capability.
+   */
+  chunkedEnvelopes?: {
+    enabled: true;
+    maxFrameBytes: number;
+  };
+  /**
    * Reliable terminal input delivery. When enabled, clients may attach an
    * `inputId` to `terminal_input` and retry until the host replies with
    * `terminal_input_ack`. Older hosts omit this field.
@@ -554,6 +573,8 @@ export type SyncHelloPayload = {
   peer: SyncPeerMetadata;
   token?: string;
   auth?: SyncHelloAuth;
+  /** Ordered application-layer codecs this client can encode and decode. */
+  compression?: SyncApplicationCompressionCodec[];
 };
 
 export type SyncMobileProjectSummary = {
@@ -884,6 +905,14 @@ export type SyncHelloOkPayload = {
   serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  /**
+   * Present only when hello offered a mutually supported application codec.
+   * Its absence preserves the exact legacy compression behavior.
+   */
+  compression?: {
+    codec: SyncApplicationCompressionCodec;
+    thresholdBytes: number;
+  };
   projects?: SyncMobileProjectSummary[];
   features: SyncFeatureFlags;
   /**
@@ -906,9 +935,7 @@ export type SyncHelloOkPayload = {
   };
 };
 
-export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
-  message: string;
+type SyncHelloErrorHost = {
   /**
    * Identity of the machine that rejected this hello. Lets a client tell
    * "the machine I'm paired with revoked this device" (safe to drop the
@@ -922,6 +949,20 @@ export type SyncHelloErrorPayload = {
     name?: string;
   };
 };
+
+export type SyncHelloErrorPayload =
+  | (SyncHelloErrorHost & {
+      code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
+      message: string;
+    })
+  | (SyncHelloErrorHost & {
+      code: "protocol_version_mismatch";
+      message: string;
+      receivedVersion: number;
+      currentVersion: number;
+      minSupportedVersion: number;
+      updateTarget: "client" | "host";
+    });
 
 export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback" | "relay";
 
@@ -1812,7 +1853,7 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
       payload: TPayload;
     })
   | (SyncEnvelopeBase<TType> & {
-      compression: "gzip";
+      compression: "gzip" | "deflate";
       payloadEncoding: "base64";
       payload: string;
       uncompressedBytes: number;

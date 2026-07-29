@@ -1,5 +1,5 @@
-import { gzipSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { deflateSync, gzipSync } from "node:zlib";
+import { describe, expect, it, vi } from "vitest";
 import {
   BACKPRESSURE_POLL_MS,
   createSyncEnvelopeChunkAssembler,
@@ -8,13 +8,18 @@ import {
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
   FORWARD_DATA_CHUNK_BYTES,
+  isSyncProtocolVersionSupported,
   MAX_CHANNEL_ID_CHARS,
+  MAX_ENVELOPE_CHUNK_ID_BYTES,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
   normalizeChannelId,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
   PEER_BACKPRESSURE_BYTES,
   RPC_DATA_CHUNK_BYTES,
+  SyncProtocolVersionMismatchError,
+  SYNC_PROTOCOL_MIN_SUPPORTED,
+  SYNC_PROTOCOL_VERSION,
 } from "./syncProtocol";
 
 // Deterministic xorshift PRNG — gzip cannot compress its output, so payloads
@@ -164,6 +169,46 @@ describe("createSyncEnvelopeChunkAssembler", () => {
     const result = assembler.add({ chunkId: "hb", index: 1, total: 2, part: raw.subarray(half).toString("base64") });
     expect(result).toBe(encoded);
   });
+
+  it("expires an incomplete chunk set after 30 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const assembler = createSyncEnvelopeChunkAssembler();
+      expect(assembler.add({
+        chunkId: "timed-out",
+        index: 0,
+        total: 2,
+        part: Buffer.from("first").toString("base64"),
+      })).toBeNull();
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(29_999);
+      expect(assembler.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(assembler.pendingCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps aggregate buffered bytes across concurrent chunk sets", () => {
+    const assembler = createSyncEnvelopeChunkAssembler({
+      maxEnvelopeBytes: 8,
+      maxBufferedBytes: 8,
+    });
+    expect(assembler.add({
+      chunkId: "one",
+      index: 0,
+      total: 2,
+      part: Buffer.from("12345").toString("base64"),
+    })).toBeNull();
+    expect(assembler.add({
+      chunkId: "two",
+      index: 0,
+      total: 2,
+      part: Buffer.from("6789").toString("base64"),
+    })).toBeNull();
+    expect(assembler.pendingCount()).toBe(1);
+  });
 });
 
 describe("parseSyncEnvelopeChunkPayload", () => {
@@ -171,6 +216,12 @@ describe("parseSyncEnvelopeChunkPayload", () => {
     expect(parseSyncEnvelopeChunkPayload(null)).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "a", index: 2, total: 2, part: "" })).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "", index: 0, total: 1, part: "" })).toBeNull();
+    expect(parseSyncEnvelopeChunkPayload({
+      chunkId: "x".repeat(MAX_ENVELOPE_CHUNK_ID_BYTES + 1),
+      index: 0,
+      total: 1,
+      part: "",
+    })).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "a", index: 0, total: 1, part: "abc" })).toEqual({
       chunkId: "a",
       index: 0,
@@ -181,6 +232,96 @@ describe("parseSyncEnvelopeChunkPayload", () => {
 });
 
 describe("parseSyncEnvelope", () => {
+  it("accepts every integer inside a supported version interval", () => {
+    expect(isSyncProtocolVersionSupported(1, 1, 2)).toBe(true);
+    expect(isSyncProtocolVersionSupported(2, 1, 2)).toBe(true);
+    expect(isSyncProtocolVersionSupported(0, 1, 2)).toBe(false);
+    expect(isSyncProtocolVersionSupported(3, 1, 2)).toBe(false);
+    expect(isSyncProtocolVersionSupported(1.5, 1, 2)).toBe(false);
+  });
+
+  it.each([
+    [0, "client"],
+    [2, "host"],
+  ] as const)("throws a typed version mismatch for protocol %i", (version, updateTarget) => {
+    let caught: unknown;
+    try {
+      parseSyncEnvelope(JSON.stringify({
+        version,
+        type: "hello",
+        requestId: `version-${version}`,
+        compression: "none",
+        payloadEncoding: "json",
+        payload: {},
+      }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SyncProtocolVersionMismatchError);
+    const mismatch = caught as SyncProtocolVersionMismatchError;
+    expect(mismatch.toHelloErrorPayload()).toEqual({
+      code: "protocol_version_mismatch",
+      message: mismatch.message,
+      receivedVersion: version,
+      currentVersion: SYNC_PROTOCOL_VERSION,
+      minSupportedVersion: SYNC_PROTOCOL_MIN_SUPPORTED,
+      updateTarget,
+    });
+  });
+
+  it("preserves the legacy gzip wire frame unless a codec is explicitly selected", () => {
+    const args = {
+      type: "chat_event" as const,
+      requestId: "legacy",
+      payload: { text: "compress me ".repeat(600) },
+      compressionThresholdBytes: 512,
+    };
+    expect(encodeSyncEnvelope(args)).toBe(encodeSyncEnvelope({
+      ...args,
+      compressionCodec: "gzip",
+    }));
+    expect(parseSyncEnvelope(encodeSyncEnvelope({
+      ...args,
+      compressionCodec: "deflate",
+    })).compression).toBe("deflate");
+  });
+
+  it("decodes zlib-wrapped deflate with the same output cap as legacy gzip", () => {
+    const payload = { text: "cross implementation ".repeat(300) };
+    const payloadJson = JSON.stringify(payload);
+    const encoded = JSON.stringify({
+      version: 1,
+      type: "chat_event",
+      requestId: "deflate-fixture",
+      compression: "deflate",
+      payloadEncoding: "base64",
+      payload: deflateSync(Buffer.from(payloadJson, "utf8")).toString("base64"),
+      uncompressedBytes: Buffer.byteLength(payloadJson, "utf8"),
+    });
+
+    expect(parseSyncEnvelope(encoded).payload).toEqual(payload);
+  });
+
+  it("decodes an envelope compressed by the shipped iOS zlib implementation", () => {
+    // Captured from SyncService.swift's deflateZlib implementation using the
+    // shipped SDK's zlib module, not generated by Node in this test.
+    const compressedPayload =
+      "eJyrVipJrShRslLKzC9WyC8tScovzUtRSC7KLy5WyMwtyEnNTc0rSSzJzM9TGFUxqmLgVSjVAgCWBg1r";
+    const encoded = JSON.stringify({
+      version: 1,
+      type: "chat_event",
+      requestId: "ios-deflate-fixture",
+      compression: "deflate",
+      payloadEncoding: "base64",
+      payload: compressedPayload,
+      uncompressedBytes: 691,
+    });
+
+    expect(parseSyncEnvelope(encoded).payload).toEqual({
+      text: "ios outbound cross implementation ".repeat(20),
+    });
+  });
+
   it("round-trips every paired runtime channel envelope", () => {
     const cases = [
       ["rpc_open", { channelId: "rpc-1" }],

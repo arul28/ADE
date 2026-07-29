@@ -273,10 +273,11 @@ running sync authority).
 │     project_catalog/project_switch/project actions,              │
 │     command / command_ack / command_result,                      │
 │     envelope_chunk                                               │
-│   - JSON payloads; gzip+base64 above threshold (4 KB default),   │
-│     with inflate capped at 25 MB before auth processing          │
-│   - encoded envelopes >720 KB sliced into envelope_chunk frames  │
-│     for peers declaring the "chunkedEnvelopes" capability        │
+│   - negotiated deflate+base64 above 512 B; no offer keeps the    │
+│     exact legacy encoder (gzip at 4 KB, or web JSON)             │
+│   - decode capped at 25 MB; reassembly capped and expires at 30 s│
+│   - encoded envelopes >720 KB sliced bidirectionally after the   │
+│     host confirms the peer's "chunkedEnvelopes" capability       │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -626,6 +627,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `account_sealed` adoption is the one account path allowed over a direct
   LAN/tailnet route — plaintext `account` bearers still require the
   `relay-bridge` transport origin), per-peer state,
+  application-compression negotiation (the client offers ordered codecs in
+  `hello`, the host selects `deflate` in the legacy-encoded `hello_ok`, and
+  both directions switch only after that frame is queued), authenticated
+  inbound `envelope_chunk` reassembly, outbound per-peer chunk framing after
+  the peer declared `chunkedEnvelopes`, and protocol-range rejection through a
+  typed uncompressed `hello_error` before close code `4406`,
   changeset fan-out + ack tracking (bounded, windowed exports and smaller-batch
   recovery from the last acknowledged cursor — see `crdt-model.md`), per-peer
   foreground-first scheduling (each peer has its own serialized
@@ -771,6 +778,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   active. Personal `chat_subscribe` snapshots carry the same byte paging
   metadata as project-host snapshots, and `chat_history` pages continue to
   work through this fallback without booting a project host.
+  It shares the project host's compression offer/selection and typed protocol
+  mismatch behavior; the selected codec is stored per socket only after the
+  legacy-encoded `hello_ok` is accepted for send.
   It also answers `command` envelopes: when no project host owns the peer
   (host restarting, or blocked by a conflicting sync listener) it replies
   immediately with a `command_result` carrying
@@ -815,18 +825,21 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   can run this too when it joins another runtime as a peer (handoff
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
-- `syncProtocol.ts` — envelope encode/decode with gzip
-  threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`)
-  plus a bounded inflate cap
-  (`MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024`), and
-  envelope chunking: an encoded envelope above
-  `DEFAULT_SYNC_MAX_FRAME_BYTES` (720 KB) is sliced into
-  `envelope_chunk` frames for peers that declared the
-  `chunkedEnvelopes` hello capability
-  (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
-  full frame. Protocol version is `1`. Default host port is `8787`,
-  and `SYNC_HOST_MAX_PORT` (`8999`) bounds the sync range the shared
-  listener will zombie-reap a stale ADE holder from.
+- `syncProtocol.ts` — canonical Node envelope codec and protocol boundary.
+  It retains the legacy gzip threshold
+  (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`) for peers that
+  omit compression negotiation, and supports negotiated zlib-wrapped
+  `deflate` at `SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES` (512 bytes).
+  Decode is capped at
+  `MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES` (25 MiB). Encoded envelopes above
+  `DEFAULT_SYNC_MAX_FRAME_BYTES` (720 KiB) can be split into
+  `envelope_chunk` frames; reassembly accepts at most eight chunk sets, 512
+  parts, a 128-byte `chunkId`, and 32 MiB total buffered data, and expires an
+  incomplete set after 30 seconds. It also owns the supported protocol range
+  (`SYNC_PROTOCOL_MIN_SUPPORTED...SYNC_PROTOCOL_VERSION`), the typed
+  mismatch error, and close code `4406`. Default host port is `8787`, and
+  `SYNC_HOST_MAX_PORT` (`8999`) bounds the sync range the shared listener
+  will zombie-reap a stale ADE holder from.
 - `abortSignal.ts` — the shared cancellation helper (`runWithAbortSignal`,
   `abortSignalError`) used across the sync command paths so a registration- or
   caller-carried `AbortSignal` rejects in-flight work with a consistent
@@ -1230,6 +1243,17 @@ runtime-scoped `PersonalChatRemoteCommandAction`s) live in
 provider-to-argv translation is shared with the desktop Work tab
 through `apps/desktop/src/shared/cliLaunch.ts`.
 
+Hosted-web wire client (`apps/desktop/src/renderer/webclient/sync/`):
+
+- `wireProtocol.ts` — browser envelope encode/decode through
+  `CompressionStream` / `DecompressionStream`, negotiated `deflate`, outbound
+  chunk framing, bounded inbound chunk reassembly with the same 30-second
+  expiry, and strict integer protocol-range validation.
+- `connection.ts` — advertises `deflate` and `chunkedEnvelopes` in `hello`,
+  applies the host's `hello_ok` selections to later sends, serializes async
+  compression/chunk writes to preserve envelope order, clears partial chunks on
+  disconnect, and surfaces protocol mismatch as a terminal update error.
+
 iOS service files (`apps/ios/ADE/Services/`):
 
 - `Database.swift` — native SQLite3 + pure-SQL CRR emulation (triggers
@@ -1237,7 +1261,9 @@ iOS service files (`apps/ios/ADE/Services/`):
   directory listings, file contents, session pin/runtime state, chat
   snapshots, PR mobile snapshot persistence, and integration proposal
   fields mirrored from desktop schema.
-- `SyncService.swift` — WebSocket client, envelope encoding (zlib),
+- `SyncService.swift` — WebSocket client, legacy gzip plus negotiated
+  zlib-wrapped deflate envelope encoding, bidirectional bounded chunk framing
+  and 30-second reassembly expiry, typed protocol-range mismatch presentation,
   command routing, keychain integration, PIN-based pairing, the sealed
   `ade-adopt-v1` account-adoption client (challenge/verify against the
   directory `pubkey`, sealed `account_sealed` hello, and LAN → Tailscale →
@@ -1557,7 +1583,7 @@ Envelopes are JSON with fields:
 
 ```ts
 {
-  version: 1,
+  version: number, // integer inside MIN_SUPPORTED...CURRENT
   type: "hello" | "hello_ok" | "hello_error" | "pairing_request" |
         "pairing_result" |
         "account_challenge" | "account_challenge_ok" |
@@ -1580,37 +1606,67 @@ Envelopes are JSON with fields:
         "envelope_chunk",
   projectId?: string | null, // present on project-scoped envelopes
   requestId: string | null,
-  compression: "none" | "gzip",
+  compression: "none" | "gzip" | "deflate",
   payloadEncoding: "json" | "base64",
   payload: ...,
-  uncompressedBytes?: number, // gzip only
+  uncompressedBytes?: number, // gzip/deflate only
 }
 ```
 
-Envelope types and `hello_ok.features` keys are additive within protocol
-version 1. Receivers decode the common envelope first and dispatch only the
-types they implement; an otherwise valid unknown type is ignored rather than
-closing the connection. This is how iOS and hosted-web clients safely coexist
-with the desktop-only `rpc_*` and `fwd_*` extensions. The paired desktop treats
-missing `features.rpcChannel` or `features.portForward` exactly like `false` and
-does not attempt that channel, while legacy phone/browser clients continue on
-their existing mobile command surface when those keys are absent or present.
+Envelope types and `hello_ok.features` keys remain additive inside the
+supported protocol interval
+`SYNC_PROTOCOL_MIN_SUPPORTED...SYNC_PROTOCOL_VERSION` (currently `1...1`).
+Receivers decode the common envelope first and dispatch only the types they
+implement; an otherwise valid unknown type is ignored rather than closing the
+connection. This is how iOS and hosted-web clients safely coexist with the
+desktop-only `rpc_*` and `fwd_*` extensions. The paired desktop treats missing
+`features.rpcChannel` or `features.portForward` exactly like `false` and does
+not attempt that channel, while legacy phone/browser clients continue on their
+existing mobile command surface when those keys are absent or present.
 
-Payloads above `DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES` (4 KB) are
-gzipped and base64-encoded. `parseSyncEnvelope` caps gzip inflate at
-`MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES` (25 MB), rejects declared
-oversize gzip envelopes before inflate, rejects a mismatch between
-`compression` and `payloadEncoding`, and rejects unsupported protocol
-versions.
+An integer version below the floor or above the current version is different
+from an additive unknown type. The host sends an uncompressed
+`hello_error` with `code: "protocol_version_mismatch"`,
+`receivedVersion`, `minSupportedVersion`, `currentVersion`, and
+`updateTarget: "client" | "host"`, then closes with code `4406`. The
+project host and machine-level fallback use the same response path. Browser and
+iOS clients treat the error as terminal and name the side that needs an update
+instead of silently dropping or retrying the connection. Non-integer versions
+remain malformed envelopes.
 
-Encoded envelopes larger than 720 KB
-(`DEFAULT_SYNC_MAX_FRAME_BYTES`) are sliced into `envelope_chunk`
-frames (base64 parts keyed by `chunkId`/`index`) for peers that
-declared the `chunkedEnvelopes` capability in `hello`; the receiver
-reassembles before normal decode. iOS declares the capability and
-raises its socket receive budget to 32 MiB, so chat / terminal
-snapshots, `file_response`, and large `command_result` payloads can
-no longer kill the connection with "Message too long".
+Application compression is negotiated in the authenticated handshake. A new
+iOS or hosted-web client offers an ordered `hello.compression` list; the host
+selects the first mutual codec and returns
+`hello_ok.compression: { codec, thresholdBytes }`. The current common codec is
+zlib-wrapped `deflate`, and the selected threshold is 512 payload bytes. The
+`hello` and selection-bearing `hello_ok` themselves retain legacy encoding;
+both directions switch only after `hello_ok` is sent. If the offer is absent or
+has no overlap, the selection is omitted and every implementation keeps its
+pre-negotiation behavior byte-for-byte: Node/iOS legacy paths use gzip above
+their existing 4 KiB threshold, while hosted web continues to send plain JSON.
+There is no static dictionary and no zstd dependency.
+
+`parseSyncEnvelope` accepts legacy gzip and negotiated deflate, caps decoded
+output at `MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES` (25 MiB), rejects a declared
+oversize before decompression, verifies `uncompressedBytes`, and rejects a
+mismatch between `compression` and `payloadEncoding`.
+
+Encoded envelopes larger than 720 KiB (`DEFAULT_SYNC_MAX_FRAME_BYTES`) are
+sliced into `envelope_chunk` frames (base64 parts keyed by
+`chunkId`/`index`) only after the client declared `chunkedEnvelopes` and the
+host confirmed `hello_ok.features.chunkedEnvelopes`. That confirmation makes
+the framing bidirectional: the host, iOS, and hosted web can all split outbound
+envelopes, and each receiver reassembles the original encoded envelope before
+normal decompression/JSON decode. A peer that does not advertise the capability
+still receives and sends the exact single-frame legacy traffic.
+
+Reassembly is bounded independently of the socket receive limit: at most eight
+concurrent chunk sets, 512 parts per set, 128 UTF-8 bytes per `chunkId`, and
+32 MiB aggregate decoded buffering. An incomplete set expires after 30 seconds
+on Node, hosted web, and iOS; disconnect/reset clears it immediately. iOS also
+keeps its WebSocket `maximumMessageSize` at 32 MiB. This protects large chat /
+terminal snapshots, `file_response`, and `command_result` payloads without
+letting abandoned chunk sets retain memory indefinitely.
 
 ### Transport readiness and path truth
 
@@ -1963,7 +2019,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | CRR marking for eligible tables | Implemented (dynamic startup) |
 | Changeset extraction/application | Implemented |
 | WebSocket sync server | Implemented |
-| Sync protocol (JSON + zlib) | Implemented |
+| Sync protocol (JSON + negotiated deflate with legacy gzip fallback) | Implemented |
 | File access sub-protocol | Implemented |
 | Terminal stream sub-protocol | Implemented |
 | Chat stream sub-protocol | Implemented |
@@ -1977,7 +2033,8 @@ feature is merged or because a deliberately isolated-port host is running.
 | Mobile project catalog + project switch handoff | Implemented |
 | Mobile project actions (browse/open/create/clone/list GitHub repos/remove from list) | Implemented |
 | Brain-level shared listener (peers adopted across project switches) | Implemented |
-| Chunked envelopes (`envelope_chunk`, 720 KB frame budget) | Implemented |
+| Bidirectional chunked envelopes (`envelope_chunk`, 720 KiB frame budget, 30 s bounded reassembly) | Implemented |
+| Typed sync protocol version floor/mismatch (`hello_error`, close `4406`) | Implemented |
 | Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |
 | Resumable chat streams (per-session `seq` + `sinceSeq` replay buffer) | Implemented |
 | Mobile changeset diet (heavy never-read tables filtered for phones) | Implemented |

@@ -15,6 +15,7 @@ import type {
   SyncChatHistoryRequestPayload,
   SyncChatUnsubscribePayload,
   SyncCommandPayload,
+  SyncApplicationCompressionCodec,
   SyncRemoteCommandDescriptor,
   SyncEnvelope,
   SyncHelloPayload,
@@ -28,7 +29,10 @@ import type {
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
+  SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+} from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -57,7 +61,11 @@ import {
   DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
   encodeSyncEnvelope,
   mapPlatform,
+  negotiateSyncApplicationCompression,
+  normalizeSyncApplicationCompressionOffer,
   parseSyncEnvelope,
+  sendSyncProtocolVersionMismatchAndClose,
+  SyncProtocolVersionMismatchError,
   wsDataToText,
 } from "./syncProtocol";
 import {
@@ -116,6 +124,7 @@ type BrainPeerState = {
 const WS_OPEN = 1;
 const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
 const BRAIN_SYNC_AUTH_TIMEOUT_MS = 15_000;
+const brainPeerCompressionBySocket = new WeakMap<WebSocket, SyncApplicationCompressionCodec>();
 
 function ensureSecretFile(filePath: string, bytes: number): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -266,9 +275,10 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   const record = payload as Record<string, unknown>;
   const peer = normalizePeerMetadata(record.peer);
   if (!peer) return null;
+  const compression = normalizeSyncApplicationCompressionOffer(record.compression);
   const auth = record.auth as SyncHelloPayload["auth"] | undefined;
   if (auth?.kind === "bootstrap" && optionalString(auth.token)) {
-    return { peer, auth: { kind: "bootstrap", token: auth.token } };
+    return { peer, auth: { kind: "bootstrap", token: auth.token }, compression };
   }
   if (
     auth?.kind === "paired"
@@ -290,10 +300,11 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
           ? { relayAccountToken: optionalString(auth.relayAccountToken)! }
           : {}),
       },
+      compression,
     };
   }
   const token = optionalString(record.token);
-  if (token) return { peer, auth: { kind: "bootstrap", token } };
+  if (token) return { peer, auth: { kind: "bootstrap", token }, compression };
   return null;
 }
 
@@ -325,11 +336,15 @@ function send(
 ): boolean {
   if (ws.readyState !== WS_OPEN) return false;
   try {
+    const compressionCodec = brainPeerCompressionBySocket.get(ws) ?? null;
     ws.send(encodeSyncEnvelope({
       type,
       requestId,
       payload,
-      compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+      compressionThresholdBytes: compressionCodec
+        ? SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES
+        : DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+      compressionCodec: compressionCodec ?? "gzip",
     }));
     return true;
   } catch {
@@ -1066,6 +1081,22 @@ export function createBrainProjectActionsSyncHandler(
       try {
         envelope = parseSyncEnvelope(wsDataToText(data));
       } catch (error) {
+        if (error instanceof SyncProtocolVersionMismatchError) {
+          const payload = sendSyncProtocolVersionMismatchAndClose(
+            peer.ws,
+            error,
+            () => {
+              clearAuthTimeout();
+            },
+          );
+          args.logger.warn("sync_brain.protocol_version_mismatch", {
+            receivedVersion: payload.receivedVersion,
+            currentVersion: payload.currentVersion,
+            minSupportedVersion: payload.minSupportedVersion,
+            remoteAddress: remoteAddress ?? null,
+          });
+          return;
+        }
         args.logger.warn("sync_brain.invalid_envelope", {
           error: error instanceof Error ? error.message : String(error),
           remoteAddress: remoteAddress ?? null,
@@ -1338,12 +1369,14 @@ export function createBrainProjectActionsSyncHandler(
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
-          send(ws, "hello_ok", buildSyncHostHelloOkPayload({
+          const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
+          const helloOkPayload = buildSyncHostHelloOkPayload({
             peer: hello.peer,
             brain,
             serverDbVersion: 0,
             heartbeatIntervalMs,
             pollIntervalMs,
+            compression: negotiatedCompression,
             projectCatalog: catalog,
             projectCatalogEnabled: true,
             crossProjectChatEnabled: false,
@@ -1361,7 +1394,16 @@ export function createBrainProjectActionsSyncHandler(
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
               auth?.kind === "paired" && isRuntimeHostPairingRecord(authenticatedPairingRecord),
-          }), envelope.requestId);
+          });
+          // The selection frame itself must retain the legacy wire encoding.
+          // Apply the selected codec only after it has been queued successfully.
+          if (send(ws, "hello_ok", helloOkPayload, envelope.requestId)) {
+            if (negotiatedCompression) {
+              brainPeerCompressionBySocket.set(ws, negotiatedCompression);
+            } else {
+              brainPeerCompressionBySocket.delete(ws);
+            }
+          }
           return;
         }
 
@@ -1390,6 +1432,7 @@ export function createBrainProjectActionsSyncHandler(
       clearAuthTimeout();
       peer.relayAuthorization?.dispose();
       peer.relayAuthorization = null;
+      brainPeerCompressionBySocket.delete(ws);
       peer.authenticated = false;
       peer.authKind = null;
       peer.metadata = null;

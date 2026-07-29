@@ -18,6 +18,7 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
 import {
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -35,9 +36,13 @@ import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof, signRelayReauthorizationProof } from "./dpop";
 import { randomHex } from "./ids";
 import {
+  availableBrowserSyncApplicationCompressionCodecs,
+  createEnvelopeChunkAssembler,
   createProjectCatalogChunkAssembler,
   decodeEnvelopeText,
   encodeEnvelopeText,
+  encodeEnvelopeFrames,
+  parseEnvelopeChunkPayload,
   type EncodeEnvelopeInput,
 } from "./wireProtocol";
 
@@ -206,6 +211,15 @@ export class SyncConnectionError extends Error {
   }
 }
 
+function protocolVersionMismatchMessage(
+  payload: Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }>,
+): string {
+  if (payload.updateTarget === "host") {
+    return "Update ADE on your Mac to connect to this browser.";
+  }
+  return "Update ADE in this browser to connect to your Mac.";
+}
+
 function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
   return payload.features?.invalidationOnlyV1?.enabled === true
     && payload.features?.compactInvalidationV1?.enabled === true;
@@ -294,6 +308,8 @@ export class SyncConnection {
   private relayRefreshDueAtMs: number | null = null;
   private relayLastRefreshStartedAtMs: number | null = null;
   private relayAuthorizationTerminalError: string | null = null;
+  private outboundSendQueue: Promise<void> = Promise.resolve();
+  private readonly envelopeChunks = createEnvelopeChunkAssembler();
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
     envelope: new Set(),
@@ -410,7 +426,37 @@ export class SyncConnection {
     if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Sync socket is not connected.");
     }
-    this.ws.send(encodeEnvelopeText(input));
+    const socket = this.ws;
+    const generation = this.connectionGeneration;
+    const negotiated = this.latestHello?.compression?.codec === "deflate"
+      ? {
+          codec: "deflate" as const,
+          thresholdBytes: Math.max(
+            1,
+            Math.floor(this.latestHello.compression.thresholdBytes),
+          ),
+        }
+      : null;
+    const maxFrameBytes = this.latestHello?.features.chunkedEnvelopes?.enabled === true
+      ? Math.max(1_025, Math.floor(this.latestHello.features.chunkedEnvelopes.maxFrameBytes))
+      : null;
+    if (!negotiated && !maxFrameBytes) {
+      socket.send(encodeEnvelopeText(input));
+      return;
+    }
+    this.outboundSendQueue = this.outboundSendQueue
+      .then(async () => {
+        const frames = await encodeEnvelopeFrames(input, {
+          compression: negotiated,
+          maxFrameBytes,
+        });
+        if (!this.isCurrentSocket(socket, generation) || socket.readyState !== SOCKET_OPEN) return;
+        for (const frame of frames) socket.send(frame);
+      })
+      .catch((error) => {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   disconnect(options: { reconnect?: boolean; code?: number; reason?: string } = {}): void {
@@ -441,6 +487,7 @@ export class SyncConnection {
     }
     this.ws = null;
     this.latestHello = null;
+    this.envelopeChunks.reset();
     this.setStatus({
       state: "disconnected",
       endpoint: null,
@@ -728,13 +775,16 @@ export class SyncConnection {
                   capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY
                   && capability !== SYNC_INVALIDATION_ONLY_V1_CAPABILITY
                   && capability !== SYNC_COMPACT_INVALIDATION_V1_CAPABILITY
+                  && capability !== SYNC_CHUNKED_ENVELOPES_CAPABILITY
                 ),
               ),
               SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
               SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
               SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+              SYNC_CHUNKED_ENVELOPES_CAPABILITY,
             ],
           },
+          compression: availableBrowserSyncApplicationCompressionCodecs(),
           auth: {
             kind: "account",
             deviceId: args.peer.deviceId,
@@ -835,7 +885,13 @@ export class SyncConnection {
             },
             onHelloError: (payload) => {
               if (settled || !this.isCurrentSocket(socket, generation)) return;
-              fail(new Error(payload.message || "Account authentication was rejected."));
+              fail(payload.code === "protocol_version_mismatch"
+                ? new SyncConnectionError(
+                    protocolVersionMismatchMessage(payload),
+                    payload.code,
+                    payload,
+                  )
+                : new Error(payload.message || "Account authentication was rejected."));
             },
           });
         }).catch((error) => {
@@ -897,8 +953,10 @@ export class SyncConnection {
           SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
           SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
           SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          SYNC_CHUNKED_ENVELOPES_CAPABILITY,
         ],
       },
+      compression: availableBrowserSyncApplicationCompressionCodecs(),
       auth: {
         kind: "paired",
         deviceId: environment.pairedDeviceId,
@@ -926,9 +984,20 @@ export class SyncConnection {
       onHelloError?: (payload: SyncHelloErrorPayload) => void;
     } = {},
   ): Promise<void> {
-    const envelope = await decodeEnvelopeText(event.data);
+    let envelope = await decodeEnvelopeText(event.data);
     if (!this.isCurrentSocket(socket, generation)) return;
     this.setStatus({ lastSeenAt: nowIso() });
+    if (envelope.type === "envelope_chunk") {
+      const chunk = parseEnvelopeChunkPayload(envelope.payload);
+      if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+      const reassembled = this.envelopeChunks.add(chunk);
+      if (!reassembled) return;
+      envelope = await decodeEnvelopeText(reassembled);
+      if (envelope.type === "envelope_chunk") {
+        throw new Error("Nested envelope_chunk frames are not allowed.");
+      }
+      if (!this.isCurrentSocket(socket, generation)) return;
+    }
     if (envelope.type === "hello_ok") {
       callbacks.onHelloOk?.(envelope.payload as SyncHelloOkPayload);
     } else if (envelope.type === "hello_error") {
@@ -1254,6 +1323,12 @@ export class SyncConnection {
   }
 
   private handleAuthFailure(environment: WebClientEnvironmentRecord, payload: SyncHelloErrorPayload): SyncConnectionError {
+    if (payload.code === "protocol_version_mismatch") {
+      this.shouldReconnect = false;
+      const message = protocolVersionMismatchMessage(payload);
+      this.setStatus({ state: "error", error: message });
+      return new SyncConnectionError(message, payload.code, payload);
+    }
     if (payload.code === "relay_account_required") {
       this.shouldReconnect = false;
       this.setStatus({ state: "error", error: payload.message });
@@ -1285,6 +1360,7 @@ export class SyncConnection {
         error.code === "attributed_auth_failed"
         || error.code === "terminal_auth_failed"
         || error.code === "invalidation_only_v1_unsupported"
+        || error.code === "protocol_version_mismatch"
       );
   }
 
@@ -1401,6 +1477,7 @@ export class SyncConnection {
     const terminalError = this.relayAuthorizationTerminalError;
     const closeGeneration = ++this.connectionGeneration;
     this.stopTimers();
+    this.envelopeChunks.reset();
     this.ws = null;
     this.latestHello = null;
     this.emit("close", { code: event.code, reason: event.reason });
@@ -1478,6 +1555,7 @@ export class SyncConnection {
   private cleanupSocket(): void {
     this.connectionGeneration += 1;
     this.stopTimers();
+    this.envelopeChunks.reset();
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;

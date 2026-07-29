@@ -48,6 +48,7 @@ import type {
   PtyExitEvent,
   PersonalChatScopeContract,
   SyncBrainStatusPayload,
+  SyncApplicationCompressionCodec,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
   CloneProjectInput,
@@ -99,6 +100,7 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
@@ -184,7 +186,26 @@ import {
   createMachineIdentitySigningStore,
   type MachineIdentitySigningStore,
 } from "./machineIdentitySigningStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, SYNC_HOST_MAX_PORT, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import {
+  createSyncEnvelopeChunkAssembler,
+  DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+  DEFAULT_SYNC_HOST_PORT,
+  DEFAULT_SYNC_MAX_FRAME_BYTES,
+  SYNC_HOST_MAX_PORT,
+  encodeSyncEnvelope,
+  encodeSyncEnvelopeFrames,
+  mapPlatform,
+  negotiateSyncApplicationCompression,
+  normalizeSyncApplicationCompressionOffer,
+  parseSyncEnvelope,
+  parseSyncEnvelopeChunkPayload,
+  sendSyncProtocolVersionMismatchAndClose,
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SyncProtocolVersionMismatchError,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
+  wsDataToText,
+  type ParsedSyncEnvelope,
+} from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
@@ -580,6 +601,8 @@ type PeerState = {
   ws: WebSocket;
   lifecycleGeneration: number;
   metadata: SyncPeerMetadata | null;
+  negotiatedCompression: SyncApplicationCompressionCodec | null;
+  envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
   authKind: SyncHostAuthKind;
@@ -1257,6 +1280,8 @@ export function buildSyncHostHelloOkPayload(args: {
   serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  compression?: SyncApplicationCompressionCodec | null;
+  chunkedEnvelopes?: boolean;
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
@@ -1298,6 +1323,14 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.serverDbSiteId ? { serverDbSiteId: args.serverDbSiteId } : {}),
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
+    ...(args.compression
+      ? {
+          compression: {
+            codec: args.compression,
+            thresholdBytes: SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
+          },
+        }
+      : {}),
     projects: args.projectCatalog.projects,
     // Explicit null (relay unavailable) must reach the wire: clients treat an
     // ABSENT key as "older host — keep saved relay routes", and the brain
@@ -1343,6 +1376,14 @@ export function buildSyncHostHelloOkPayload(args: {
       changesetAck: {
         enabled: true,
       },
+      ...(args.chunkedEnvelopes
+        ? {
+            chunkedEnvelopes: {
+              enabled: true as const,
+              maxFrameBytes: DEFAULT_SYNC_MAX_FRAME_BYTES,
+            },
+          }
+        : {}),
       ...(args.terminalInputAckEnabled
         ? {
             terminalInputAck: {
@@ -1472,6 +1513,7 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
     },
     auth: normalizedAuth,
+    compression: normalizeSyncApplicationCompressionOffer(value?.compression),
   };
 }
 
@@ -3187,6 +3229,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws,
       lifecycleGeneration: 0,
       metadata: null,
+      negotiatedCompression: null,
+      envelopeChunks: createSyncEnvelopeChunkAssembler(),
       authenticated: false,
       authTimeout: null,
       authKind: null,
@@ -3257,7 +3301,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let envelope: ParsedSyncEnvelope;
       try {
         envelope = parseSyncEnvelope(wsDataToText(raw));
+        if (
+          envelope.type === "envelope_chunk"
+          && peer.authenticated
+          && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+        ) {
+          const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
+          if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+          const reassembled = peer.envelopeChunks.add(chunk);
+          if (!reassembled) return;
+          envelope = parseSyncEnvelope(reassembled);
+          if (envelope.type === "envelope_chunk") {
+            throw new Error("Nested envelope_chunk frames are not allowed.");
+          }
+        }
       } catch (error) {
+        if (error instanceof SyncProtocolVersionMismatchError) {
+          const payload = sendSyncProtocolVersionMismatchAndClose(
+            peer.ws,
+            error,
+            () => {
+              clearPeerAuthTimeout(peer);
+            },
+          );
+          args.logger.warn("sync_host.protocol_version_mismatch", {
+            receivedVersion: payload.receivedVersion,
+            currentVersion: payload.currentVersion,
+            minSupportedVersion: payload.minSupportedVersion,
+            remoteAddress: peer.remoteAddress,
+          });
+          return;
+        }
         args.logger.warn("sync_host.message_parse_failed", {
           error: error instanceof Error ? error.message : String(error),
           peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -3294,6 +3368,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.lifecycleGeneration += 1;
       abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
+      peer.envelopeChunks.reset();
       clearPeerAuthTimeout(peer);
       releaseConnectionAttemptWinner(peer);
       peer.relayAuthorization?.dispose();
@@ -3409,6 +3484,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.authenticated = true;
         clearPeerAuthTimeout(peer);
         peer.metadata = snapshot.metadata;
+        peer.negotiatedCompression = snapshot.negotiatedCompression ?? null;
         peer.authKind = snapshot.authKind;
         peer.pairedDeviceId = snapshot.pairedDeviceId;
         peer.pairingRecord = pairingRecord;
@@ -4125,11 +4201,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     requestId?: string | null,
   ): string[] {
     const peer = target instanceof WebSocket ? peerForSocket(target) : target;
+    const negotiatedCompression = peer?.negotiatedCompression ?? null;
     return encodeSyncEnvelopeFrames({
       type,
       payload,
       requestId,
-      compressionThresholdBytes,
+      compressionThresholdBytes: negotiatedCompression
+        ? SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES
+        : compressionThresholdBytes,
+      compressionCodec: negotiatedCompression ?? "gzip",
       maxFrameBytes: maxFrameBytesForPeer(peer),
     });
   }
@@ -6823,6 +6903,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return;
       }
+      const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
       let sealedAdoption: {
         sessionKey: Buffer;
         hostDeviceId: string;
@@ -7392,6 +7473,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         serverDbSiteId: ownSiteId,
         heartbeatIntervalMs,
         pollIntervalMs,
+        compression: negotiatedCompression,
+        chunkedEnvelopes: hello.peer.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true,
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
@@ -7437,6 +7520,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } else {
         send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
       }
+      // hello_ok itself uses the legacy encoder so the selected codec is never
+      // required before the client has observed the negotiation result.
+      peer.negotiatedCompression = negotiatedCompression;
       args.onStateChanged?.();
       // Catch-up is background work. The periodic poll starts it after the
       // serialized hello queue has had a chance to admit subscriptions.
@@ -8572,6 +8658,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const relayAuthorizationSnapshot = peer.relayAuthorization?.snapshot() ?? null;
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
+          peer.envelopeChunks.reset();
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");
@@ -8601,6 +8688,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             remotePort: peer.remotePort,
             transportOrigin: peer.transportOrigin,
             metadata: peer.metadata,
+            negotiatedCompression: peer.negotiatedCompression,
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,

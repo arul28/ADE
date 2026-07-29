@@ -2,7 +2,10 @@ import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
+import type {
+  SyncApplicationCompressionCodec,
+  SyncPeerMetadata,
+} from "../../../../desktop/src/shared/types";
 import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
@@ -105,6 +108,8 @@ export type SyncPeerHandoffSnapshot = {
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
   metadata: SyncPeerMetadata | null;
+  /** Negotiated application codec for a live socket crossing a project handoff. */
+  negotiatedCompression?: SyncApplicationCompressionCodec | null;
   authKind: "bootstrap" | "paired" | "account" | null;
   pairedDeviceId: string | null;
   connectedAt: string;
