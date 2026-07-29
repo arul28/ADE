@@ -2,3 +2,4 @@ dist/
 node_modules/
 src/generated/*.ts
 *.png
+!native/ADEAttentionNotch/Sources/ADEAttentionNotch/Resources/ADEStatusIcon.png

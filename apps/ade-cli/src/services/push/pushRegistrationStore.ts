@@ -13,6 +13,16 @@ export type StoredPushDevice = PushDeviceRegistration & {
   updatedAt: string;
 };
 
+export type StoredAttentionAcknowledgment = {
+  itemId: string;
+  accountOwnerId: string | null;
+  sourceRevision: number;
+  seenAt: string;
+  dismissedAt: string | null;
+  updatedAt: string;
+  pendingRelaySync: boolean;
+};
+
 type PushRegistrationFile = {
   version: 1;
   /** Unguessable machine key claimed on the relay (32 hex chars). */
@@ -24,6 +34,8 @@ type PushRegistrationFile = {
   /** Master publisher switch for this machine (default on). */
   enabled: boolean;
   devices: Record<string, StoredPushDevice>;
+  /** Durable machine-fallback inbox state, revision-fenced per Attention item. */
+  attentionAcknowledgments: Record<string, StoredAttentionAcknowledgment>;
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
@@ -44,6 +56,14 @@ type PushRegistrationStoreArgs = {
 
 const MACHINE_KEY_BYTES = 16; // 32 hex chars — matches the relay's 32-64 hex key pattern.
 const MACHINE_SECRET_BYTES = 24; // 48 hex chars — inside the relay's 32-128 char secret bounds.
+const ATTENTION_ACK_MAX = 512;
+
+function attentionAcknowledgmentKey(
+  accountOwnerId: string | null,
+  itemId: string,
+): string {
+  return `${accountOwnerId ?? ""}\u0000${itemId}`;
+}
 
 export function defaultPushPrefs(): PushNotificationPrefs {
   return {
@@ -76,6 +96,7 @@ function createEmptyFile(): PushRegistrationFile {
     claimed: false,
     enabled: true,
     devices: {},
+    attentionAcknowledgments: {},
     lastPublishAt: null,
     lastPublishError: null,
     lastRelayContactAt: null,
@@ -136,6 +157,41 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
             deviceId,
             { ...device, prefs: normalizePrefs(device.prefs) },
           ]),
+      ),
+      attentionAcknowledgments: Object.fromEntries(
+        Object.entries(parsed.attentionAcknowledgments ?? {})
+          .filter((entry): entry is [string, StoredAttentionAcknowledgment] => {
+            const acknowledgment = entry[1];
+            return Boolean(
+              acknowledgment
+              && typeof acknowledgment === "object"
+              && typeof acknowledgment.itemId === "string"
+              && acknowledgment.itemId.trim().length > 0
+              && (
+                acknowledgment.accountOwnerId === undefined
+                || acknowledgment.accountOwnerId === null
+                || typeof acknowledgment.accountOwnerId === "string"
+              )
+              && Number.isFinite(acknowledgment.sourceRevision)
+              && typeof acknowledgment.seenAt === "string"
+              && (
+                acknowledgment.dismissedAt === null
+                || typeof acknowledgment.dismissedAt === "string"
+              )
+              && typeof acknowledgment.updatedAt === "string",
+            );
+          })
+          .map(([, acknowledgment]) => {
+            const accountOwnerId = acknowledgment.accountOwnerId?.trim() || null;
+            return [
+              attentionAcknowledgmentKey(accountOwnerId, acknowledgment.itemId),
+              {
+              ...acknowledgment,
+              accountOwnerId,
+              pendingRelaySync: acknowledgment.pendingRelaySync !== false,
+              },
+            ];
+          }),
       ),
       lastPublishAt: parsed.lastPublishAt ?? null,
       lastPublishError: parsed.lastPublishError ?? null,
@@ -246,6 +302,83 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       const file = load();
       if (file.enabled === enabled) return;
       write({ ...file, enabled });
+    },
+
+    recordAttentionAcknowledgments(args: {
+      items: Array<{ id: string; revision: number }>;
+      accountOwnerId: string | null;
+      seenAt: string;
+      dismissedAt?: string | null;
+      updatedAt: string;
+    }): void {
+      const file = load();
+      const next = { ...file.attentionAcknowledgments };
+      for (const item of args.items) {
+        const itemId = item.id.trim();
+        if (!itemId || !Number.isFinite(item.revision)) continue;
+        const key = attentionAcknowledgmentKey(args.accountOwnerId, itemId);
+        const existing = next[key];
+        next[key] = {
+          itemId,
+          accountOwnerId: args.accountOwnerId,
+          sourceRevision: Math.max(item.revision, existing?.sourceRevision ?? 0),
+          seenAt: args.seenAt,
+          dismissedAt:
+            typeof args.dismissedAt === "string"
+              ? args.dismissedAt
+              : existing?.dismissedAt ?? null,
+          updatedAt: args.updatedAt,
+          pendingRelaySync: true,
+        };
+      }
+      const bounded = Object.fromEntries(
+        Object.entries(next)
+          .sort((left, right) =>
+            Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt))
+          .slice(0, ATTENTION_ACK_MAX),
+      );
+      write({ ...file, attentionAcknowledgments: bounded });
+    },
+
+    getAttentionAcknowledgment(
+      itemId: string,
+      accountOwnerId: string | null,
+    ): StoredAttentionAcknowledgment | null {
+      return load().attentionAcknowledgments[
+        attentionAcknowledgmentKey(accountOwnerId, itemId)
+      ] ?? null;
+    },
+
+    listPendingAttentionAcknowledgments(): StoredAttentionAcknowledgment[] {
+      return Object.values(load().attentionAcknowledgments)
+        .filter((acknowledgment) => acknowledgment.pendingRelaySync)
+        .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+    },
+
+    markAttentionAcknowledgmentsSynced(
+      acknowledgments: Array<{
+        itemId: string;
+        accountOwnerId: string | null;
+        updatedAt: string;
+      }>,
+    ): void {
+      const file = load();
+      let changed = false;
+      const next = { ...file.attentionAcknowledgments };
+      for (const acknowledgment of acknowledgments) {
+        const key = attentionAcknowledgmentKey(
+          acknowledgment.accountOwnerId,
+          acknowledgment.itemId,
+        );
+        const existing = next[key];
+        if (
+          !existing?.pendingRelaySync
+          || existing.updatedAt !== acknowledgment.updatedAt
+        ) continue;
+        next[key] = { ...existing, pendingRelaySync: false };
+        changed = true;
+      }
+      if (changed) write({ ...file, attentionAcknowledgments: next });
     },
 
     hasRegisteredDevices(): boolean {

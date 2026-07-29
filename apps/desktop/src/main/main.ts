@@ -32,6 +32,11 @@ import {
   isAdeDeeplinkArg,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
+import {
+  appNavigationOwnership,
+  dispatchOwnerAwareNavigation,
+  ownerNavigationFailureCopy,
+} from "./services/deeplinks/ownerAwareNavigation";
 import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
@@ -185,6 +190,9 @@ import {
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
+import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
+import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/pushRegistrationStore";
+import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
 import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
@@ -6422,6 +6430,76 @@ app.whenReady().then(async () => {
 
   dispatchAppNavigationRequest = (request) => {
     void (async () => {
+      const handledByOwner = await dispatchOwnerAwareNavigation(request, {
+        getLocalMachineKey: () =>
+          attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "",
+        resolveLocalProjectRoot: (projectId) => {
+          const contextMatch = [...projectContexts.entries()]
+            .find(([, context]) => context.projectId === projectId);
+          if (contextMatch) return contextMatch[0];
+          const recentMatch = readLocalRecentProjects()
+            .map(inspectRecentProject)
+            .find((entry) => entry.projectId === projectId);
+          return recentMatch?.summary.rootPath ?? null;
+        },
+        deliverLocal: async (projectRoot, ownedRequest) => {
+          const delivered = await deliverAppNavigationToProject(
+            projectRoot,
+            ownedRequest,
+          );
+          if (!delivered.ok) throw new Error(delivered.message);
+        },
+        findRemote: (accountMachineKey, projectId) => {
+          const targetId =
+            attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey)
+            ?? null;
+          if (!targetId) return null;
+          for (const [windowId, binding] of windowProjectBindings) {
+            if (
+              binding.targetId !== targetId
+              || binding.projectId !== projectId
+            ) {
+              continue;
+            }
+            const win = BrowserWindow.fromId(windowId);
+            if (win && !win.isDestroyed()) return win;
+          }
+          return null;
+        },
+        openRemote: async (accountMachineKey, projectId) => {
+          const win = await attentionWindow();
+          if (!win || win.isDestroyed() || !attentionIpcBridge) {
+            throw new Error("No ADE window is available for the owning machine.");
+          }
+          const binding = await attentionIpcBridge.openAttentionProject({
+            machineKey: accountMachineKey,
+            projectId,
+            windowId: win.id,
+          });
+          for (const [windowId, openBinding] of windowProjectBindings) {
+            if (
+              openBinding.targetId !== binding.targetId
+              || openBinding.projectId !== projectId
+            ) {
+              continue;
+            }
+            const exactWindow = BrowserWindow.fromId(windowId);
+            if (exactWindow && !exactWindow.isDestroyed()) return exactWindow;
+          }
+          return win;
+        },
+        deliverRemote: async (handle, ownedRequest) => {
+          if (!(handle instanceof BrowserWindow) || handle.isDestroyed()) {
+            throw new Error("The owning ADE window is no longer available.");
+          }
+          if (handle.isMinimized()) handle.restore();
+          handle.show();
+          handle.focus();
+          handle.webContents.send(IPC.appNavigate, ownedRequest);
+        },
+      });
+      if (handledByOwner) return;
+
       let targetWindow =
         BrowserWindow.getFocusedWindow() ??
         BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
@@ -6440,9 +6518,26 @@ app.whenReady().then(async () => {
       targetWindow.focus();
       targetWindow.webContents.send(IPC.appNavigate, request);
     })().catch((error: unknown) => {
+      const ownership = appNavigationOwnership(request.target);
       getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        ...(ownership
+          ? {
+              accountMachineKey: ownership.accountMachineKey,
+              projectId: ownership.projectId,
+            }
+          : {}),
         error: error instanceof Error ? error.message : String(error),
       });
+      if (ownership) {
+        const copy = ownerNavigationFailureCopy(error);
+        void dialog.showMessageBox({
+          type: "warning",
+          buttons: ["OK"],
+          title: copy.title,
+          message: copy.message,
+          detail: copy.detail,
+        }).catch(() => {});
+      }
     });
   };
 
@@ -6633,6 +6728,19 @@ app.whenReady().then(async () => {
 
   let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
+  const attentionAccountAuthService = getSharedAccountAuthService();
+  const attentionRelayClient = createPushRelayClient({
+    store: createPushRegistrationStore({
+      filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+    }),
+    logger: localRuntimeLogger,
+    getAccountAccessToken: (options) =>
+      getSignedInAccountAccessToken(attentionAccountAuthService, options),
+    getAccountUserId: () => {
+      const status = attentionAccountAuthService.getStatus();
+      return status.signedIn ? status.userId?.trim() || null : null;
+    },
+  });
 
   const attentionWindow = async (): Promise<BrowserWindow | null> => {
     const existing =
@@ -6655,13 +6763,13 @@ app.whenReady().then(async () => {
     target.webContents.send(IPC.attentionNotchAcknowledgeRequested, request);
   };
 
-  const requestAttentionNotchRefresh = (): void => {
+  const requestAttentionNotchRefresh = (force = false): void => {
     const target =
       BrowserWindow.getFocusedWindow()
       ?? BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
       ?? null;
     if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
-    target.webContents.send(IPC.attentionNotchRefreshRequested);
+    target.webContents.send(IPC.attentionNotchRefreshRequested, { force });
   };
 
   const matchingRemoteAttentionWindow = (
@@ -6806,6 +6914,26 @@ app.whenReady().then(async () => {
       });
       return;
     }
+    if (output.type === "open_center") {
+      dispatchAppNavigationRequest?.({
+        target: { kind: "route", route: "/attention" },
+        source: "attention-notch",
+      });
+      return;
+    }
+    if (output.type === "refresh") {
+      requestAttentionNotchRefresh(true);
+      return;
+    }
+    if (output.type === "settings") {
+      attentionNotchHelper?.updateSettings(output.settings);
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+        win.webContents.send(IPC.attentionNotchSettingsChanged, output.settings);
+      }
+      return;
+    }
+    if (output.type !== "open" && output.type !== "action") return;
     const resolved = resolveAttentionNotchOutput(output, latestAttentionNotchSnapshot);
     if (resolved.kind === "ignore") {
       getActiveContext().logger.warn("attention.notch_output_ignored", {
@@ -6891,12 +7019,31 @@ app.whenReady().then(async () => {
     updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
       attentionNotchHelper?.updateSettings(settings);
     },
+    getAttentionNotchHealth: () => attentionNotchHelper?.getHealth() ?? {
+      state: "unsupported",
+      title: "ADE Notch is unavailable",
+      message: "This ADE build does not include the native ambient surface.",
+      recovery: "reinstall_or_update",
+      surface: null,
+    },
+    retryAttentionNotch: () => attentionNotchHelper?.retry() ?? {
+      state: "unsupported",
+      title: "ADE Notch is unavailable",
+      message: "This ADE build does not include the native ambient surface.",
+      recovery: "reinstall_or_update",
+      surface: null,
+    },
     openAttentionItem: async (item: AttentionItem) => {
       await navigateFromAttentionItem(
         item,
         attentionItemNavigationRequest(item),
         { acknowledge: false },
       );
+    },
+    accountAttentionClient: attentionRelayClient,
+    getCurrentAccountOwnerId: () => {
+      const status = attentionAccountAuthService.getStatus();
+      return status.signedIn ? status.userId?.trim() || null : null;
     },
   });
 

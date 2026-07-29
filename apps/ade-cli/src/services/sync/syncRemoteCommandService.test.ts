@@ -128,6 +128,76 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("serves machine Attention to paired viewers without project context", async () => {
+    const snapshot = {
+      contractVersion: 1,
+      scope: "machine",
+      streamId: "machine:host-1",
+      revision: 7,
+      generatedAt: "2026-07-29T12:00:00.000Z",
+      items: [],
+      tombstones: [],
+    };
+    const getMachineAttentionSnapshot = vi.fn().mockResolvedValue(snapshot);
+    const acknowledgeMachineAttention = vi.fn().mockResolvedValue(undefined);
+    const { service } = createService({
+      pushPublisherService: {
+        getMachineAttentionSnapshot,
+        acknowledgeMachineAttention,
+      },
+    });
+
+    expect(service.getDescriptor("attention.getMachineSnapshot")).toEqual({
+      action: "attention.getMachineSnapshot",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+    await expect(
+      service.execute(makePayload("attention.getMachineSnapshot")),
+    ).resolves.toEqual(snapshot);
+    expect(getMachineAttentionSnapshot).toHaveBeenCalledTimes(1);
+
+    expect(service.getDescriptor("attention.acknowledgeMachine")).toEqual({
+      action: "attention.acknowledgeMachine",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("attention.acknowledgeMachine", {
+      itemIds: [" item-1 ", "", 42],
+      sourceRevisions: { "item-1": 7 },
+      expectedAccountOwnerId: "account-a",
+      seenAt: "2026-07-29T12:01:00.000Z",
+    }))).resolves.toEqual({ ok: true });
+    expect(acknowledgeMachineAttention).toHaveBeenCalledWith({
+      itemIds: ["item-1"],
+      sourceRevisions: { "item-1": 7 },
+      expectedAccountOwnerId: "account-a",
+      seenAt: "2026-07-29T12:01:00.000Z",
+    });
+
+    await expect(service.execute(makePayload("attention.acknowledgeMachine", {
+      itemIds: ["item-1"],
+      sourceRevisions: {},
+      expectedAccountOwnerId: "account-a",
+    }))).rejects.toThrow("requires the source revision for every item");
+    await expect(service.execute(makePayload("attention.acknowledgeMachine", {
+      itemIds: ["item-1"],
+      sourceRevisions: { "item-1": 7 },
+    }))).rejects.toThrow("requires the machine snapshot account owner");
+    await expect(service.execute(makePayload("attention.acknowledgeMachine", {
+      itemIds: ["item-1"],
+      sourceRevisions: { "item-1": 7 },
+      expectedAccountOwnerId: null,
+      dismissedAt: "2026-07-29T12:02:00.000Z",
+    }))).resolves.toEqual({ ok: true });
+    expect(acknowledgeMachineAttention).toHaveBeenLastCalledWith({
+      itemIds: ["item-1"],
+      sourceRevisions: { "item-1": 7 },
+      expectedAccountOwnerId: null,
+      dismissedAt: "2026-07-29T12:02:00.000Z",
+    });
+  });
+
   it("forwards explicit push-to-start clears and rejects set-plus-clear conflicts", async () => {
     const handleDeviceRegistered = vi.fn().mockResolvedValue({ ok: true });
     const { service } = createService({

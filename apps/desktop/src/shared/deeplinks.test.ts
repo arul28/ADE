@@ -33,6 +33,34 @@ describe("parseDeeplink — ade:// scheme", () => {
     expect(target).toEqual({ kind: "session", sessionId: "session-123", laneId: UUID });
   });
 
+  it("preserves exact account ownership for a work session", () => {
+    const target = expectOk(parseDeeplink(
+      "ade://session/session-123?accountMachineKey=machine-b&projectId=project-b",
+    ));
+    expect(target).toEqual({
+      kind: "session",
+      sessionId: "session-123",
+      ownership: {
+        accountMachineKey: "machine-b",
+        projectId: "project-b",
+      },
+    });
+  });
+
+  it("rejects partial destination ownership instead of routing ambiguously", () => {
+    const result = parseDeeplink(
+      "ade://session/session-123?accountMachineKey=machine-b",
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "malformed",
+        reason: "accountMachineKey and projectId must be provided together",
+      },
+      rawUrl: "ade://session/session-123?accountMachineKey=machine-b",
+    });
+  });
+
   it("parses session anchors and envelope params", () => {
     const target = expectOk(parseDeeplink(
       `ade://session/session-123?lane=${UUID}&event=4&offset=12&repo=owner%2Frepo&branch=feat&pr=42&linear=ADE-123`,
@@ -321,6 +349,52 @@ describe("buildDeeplink", () => {
 
     const https = buildDeeplink(target);
     expect(expectOk(parseDeeplink(https))).toEqual(target);
+  });
+
+  it("round-trips exact account ownership for session and PR links", () => {
+    const ownership = {
+      accountMachineKey: "machine-b",
+      projectId: "project-b",
+    };
+    const session = {
+      kind: "session",
+      sessionId: "session-123",
+      ownership,
+    } as const;
+    expect(expectOk(parseDeeplink(
+      buildDeeplink(session, { form: "ade" }),
+    ))).toEqual(session);
+    expect(expectOk(parseDeeplink(buildDeeplink(session)))).toEqual(session);
+
+    const pr = {
+      kind: "pr",
+      repoOwner: "openai",
+      repoName: "ade",
+      prNumber: 42,
+      detailTab: "checks",
+      ownership,
+    } as const;
+    expect(expectOk(parseDeeplink(
+      buildDeeplink(pr, { form: "ade" }),
+    ))).toEqual(pr);
+    expect(expectOk(parseDeeplink(buildDeeplink(pr)))).toEqual(pr);
+  });
+
+  it("accepts an owner-scoped PR without portable repo identity", () => {
+    const target = {
+      kind: "pr",
+      prNumber: 42,
+      ownership: {
+        accountMachineKey: "machine-b",
+        projectId: "project-b",
+      },
+    } as const;
+    const url = buildDeeplink(target, { form: "ade" });
+    expect(url).toBe(
+      "ade://pr/42?accountMachineKey=machine-b&projectId=project-b",
+    );
+    expect(expectOk(parseDeeplink(url))).toEqual(target);
+    expect(parseDeeplink("ade://pr/42").ok).toBe(false);
   });
 
   it("round-trips file, commit, and artifact links", () => {

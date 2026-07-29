@@ -19854,7 +19854,28 @@ async function executePlan(
         const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {
-        if (!step.optional) throw error;
+        if (!step.optional) {
+          const createdSessionId = (
+            plan.label === "new chat" || plan.label === "chat create"
+          )
+            ? sessionIdFromCreateChatValue(values.session)
+            : null;
+          if (createdSessionId && step.key === "result") {
+            const cause = error instanceof Error ? error.message : String(error);
+            throw new CliExecutionError(
+              `ADE created chat ${createdSessionId}, but the connected brain could not start its first turn.`,
+              {
+                cause,
+                sessionId: createdSessionId,
+                hostName: os.hostname(),
+                nextAction:
+                  `Update and restart ADE on ${os.hostname()}, then retry with `
+                  + `\`ade chat message ${createdSessionId} --kind auto --text \"<prompt>\"\`.`,
+              },
+            );
+          }
+          throw error;
+        }
         values[step.key] = {
           ok: false,
           error: error instanceof Error ? error.message : String(error),

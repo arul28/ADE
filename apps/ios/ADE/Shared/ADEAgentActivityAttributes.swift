@@ -1,15 +1,44 @@
 import ActivityKit
 import SwiftUI
 
+public func adeAccountWideActivityMatchesCurrentOwnership(
+    attributesEpoch: Int?,
+    contentEpoch: Int?,
+    currentEpoch: Int?,
+    hasCurrentOwner: Bool
+) -> Bool {
+    guard hasCurrentOwner, let currentEpoch else { return false }
+    if let attributesEpoch, let contentEpoch {
+        return attributesEpoch == currentEpoch && contentEpoch == currentEpoch
+    }
+    // Preserve the original account-wide wire format for a first-owner
+    // installation during relay rollout. Once this installation has crossed
+    // any sign-out or account-switch boundary, an unfenced legacy activity is
+    // no longer safe to attribute to the current account.
+    return attributesEpoch == nil
+        && contentEpoch == nil
+        && currentEpoch == 2
+}
+
 /// ActivityKit attributes shared by the main app (which starts / updates the
 /// activity) and the widget extension (which renders it). The shapes here match
 /// the brain-side Live Activity contract byte-for-byte so an APNs
 /// content-state update decodes without a translation layer:
 ///
 ///   attributesType: "ADEAgentRunsAttributes"
-///   attributes:     { "machineName": String, "accountWide"?: Bool }
+///   attributes:     {
+///                     "machineName": String,
+///                     "accountWide"?: Bool,
+///                     "ownershipEpoch"?: Int
+///                   }
 ///   activityId:     "agent-runs"
-///   contentState:   { updatedAt, activeCount, runs: [Run], prs: [PullRequest] }
+///   contentState:   {
+///                     updatedAt,
+///                     activeCount,
+///                     runs: [Run],
+///                     prs: [PullRequest],
+///                     ownershipEpoch?: Int
+///                   }
 ///
 /// Decoding is deliberately lenient — a run row with an unrecognised `phase`
 /// still renders (as `.running`), and a missing optional collapses to `nil`
@@ -24,16 +53,26 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public var activeCount: Int
         public var runs: [Run]
         public var prs: [PullRequest]
+        /// Repeated on every account-wide update so a delayed update from a
+        /// prior owner cannot refresh an otherwise valid ActivityKit instance.
+        public var ownershipEpoch: Int?
 
-        public init(updatedAt: Double, activeCount: Int, runs: [Run], prs: [PullRequest] = []) {
+        public init(
+            updatedAt: Double,
+            activeCount: Int,
+            runs: [Run],
+            prs: [PullRequest] = [],
+            ownershipEpoch: Int? = nil
+        ) {
             self.updatedAt = updatedAt
             self.activeCount = activeCount
             self.runs = runs
             self.prs = prs
+            self.ownershipEpoch = ownershipEpoch
         }
 
         private enum CodingKeys: String, CodingKey {
-            case updatedAt, activeCount, runs, prs
+            case updatedAt, activeCount, runs, prs, ownershipEpoch
         }
 
         public init(from decoder: Decoder) throws {
@@ -45,6 +84,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.runs = Array(decodedRuns.prefix(3))
             let decodedPrs = (try? c.decode([PullRequest].self, forKey: .prs)) ?? []
             self.prs = Array(decodedPrs.prefix(2))
+            self.ownershipEpoch = try? c.decodeIfPresent(Int.self, forKey: .ownershipEpoch)
         }
 
         /// `Date` view over the unix-seconds marker for relative formatting.
@@ -241,10 +281,19 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
     /// single-paired-host orphan cleanup. Optional keeps attributes started by
     /// older relay versions decodable.
     public var accountWide: Bool?
+    /// Non-PII ownership fence stamped by Relay for account-wide activities.
+    /// The main app ends an activity unless this exactly matches the current
+    /// signed-in ownership epoch for this installation.
+    public var ownershipEpoch: Int?
 
-    public init(machineName: String, accountWide: Bool? = nil) {
+    public init(
+        machineName: String,
+        accountWide: Bool? = nil,
+        ownershipEpoch: Int? = nil
+    ) {
         self.machineName = machineName
         self.accountWide = accountWide
+        self.ownershipEpoch = ownershipEpoch
     }
 
     public var isAccountWide: Bool {

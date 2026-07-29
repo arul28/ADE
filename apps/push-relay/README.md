@@ -164,7 +164,9 @@ npx wrangler secret put CLERK_OAUTH_CLIENT_ID
 ```
 
 If these are absent, legacy machine-scoped push routes continue to work, while
-account Attention routes fail closed with `401`.
+account Attention routes fail closed with an actionable `503`. A rejected
+session token returns `401` separately, so configuration outages are not
+misdiagnosed as a user sign-in problem.
 
 The iOS Debug configuration uses ADE's development Clerk instance. A shared
 relay deployment can accept it without mixing identity domains by configuring:
@@ -177,6 +179,17 @@ npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
 
 Verified account keys are namespaced by issuer before persistence, so identical
 opaque user ids from development and production cannot collide.
+
+`npm run deploy` now refuses to deploy unless both primary and secondary Clerk
+secret triples, `ADE_PUSH_RELAY_SMOKE_TOKEN`, and
+`ADE_PUSH_RELAY_SECONDARY_SMOKE_TOKEN` are present. The smoke tokens must be
+short-lived valid ADE Clerk tokens for their respective issuer, supplied only
+in the deploy environment; the script never prints them. After deployment, the
+pipeline verifies `/health` and then calls the authenticated account snapshot
+endpoint once with each issuer. This distinguishes a successful D1 migration
+or Worker upload from usable account authentication in either identity domain.
+The health response exposes only binding status and fixed error codes, never
+secret values.
 
 ## Local dev
 

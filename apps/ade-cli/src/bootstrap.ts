@@ -746,7 +746,9 @@ export async function createAdeRuntime(args: {
       projectRoots: () => [projectRoot],
       logger,
     });
-    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
+    const getAccountAccessToken = (
+      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
+    ) => getSignedInAccountAccessToken(accountAuthService, options);
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1457,6 +1459,10 @@ export async function createAdeRuntime(args: {
         },
       }),
       machineName: os.hostname(),
+      getAccountOwnerId: () => {
+        const status = accountAuthService.getStatus();
+        return status.signedIn ? status.userId?.trim() || null : null;
+      },
       getAccountMachineIdentity: () => {
         const { machineKey } = cloudRelayStore.getMachineIdentity();
         let deviceId: string | null = null;

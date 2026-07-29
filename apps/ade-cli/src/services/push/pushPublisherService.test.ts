@@ -9,7 +9,11 @@ import type {
   PushDeviceRegistration,
   PushQuietHours,
 } from "../../../../desktop/src/shared/types/push";
-import { createPushRegistrationStore, type PushRegistrationStore } from "./pushRegistrationStore";
+import {
+  createPushRegistrationStore,
+  type PushRegistrationStore,
+  type StoredAttentionAcknowledgment,
+} from "./pushRegistrationStore";
 import { createPushRelayClient } from "./pushRelayClient";
 import {
   buildAgentRunsContentState,
@@ -148,7 +152,14 @@ describe("createPushPublisherService flush", () => {
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
     const publishAttention = vi.fn().mockResolvedValue(null);
+    const acknowledgeAttention = vi.fn().mockResolvedValue(null);
+    let accountOwnerId: string | null = "owner-a";
     const devices = Array.isArray(deviceOverride) ? [...deviceOverride] : [deviceOverride];
+    const attentionAcknowledgments = new Map<string, StoredAttentionAcknowledgment>();
+    const attentionAcknowledgmentKey = (
+      accountOwnerId: string | null,
+      itemId: string,
+    ) => `${accountOwnerId ?? ""}\u0000${itemId}`;
     const store = {
       hasRegisteredDevices: () => true,
       getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
@@ -179,10 +190,61 @@ describe("createPushPublisherService flush", () => {
       },
       recordPublishResult: vi.fn(),
       recordRelayContact: vi.fn(),
+      recordAttentionAcknowledgments: (args: {
+        items: Array<{ id: string; revision: number }>;
+        accountOwnerId: string | null;
+        seenAt: string;
+        dismissedAt?: string | null;
+        updatedAt: string;
+      }) => {
+        for (const item of args.items) {
+          const key = attentionAcknowledgmentKey(args.accountOwnerId, item.id);
+          attentionAcknowledgments.set(key, {
+            itemId: item.id,
+            accountOwnerId: args.accountOwnerId,
+            sourceRevision: item.revision,
+            seenAt: args.seenAt,
+            dismissedAt:
+              typeof args.dismissedAt === "string"
+                ? args.dismissedAt
+                : attentionAcknowledgments.get(key)?.dismissedAt ?? null,
+            updatedAt: args.updatedAt,
+            pendingRelaySync: true,
+          });
+        }
+      },
+      getAttentionAcknowledgment: (itemId: string, accountOwnerId: string | null) =>
+        attentionAcknowledgments.get(
+          attentionAcknowledgmentKey(accountOwnerId, itemId),
+        ) ?? null,
+      listPendingAttentionAcknowledgments: () =>
+        [...attentionAcknowledgments.values()].filter((entry) => entry.pendingRelaySync),
+      markAttentionAcknowledgmentsSynced: (
+        acknowledgments: Array<{
+          itemId: string;
+          accountOwnerId: string | null;
+          updatedAt: string;
+        }>,
+      ) => {
+        for (const acknowledgment of acknowledgments) {
+          const key = attentionAcknowledgmentKey(
+            acknowledgment.accountOwnerId,
+            acknowledgment.itemId,
+          );
+          const entry = attentionAcknowledgments.get(key);
+          if (entry?.updatedAt === acknowledgment.updatedAt) {
+            attentionAcknowledgments.set(key, {
+            ...entry,
+            pendingRelaySync: false,
+            });
+          }
+        }
+      },
     };
     const relayClient = {
       publish,
       publishAttention,
+      acknowledgeAttention,
       claim: vi.fn().mockResolvedValue(undefined),
       registerDevice: vi.fn().mockResolvedValue(undefined),
       unregisterDevice: vi.fn().mockResolvedValue(undefined),
@@ -218,6 +280,7 @@ describe("createPushPublisherService flush", () => {
         machineKey: "b".repeat(32),
         deviceId: "desktop-device",
       }),
+      getAccountOwnerId: () => accountOwnerId,
       now,
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
@@ -234,11 +297,22 @@ describe("createPushPublisherService flush", () => {
       publisher,
       publish,
       publishAttention,
+      acknowledgeAttention,
       emit: (env: AgentChatEventEnvelope) => chatCb?.(env),
       store,
       relayClient,
       cliSessions,
       detach,
+      attentionAcknowledgments,
+      getAttentionAcknowledgment: (
+        itemId: string,
+        ownerId: string | null = accountOwnerId,
+      ) => attentionAcknowledgments.get(
+        attentionAcknowledgmentKey(ownerId, itemId),
+      ) ?? null,
+      setAccountOwnerId: (ownerId: string | null) => {
+        accountOwnerId = ownerId;
+      },
     };
   }
 
@@ -258,7 +332,7 @@ describe("createPushPublisherService flush", () => {
     vi.clearAllMocks();
   });
 
-  it("publishes an approval alert + a started Live Activity, then dedupes a repeat", async () => {
+  it("keeps legacy machine Live Activities ownerless while deduping a repeat", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();
 
@@ -276,6 +350,8 @@ describe("createPushPublisherService flush", () => {
     expect(payload.liveActivity[0].event).toBe("start");
     expect(payload.liveActivity[0].activityId).toBe("agent-runs");
     expect(payload.liveActivity[0].attributes).toEqual({ machineName: "MacBook" });
+    expect(payload.liveActivity[0].attributes.ownershipEpoch).toBeUndefined();
+    expect(payload.liveActivity[0].contentState.ownershipEpoch).toBeUndefined();
     expect(payload.liveActivity[0].contentState.activeCount).toBe(1);
     expect(payload.liveActivity[0].contentState.runs[0].id).toBe("s-1");
 
@@ -888,6 +964,161 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("keeps machine Attention acknowledgments durable and revision-fenced", async () => {
+    const {
+      publisher,
+      emit,
+      publishAttention,
+      acknowledgeAttention,
+      getAttentionAcknowledgment,
+      setAccountOwnerId,
+    } = makeHarness();
+    emit(approval);
+
+    const first = await publisher.getMachineAttentionSnapshot();
+    expect(first.items).toHaveLength(1);
+    const item = first.items[0]!;
+
+    await publisher.acknowledgeMachineAttention({
+      itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:01.000Z",
+    });
+    expect(getAttentionAcknowledgment(item.id, "owner-a")).toMatchObject({
+      sourceRevision: item.revision,
+      seenAt: "2026-07-05T12:00:01.000Z",
+      pendingRelaySync: true,
+    });
+    expect(acknowledgeAttention).not.toHaveBeenCalled();
+    await expect(publisher.getMachineAttentionSnapshot()).resolves.toMatchObject({
+      items: [expect.objectContaining({
+        id: item.id,
+        seenAt: "2026-07-05T12:00:01.000Z",
+      })],
+    });
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "s-1",
+      kind: "chat",
+      title: "Fix login",
+      message: "A newer question needs an answer.",
+      laneId: "auth-lane",
+    });
+    const updated = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(updated).toMatchObject({
+      id: item.id,
+      seenAt: null,
+    });
+    expect(updated.revision).toBeGreaterThan(item.revision);
+    await expect(publisher.acknowledgeMachineAttention({
+      itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
+      expectedAccountOwnerId: "owner-a",
+    })).rejects.toThrow(/changed after it loaded/i);
+
+    await expect(publisher.acknowledgeMachineAttention({
+      itemIds: ["agent:other-machine:unknown"],
+      sourceRevisions: { "agent:other-machine:unknown": 1 },
+      expectedAccountOwnerId: "owner-a",
+    })).rejects.toThrow(/latest Attention snapshot/i);
+
+    const current = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    setAccountOwnerId("owner-b");
+    await expect(publisher.acknowledgeMachineAttention({
+      itemIds: [current.id],
+      sourceRevisions: { [current.id]: current.revision },
+      expectedAccountOwnerId: "owner-a",
+    })).rejects.toThrow(/account changed/i);
+
+    publishAttention.mockResolvedValue({ ok: true, revision: 9 });
+    publisher.poke();
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(acknowledgeAttention).not.toHaveBeenCalled();
+    expect(getAttentionAcknowledgment(item.id, "owner-a")?.pendingRelaySync).toBe(true);
+    publisher.dispose();
+  });
+
+  it("reconciles a durable machine acknowledgment only after publishing its item", async () => {
+    const {
+      publisher,
+      emit,
+      publishAttention,
+      acknowledgeAttention,
+      getAttentionAcknowledgment,
+    } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    acknowledgeAttention.mockResolvedValue({ ok: true, revision: 2 });
+    emit(approval);
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    await publisher.acknowledgeMachineAttention({
+      itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:01.000Z",
+    });
+    expect(acknowledgeAttention).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(acknowledgeAttention).toHaveBeenCalledWith({
+      itemIds: [item.id],
+      seenAt: "2026-07-05T12:00:01.000Z",
+      expectedAccountOwnerId: "owner-a",
+    });
+    expect(getAttentionAcknowledgment(item.id, "owner-a")?.pendingRelaySync).toBe(false);
+    publisher.dispose();
+  });
+
+  it("stops a multi-group acknowledgment reconcile when the account changes mid-flight", async () => {
+    const {
+      publisher,
+      emit,
+      publishAttention,
+      acknowledgeAttention,
+      getAttentionAcknowledgment,
+      setAccountOwnerId,
+    } = makeHarness();
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    emit(approval);
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "s-2",
+      kind: "chat",
+      title: "Second question",
+      message: "Choose a migration path.",
+      laneId: "auth-lane",
+    });
+    const snapshot = await publisher.getMachineAttentionSnapshot();
+    const first = snapshot.items.find((entry) => entry.id.includes(":s-1"))!;
+    const second = snapshot.items.find((entry) => entry.id.includes(":s-2"))!;
+    await publisher.acknowledgeMachineAttention({
+      itemIds: [first.id],
+      sourceRevisions: { [first.id]: first.revision },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:01.000Z",
+    });
+    vi.setSystemTime(new Date("2026-07-05T12:00:02.000Z"));
+    await publisher.acknowledgeMachineAttention({
+      itemIds: [second.id],
+      sourceRevisions: { [second.id]: second.revision },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:02.000Z",
+    });
+    acknowledgeAttention.mockImplementationOnce(async () => {
+      setAccountOwnerId("owner-b");
+      return { ok: true, revision: 2 };
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(acknowledgeAttention).toHaveBeenCalledTimes(1);
+    expect(getAttentionAcknowledgment(first.id, "owner-a")?.pendingRelaySync).toBe(false);
+    expect(getAttentionAcknowledgment(second.id, "owner-a")?.pendingRelaySync).toBe(true);
+    publisher.dispose();
+  });
+
   it.each([
     { unchanged: true },
     { suppressed: true },
@@ -910,7 +1141,7 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("delivers queued alerts when the Attention fingerprint is locally unchanged", async () => {
+  it("advances the Attention revision without spamming a duplicate alert", async () => {
     const fixedNow = Date.parse("2026-07-05T12:00:00.000Z");
     const { publisher, publish, publishAttention, emit } = makeHarness(
       device,
@@ -930,15 +1161,8 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(publishAttention).toHaveBeenCalledTimes(1);
-    expect(publish).toHaveBeenCalledTimes(1);
-    const payload = publish.mock.calls[0][0];
-    expect(payload.notifications).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ dedupeKey: alertDedupeKey("alert:s-1:approval") }),
-      ]),
-    );
-    expect(payload.liveActivity).toBeUndefined();
+    expect(publishAttention).toHaveBeenCalledTimes(2);
+    expect(publish).not.toHaveBeenCalled();
 
     publisher.dispose();
   });
@@ -1951,6 +2175,81 @@ describe("createPushRegistrationStore", () => {
     expect(store.isClaimed()).toBe(true);
     expect(createPushRegistrationStore({ filePath }).isClaimed()).toBe(true);
   });
+
+  it("persists revision-fenced machine Attention acknowledgments across reloads", () => {
+    const store = createPushRegistrationStore({ filePath });
+    store.getOrCreateIdentity();
+    store.recordAttentionAcknowledgments({
+      items: [{ id: "agent:machine:session-1", revision: 7 }],
+      accountOwnerId: "owner-a",
+      seenAt: "2026-07-05T01:00:00.000Z",
+      dismissedAt: "2026-07-05T01:01:00.000Z",
+      updatedAt: "2026-07-05T01:01:00.000Z",
+    });
+
+    const reopened = createPushRegistrationStore({ filePath });
+    expect(reopened.getAttentionAcknowledgment(
+      "agent:machine:session-1",
+      "owner-a",
+    )).toMatchObject({
+      sourceRevision: 7,
+      accountOwnerId: "owner-a",
+      seenAt: "2026-07-05T01:00:00.000Z",
+      dismissedAt: "2026-07-05T01:01:00.000Z",
+      pendingRelaySync: true,
+    });
+    expect(reopened.listPendingAttentionAcknowledgments()).toHaveLength(1);
+
+    reopened.recordAttentionAcknowledgments({
+      items: [{ id: "agent:machine:session-1", revision: 7 }],
+      accountOwnerId: "owner-a",
+      seenAt: "2026-07-05T01:02:00.000Z",
+      updatedAt: "2026-07-05T01:02:00.000Z",
+    });
+    reopened.markAttentionAcknowledgmentsSynced([{
+      itemId: "agent:machine:session-1",
+      accountOwnerId: "owner-a",
+      updatedAt: "2026-07-05T01:01:00.000Z",
+    }]);
+    expect(reopened.listPendingAttentionAcknowledgments()).toHaveLength(1);
+    reopened.markAttentionAcknowledgmentsSynced([{
+      itemId: "agent:machine:session-1",
+      accountOwnerId: "owner-a",
+      updatedAt: "2026-07-05T01:02:00.000Z",
+    }]);
+    expect(createPushRegistrationStore({ filePath }).listPendingAttentionAcknowledgments())
+      .toEqual([]);
+  });
+
+  it("partitions durable Attention acknowledgments by account owner", () => {
+    const store = createPushRegistrationStore({ filePath });
+    store.getOrCreateIdentity();
+    const item = { id: "agent:machine:shared-session", revision: 4 };
+    store.recordAttentionAcknowledgments({
+      items: [item],
+      accountOwnerId: "owner-a",
+      seenAt: "2026-07-05T01:00:00.000Z",
+      updatedAt: "2026-07-05T01:00:00.000Z",
+    });
+    store.recordAttentionAcknowledgments({
+      items: [item],
+      accountOwnerId: "owner-b",
+      seenAt: "2026-07-05T02:00:00.000Z",
+      dismissedAt: "2026-07-05T02:00:00.000Z",
+      updatedAt: "2026-07-05T02:00:00.000Z",
+    });
+
+    const reopened = createPushRegistrationStore({ filePath });
+    expect(reopened.getAttentionAcknowledgment(item.id, "owner-a")).toMatchObject({
+      seenAt: "2026-07-05T01:00:00.000Z",
+      dismissedAt: null,
+    });
+    expect(reopened.getAttentionAcknowledgment(item.id, "owner-b")).toMatchObject({
+      seenAt: "2026-07-05T02:00:00.000Z",
+      dismissedAt: "2026-07-05T02:00:00.000Z",
+    });
+    expect(reopened.listPendingAttentionAcknowledgments()).toHaveLength(2);
+  });
 });
 
 const MACHINE_KEY = "0123456789abcdef0123456789abcdef"; // gitleaks:allow — test fixture
@@ -2104,6 +2403,7 @@ describe("createPushRelayClient", () => {
       logger,
       baseUrl: "https://relay.test",
       getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
     });
     await client.publishAttention({
       machineName: "MacBook",
@@ -2133,11 +2433,25 @@ describe("createPushRelayClient", () => {
   });
 
   it("binds incremental snapshot cursors to the authenticated stream", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        contractVersion: 1,
+        streamId: "account-a",
+        revision: 12,
+        generatedAt: "2026-07-05T00:00:00.000Z",
+        items: [],
+        tombstones: [],
+        machines: [],
+      }),
+    });
     const client = createPushRelayClient({
       store: makeStore(),
       logger,
       baseUrl: "https://relay.test",
       getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
     });
     await client.getAttentionSnapshot(12, "account-a");
 
@@ -2146,6 +2460,123 @@ describe("createPushRelayClient", () => {
       "https://relay.test/attention/account/snapshot?since=12&streamId=account-a",
     );
     expect(init.headers.authorization).toBe("Bearer account-access-token");
+  });
+
+  it("retries one unauthorized account read with a forced fresh token", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ ok: false, error: "unauthorized" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          contractVersion: 1,
+          streamId: "account-a",
+          revision: 0,
+          generatedAt: "2026-07-29T00:00:00.000Z",
+          items: [],
+          tombstones: [],
+        }),
+      });
+    const getAccountAccessToken = vi.fn(
+      async (options?: { forceRefresh?: boolean }) =>
+        options?.forceRefresh ? "fresh-access-token" : "cached-access-token",
+    );
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken,
+      getAccountUserId: () => "account-a",
+    });
+
+    await expect(client.getAttentionSnapshot()).resolves.toMatchObject({
+      streamId: "account-a",
+    });
+
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(1, undefined);
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer cached-access-token");
+    expect(fetchMock.mock.calls[1][1].headers.authorization).toBe("Bearer fresh-access-token");
+  });
+
+  it("rejects an account snapshot response that resolves after the account changes", async () => {
+    let currentAccountUserId: string | null = "account-a";
+    let resolveResponse: (response: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    }));
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-a-access-token",
+      getAccountUserId: () => currentAccountUserId,
+    });
+
+    const snapshot = client.getAttentionSnapshot();
+    await Promise.resolve();
+    currentAccountUserId = "account-b";
+    resolveResponse(Response.json({
+      contractVersion: 1,
+      streamId: "account-a",
+      revision: 1,
+      generatedAt: "2026-07-29T00:00:00.000Z",
+      items: [],
+      tombstones: [],
+    }));
+
+    await expect(snapshot).rejects.toThrow(/account changed/i);
+  });
+
+  it("rejects a malformed successful Attention snapshot instead of trusting it", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, contractVersion: 1, items: "not-an-array" }),
+    });
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await expect(client.getAttentionSnapshot()).rejects.toThrow(
+      /invalid Attention snapshot/i,
+    );
+  });
+
+  it("does not retry an unauthorized account request after the account owner changes", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      json: async () => ({ ok: false, error: "unauthorized" }),
+    });
+    let currentAccountUserId: string | null = "account-a";
+    const getAccountAccessToken = vi.fn(
+      async (options?: { forceRefresh?: boolean }) => {
+        if (options?.forceRefresh) currentAccountUserId = "account-b";
+        return options?.forceRefresh ? "account-b-access-token" : "account-a-access-token";
+      },
+    );
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken,
+      getAccountUserId: () => currentAccountUserId,
+    });
+
+    await expect(
+      client.getAttentionPreferences("account-a"),
+    ).rejects.toThrow(/account changed/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not authorize an account-A preference write with account B's refreshed token", async () => {
@@ -2172,5 +2603,30 @@ describe("createPushRelayClient", () => {
 
     await expect(write).rejects.toThrow(/account changed/i);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not publish account-A work with account B's token after an account switch", async () => {
+    let currentAccountUserId: string | null = "account-a";
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => {
+        currentAccountUserId = "account-b";
+        return "account-b-access-token";
+      },
+      getAccountUserId: () => currentAccountUserId,
+    });
+
+    await expect(client.publishAttention({
+      machineName: "MacBook",
+      fullSnapshot: true,
+      items: [],
+    })).rejects.toThrow(/account changed/i);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `https://relay.test/machines/${MACHINE_KEY}/claim`,
+    );
   });
 });

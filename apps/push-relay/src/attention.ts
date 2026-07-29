@@ -1,10 +1,18 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import {
   sendApnsPush,
   type ApnsEnvironment,
   type ApnsKeyConfig,
   type ApnsSendResult,
 } from "./apns";
+import {
+  AttentionAuthVerificationUnavailableError,
+  inspectAttentionAuthConfiguration,
+  verifyAttentionBearerToken,
+} from "./attentionAuth";
+export {
+  inspectAttentionAuthConfiguration,
+  type AttentionAuthConfigurationStatus,
+} from "./attentionAuth";
 
 export type AttentionRelayEnv = {
   DB: D1Database;
@@ -48,6 +56,10 @@ type AttentionDeviceRow = {
   aps_environment: string;
   preferences_json: string;
   generation: string;
+};
+
+type OwnedAttentionDeviceRow = AttentionDeviceRow & {
+  ownership_epoch: number;
 };
 
 type AttentionDeviceOwnershipRow = {
@@ -97,7 +109,7 @@ const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
 const LIVE_ACTIVITY_START_CLAIM_TTL_MS = 30_000;
-const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+const NOTIFICATION_DELIVERY_CLAIM_TTL_MS = 60_000;
 
 const EVENT_KINDS = new Set([
   "agent_running",
@@ -112,6 +124,26 @@ const EVENT_KINDS = new Set([
   "pr_opened",
   "pr_closed",
 ]);
+
+function logAttentionDeliveryError(
+  surface: "notification" | "live_activity",
+  deviceId: string,
+  error: unknown,
+): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  try {
+    console.error(JSON.stringify({
+      ts: new Date().toISOString(),
+      svc: "ade-push-relay",
+      kind: "attention_delivery_error",
+      surface,
+      device: deviceId.slice(-6),
+      reason: reason.slice(0, 500),
+    }));
+  } catch {
+    console.error("ade-push-relay attention_delivery_error");
+  }
+}
 
 const PHASES = new Set([
   "starting",
@@ -708,21 +740,84 @@ function stringListIncludes(value: unknown, target: string | null): boolean {
   return value.some((entry) => typeof entry === "string" && entry === target);
 }
 
-async function hasRecentForegroundDesktop(
+async function recentDesktopAttentionItemIds(
   env: AttentionRelayEnv,
   userId: string,
   nowMs: number,
-): Promise<boolean> {
+): Promise<Set<string>> {
   const cutoff = new Date(nowMs - DESKTOP_PRESENCE_WINDOW_MS).toISOString();
   const rows = await env.DB.prepare(`
     select payload_json
     from attention_presence
     where user_id = ? and observed_at >= ?
   `).bind(userId, cutoff).all<{ payload_json: string }>();
-  return rows.results.some((row) => {
+  const visibleItemIds = new Set<string>();
+  for (const row of rows.results) {
     const presence = readPreferences(row.payload_json);
-    return presence.platform === "macOS" && presence.appForeground === true;
-  });
+    if (presence.platform !== "macOS" || presence.ambientSurfaceVisible !== true) continue;
+    if (!Array.isArray(presence.visibleItemIds)) continue;
+    for (const itemId of presence.visibleItemIds) {
+      if (typeof itemId === "string" && itemId.trim()) visibleItemIds.add(itemId);
+    }
+  }
+  return visibleItemIds;
+}
+
+async function claimAttentionNotificationDelivery(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    itemId: string;
+    deviceId: string;
+    receiptState: string;
+  },
+): Promise<string | null> {
+  const claimState = `pending:${args.receiptState}`;
+  const claimNowMs = Date.now();
+  const claim = `${new Date(claimNowMs).toISOString()}|${crypto.randomUUID()}`;
+  const staleBefore = new Date(
+    claimNowMs - NOTIFICATION_DELIVERY_CLAIM_TTL_MS,
+  ).toISOString();
+  const row = await env.DB.prepare(`
+    insert into attention_delivery_receipts(
+      user_id, item_id, device_id, state, delivered_at
+    ) values (?, ?, ?, ?, ?)
+    on conflict(user_id, item_id, device_id, state) do update set
+      delivered_at = excluded.delivered_at
+    where substr(attention_delivery_receipts.delivered_at, 1, 24) <= ?
+    returning delivered_at
+  `).bind(
+    args.userId,
+    args.itemId,
+    args.deviceId,
+    claimState,
+    claim,
+    staleBefore,
+  ).first<{ delivered_at: string }>();
+  return row?.delivered_at === claim ? claim : null;
+}
+
+async function releaseAttentionNotificationDelivery(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    itemId: string;
+    deviceId: string;
+    receiptState: string;
+    claim: string;
+  },
+): Promise<void> {
+  await env.DB.prepare(`
+    delete from attention_delivery_receipts
+    where user_id = ? and item_id = ? and device_id = ?
+      and state = ? and delivered_at = ?
+  `).bind(
+    args.userId,
+    args.itemId,
+    args.deviceId,
+    `pending:${args.receiptState}`,
+    args.claim,
+  ).run();
 }
 
 async function deliverAttentionNotifications(
@@ -753,7 +848,7 @@ async function deliverAttentionNotifications(
     : {};
   const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
   const nowMs = Date.now();
-  const desktopForeground = await hasRecentForegroundDesktop(env, userId, nowMs);
+  const desktopVisibleItemIds = await recentDesktopAttentionItemIds(env, userId, nowMs);
   const desktopFirstEnabled = preferenceBoolean(
     {},
     accountPreferences,
@@ -797,12 +892,14 @@ async function deliverAttentionNotifications(
     ) {
       continue;
     }
-    // Give an active desktop/notch the first chance to surface the item. The
-    // machine heartbeat republishes the full snapshot every 30s; if the item
-    // remains unseen, the next pass escalates it to the phone.
+    // Give a desktop surface that actually contains this item the first chance
+    // to surface it. A merely foreground ADE window is not enough: the header,
+    // full center, or native notch must report the exact visible item.
+    // The machine heartbeat republishes the full snapshot every 30s; if the
+    // item remains unseen, the next pass escalates it to the phone.
     if (
       desktopFirstEnabled
-      && desktopForeground
+      && desktopVisibleItemIds.has(item.id)
       && nowMs - Date.parse(item.updatedAt) < desktopFirstDelayMs
     ) {
       continue;
@@ -841,49 +938,94 @@ async function deliverAttentionNotifications(
         limit 1
       `).bind(userId, item.id, device.device_id, receiptState).first<{ found: number }>();
       if (existing?.found) continue;
+      const deliveryClaim = await claimAttentionNotificationDelivery(env, {
+        userId,
+        itemId: item.id,
+        deviceId: device.device_id,
+        receiptState,
+      });
+      if (!deliveryClaim) continue;
 
       const hideDetails = preferenceBoolean(override, accountPreferences, "hideDetails", false);
       const soundsEnabled = preferenceBoolean(override, accountPreferences, "soundsEnabled", false);
       const body = hideDetails
         ? boundedText(item.privacyPreview, MAX_PREVIEW_LENGTH)
         : boundedText(item.preview, MAX_PREVIEW_LENGTH);
-      const result = await sendPush(config, {
-        environment: device.aps_environment as ApnsEnvironment,
-        deviceToken: device.apns_token,
-        topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
-        pushType: "alert",
-        priority: 10,
-        expiration: Math.floor(nowMs / 1_000) + 24 * 60 * 60,
-        collapseId: item.id,
-        payload: {
-          aps: {
-            alert: {
-              title: notificationTitle(item, hideDetails),
-              ...(body ? { body } : {}),
+      let result: ApnsSendResult;
+      try {
+        result = await sendPush(config, {
+          environment: device.aps_environment as ApnsEnvironment,
+          deviceToken: device.apns_token,
+          topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
+          pushType: "alert",
+          priority: 10,
+          expiration: Math.floor(nowMs / 1_000) + 24 * 60 * 60,
+          collapseId: item.id,
+          payload: {
+            aps: {
+              alert: {
+                title: notificationTitle(item, hideDetails),
+                ...(body ? { body } : {}),
+              },
+              ...(soundsEnabled ? { sound: "default" } : {}),
+              "thread-id": item.id,
+              "interruption-level": item.eventKind === "agent_needs_you"
+                ? "time-sensitive"
+                : "active",
             },
-            ...(soundsEnabled ? { sound: "default" } : {}),
-            "thread-id": item.id,
-            "interruption-level": item.eventKind === "agent_needs_you"
-              ? "time-sensitive"
-              : "active",
+            ...attentionAlertRoutingPayload(item, deepLink),
           },
-          ...attentionAlertRoutingPayload(item, deepLink),
-        },
-      });
+        });
+      } catch (error) {
+        notificationAttempts += 1;
+        await releaseAttentionNotificationDelivery(env, {
+          userId,
+          itemId: item.id,
+          deviceId: device.device_id,
+          receiptState,
+          claim: deliveryClaim,
+        });
+        logAttentionDeliveryError("notification", device.device_id, error);
+        continue;
+      }
       notificationAttempts += 1;
       if (result.ok) {
-        await env.DB.prepare(`
-          insert into attention_delivery_receipts(user_id, item_id, device_id, state, delivered_at)
-          values (?, ?, ?, ?, ?)
-          on conflict(user_id, item_id, device_id, state) do nothing
-        `).bind(
+        await env.DB.batch([
+          env.DB.prepare(`
+            insert into attention_delivery_receipts(
+              user_id, item_id, device_id, state, delivered_at
+            )
+            values (?, ?, ?, ?, ?)
+            on conflict(user_id, item_id, device_id, state) do nothing
+          `).bind(
+            userId,
+            item.id,
+            device.device_id,
+            receiptState,
+            new Date(nowMs).toISOString(),
+          ),
+          env.DB.prepare(`
+            delete from attention_delivery_receipts
+            where user_id = ? and item_id = ? and device_id = ?
+              and state = ? and delivered_at = ?
+          `).bind(
+            userId,
+            item.id,
+            device.device_id,
+            `pending:${receiptState}`,
+            deliveryClaim,
+          ),
+        ]);
+      } else {
+        await releaseAttentionNotificationDelivery(env, {
           userId,
-          item.id,
-          device.device_id,
+          itemId: item.id,
+          deviceId: device.device_id,
           receiptState,
-          new Date(nowMs).toISOString(),
-        ).run();
-      } else if (result.tokenInvalid) {
+          claim: deliveryClaim,
+        });
+      }
+      if (!result.ok && result.tokenInvalid) {
         await env.DB.prepare(`
           update attention_devices
           set apns_token = null, updated_at = ?
@@ -1152,11 +1294,16 @@ async function deliverAccountLiveActivity(
     await Promise.all([
       accountActivityContentState(env, userId),
       env.DB.prepare(`
-        select device_id, apns_token, push_to_start_token, bundle_id,
-          aps_environment, preferences_json, generation
-        from attention_devices
-        where user_id = ? and lease_expires_at > ?
-      `).bind(userId, new Date().toISOString()).all<AttentionDeviceRow>(),
+        select device.device_id, device.apns_token, device.push_to_start_token,
+          device.bundle_id, device.aps_environment, device.preferences_json,
+          device.generation, ownership.ownership_epoch
+        from attention_devices as device
+        join attention_device_ownership as ownership
+          on ownership.device_id = device.device_id
+          and ownership.user_id = device.user_id
+          and ownership.active = 1
+        where device.user_id = ? and device.lease_expires_at > ?
+      `).bind(userId, new Date().toISOString()).all<OwnedAttentionDeviceRow>(),
       env.DB
         .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
         .bind(userId)
@@ -1168,6 +1315,10 @@ async function deliverAccountLiveActivity(
   const nowSeconds = Math.floor(Date.now() / 1_000);
 
   for (const device of devicesResult.results) {
+    const ownershipEpoch = Number(device.ownership_epoch);
+    // Account-wide ActivityKit delivery fails closed unless the current
+    // registered device row is still owned by this exact account epoch.
+    if (!Number.isSafeInteger(ownershipEpoch) || ownershipEpoch <= 0) continue;
     const override = mergedDevicePreferences(
       device,
       accountPreferences,
@@ -1196,7 +1347,7 @@ async function deliverAccountLiveActivity(
       false,
     );
     const deviceCount = liveActivitiesEnabled ? count : 0;
-    const deviceContentState = liveActivitiesEnabled
+    const visibleContentState = liveActivitiesEnabled
       ? hideDetails
         ? privacyPreservingActivityContentState(contentState)
         : contentState
@@ -1206,7 +1357,12 @@ async function deliverAccountLiveActivity(
           runs: [],
           prs: [],
         };
-    const deviceFingerprint = hideDetails ? `${fingerprint}:private` : fingerprint;
+    const deviceContentState = {
+      ...visibleContentState,
+      ownershipEpoch,
+    };
+    const deviceFingerprint =
+      `${fingerprint}:${hideDetails ? "private" : "public"}:owner:${ownershipEpoch}`;
     if (deviceCount === 0 && !started) continue;
     if (deviceCount > 0 && started && state?.fingerprint === deviceFingerprint) continue;
 
@@ -1275,7 +1431,11 @@ async function deliverAccountLiveActivity(
     if (event === "start") {
       aps["input-push-token"] = 1;
       aps["attributes-type"] = "ADEAgentRunsAttributes";
-      aps.attributes = { machineName: "All machines", accountWide: true };
+      aps.attributes = {
+        machineName: "All machines",
+        accountWide: true,
+        ownershipEpoch,
+      };
       aps.alert = {
         title: hideDetails
           ? "ADE activity started"
@@ -1309,7 +1469,8 @@ async function deliverAccountLiveActivity(
           device.generation,
         );
       }
-      throw error;
+      logAttentionDeliveryError("live_activity", device.device_id, error);
+      continue;
     }
     if (result.ok) {
       if (event === "end") {
@@ -1419,8 +1580,8 @@ async function deliverAccountLiveActivity(
           .bind(userId, device.device_id, device.generation)
           .run();
       } else if (result.tokenInvalid) {
-        await env.DB
-          .prepare(`
+        await env.DB.batch([
+          env.DB.prepare(`
             delete from attention_activity_tokens
             where user_id = ? and device_id = ? and activity_id = ?
               and exists (
@@ -1428,92 +1589,86 @@ async function deliverAccountLiveActivity(
                 from attention_devices
                 where user_id = ? and device_id = ? and generation = ?
               )
-          `)
-          .bind(
+          `).bind(
             userId,
             device.device_id,
             activityId,
             userId,
             device.device_id,
             device.generation,
-          )
-          .run();
+          ),
+          env.DB.prepare(`
+            delete from attention_activity_state
+            where user_id = ? and device_id = ? and activity_id = ?
+              and exists (
+                select 1
+                from attention_devices
+                where user_id = ? and device_id = ? and generation = ?
+              )
+          `).bind(
+            userId,
+            device.device_id,
+            activityId,
+            userId,
+            device.device_id,
+            device.generation,
+          ),
+        ]);
       }
     }
   }
-}
-
-function audienceIncludes(audience: JWTPayload["aud"], expected: string): boolean {
-  return typeof audience === "string"
-    ? audience === expected
-    : Array.isArray(audience) && audience.includes(expected);
-}
-
-async function verifyBearerToken(request: Request, env: AttentionRelayEnv): Promise<string | null> {
-  const match = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(\S+)\s*$/i);
-  const token = match?.[1];
-  if (!token) return null;
-  const configurations = [
-    {
-      jwksUrl: env.CLERK_JWKS_URL?.trim() ?? "",
-      issuer: env.CLERK_ISSUER?.trim() ?? "",
-      oauthClientId: env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
-    },
-    {
-      jwksUrl: env.CLERK_SECONDARY_JWKS_URL?.trim() ?? "",
-      issuer: env.CLERK_SECONDARY_ISSUER?.trim() ?? "",
-      oauthClientId: env.CLERK_SECONDARY_OAUTH_CLIENT_ID?.trim() ?? "",
-    },
-  ].filter((config) => config.jwksUrl && config.issuer && config.oauthClientId);
-
-  for (const config of configurations) {
-    let jwks = remoteJwksByUrl.get(config.jwksUrl);
-    if (!jwks) {
-      jwks = createRemoteJWKSet(new URL(config.jwksUrl));
-      remoteJwksByUrl.set(config.jwksUrl, jwks);
-    }
-    try {
-      const { payload } = await jwtVerify(token, jwks, {
-        issuer: config.issuer,
-        algorithms: ["RS256"],
-        clockTolerance: 5,
-      });
-      const subject = requiredString(payload.sub);
-      if (!subject) continue;
-      // Clerk's native session tokens have no audience; their `azp` may be
-      // origin-based. OAuth access tokens are client-bound through `aud`/`azp`.
-      // Keep this byte-for-byte in policy with apps/account-directory.
-      if (
-        payload.aud !== undefined
-        && !audienceIncludes(payload.aud, config.oauthClientId)
-        && payload.azp !== config.oauthClientId
-      ) {
-        continue;
-      }
-      // Development and production Clerk instances can emit the same opaque
-      // `sub` shape. Namespace the database key by verified issuer so those
-      // identity domains can never see or overwrite one another.
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(`${config.issuer}\0${subject}`),
-      );
-      return Array.from(new Uint8Array(digest), (byte) =>
-        byte.toString(16).padStart(2, "0")).join("");
-    } catch {
-      // Try the next configured issuer.
-    }
-  }
-  return null;
 }
 
 async function authorizedUser(
   request: Request,
   env: AttentionRelayEnv,
 ): Promise<{ userId: string } | { response: Response }> {
-  const userId = await verifyBearerToken(request, env);
+  const configuration = inspectAttentionAuthConfiguration(env);
+  if (!configuration.configured) {
+    return {
+      response: json(
+        {
+          ok: false,
+          error: "account authentication unavailable",
+          code: "account_auth_unavailable",
+          recovery: "Relay authentication must be configured by the ADE service owner.",
+        },
+        { status: 503 },
+      ),
+    };
+  }
+  let userId: string | null;
+  try {
+    userId = await verifyAttentionBearerToken(request, env);
+  } catch (error) {
+    if (error instanceof AttentionAuthVerificationUnavailableError) {
+      return {
+        response: json(
+          {
+            ok: false,
+            error: "account authentication unavailable",
+            code: "account_auth_unavailable",
+            recovery: "ADE's account verifier is temporarily unreachable. Retry shortly.",
+          },
+          { status: 503 },
+        ),
+      };
+    }
+    throw error;
+  }
   return userId
     ? { userId }
-    : { response: json({ ok: false, error: "unauthorized" }, { status: 401 }) };
+    : {
+        response: json(
+          {
+            ok: false,
+            error: "account token rejected",
+            code: "account_token_rejected",
+            recovery: "Refresh the ADE account session and try again.",
+          },
+          { status: 401 },
+        ),
+      };
 }
 
 function parseAttentionItem(value: unknown, machineKey: string): ParsedAttentionItem | null {
@@ -2445,15 +2600,31 @@ async function handleAcknowledgment(
   const statements = (itemIds as string[]).map((itemId) =>
     env.DB.prepare(`
       update attention_items
-      set seen_at = ?,
-        dismissed_at = coalesce(?, dismissed_at),
+      set seen_at = case
+          when seen_at is null or seen_at > ? then ?
+          else seen_at
+        end,
+        dismissed_at = case
+          when ? is null then dismissed_at
+          when dismissed_at is null or dismissed_at > ? then ?
+          else dismissed_at
+        end,
         account_revision = (
           select revision
           from attention_revisions
           where user_id = ?
         )
       where user_id = ? and item_id = ?
-    `).bind(seenAt, dismissedAt, userId, userId, itemId),
+    `).bind(
+      seenAt,
+      seenAt,
+      dismissedAt,
+      dismissedAt,
+      dismissedAt,
+      userId,
+      userId,
+      itemId,
+    ),
   );
   const revision = await commitAttentionRevision(env, userId, statements);
   await deliverAccountLiveActivity(env, userId);
@@ -3007,6 +3178,10 @@ async function handleActivityTokenRegistration(
           )
       `).bind(userId, deviceId, activityId, userId, deviceId, generation),
     ]);
+    // The device is the authority on whether ActivityKit actually materialized
+    // an APNs-accepted start. Recompute immediately so active account work can
+    // issue a fresh push-to-start instead of remaining stuck forever.
+    await deliverAccountLiveActivity(env, userId);
     return json({ ok: true, removed: true });
   }
   let payload: unknown;

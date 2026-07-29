@@ -19,6 +19,92 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(try NotchInputDecoder.decode(line: envelope), .snapshot(snapshot))
     }
 
+    func testSnapshotCursorRejectsLateRevisionsWithinAStream() {
+        var cursor = AttentionSnapshotCursor()
+        XCTAssertEqual(
+            cursor.accept(AttentionSnapshot(
+                streamId: "account:user-a",
+                revision: 12,
+                generatedAt: "2026-07-28T12:00:12Z",
+                items: []
+            )),
+            .accepted(resetPresentationState: false)
+        )
+        XCTAssertEqual(
+            cursor.accept(AttentionSnapshot(
+                streamId: "account:user-a",
+                revision: 11,
+                generatedAt: "2026-07-28T12:00:13Z",
+                items: []
+            )),
+            .rejectedStale
+        )
+    }
+
+    func testSnapshotCursorAcceptsAccountSwitchAndResetsPresentationState() {
+        var cursor = AttentionSnapshotCursor()
+        _ = cursor.accept(AttentionSnapshot(
+            streamId: "account:user-a",
+            revision: 99,
+            generatedAt: "2026-07-28T12:00:00Z",
+            items: []
+        ))
+
+        XCTAssertEqual(
+            cursor.accept(AttentionSnapshot(
+                streamId: "account:user-b",
+                revision: 1,
+                generatedAt: "2026-07-28T12:00:01Z",
+                items: []
+            )),
+            .accepted(resetPresentationState: true)
+        )
+    }
+
+    func testSnapshotCursorRejectsDelayedFrameFromPreviousAccount() {
+        var cursor = AttentionSnapshotCursor()
+        _ = cursor.accept(AttentionSnapshot(
+            streamId: "account:user-a",
+            revision: 99,
+            generatedAt: "2026-07-28T12:00:00Z",
+            items: []
+        ))
+        _ = cursor.accept(AttentionSnapshot(
+            streamId: "account:user-b",
+            revision: 1,
+            generatedAt: "2026-07-28T12:00:02Z",
+            items: []
+        ))
+
+        XCTAssertEqual(
+            cursor.accept(AttentionSnapshot(
+                streamId: "account:user-a",
+                revision: 100,
+                generatedAt: "2026-07-28T12:00:01Z",
+                items: []
+            )),
+            .rejectedStale
+        )
+    }
+
+    func testLegacySnapshotCursorUsesGeneratedTimeToRejectLateFrames() {
+        var cursor = AttentionSnapshotCursor()
+        _ = cursor.accept(AttentionSnapshot(
+            revision: 4,
+            generatedAt: "2026-07-28T12:00:04Z",
+            items: []
+        ))
+
+        XCTAssertEqual(
+            cursor.accept(AttentionSnapshot(
+                revision: 8,
+                generatedAt: "2026-07-28T12:00:03Z",
+                items: []
+            )),
+            .rejectedStale
+        )
+    }
+
     func testDestinationBuildsExactDeepLink() {
         let destination = AttentionDestination(
             kind: "pull_request",
@@ -55,6 +141,130 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertFalse(settings.enabled)
         XCTAssertTrue(settings.hideDetails)
         XCTAssertFalse(settings.soundsEnabled)
+        // Presentation defaults are the shipped surface, so enabling the notch
+        // without ever touching the new controls behaves exactly as before.
+        XCTAssertEqual(settings.revealMode, .hover)
+        XCTAssertTrue(settings.expandedPanelEnabled)
+    }
+
+    /// A host built before the presentation controls existed sends neither key.
+    /// It has to keep the behaviour it was built against, not lose the frame.
+    func testSettingsFromAHostWithoutPresentationKeysKeepsShippedBehavior() throws {
+        let legacy = """
+        {"type":"settings","settings":{"enabled":true,"preferredDisplayId":null,
+         "hideDetails":false,"celebrationsEnabled":true,"soundsEnabled":false}}
+        """
+        guard case .settings(let settings) = try NotchInputDecoder.decode(line: legacy) else {
+            return XCTFail("expected settings")
+        }
+        XCTAssertTrue(settings.enabled)
+        XCTAssertEqual(settings.revealMode, .hover)
+        XCTAssertTrue(settings.expandedPanelEnabled)
+        XCTAssertFalse(settings.hideDetails)
+    }
+
+    func testSettingsDecodeEveryRevealModeAndDegradeUnknownOnes() throws {
+        for (raw, expected) in [
+            ("minimal", NotchRevealMode.minimal),
+            ("hover", .hover),
+            ("click", .click),
+            // A newer host may name a mode this build has never heard of.
+            ("telepathy", .hover),
+        ] {
+            let line = """
+            {"type":"settings","settings":{"enabled":true,"revealMode":"\(raw)",
+             "expandedPanelEnabled":false,"hideDetails":true,
+             "celebrationsEnabled":true,"soundsEnabled":false}}
+            """
+            guard case .settings(let settings) = try NotchInputDecoder.decode(line: line) else {
+                return XCTFail("expected settings for \(raw)")
+            }
+            XCTAssertEqual(settings.revealMode, expected, "reveal mode \(raw)")
+            XCTAssertFalse(settings.expandedPanelEnabled)
+        }
+    }
+
+    func testSettingsRoundTripThroughTheWire() throws {
+        let settings = NotchSettings(
+            enabled: true,
+            revealMode: .minimal,
+            expandedPanelEnabled: false,
+            preferredDisplayId: 7,
+            hideDetails: false,
+            celebrationsEnabled: false,
+            soundsEnabled: true
+        )
+        let encoded = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
+        let line = """
+        {"type":"settings","settings":\(encoded)}
+        """
+        XCTAssertEqual(try NotchInputDecoder.decode(line: line), .settings(settings))
+    }
+
+    func testContextMenuSettingsActionsPreserveUnrelatedChoices() {
+        let original = NotchSettings(
+            enabled: true,
+            revealMode: .hover,
+            expandedPanelEnabled: true,
+            preferredDisplayId: 42,
+            hideDetails: false,
+            celebrationsEnabled: false,
+            soundsEnabled: true
+        )
+
+        let clickOnly = applyingNotchSettingsMenuAction(
+            .setRevealMode(.click),
+            to: original
+        )
+        XCTAssertEqual(clickOnly.revealMode, .click)
+        XCTAssertEqual(clickOnly.preferredDisplayId, 42)
+        XCTAssertFalse(clickOnly.hideDetails)
+        XCTAssertTrue(clickOnly.soundsEnabled)
+
+        let compactPanel = applyingNotchSettingsMenuAction(
+            .toggleExpandedPanel,
+            to: clickOnly
+        )
+        XCTAssertFalse(compactPanel.expandedPanelEnabled)
+        XCTAssertEqual(compactPanel.revealMode, .click)
+
+        let hidden = applyingNotchSettingsMenuAction(.hide, to: compactPanel)
+        XCTAssertFalse(hidden.enabled)
+        XCTAssertFalse(hidden.expandedPanelEnabled)
+        XCTAssertEqual(hidden.revealMode, .click)
+    }
+
+    func testHoverDormancyDoesNotDisableOrHideTheNotchSetting() {
+        let hover = NotchSettings(enabled: true, revealMode: .hover)
+        XCTAssertTrue(hover.enabled)
+        XCTAssertTrue(notchSurfaceIsDormant(
+            presentation: .compact,
+            revealMode: hover.revealMode
+        ))
+
+        let hidden = applyingNotchSettingsMenuAction(.hide, to: hover)
+        XCTAssertFalse(hidden.enabled)
+        XCTAssertEqual(hidden.revealMode, .hover)
+    }
+
+    func testSettingsOutputCarriesTheWholeUpdatedSettingsFrame() throws {
+        let settings = NotchSettings(
+            enabled: false,
+            revealMode: .minimal,
+            expandedPanelEnabled: false,
+            hideDetails: true
+        )
+        let output = NotchOutput(type: "settings", settings: settings)
+        let encoded = try JSONEncoder().encode(output)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let encodedSettings = try XCTUnwrap(object["settings"] as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "settings")
+        XCTAssertEqual(encodedSettings["enabled"] as? Bool, false)
+        XCTAssertEqual(encodedSettings["revealMode"] as? String, "minimal")
+        XCTAssertEqual(encodedSettings["expandedPanelEnabled"] as? Bool, false)
     }
 
     func testPrivacyPresentationRedactsEverySensitiveSurfaceAndAccessibilitySummary() {
@@ -139,6 +349,121 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertEqual(notchStatusTone(for: "changes_requested"), .red)
         XCTAssertTrue(mergeReady.isAttention)
         XCTAssertEqual(mergeReady.statusLabel, "Ready to merge")
+    }
+
+    // MARK: - Availability
+
+    func testSnapshotDecodesAvailabilityAndSurvivesDriftedPayloads() throws {
+        let withAvailability = """
+        {"contractVersion":1,"revision":3,"generatedAt":"2026-07-28T12:00:00Z","items":[],
+         "availability":{"state":"degraded","title":"Reconnecting","message":"Lost the account stream.",
+         "recovery":"retry","hostName":"Studio"}}
+        """
+        guard case .snapshot(let snapshot) = try NotchInputDecoder.decode(line: withAvailability) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertEqual(snapshot.availability?.state, .degraded)
+        XCTAssertEqual(snapshot.availability?.recovery, .retry)
+        XCTAssertEqual(snapshot.availability?.hostName, "Studio")
+
+        // A newer host may send codes this build has never heard of, and may
+        // omit copy entirely. Neither may cost us the snapshot.
+        let drifted = """
+        {"contractVersion":1,"revision":4,"generatedAt":"2026-07-28T12:00:00Z","items":[],
+         "availability":{"state":"quantum_flux","recovery":"reboot_universe"}}
+        """
+        guard case .snapshot(let driftedSnapshot) = try NotchInputDecoder.decode(line: drifted) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertEqual(driftedSnapshot.availability?.state, .unknown)
+        XCTAssertEqual(driftedSnapshot.availability?.recovery, .unknown)
+        XCTAssertEqual(driftedSnapshot.revision, 4)
+
+        // Availability is advisory chrome; a malformed one must not blind the
+        // surface to the items that came with it.
+        let malformed = """
+        {"contractVersion":1,"revision":5,"generatedAt":"2026-07-28T12:00:00Z","items":[],"availability":"broken"}
+        """
+        guard case .snapshot(let malformedSnapshot) = try NotchInputDecoder.decode(line: malformed) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertNil(malformedSnapshot.availability)
+        XCTAssertEqual(malformedSnapshot.revision, 5)
+    }
+
+    /// Zero items is a state worth showing, not a reason to vanish.
+    func testEmptyButHealthyStreamStillHasSomethingToSay() throws {
+        let status = try XCTUnwrap(notchStatusPresentation(availability: nil, itemCount: 0))
+        XCTAssertFalse(status.isProblem)
+        XCTAssertEqual(status.title, "All clear")
+        XCTAssertEqual(status.compactLabel, "All clear")
+        XCTAssertEqual(status.tone, .emerald)
+
+        // Nothing to report once items are flowing again.
+        XCTAssertNil(notchStatusPresentation(availability: nil, itemCount: 2))
+        XCTAssertNil(notchStatusPresentation(
+            availability: AttentionAvailability(state: .ready, title: "Connected", message: "Live"),
+            itemCount: 2
+        ))
+    }
+
+    /// Host copy wins; the helper only fills in what the host left blank, and
+    /// says so even while stale items are still on screen.
+    func testUnhealthyStreamReportsHostCopyAndRecovery() throws {
+        let hostAuthored = try XCTUnwrap(notchStatusPresentation(
+            availability: AttentionAvailability(
+                state: .signedOut,
+                title: "Signed out",
+                message: "Your ADE session expired.",
+                recovery: .signIn
+            ),
+            itemCount: 0
+        ))
+        XCTAssertTrue(hostAuthored.isProblem)
+        XCTAssertEqual(hostAuthored.title, "Signed out")
+        XCTAssertEqual(hostAuthored.message, "Your ADE session expired.")
+        XCTAssertEqual(hostAuthored.hint, "Sign in to ADE to restore account attention.")
+
+        let blankCopy = try XCTUnwrap(notchStatusPresentation(
+            availability: AttentionAvailability(state: .incompatible, recovery: .updateHost, hostName: "Studio"),
+            itemCount: 0
+        ))
+        XCTAssertEqual(blankCopy.title, "ADE needs an update")
+        XCTAssertEqual(blankCopy.hint, "Update ADE on Studio.")
+        XCTAssertEqual(blankCopy.tone, .red)
+
+        // Stale items stay visible, but the copy admits they may be stale.
+        let stale = try XCTUnwrap(notchStatusPresentation(
+            availability: AttentionAvailability(state: .degraded),
+            itemCount: 3
+        ))
+        XCTAssertEqual(stale.message, "Showing the last state ADE received.")
+        XCTAssertEqual(stale.compactLabel, "Reconnecting")
+    }
+
+    func testScopeSummaryPluralizesEveryCount() {
+        XCTAssertEqual(
+            attentionScopeSummary(itemCount: 3, projectCount: 2, machineCount: 1),
+            "3 items · 2 projects · 1 machine"
+        )
+        XCTAssertEqual(
+            attentionScopeSummary(itemCount: 1, projectCount: 1, machineCount: 0),
+            "1 item · 1 project · 0 machines"
+        )
+    }
+
+    /// The expanded footer renders a prominent "Open in ADE" of its own, so a
+    /// plain `open` action beside it would be the same button twice.
+    func testPlainOpenActionIsLeftToTheProminentButton() {
+        let actions = [
+            AttentionAction(id: "open", kind: "open", label: "Open"),
+            AttentionAction(id: "approve", kind: "approve", label: "Approve"),
+            AttentionAction(id: "dismiss", kind: "dismiss", label: "Dismiss"),
+        ]
+        // "open" renders as "Open in ADE", which the prominent button already
+        // is; "dismiss" navigates nowhere.
+        XCTAssertEqual(notchSecondaryActions(actions).map(\.id), ["approve"])
+        XCTAssertEqual(AttentionAction(id: "open", kind: "open", label: "Open").navigationLabel, "Open in ADE")
     }
 
     private func fixtureItem(

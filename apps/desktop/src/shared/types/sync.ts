@@ -1704,6 +1704,8 @@ export type SyncRemoteCommandAction =
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
   | "prs.getMobileGithubDetail"
+  | "attention.getMachineSnapshot"
+  | "attention.acknowledgeMachine"
   | "sync.getWebPairingInfo"
   | "sync.getDesktopPairingInfo"
   | "modelPicker.getFavorites"

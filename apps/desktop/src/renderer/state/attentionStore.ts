@@ -26,6 +26,9 @@ type PendingAttentionAcknowledgement = {
 };
 
 export type AttentionStoreState = {
+  snapshotScope: AttentionSnapshot["scope"] | null;
+  accountOwnerId: string | null;
+  availability: AttentionSnapshot["availability"] | null;
   streamId: string | null;
   revision: number;
   generatedAt: string | null;
@@ -34,6 +37,7 @@ export type AttentionStoreState = {
   view: AttentionView;
   scope: AttentionScope;
   selectedItemId: string | null;
+  headerSurfaceVisible: boolean;
   syncStatus: AttentionSyncStatus;
   syncError: string | null;
   pendingAcknowledgements: Record<string, PendingAttentionAcknowledgement>;
@@ -45,6 +49,7 @@ export type AttentionStoreState = {
   setView: (view: AttentionView) => void;
   setScope: (scope: AttentionScope) => void;
   selectItem: (itemId: string | null) => void;
+  setHeaderSurfaceVisible: (visible: boolean) => void;
   setSyncStatus: (status: AttentionSyncStatus, error?: string | null) => void;
   markSeen: (itemId: string, seenAt?: string) => void;
   dismiss: (itemId: string, dismissedAt?: string) => void;
@@ -122,6 +127,9 @@ export function selectAttentionUnseenCount(
 function createInitialState(): Pick<
   AttentionStoreState,
   | "streamId"
+  | "snapshotScope"
+  | "accountOwnerId"
+  | "availability"
   | "revision"
   | "generatedAt"
   | "itemsById"
@@ -129,12 +137,16 @@ function createInitialState(): Pick<
   | "view"
   | "scope"
   | "selectedItemId"
+  | "headerSurfaceVisible"
   | "syncStatus"
   | "syncError"
   | "pendingAcknowledgements"
   | "acknowledgementErrors"
 > {
   return {
+    snapshotScope: null,
+    accountOwnerId: null,
+    availability: null,
     streamId: null,
     revision: 0,
     generatedAt: null,
@@ -143,6 +155,7 @@ function createInitialState(): Pick<
     view: "live",
     scope: { kind: "all" },
     selectedItemId: null,
+    headerSurfaceVisible: false,
     syncStatus: "idle",
     syncError: null,
     pendingAcknowledgements: {},
@@ -152,7 +165,11 @@ function createInitialState(): Pick<
 
 export const attentionStore = createStore<AttentionStoreState>((set) => ({
   ...createInitialState(),
-  resetStream: () => set(createInitialState()),
+  resetStream: () =>
+    set((state) => ({
+      ...createInitialState(),
+      headerSurfaceVisible: state.headerSurfaceVisible,
+    })),
   applySnapshot: (snapshot) =>
     set((state) => {
       // Account revisions are monotonic only inside one verified account.
@@ -206,6 +223,9 @@ export const attentionStore = createStore<AttentionStoreState>((set) => ({
         };
       }
       return {
+        snapshotScope: snapshot.scope ?? null,
+        accountOwnerId: snapshot.accountOwnerId?.trim() || null,
+        availability: snapshot.availability ?? null,
         streamId: incomingStreamId ?? (streamReset ? null : state.streamId),
         revision: snapshot.revision,
         generatedAt: snapshot.generatedAt,
@@ -247,6 +267,7 @@ export const attentionStore = createStore<AttentionStoreState>((set) => ({
   setView: (view) => set({ view, selectedItemId: null }),
   setScope: (scope) => set({ scope, selectedItemId: null }),
   selectItem: (selectedItemId) => set({ selectedItemId }),
+  setHeaderSurfaceVisible: (headerSurfaceVisible) => set({ headerSurfaceVisible }),
   setSyncStatus: (syncStatus, syncError = null) => set({ syncStatus, syncError }),
   markSeen: (itemId, seenAt = new Date().toISOString()) =>
     set((state) => {
@@ -335,6 +356,8 @@ export async function acknowledgeAttentionItem(
     if (api) {
       await api.acknowledge({
         itemIds: [itemId],
+        sourceRevisions: { [itemId]: item.revision },
+        expectedAccountOwnerId: before.accountOwnerId,
         seenAt: timestamp,
         ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
       });

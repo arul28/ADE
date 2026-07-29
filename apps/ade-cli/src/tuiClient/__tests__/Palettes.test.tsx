@@ -100,7 +100,7 @@ describe("SlashPalette", () => {
   it("uses the available center width for long slash command names", () => {
     const frame = stripAnsi(render(
       <SlashPalette
-        query="/wide"
+        query="/wide-subscription-localization"
         userCommands={[{
           name: "/wide-subscription-localization",
           description: "Bulk-localize subscription and in-app purchase display names",

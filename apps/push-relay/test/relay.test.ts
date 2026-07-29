@@ -431,6 +431,87 @@ describe("push relay", () => {
     resetSpendGuardsForTests();
   });
 
+  it("reports account authentication readiness without exposing binding values", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      CLERK_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+      CLERK_ISSUER: "https://clerk.example",
+      CLERK_OAUTH_CLIENT_ID: "prod-client",
+      CLERK_SECONDARY_JWKS_URL: "https://clerk-dev.example/.well-known/jwks.json",
+      CLERK_SECONDARY_ISSUER: "https://clerk-dev.example",
+      CLERK_SECONDARY_OAUTH_CLIENT_ID: "dev-client",
+    };
+    const response = await handleRequest(new Request("https://push.example/health"), env);
+    expect(response.status).toBe(200);
+    const health = await response.json() as Record<string, unknown>;
+    expect(health).toMatchObject({
+      ok: true,
+      accountAuthConfigured: true,
+      primaryAccountAuthConfigured: true,
+      secondaryAccountAuthConfigured: true,
+      accountAuthConfigurationErrors: [],
+    });
+    expect(JSON.stringify(health)).not.toContain("clerk.example");
+    expect(JSON.stringify(health)).not.toContain("prod-client");
+  });
+
+  it("allows only the configured hosted origin to preflight account Attention", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      WEB_CLIENT_ORIGIN: "https://app.ade-app.dev",
+    };
+    const allowed = await handleRequest(
+      new Request("https://push.example/attention/account/snapshot", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.ade-app.dev",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "authorization",
+        },
+      }),
+      env,
+    );
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("access-control-allow-origin"))
+      .toBe("https://app.ade-app.dev");
+
+    const hostile = await handleRequest(
+      new Request("https://push.example/attention/account/snapshot", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://evil.example",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "authorization",
+        },
+      }),
+      env,
+    );
+    expect(hostile.status).toBe(403);
+    expect(hostile.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("keeps allowed browser account errors readable across early relay gates", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      WEB_CLIENT_ORIGIN: "https://app.ade-app.dev",
+    };
+    const response = await handleRequest(
+      new Request("https://push.example/attention/account/ack", {
+        method: "POST",
+        headers: {
+          origin: "https://app.ade-app.dev",
+          "content-length": String(2 * 1024 * 1024),
+        },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get("access-control-allow-origin"))
+      .toBe("https://app.ade-app.dev");
+    expect(await response.json()).toMatchObject({ error: "payload too large" });
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

@@ -14,6 +14,12 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         ProductAnalytics.shared.captureAppOpened(.coldStart)
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
+        // A push-to-start notification wakes the process before SwiftUI scene
+        // tasks are guaranteed to run. Install ActivityKit observers at launch
+        // so the newly-created activity and its update token cannot be missed.
+        MainActor.assumeIsolated {
+            LiveActivityService.shared.start()
+        }
         return true
     }
 

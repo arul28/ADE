@@ -1397,6 +1397,7 @@ struct PRsTabView: View {
     selectedPrTransitionId = nil
     laneContextLaneId = nil
 
+    let destinationResolved: Bool
     switch target {
     case .detail(let prId, let laneId, let repoScope):
       selectedPrTransitionId = prId
@@ -1408,10 +1409,19 @@ struct PRsTabView: View {
         prDetailRouteScopes.removeValue(forKey: prId)
       }
       path.append(prId)
+      destinationResolved = true
     case .github(let item):
       openGitHubDetail(item, initialTab: request.detailTab ?? .overview)
+      destinationResolved = true
     case .unresolved:
       errorMessage = "That pull request is not available on this phone yet."
+      destinationResolved = false
+    }
+
+    if destinationResolved {
+      await AccountService.shared.acknowledgeAttentionNavigation(
+        request.attentionItemId
+      )
     }
 
     syncService.requestedPrNavigation = nil

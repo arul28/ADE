@@ -87,11 +87,26 @@ function signRequest(
 
 type RelayResponse = { ok: boolean; status: number; body: Record<string, unknown> | null };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export class PushRelayRequestError extends Error {
+  constructor(
+    readonly action: string,
+    readonly status: number,
+    readonly reason: string,
+  ) {
+    super(`push relay ${action} failed: ${reason}`);
+    this.name = "PushRelayRequestError";
+  }
+}
+
 export function createPushRelayClient(args: {
   store: PushRegistrationStore;
   logger: Logger;
   baseUrl?: string;
-  getAccountAccessToken?: () => Promise<string | null>;
+  getAccountAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getAccountUserId?: () => string | null;
 }) {
   const baseUrl = (args.baseUrl ?? process.env.ADE_PUSH_RELAY_URL?.trim() ?? "").trim() || DEFAULT_RELAY_URL;
@@ -108,78 +123,134 @@ export function createPushRelayClient(args: {
   ): Promise<RelayResponse> => {
     const url = new URL(`${baseUrl}${pathSuffix}`);
     const bodyString = options?.body === undefined ? "" : JSON.stringify(options.body);
-    const headers: Record<string, string> = {};
-    if (options?.body !== undefined) headers["content-type"] = "application/json";
+    const requestOnce = async (forceRefresh: boolean): Promise<RelayResponse> => {
+      const expectedAccountUserId = options?.expectedAccountUserId;
+      const headers: Record<string, string> = {};
+      if (options?.body !== undefined) headers["content-type"] = "application/json";
 
-    if (options?.signed) {
-      const { machineSecret } = args.store.getOrCreateIdentity();
-      const timestamp = String(Math.floor(Date.now() / 1000));
-      headers["x-ade-push-timestamp"] = timestamp;
-      // Sign the pathname exactly as it appears on the wire — the worker signs
-      // `new URL(request.url).pathname`, so any percent-encoding must match.
-      headers["x-ade-push-signature"] = signRequest(machineSecret, {
-        timestamp,
-        method,
-        pathname: url.pathname,
-        body: bodyString,
-      });
-    }
-    if (options?.accountAuthorized) {
-      if (
-        options.expectedAccountUserId
-        && args.getAccountUserId?.() !== options.expectedAccountUserId
-      ) {
-        return {
-          ok: false,
-          status: 409,
-          body: { error: "ADE account changed before the request was authorized" },
-        };
+      if (options?.signed) {
+        const { machineSecret } = args.store.getOrCreateIdentity();
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        headers["x-ade-push-timestamp"] = timestamp;
+        // Sign the pathname exactly as it appears on the wire — the worker signs
+        // `new URL(request.url).pathname`, so any percent-encoding must match.
+        headers["x-ade-push-signature"] = signRequest(machineSecret, {
+          timestamp,
+          method,
+          pathname: url.pathname,
+          body: bodyString,
+        });
       }
-      const token = await args.getAccountAccessToken?.();
-      if (!token) {
-        return { ok: false, status: 401, body: { error: "ADE account is not signed in" } };
+      if (options?.accountAuthorized) {
+        if (
+          expectedAccountUserId
+          && args.getAccountUserId?.() !== expectedAccountUserId
+        ) {
+          return {
+            ok: false,
+            status: 409,
+            body: { error: "ADE account changed before the request was authorized" },
+          };
+        }
+        const token = await args.getAccountAccessToken?.(
+          forceRefresh ? { forceRefresh: true } : undefined,
+        );
+        if (!token) {
+          return {
+            ok: false,
+            status: 401,
+            body: {
+              error: expectedAccountUserId
+                ? "ADE account has no usable access token"
+                : "ADE account is not signed in",
+            },
+          };
+        }
+        if (
+          expectedAccountUserId
+          && args.getAccountUserId?.() !== expectedAccountUserId
+        ) {
+          return {
+            ok: false,
+            status: 409,
+            body: { error: "ADE account changed while the request was authorized" },
+          };
+        }
+        headers.authorization = `Bearer ${token}`;
       }
-      if (
-        options.expectedAccountUserId
-        && args.getAccountUserId?.() !== options.expectedAccountUserId
-      ) {
-        return {
-          ok: false,
-          status: 409,
-          body: { error: "ADE account changed while the request was authorized" },
-        };
-      }
-      headers.authorization = `Bearer ${token}`;
-    }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      const response = await fetch(url.toString(), {
-        method,
-        headers,
-        ...(options?.body !== undefined ? { body: bodyString } : {}),
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout));
-      let parsed: Record<string, unknown> | null = null;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       try {
-        parsed = (await response.json()) as Record<string, unknown>;
-      } catch {
-        parsed = null;
+        const response = await fetch(url.toString(), {
+          method,
+          headers,
+          ...(options?.body !== undefined ? { body: bodyString } : {}),
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timeout));
+        let parsed: Record<string, unknown> | null = null;
+        try {
+          const value: unknown = await response.json();
+          parsed = isRecord(value) ? value : null;
+        } catch {
+          parsed = null;
+        }
+        if (
+          expectedAccountUserId
+          && args.getAccountUserId?.() !== expectedAccountUserId
+        ) {
+          return {
+            ok: false,
+            status: 409,
+            body: { error: "ADE account changed while the relay response was in flight" },
+          };
+        }
+        return { ok: response.ok, status: response.status, body: parsed };
+      } catch (error) {
+        clearTimeout(timeout);
+        throw error instanceof Error ? error : new Error(String(error));
       }
-      return { ok: response.ok, status: response.status, body: parsed };
-    } catch (error) {
-      clearTimeout(timeout);
-      throw error instanceof Error ? error : new Error(String(error));
-    }
+    };
+
+    const first = await requestOnce(false);
+    if (!options?.accountAuthorized || first.status !== 401) return first;
+
+    // A cached Clerk token can be revoked or rejected before its signed expiry.
+    // Retry the exact request once with a forced refresh. Account-owner fencing
+    // runs again before and after refresh, so an account switch can never send
+    // the replacement credential on behalf of the prior owner.
+    return await requestOnce(true);
   };
 
   const requireOk = (action: string, response: RelayResponse): Record<string, unknown> => {
     if (!response.ok) {
       const message = typeof response.body?.error === "string" ? response.body.error : `HTTP ${response.status}`;
-      throw new Error(`push relay ${action} failed: ${message}`);
+      throw new PushRelayRequestError(action, response.status, message);
     }
     return response.body ?? {};
+  };
+
+  const requireAttentionSnapshot = (
+    response: RelayResponse,
+  ): AttentionSnapshot => {
+    const body = requireOk("getAttentionSnapshot", response);
+    const valid = body.contractVersion === 1
+      && (body.streamId === null || typeof body.streamId === "string")
+      && Number.isSafeInteger(body.revision)
+      && Number(body.revision) >= 0
+      && typeof body.generatedAt === "string"
+      && !Number.isNaN(Date.parse(body.generatedAt))
+      && Array.isArray(body.items)
+      && Array.isArray(body.tombstones)
+      && (body.machines === undefined || Array.isArray(body.machines));
+    if (!valid) {
+      throw new PushRelayRequestError(
+        "getAttentionSnapshot",
+        502,
+        "relay returned an invalid Attention snapshot",
+      );
+    }
+    return body as unknown as AttentionSnapshot;
   };
 
   const machinePath = (suffix: string): string => {
@@ -255,11 +326,14 @@ export function createPushRelayClient(args: {
 
     async publishAttention(payload: AttentionRelayPublishPayload): Promise<Record<string, unknown> | null> {
       if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
       await claimMachine();
       const response = await request("POST", machinePath("/attention"), {
         body: payload,
         signed: true,
         accountAuthorized: true,
+        expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;
@@ -272,6 +346,8 @@ export function createPushRelayClient(args: {
       streamId?: string | null,
     ): Promise<AttentionSnapshot | null> {
       if (!args.getAccountAccessToken) return null;
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return null;
       const query = new URLSearchParams({
         since: String(Math.max(0, Math.trunc(since))),
       });
@@ -279,23 +355,39 @@ export function createPushRelayClient(args: {
       const response = await request(
         "GET",
         `/attention/account/snapshot?${query.toString()}`,
-        { accountAuthorized: true },
+        { accountAuthorized: true, expectedAccountUserId },
       );
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;
       }
-      return requireOk("getAttentionSnapshot", response) as unknown as AttentionSnapshot;
+      return requireAttentionSnapshot(response);
     },
 
     async acknowledgeAttention(acknowledgment: {
       itemIds: string[];
       seenAt?: string;
       dismissedAt?: string | null;
+      expectedAccountOwnerId?: string | null;
     }): Promise<Record<string, unknown> | null> {
       if (!args.getAccountAccessToken) return null;
+      const currentAccountUserId = args.getAccountUserId?.()?.trim() || null;
+      const expectedAccountUserId = acknowledgment.expectedAccountOwnerId === undefined
+        ? currentAccountUserId
+        : acknowledgment.expectedAccountOwnerId?.trim() || null;
+      if (expectedAccountUserId !== currentAccountUserId) {
+        throw new Error(
+          "The ADE account changed before the Attention acknowledgment could sync.",
+        );
+      }
+      if (!currentAccountUserId) return null;
+      const {
+        expectedAccountOwnerId: _expectedAccountOwnerId,
+        ...relayAcknowledgment
+      } = acknowledgment;
       const response = await request("POST", "/attention/account/ack", {
-        body: acknowledgment,
+        body: relayAcknowledgment,
         accountAuthorized: true,
+        expectedAccountUserId: expectedAccountUserId ?? undefined,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;
@@ -304,9 +396,12 @@ export function createPushRelayClient(args: {
     },
 
     async reportAttentionPresence(presence: AttentionPresence): Promise<void> {
+      const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
+      if (!expectedAccountUserId) return;
       const response = await request("POST", "/attention/account/presence", {
         body: presence,
         accountAuthorized: true,
+        expectedAccountUserId,
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
       requireOk("reportAttentionPresence", response);

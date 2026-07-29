@@ -348,6 +348,12 @@ import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybind
 import { buildDeeplinkForRow, buildWebClientUrlForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
 import {
+  acknowledgeAttentionItem,
+  attentionItemDeepLink,
+  buildAttentionPaneModel,
+  loadAttentionSnapshot,
+} from "./attentionPane";
+import {
   deletePromptSmartLinkBackward,
   deletePromptSmartLinkForward,
   formatPromptSmartLinkStrip,
@@ -883,6 +889,54 @@ function openExternalUrl(url: string, notice: (message: string, tone?: LocalNoti
   spawn(command, [trimmed], { stdio: "ignore", detached: true }).unref();
   notice("Opening link in browser…", "info");
   return true;
+}
+
+async function openAttentionDeepLink(
+  url: string,
+  notice: (message: string, tone?: LocalNotice["tone"]) => void,
+): Promise<boolean> {
+  const trimmed = url.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return false;
+  }
+  if (
+    parsed.protocol !== "ade:"
+    || (parsed.hostname !== "session" && parsed.hostname !== "pr")
+  ) return false;
+  const bridge = (globalThis as {
+    window?: { ade?: { app?: { openExternal?: (value: string) => unknown } } };
+  }).window;
+  const opener = bridge?.ade?.app?.openExternal;
+  if (typeof opener === "function") {
+    try {
+      await Promise.resolve(opener(trimmed));
+      notice("Opening exact destination in ADE…", "info");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const command = process.platform === "darwin"
+    ? "open"
+    : process.platform === "linux"
+      ? "xdg-open"
+      : null;
+  if (!command) return false;
+  return await new Promise<boolean>((resolve) => {
+    const child = spawn(command, [trimmed], {
+      stdio: "ignore",
+      detached: true,
+    });
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => {
+      child.unref();
+      notice("Opening exact destination in ADE…", "info");
+      resolve(true);
+    });
+  });
 }
 
 export function shouldToggleLatestFailedLineOnBlankEnter(args: {
@@ -9391,6 +9445,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     toggleRightChatsClosedGroup,
   ]);
 
+  const activateAttentionItem = useCallback(async (index: number): Promise<void> => {
+    const pane = rightPaneRef.current;
+    if (pane.kind !== "attention") return;
+    const item = pane.model.items[index];
+    if (!item) return;
+    const deepLink = attentionItemDeepLink(item);
+    if (!await openAttentionDeepLink(deepLink, addNotice)) {
+      addNotice("ADE could not open this destination on the current platform. The item remains unreviewed.", "error");
+      return;
+    }
+
+    // Opening the destination is the acknowledgement boundary. Never mark an
+    // item seen before the OS accepts its exact ADE deeplink.
+    const seenAt = new Date().toISOString();
+    const updatedSnapshot = {
+      ...pane.model.snapshot,
+      items: pane.model.snapshot.items.map((entry) =>
+        entry.id === item.id ? { ...entry, seenAt } : entry),
+    };
+    setRightPane({
+      kind: "attention",
+      model: buildAttentionPaneModel(updatedSnapshot),
+    });
+    const conn = connectionRef.current;
+    if (!conn) return;
+    try {
+      await acknowledgeAttentionItem(
+        conn,
+        item,
+        pane.model.snapshot.scope,
+        pane.model.snapshot.accountOwnerId ?? null,
+      );
+    } catch {
+      addNotice("The destination opened, but ADE could not sync the seen state. Retry Attention to reconcile it.", "error");
+    }
+  }, [addNotice]);
+
   const sendOrSteerChatMessage = useCallback(async (
     sessionId: string,
     text: string,
@@ -9489,6 +9580,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPaneFocus("details");
   }, [renderHelpPane, setPaneFocus]);
 
+  const refreshAttentionPane = useCallback(async (options: { announce?: boolean } = {}) => {
+    const conn = connectionRef.current;
+    if (!conn) {
+      setRightPane({
+        kind: "details",
+        title: "Attention",
+        body: "ADE is still connecting. Retry when the runtime is ready.",
+      });
+      return;
+    }
+    const snapshot = await loadAttentionSnapshot(conn, {
+      hostName: project.remoteLabel,
+    });
+    const model = buildAttentionPaneModel(snapshot);
+    setRightSelectionIndex((index) => Math.max(0, Math.min(index, Math.max(0, model.items.length - 1))));
+    setRightPane({ kind: "attention", model });
+    setRightOpen(true);
+    if (options.announce) {
+      addNotice(
+        snapshot.scope === "machine"
+          ? "Attention refreshed from this connected machine."
+          : "Account Attention refreshed.",
+        snapshot.availability?.state === "ready" ? "success" : "info",
+      );
+    }
+  }, [addNotice, project.remoteLabel]);
+
+  useEffect(() => {
+    if (rightPane.kind !== "attention" || !connection) return;
+    const timer = setInterval(() => {
+      void refreshAttentionPane();
+    }, 10_000);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [connection, refreshAttentionPane, rightPane.kind]);
+
   const runRightCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -9515,6 +9642,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ["chat", activeSession?.title ?? activeSession?.sessionId ?? "none"],
             ["ADE", mode],
           ],
+        });
+        return;
+      }
+      if (name === "/attention") {
+        setRightPane({
+          kind: "details",
+          title: "Attention",
+          body: "ADE is still connecting. Retry when the runtime is ready.",
         });
         return;
       }
@@ -9564,6 +9699,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     if (name === "/help") {
       renderHelpPane("", 0, helpRecentsRef.current);
+      return;
+    }
+    if (name === "/attention") {
+      setRightSelectionIndex(0);
+      await refreshAttentionPane();
       return;
     }
     if (name === "/keybindings") {
@@ -11095,7 +11235,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, applySessionSnooze, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, openSnoozeDurationPalette, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshAttentionPane, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -14894,6 +15034,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           void submitPrompt("/pr open");
           return;
         }
+        return;
+      }
+    }
+
+    if (pane === "details" && rightOpen && rightPane.kind === "attention") {
+      const itemCount = rightPane.model.items.length;
+      if (key.upArrow) {
+        setRightSelectionIndex((index) => (index <= 0 ? Math.max(0, itemCount - 1) : index - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setRightSelectionIndex((index) => (itemCount > 0 ? (index + 1) % itemCount : 0));
+        return;
+      }
+      if ((key as { home?: boolean }).home) {
+        setRightSelectionIndex(0);
+        return;
+      }
+      if ((key as { end?: boolean }).end) {
+        setRightSelectionIndex(Math.max(0, itemCount - 1));
+        return;
+      }
+      if (key.return && itemCount > 0) {
+        void activateAttentionItem(rightSelectionIndex);
+        return;
+      }
+      if (input.toLowerCase() === "r" && !key.ctrl && !key.meta) {
+        void refreshAttentionPane({ announce: true });
         return;
       }
     }

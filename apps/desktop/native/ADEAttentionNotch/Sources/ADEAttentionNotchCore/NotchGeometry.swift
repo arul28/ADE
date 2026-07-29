@@ -15,6 +15,7 @@ public struct NotchRect: Equatable, Sendable {
 
     public var maxX: Double { x + width }
     public var maxY: Double { y + height }
+    public var midX: Double { x + width / 2 }
 }
 
 public struct NotchDisplayGeometry: Equatable, Sendable {
@@ -69,4 +70,44 @@ public struct NotchDisplayGeometry: Equatable, Sendable {
             height: Self.panelSize.height
         )
     }
+}
+
+/// The physical cutout is itself the resting surface. A Mac without one uses
+/// the status item as its resting surface and only creates visible panel chrome
+/// after a hover, click, or allowed transient changes the presentation.
+public func notchPanelShouldShow(
+    surfaceEnabled: Bool,
+    hasPhysicalNotch: Bool,
+    presentation: NotchPresentationState
+) -> Bool {
+    surfaceEnabled && (hasPhysicalNotch || presentation != .compact)
+}
+
+/// Positions the transparent hosting panel so its visible surface is directly
+/// beneath the menu-bar item. The surface center is clamped (instead of the
+/// much wider transparent panel) so expanded content cannot run off either
+/// display edge, while the panel's top always remains below the menu bar.
+public func menuBarAnchoredPanelFrame(
+    statusItemFrame: NotchRect,
+    displayFrame: NotchRect,
+    surfaceSize: NotchSize,
+    panelSize: NotchSize = NotchDisplayGeometry.panelSize,
+    edgeMargin: Double = 8,
+    menuBarGap: Double = 4
+) -> NotchRect {
+    let halfSurfaceWidth = min(surfaceSize.width, displayFrame.width) / 2
+    let minimumCenter = displayFrame.x + edgeMargin + halfSurfaceWidth
+    let maximumCenter = displayFrame.maxX - edgeMargin - halfSurfaceWidth
+    let unclampedCenter = statusItemFrame.midX
+    let centerX = minimumCenter <= maximumCenter
+        ? min(max(unclampedCenter, minimumCenter), maximumCenter)
+        : displayFrame.midX
+    let top = min(statusItemFrame.y - menuBarGap, displayFrame.maxY - menuBarGap)
+
+    return NotchRect(
+        x: centerX - panelSize.width / 2,
+        y: top - panelSize.height,
+        width: panelSize.width,
+        height: panelSize.height
+    )
 }

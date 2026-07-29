@@ -238,7 +238,8 @@ apps/ios/
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
 │   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
 │   │   ├── ADEAgentActivityAttributes.swift # account-wide ActivityKit
-│   │   │                            # content-state + exact machine links
+│   │   │                            # content-state + exact machine links +
+│   │   │                            # non-PII ownership-epoch fence
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
 │   │   ├── Account/                 # account choice/sign-in plus the mobile
@@ -1098,7 +1099,13 @@ contract) is documented in
   `Run` / `PullRequest` row carries an optional `accountMachineKey`; exact
   element-level links preserve it so tapping a secondary row never opens the
   primary item or the wrong machine. Legacy payloads without the additive key
-  still decode.
+  still decode. Account-wide attributes and content also carry the relay's
+  non-PII `ownershipEpoch`. `LiveActivityService` compares both copies with the
+  durable current account-device owner and immediately ends a stale activity.
+  The widget extension performs that check before drawing project/run details;
+  while the app is not awake to end a delayed old-account start, it renders only
+  a neutral **Updating ADE** state. Legacy signed-out machine activities do not
+  claim account ownership and remain on their separate compatibility path.
   PR rows are sourced from the same `pr-notification` fan-out as desktop
   toasts and cover opened, reopened, closed, merged, checks failing, changes
   requested, review requested, and merge-ready states. `NSSupportsLiveActivities`
@@ -2260,7 +2267,11 @@ different machine's cached limits.
   are serialized/latest-wins, and a Relay `409` is terminal because a newer
   owner boundary already superseded the request. Do not replace this with task
   cancellation: cancellation cannot recall an HTTP request that already
-  reached Relay.
+  reached Relay. Relay stamps that same epoch into account Live Activity
+  attributes and content. `LiveActivityService` and
+  `ADEAgentActivityWidget` accept account details only when both payload epochs
+  match the durable current owner; a mismatch ends in-app and renders neutral
+  extension copy until cleanup.
 - **Account routes must retain `accountMachineKey`.** Attention destinations,
   APNs payloads, Live Activity `Run`/`PullRequest` rows, and their element-level
   links carry the canonical account machine key. `DeepLinkRouter` threads it

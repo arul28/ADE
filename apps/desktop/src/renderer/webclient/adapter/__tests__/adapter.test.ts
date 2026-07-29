@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectInfo } from "../../../../shared/types";
+import {
+  DEFAULT_ATTENTION_PREFERENCES,
+  type AttentionItem,
+  type ProjectInfo,
+} from "../../../../shared/types";
 import type {
   SyncChatEventPayload,
   SyncChatSubscribeSnapshotPayload,
@@ -176,8 +180,9 @@ describe("createAdeWebAdapter", () => {
       relayBaseUrls: ["wss://relay.example"],
       message: null,
     };
+    let currentSnapshot: BrowserAccountSnapshot = snapshot;
     const accountClient = {
-      getSnapshot: () => snapshot,
+      getSnapshot: () => currentSnapshot,
       startSignIn: vi.fn(async () => "https://clerk.example/oauth/authorize"),
       signOut: vi.fn(async () => ({ ...snapshot, state: "signed_out" as const })),
       loadMachines: vi.fn(async () => snapshot),
@@ -218,6 +223,405 @@ describe("createAdeWebAdapter", () => {
       deviceId: "",
     });
 
+    adapter.dispose();
+  });
+
+  it("reads account Attention directly and refreshes one rejected browser token", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    let currentSnapshot: BrowserAccountSnapshot = snapshot;
+    const getAccessToken = vi.fn(async (options?: { forceRefresh?: boolean }) =>
+      options?.forceRefresh ? "fresh-token" : "cached-token");
+    const accountClient = {
+      getSnapshot: () => currentSnapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken,
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        error: "account token rejected",
+      }), { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        contractVersion: 1,
+        streamId: "account-stream",
+        revision: 4,
+        generatedAt: "2026-07-29T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getSnapshot(3, "account-stream"))
+      .resolves.toMatchObject({
+        scope: "account",
+        streamId: "account-stream",
+        revision: 4,
+        availability: { state: "ready" },
+      });
+    expect(getAccessToken).toHaveBeenNthCalledWith(1, { forceRefresh: false });
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(fetchMock.mock.calls.map(([, init]) =>
+      (init as RequestInit).headers)).toEqual([
+      expect.objectContaining({ authorization: "Bearer cached-token" }),
+      expect.objectContaining({ authorization: "Bearer fresh-token" }),
+    ]);
+    currentSnapshot = { ...snapshot, userId: "account-b" };
+    await expect(adapter.ade.attention.acknowledge({
+      itemIds: ["stale-account-a-item"],
+      seenAt: "2026-07-29T12:01:00.000Z",
+    })).rejects.toThrow(/account changed/i);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    adapter.dispose();
+  });
+
+  it("rejects malformed account Attention responses at the relay boundary", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    let currentSnapshot: BrowserAccountSnapshot = snapshot;
+    const accountClient = {
+      getSnapshot: () => currentSnapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      contractVersion: 1,
+      streamId: "account-stream",
+      revision: 4,
+      generatedAt: "2026-07-29T12:00:00.000Z",
+      items: [{ id: "missing-required-item-fields" }],
+      tombstones: [],
+    }), { status: 200 })));
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
+      "ADE Attention returned an incompatible response. Update ADE and retry.",
+    );
+    adapter.dispose();
+  });
+
+  it("validates account Attention preferences before exposing them to the renderer", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    let currentSnapshot: BrowserAccountSnapshot = snapshot;
+    const accountClient = {
+      getSnapshot: () => currentSnapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        preferences: DEFAULT_ATTENTION_PREFERENCES,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        preferences: {
+          ...DEFAULT_ATTENTION_PREFERENCES,
+          account: { notificationsEnabled: "yes" },
+        },
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getPreferences("account-a"))
+      .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
+    await expect(adapter.ade.attention.getPreferences("account-a"))
+      .rejects.toThrow(
+        "Account Attention preferences were incompatible. Update ADE and retry.",
+      );
+    adapter.dispose();
+  });
+
+  it("loads real machine Attention from the paired host while signed out", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_out",
+      userId: null,
+      email: null,
+      name: null,
+      imageUrl: null,
+      expiresAt: null,
+      machines: [],
+      relayBaseUrls: [],
+      message: null,
+    };
+    let currentSnapshot: BrowserAccountSnapshot = snapshot;
+    const accountClient = {
+      getSnapshot: () => currentSnapshot,
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fake.activeProjectId = null;
+    fake.descriptors = [
+      {
+        action: "attention.getMachineSnapshot",
+        scope: "runtime",
+        policy: { viewerAllowed: true },
+      },
+      {
+        action: "attention.acknowledgeMachine",
+        scope: "runtime",
+        policy: { viewerAllowed: true, queueable: false },
+      },
+    ];
+    fake.commandResults.set("attention.getMachineSnapshot", {
+      contractVersion: 1,
+      scope: "machine",
+      accountOwnerId: null,
+      streamId: "machine:host-1",
+      revision: 5,
+      generatedAt: "2026-07-29T12:00:00.000Z",
+      machines: [{
+        machineKey: "host-1",
+        name: "Host",
+        online: true,
+        lastSeenAt: null,
+      }],
+      items: [{
+        contractVersion: 1,
+        id: "machine-agent-1",
+        revision: 5,
+        fingerprint: "machine-agent-1",
+        kind: "agent",
+        eventKind: "agent_running",
+        phase: "running",
+        machine: {
+          machineKey: "host-1",
+          name: "Host",
+          online: true,
+          lastSeenAt: null,
+        },
+        project: { projectId: "project-host", name: "Host Project" },
+        title: "Agent is working",
+        preview: "Implementing account Attention",
+        privacyPreview: "Agent is working",
+        destination: { kind: "session", sessionId: "session-host" },
+        actions: [],
+        occurredAt: "2026-07-29T11:59:00.000Z",
+        updatedAt: "2026-07-29T12:00:00.000Z",
+        seenAt: null,
+        dismissedAt: null,
+        expiresAt: null,
+      }],
+      tombstones: [],
+    });
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getSnapshot()).resolves.toMatchObject({
+      scope: "machine",
+      availability: { state: "signed_out", recovery: "sign_in" },
+      streamId: "machine:host-1",
+      revision: 5,
+      items: [{ id: "machine-agent-1" }],
+    });
+    await adapter.ade.attention.acknowledge({
+      itemIds: ["machine-agent-1"],
+      sourceRevisions: { "machine-agent-1": 5 },
+      expectedAccountOwnerId: null,
+      seenAt: "2026-07-29T12:01:00.000Z",
+    });
+    currentSnapshot = {
+      ...snapshot,
+      state: "signed_in",
+      userId: "account-b",
+      email: "b@example.test",
+    };
+    await expect(adapter.ade.attention.acknowledge({
+      itemIds: ["machine-agent-1"],
+      sourceRevisions: { "machine-agent-1": 5 },
+      expectedAccountOwnerId: null,
+      seenAt: "2026-07-29T12:02:00.000Z",
+    })).rejects.toThrow(/account changed/i);
+    expect(fake.commandCalls).toEqual([
+      {
+        action: "attention.getMachineSnapshot",
+        args: {},
+        opts: { projectId: null, timeoutMs: undefined },
+      },
+      {
+        action: "attention.acknowledgeMachine",
+        args: {
+          itemIds: ["machine-agent-1"],
+          sourceRevisions: { "machine-agent-1": 5 },
+          expectedAccountOwnerId: null,
+          seenAt: "2026-07-29T12:01:00.000Z",
+        },
+        opts: { projectId: null, timeoutMs: undefined },
+      },
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    adapter.dispose();
+  });
+
+  it("requires a host update instead of fabricating empty signed-out machine data", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_out",
+      userId: null,
+      email: null,
+      name: null,
+      imageUrl: null,
+      expiresAt: null,
+      machines: [],
+      relayBaseUrls: [],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getSnapshot()).resolves.toMatchObject({
+      scope: "machine",
+      availability: {
+        state: "incompatible",
+        recovery: "update_host",
+        hostName: "Host",
+      },
+      items: [],
+    });
+    expect(fake.commandCalls).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    adapter.dispose();
+  });
+
+  it("rejects malformed signed-out machine Attention from the paired host", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_out",
+      userId: null,
+      email: null,
+      name: null,
+      imageUrl: null,
+      expiresAt: null,
+      machines: [],
+      relayBaseUrls: [],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+    } as unknown as BrowserAccountClient;
+    fake.descriptors = [{
+      action: "attention.getMachineSnapshot",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    }];
+    fake.commandResults.set("attention.getMachineSnapshot", {
+      contractVersion: 1,
+      revision: 1,
+      generatedAt: "2026-07-29T12:00:00.000Z",
+      items: [{ id: "missing-required-item-fields" }],
+      tombstones: [],
+    });
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
+      "ADE Attention returned an incompatible response. Update ADE and retry.",
+    );
+    adapter.dispose();
+  });
+
+  it("connects the owning account machine before opening an Attention destination", async () => {
+    const ownerMachine = {
+      machineKey: "account-machine-studio",
+      deviceId: "host-studio",
+      name: "Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      reachableEndpoints: [],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [ownerMachine],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+      getRelayBaseUrls: () => snapshot.relayBaseUrls,
+    } as unknown as BrowserAccountClient;
+    fake.projects.push({
+      ...fake.projects[0],
+      id: "project-studio",
+      displayName: "Studio Repo",
+    });
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+    const attentionItem: AttentionItem = {
+      contractVersion: 1,
+      id: "remote-item",
+      revision: 1,
+      fingerprint: "remote-item",
+      kind: "agent",
+      eventKind: "agent_running",
+      phase: "running",
+      machine: {
+        machineKey: "runtime-studio",
+        accountMachineKey: ownerMachine.machineKey,
+        deviceId: ownerMachine.deviceId,
+        name: ownerMachine.name,
+        online: true,
+        lastSeenAt: null,
+      },
+      project: { projectId: "project-studio", name: "Studio Repo" },
+      title: "Remote work",
+      preview: "Working",
+      privacyPreview: "Agent is working",
+      destination: { kind: "session", sessionId: "session-studio" },
+      actions: [],
+      occurredAt: "2026-07-29T12:00:00.000Z",
+      updatedAt: "2026-07-29T12:00:00.000Z",
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: null,
+    };
+
+    await expect(adapter.ade.attention.openItem(attentionItem)).resolves.toBeUndefined();
+
+    expect(fake.accountPairCalls).toHaveLength(1);
+    expect(fake.accountPairCalls[0]).toMatchObject({
+      machine: { machineKey: "account-machine-studio", deviceId: "host-studio" },
+      accountSessionLease: { userId: "account-a", generation: 1 },
+    });
+    expect(fake.hostDeviceId).toBe("host-studio");
     adapter.dispose();
   });
 
@@ -2032,6 +2436,8 @@ class FakeAdeSyncClient {
   fileErrors = new Map<string, Error>();
   commandCalls: CommandCall[] = [];
   disconnectCalls = 0;
+  accountPairCalls: Array<Record<string, unknown>> = [];
+  hostDeviceId = "host-1";
   fileCalls: Array<{ action: string; args: Record<string, unknown>; opts: { projectId?: string | null; timeoutMs?: number } }> = [];
   terminalInputs: Array<{ sessionId: string; data: string }> = [];
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
@@ -2078,7 +2484,7 @@ class FakeAdeSyncClient {
       state: this.connectionState,
       endpoint: "ws://localhost:8787",
       envId: "env-1",
-      hostDeviceId: "host-1",
+      hostDeviceId: this.hostDeviceId,
       hostName: "Host",
       connectedAt: "2026-07-07T00:00:00.000Z",
       lastSeenAt: "2026-07-07T00:00:00.000Z",
@@ -2091,6 +2497,13 @@ class FakeAdeSyncClient {
   subscribe(listener: (payload: ReturnType<FakeAdeSyncClient["getStatus"]>) => void): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
+  }
+
+  async pairWithAccountMachine(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.accountPairCalls.push(args);
+    const machine = args.machine as { deviceId?: string } | undefined;
+    if (machine?.deviceId) this.hostDeviceId = machine.deviceId;
+    return { envId: "account-env", activeProjectId: null };
   }
 
   emitStatus(): void {

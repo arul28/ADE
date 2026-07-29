@@ -763,6 +763,7 @@ final class ADETests: XCTestCase {
       "prId": "pr_123",
       "prNumber": "42",
       "accountMachineKey": "machine-relay-key",
+      "attentionItemId": "pull-request:machine-relay-key:pr_123",
       "eventId": "checks-failed",
     ])
 
@@ -771,6 +772,10 @@ final class ADETests: XCTestCase {
       .detail(prId: "pr_123", prNumber: 42, laneId: nil)
     )
     XCTAssertEqual(service.requestedPrNavigation?.accountMachineKey, "machine-relay-key")
+    XCTAssertEqual(
+      service.requestedPrNavigation?.attentionItemId,
+      "pull-request:machine-relay-key:pr_123"
+    )
     XCTAssertEqual(service.requestedPrNavigation?.eventId, "checks-failed")
   }
 
@@ -787,6 +792,7 @@ final class ADETests: XCTestCase {
     DeepLinkRouter.shared.handleNotificationUserInfo([
       "sessionId": "session-remote",
       "accountMachineKey": "machine-studio",
+      "attentionItemId": "agent:machine-studio:session-remote",
       "itemId": "approval-7",
       "eventId": "question-7",
     ])
@@ -794,8 +800,29 @@ final class ADETests: XCTestCase {
     let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
     XCTAssertEqual(request.sessionId, "session-remote")
     XCTAssertEqual(request.accountMachineKey, "machine-studio")
+    XCTAssertEqual(request.attentionItemId, "agent:machine-studio:session-remote")
     XCTAssertEqual(request.itemId, "approval-7")
     XCTAssertEqual(request.eventId, "question-7")
+  }
+
+  @MainActor
+  func testNotificationDeepLinkCarriesAttentionAcknowledgmentToResolvedDestination() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handleNotificationUserInfo([
+      "deepLink": "ade://session/session-remote?accountMachineKey=machine-studio",
+      "attentionItemId": "agent:machine-studio:session-remote",
+    ])
+
+    let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
+    XCTAssertEqual(request.accountMachineKey, "machine-studio")
+    XCTAssertEqual(request.attentionItemId, "agent:machine-studio:session-remote")
   }
 
   @MainActor

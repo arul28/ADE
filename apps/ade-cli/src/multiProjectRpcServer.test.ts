@@ -156,7 +156,17 @@ describe("multi-project RPC server", () => {
         items: [],
         tombstones: [],
       })),
+      getMachineAttentionSnapshot: vi.fn(async () => ({
+        contractVersion: 1,
+        scope: "machine",
+        streamId: "machine:local",
+        revision: 3,
+        generatedAt: "2026-07-28T12:00:00.000Z",
+        items: [],
+        tombstones: [],
+      })),
       acknowledgeAttention: vi.fn(async () => undefined),
+      acknowledgeMachineAttention: vi.fn(async () => undefined),
       reportAttentionPresence: vi.fn(async () => undefined),
       getAttentionPreferences: vi.fn(async () => ({ account: { hideDetails: true } })),
       putAttentionPreferences: vi.fn(async () => undefined),
@@ -203,6 +213,42 @@ describe("multi-project RPC server", () => {
       });
       expect(runtime.pushPublisherService.getAttentionSnapshot)
         .toHaveBeenCalledWith(7, "account-stream");
+      const machineResult = await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "attention.call",
+        params: {
+          action: "getMachineSnapshot",
+          args: {},
+        },
+      });
+      expect(machineResult).toMatchObject({
+        scope: "machine",
+        streamId: "machine:local",
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "attention.call",
+        params: {
+          action: "acknowledge",
+          args: {
+            scope: "machine",
+            itemIds: ["machine-item"],
+            sourceRevisions: { "machine-item": 3 },
+            expectedAccountOwnerId: "account-a",
+            seenAt: "2026-07-28T12:01:00.000Z",
+          },
+        },
+      });
+      expect(runtime.pushPublisherService.acknowledgeMachineAttention)
+        .toHaveBeenCalledWith({
+          itemIds: ["machine-item"],
+          sourceRevisions: { "machine-item": 3 },
+          expectedAccountOwnerId: "account-a",
+          seenAt: "2026-07-28T12:01:00.000Z",
+        });
+      expect(runtime.pushPublisherService.acknowledgeAttention).not.toHaveBeenCalled();
       await handler({
         jsonrpc: "2.0",
         id: 5,
@@ -250,6 +296,48 @@ describe("multi-project RPC server", () => {
           },
         },
       })).rejects.toThrow(/account changed/i);
+
+      (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+        signedIn: false,
+        userId: null,
+        email: null,
+        name: null,
+        expiresAt: null,
+      });
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "attention.call",
+        params: {
+          action: "getMachineSnapshot",
+          args: {},
+        },
+      })).resolves.toMatchObject({
+        scope: "machine",
+        streamId: "machine:local",
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "attention.call",
+        params: {
+          action: "acknowledge",
+          args: {
+            scope: "machine",
+            itemIds: ["machine-item"],
+            sourceRevisions: { "machine-item": 3 },
+            expectedAccountOwnerId: null,
+            dismissedAt: "2026-07-28T12:02:00.000Z",
+          },
+        },
+      });
+      expect(runtime.pushPublisherService.acknowledgeMachineAttention)
+        .toHaveBeenLastCalledWith({
+          itemIds: ["machine-item"],
+          sourceRevisions: { "machine-item": 3 },
+          expectedAccountOwnerId: null,
+          dismissedAt: "2026-07-28T12:02:00.000Z",
+        });
       handler.dispose();
 
       const agentHandler = createMultiProjectRpcRequestHandler({

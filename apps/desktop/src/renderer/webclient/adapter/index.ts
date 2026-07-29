@@ -5,6 +5,7 @@ import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
 import { createAnalyticsNamespace } from "./analytics";
+import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webUpdateMethods } from "./app";
 import { createFilesNamespace } from "./files";
 import { createGitNamespaces } from "./git";
@@ -116,6 +117,7 @@ export function createAdeWebAdapter(
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
+    attention: createAttentionNamespace(infra, accountClient),
     analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),

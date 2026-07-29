@@ -80,7 +80,10 @@ const BOOLEAN_PROPERTIES = new Set([
 // Actions emitted only by daemon services (not user-mutation ledger rows) that
 // are still meaningful product facts. Kept here rather than in the usage-stats
 // MEANINGFUL_ACTIONS set because they never correspond to a persisted mutation.
-const ANALYTICS_ONLY_ACTIONS = new Set(["maintenance_run"]);
+const ANALYTICS_ONLY_ACTIONS = new Set([
+  "maintenance_run",
+  "header_opened",
+]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
   ade_app_opened: new Set([
@@ -125,7 +128,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   feature: new Set([
     "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
-    "automations", "command_palette", "storage_doctor",
+    "automations", "command_palette", "storage_doctor", "attention",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

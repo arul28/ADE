@@ -78,8 +78,8 @@ export function targetToWebPath(target: DeeplinkTarget): string {
       return withQuery("/work", params);
     case "pr":
       params.set("pr", String(target.prNumber));
-      params.set("repoOwner", target.repoOwner);
-      params.set("repoName", target.repoName);
+      if (target.repoOwner) params.set("repoOwner", target.repoOwner);
+      if (target.repoName) params.set("repoName", target.repoName);
       return withQuery("/prs", params);
     case "branch":
       params.set("repoOwner", target.repoOwner);

@@ -1249,6 +1249,9 @@ export function createMultiProjectRpcRequestHandler(
             : null;
         return await publisher.getAttentionSnapshot(since, streamId);
       }
+      if (action === "getMachineSnapshot") {
+        return await publisher.getMachineAttentionSnapshot();
+      }
       if (action === "acknowledge") {
         const itemIds = Array.isArray(args.itemIds)
           ? args.itemIds
@@ -1263,13 +1266,46 @@ export function createMultiProjectRpcRequestHandler(
             "attention.acknowledge requires at least one item id.",
           );
         }
-        await publisher.acknowledgeAttention({
+        const acknowledgment = {
           itemIds,
           ...(typeof args.seenAt === "string" ? { seenAt: args.seenAt } : {}),
           ...(args.dismissedAt === null || typeof args.dismissedAt === "string"
             ? { dismissedAt: args.dismissedAt }
             : {}),
-        });
+        };
+        if (args.scope === "machine") {
+          const sourceRevisions = args.sourceRevisions
+            && typeof args.sourceRevisions === "object"
+            && !Array.isArray(args.sourceRevisions)
+            ? Object.fromEntries(
+                Object.entries(args.sourceRevisions as Record<string, unknown>)
+                  .filter((entry): entry is [string, number] =>
+                    Number.isFinite(entry[1])),
+              )
+            : {};
+          if (itemIds.some((itemId) => !Number.isFinite(sourceRevisions[itemId]))) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.invalidParams,
+              "attention.acknowledge requires the source revision for every machine item.",
+            );
+          }
+          if (
+            args.expectedAccountOwnerId !== null
+            && typeof args.expectedAccountOwnerId !== "string"
+          ) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.invalidParams,
+              "attention.acknowledge requires the machine snapshot account owner.",
+            );
+          }
+          await publisher.acknowledgeMachineAttention({
+            ...acknowledgment,
+            sourceRevisions,
+            expectedAccountOwnerId: args.expectedAccountOwnerId?.trim() || null,
+          });
+        } else {
+          await publisher.acknowledgeAttention(acknowledgment);
+        }
         return null;
       }
       if (action === "reportPresence") {

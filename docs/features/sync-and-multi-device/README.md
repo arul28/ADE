@@ -26,9 +26,10 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
   bounded context capsule, destination setup, route confirmation, and
   idempotent recovery used by **Send to machine**.
-- `push-notifications.md` — the APNs push + Live Activity pipeline:
-  Cloudflare push relay, brain publisher, per-device prefs, and the
-  Live Activity content-state contract.
+- `push-notifications.md` — ADE Attention's account-wide source of truth and
+  its APNs + Live Activity pipeline: machine publishers, the Cloudflare
+  consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
+  per-device policy, exact routing, acknowledgments, and ownership fences.
 
 Web client: the browser client is another controller of the same machine
 runtime. New hosted connections are account-only: the browser signs in, chooses
@@ -38,6 +39,15 @@ changeset batches as invalidation signals and refreshes state through remote
 commands, file requests, and chat/terminal streams. Browser environments paired
 before this release can still reconnect over their saved local/direct routes,
 but the hosted client no longer creates non-account pairings.
+
+Account Attention deliberately does **not** follow that selected machine or
+project binding. Every signed-in brain publishes all of its active projects to
+the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
+the consolidated account stream through an account-scoped path. Navigation and
+actions still carry the owning machine/project/session so the client can adopt
+or select the correct destination. Without an account, a client may show only a
+truthfully labeled local or explicitly connected-machine snapshot; it must
+never present that subset as the account view.
 
 ## Where the sync authority runs
 
@@ -977,10 +987,40 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   handoff is idempotent. Legacy peers that do not advertise renewal close at
   token expiry; capable peers have only the advertised short grace window.
 
-Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
-Live Activity pipeline (`pushPublisherService.ts`,
-`pushRegistrationStore.ts`, `pushRelayClient.ts`). See
-`push-notifications.md` for the full topology.
+Account Attention and push:
+
+- `apps/ade-cli/src/services/push/pushPublisherService.ts` — derives one
+  bounded machine contribution across every project hosted by the brain,
+  publishes it to the account relay, and owns the signed-out/degraded
+  machine-snapshot fallback.
+- `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
+  delivery, and machine-acknowledgment state. Machine acknowledgments are keyed
+  by account owner + item, carry the exact source revision, and remain pending
+  until a later successful account publish can reconcile them.
+- `apps/ade-cli/src/services/push/pushRelayClient.ts` — authenticated relay
+  client with one safe forced token refresh after a 401 and account-owner
+  fences across asynchronous requests.
+- `apps/desktop/src/main/services/attention/attentionAccountCoordinator.ts` —
+  desktop account-first read/ack/presence/preferences coordinator. It bypasses
+  the selected project or remote-machine binding and uses the local machine
+  runtime only as an explicitly labeled fallback.
+- `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
+  destination, availability, preference, and native-presentation contract.
+- `apps/desktop/src/renderer/components/attention/` and
+  `apps/desktop/src/renderer/state/attentionStore.ts` — global header control,
+  compact drawer, full history center, account-switch/revision-safe mutations,
+  and renderer-to-native snapshot feed.
+- `apps/desktop/src/renderer/webclient/adapter/attention.ts` — direct browser
+  account-relay reader plus signed-out paired-host fallback through
+  `attention.getMachineSnapshot` / `attention.acknowledgeMachine`.
+- `apps/ade-cli/src/tuiClient/attentionPane.ts` and
+  `components/AttentionPaneView.tsx` — ADE Code's machine-global `/attention`
+  pane and exact-destination acknowledgment flow.
+- `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
+  Clerk verification, acknowledgments, presence/preferences, APNs fan-out, and
+  one account-wide Live Activity per phone.
+
+See `push-notifications.md` for the full topology and delivery policy.
 
 Desktop client adapter (`apps/desktop/src/main/services/sync/`):
 

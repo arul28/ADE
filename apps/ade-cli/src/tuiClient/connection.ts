@@ -132,6 +132,7 @@ const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "runtime/info",
   "machineInfo.get",
   "account.call",
+  "attention.call",
   "projects.list",
   "projects.add",
   "projects.setCatalogVisibility",

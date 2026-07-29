@@ -174,6 +174,13 @@ struct HubScreen: View {
       lane: target.lane,
       chat: target.chat
     )
+    if request.attentionItemId != nil {
+      Task {
+        await AccountService.shared.acknowledgeAttentionNavigation(
+          request.attentionItemId
+        )
+      }
+    }
     syncService.requestedWorkSessionNavigation = nil
   }
 

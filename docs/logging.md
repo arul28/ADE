@@ -117,6 +117,17 @@ blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
 
+Opening the account-wide Attention control records the existing
+`ade_feature_used` event with `feature: "attention"`,
+`action: "header_opened"`, `outcome: "opened"`, and
+`source: "renderer_route"`. The renderer emits no item, machine, project,
+session, notification, or error data. A persisted one-hour deduplication key
+limits this to at most 24 accepted events per installation per UTC day, inside
+the existing `ade_feature_used` and shared daily ceilings. Hover, right-click,
+snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
+and native presentation changes remain untracked because they are either
+high-frequency mechanics or can expose work-specific interaction patterns.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate anonymous installation identity and separate `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention.

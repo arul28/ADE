@@ -20,6 +20,15 @@ import {
 import {
   AttentionCenter,
 } from "./AttentionCenter";
+import {
+  attentionNotchSettingsFromPreferences,
+  onAttentionNotchSettingsChanged,
+  persistAttentionNotchSettings,
+  readAttentionNotchEnabled,
+  readAttentionNotchPresentation,
+  writeAttentionNotchEnabled,
+  writeAttentionNotchPresentation,
+} from "./attentionNotchLocalSettings";
 
 const originalAde = window.ade;
 const signedInAccount = {
@@ -93,6 +102,8 @@ afterEach(() => {
   resetAttentionStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   window.localStorage.removeItem("ade:attention:notch-enabled");
+  window.localStorage.removeItem("ade:attention:notch-reveal-mode");
+  window.localStorage.removeItem("ade:attention:notch-expanded-panel");
   Object.defineProperty(window, "ade", {
     configurable: true,
     writable: true,
@@ -258,6 +269,8 @@ describe("AttentionCenter", () => {
     await waitFor(() => {
       expect(acknowledge).toHaveBeenCalledWith({
         itemIds: [approval.id],
+        sourceRevisions: { [approval.id]: approval.revision },
+        expectedAccountOwnerId: null,
         seenAt: expect.any(String),
       });
       expect(attentionStore.getState().itemsById[approval.id]?.seenAt).toBeNull();
@@ -393,6 +406,79 @@ describe("AttentionCenter", () => {
         soundsEnabled: true,
       }));
       expect(window.localStorage.getItem("ade:attention:notch-enabled")).toBe("false");
+    });
+  });
+
+  // Off, the three reveal modes, and the expanded-panel switch are the whole
+  // presentation contract; they only mean anything if they reach the helper.
+  it("sends the chosen notch presentation to the native helper and keeps it on this Mac", async () => {
+    const updateSettings = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.ade ?? {}),
+        attention: {
+          getSnapshot: vi.fn(),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+          putPreferences: vi.fn(async () => undefined),
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(),
+          updateSettings,
+          getHealth: vi.fn(async () => ({
+            state: "running" as const,
+            title: "ADE Notch is active",
+            message: "Showing account activity in the menu bar.",
+            recovery: null,
+            surface: "menu_bar" as const,
+          })),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+    render(<AttentionCenter />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Attention settings" }));
+    await screen.findByRole("dialog", { name: "Attention settings" });
+    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
+
+    // Defaults are today's surface, so an untouched Mac changes nothing.
+    expect((behavior as HTMLSelectElement).value).toBe("hover");
+    expect(screen.getByRole("switch", { name: "Expanded panel" }).getAttribute("aria-checked"))
+      .toBe("true");
+
+    fireEvent.change(behavior, { target: { value: "click" } });
+    fireEvent.click(screen.getByRole("switch", { name: "Expanded panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+        enabled: true,
+        revealMode: "click",
+        expandedPanelEnabled: false,
+      }));
+      expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
+      expect(window.localStorage.getItem("ade:attention:notch-expanded-panel")).toBe("false");
+    });
+  });
+
+  it("locks the notch presentation controls while ADE Notch is off", async () => {
+    render(<AttentionCenter />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Attention settings" }));
+    await screen.findByRole("dialog", { name: "Attention settings" });
+    await screen.findByRole("combobox", { name: "Notch behavior" });
+
+    fireEvent.click(screen.getByRole("switch", { name: "ADE Notch" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Notch behavior" }).hasAttribute("disabled"))
+        .toBe(true);
+      expect(screen.getByRole("switch", { name: "Expanded panel" }).hasAttribute("disabled"))
+        .toBe(true);
     });
   });
 
@@ -558,5 +644,68 @@ describe("AttentionCenter", () => {
     await waitFor(() => {
       expect(putPreferences).toHaveBeenCalledWith("account-b", accountBPreferences);
     });
+  });
+});
+
+describe("attention notch local settings", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("defaults safely and falls back from an unreadable reveal mode", () => {
+    expect(readAttentionNotchEnabled()).toBe(true);
+    expect(readAttentionNotchPresentation()).toEqual({
+      revealMode: "hover",
+      expandedPanelEnabled: true,
+    });
+
+    window.localStorage.setItem("ade:attention:notch-reveal-mode", "telepathy");
+    expect(readAttentionNotchPresentation().revealMode).toBe("hover");
+  });
+
+  it("round-trips every presentation mode independently from full disable", () => {
+    for (const revealMode of ["minimal", "hover", "click"] as const) {
+      writeAttentionNotchPresentation({ revealMode, expandedPanelEnabled: false });
+      expect(readAttentionNotchPresentation()).toEqual({
+        revealMode,
+        expandedPanelEnabled: false,
+      });
+    }
+    writeAttentionNotchEnabled(false);
+
+    expect(attentionNotchSettingsFromPreferences(DEFAULT_ATTENTION_PREFERENCES))
+      .toMatchObject({
+        enabled: false,
+        revealMode: "click",
+        expandedPanelEnabled: false,
+      });
+  });
+
+  it("persists native context-menu changes and notifies the renderer", () => {
+    let observed: ReturnType<typeof attentionNotchSettingsFromPreferences> | null = null;
+    const unsubscribe = onAttentionNotchSettingsChanged((settings) => {
+      observed = settings;
+    });
+    persistAttentionNotchSettings({
+      enabled: false,
+      revealMode: "minimal",
+      expandedPanelEnabled: false,
+      preferredDisplayId: null,
+      hideDetails: true,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    });
+
+    expect(readAttentionNotchEnabled()).toBe(false);
+    expect(readAttentionNotchPresentation()).toEqual({
+      revealMode: "minimal",
+      expandedPanelEnabled: false,
+    });
+    expect(observed).toMatchObject({
+      enabled: false,
+      revealMode: "minimal",
+      expandedPanelEnabled: false,
+    });
+    unsubscribe();
   });
 });

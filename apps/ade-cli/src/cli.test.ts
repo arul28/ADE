@@ -2418,6 +2418,67 @@ describe("ADE CLI", () => {
     });
   });
 
+  posixIt("keeps a mixed-version kickoff failure actionable after creating the chat", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-new-chat-kickoff-"));
+    const socketPath = path.join(root, "ade.sock");
+    const actions: string[] = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") return { ok: true };
+        if (request.method === "ade/actions/call") {
+          const action = request.params?.arguments?.action;
+          actions.push(action);
+          if (action === "createSession") {
+            return {
+              domain: "chat",
+              action,
+              result: { sessionId: "chat-new" },
+            };
+          }
+          if (action === "messageSession") {
+            throw new Error("Unsupported chat method: run_ade_action:chat.messageSession");
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      await runCli([
+        "--socket",
+        socketPath,
+        "new",
+        "chat",
+        "--mode",
+        "chat",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "codex",
+        "--prompt",
+        "Fix login",
+      ]);
+      throw new Error("Expected the mixed-version kickoff to fail.");
+    } catch (error) {
+      expect(error).toMatchObject({
+        message: "ADE created chat chat-new, but the connected brain could not start its first turn.",
+        details: {
+          cause: expect.stringContaining("chat.messageSession"),
+          sessionId: "chat-new",
+          nextAction: expect.stringContaining("Update and restart ADE"),
+        },
+      });
+      expect((error as { details?: { nextAction?: string } }).details?.nextAction)
+        .toContain("ade chat message chat-new --kind auto");
+      expect(actions).toEqual(["createSession", "messageSession"]);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("builds new chat CLI mode with the same launch controls", () => {
     const plan = buildCliPlan([
       "new",

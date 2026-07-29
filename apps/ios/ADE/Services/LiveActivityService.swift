@@ -10,6 +10,64 @@ func liveActivityTokenRoute(accountWide: Bool) -> LiveActivityTokenRoute {
     accountWide ? .accountOnly : .pairedMachine
 }
 
+enum AccountWideActivityObservationAction: Equatable {
+    /// Clerk has not resolved the cached session yet. Preserve the activity and
+    /// attach its token observer after the account boundary becomes determinate.
+    case waitForAccount
+    case observe
+    /// A real sign-out/account switch is a privacy boundary.
+    case end
+}
+
+func accountWideActivityObservationAction(
+    phase: AccountService.Phase,
+    accountObserversSuspended: Bool
+) -> AccountWideActivityObservationAction {
+    if accountObserversSuspended {
+        return .end
+    }
+    switch phase {
+    case .loading:
+        return .waitForAccount
+    case .signedIn:
+        return .observe
+    case .signedOut, .unconfigured:
+        return .end
+    }
+}
+
+func accountWideActivityMatchesCurrentOwnership(
+    attributesEpoch: Int?,
+    contentEpoch: Int?,
+    currentOwnership: AccountDeviceOwnershipState
+) -> Bool {
+    adeAccountWideActivityMatchesCurrentOwnership(
+        attributesEpoch: attributesEpoch,
+        contentEpoch: contentEpoch,
+        currentEpoch: currentOwnership.ownershipEpoch,
+        hasCurrentOwner: currentOwnership.ownerId != nil
+    )
+}
+
+struct AccountWideActivityCandidate: Equatable {
+    let id: String
+    let updatedAt: Double
+}
+
+/// ActivityKit can briefly retain two account-wide activities when a
+/// push-to-start retry races the first activity's token handoff. ADE only has
+/// one logical account activity, so keep the freshest deterministically.
+func preferredAccountWideActivityId(
+    _ candidates: [AccountWideActivityCandidate]
+) -> String? {
+    candidates.max {
+        if $0.updatedAt != $1.updatedAt {
+            return $0.updatedAt < $1.updatedAt
+        }
+        return $0.id < $1.id
+    }?.id
+}
+
 struct PendingAccountActivityTokenRegistration: Codable, Equatable {
     let deviceId: String
     let activityId: String
@@ -93,7 +151,12 @@ final class LiveActivityService {
     private var perActivityTokenTasks: [String: Task<Void, Never>] = [:]
     private var started = false
     private var accountObserversSuspended = false
+    private var accountReconciliationInFlight = false
+    private var accountReconciliationPending = false
+    private var pendingPreferredAccountActivityId: String?
     private let accountTokenStore = AccountActivityTokenRegistrationStore()
+    private let accountTokenQueue =
+        LatestAccountRegistrationQueue<PendingAccountActivityTokenRegistration>()
 
     private init() {}
 
@@ -116,12 +179,30 @@ final class LiveActivityService {
         publishCurrentPushToStartToken()
         observePushToStartToken()
         observeActivityUpdates()
+        var shouldReconcileAccountActivity = false
         for activity in Activity<ADEAgentRunsAttributes>.activities {
-            if activity.attributes.isAccountWide,
-               (accountObserversSuspended || !AccountService.shared.isSignedIn) {
+            if activity.attributes.isAccountWide {
+                switch accountWideActivityObservationAction(
+                    phase: AccountService.shared.phase,
+                    accountObserversSuspended: accountObserversSuspended
+                ) {
+                case .waitForAccount:
+                    continue
+                case .observe:
+                    shouldReconcileAccountActivity = true
+                case .end:
+                    Task { @MainActor [weak self] in
+                        self?.perActivityTokenTasks[activity.id]?.cancel()
+                        self?.perActivityTokenTasks[activity.id] = nil
+                        await activity.end(nil, dismissalPolicy: .immediate)
+                    }
+                }
                 continue
             }
             observePushToken(for: activity)
+        }
+        if shouldReconcileAccountActivity {
+            scheduleAccountWideActivityReconciliation()
         }
     }
 
@@ -135,11 +216,9 @@ final class LiveActivityService {
         }
         await endOrphanedActivities()
         await retryPendingAccountWideTokenRegistration()
-        for activity in Activity<ADEAgentRunsAttributes>.activities {
-            if activity.attributes.isAccountWide,
-               (accountObserversSuspended || !AccountService.shared.isSignedIn) {
-                continue
-            }
+        await reconcileAccountWideActivityTarget()
+        for activity in Activity<ADEAgentRunsAttributes>.activities
+        where !activity.attributes.isAccountWide {
             observePushToken(for: activity)
         }
     }
@@ -153,11 +232,8 @@ final class LiveActivityService {
         if ActivityAuthorizationInfo().areActivitiesEnabled {
             publishCurrentPushToStartToken()
         }
-        for activity in Activity<ADEAgentRunsAttributes>.activities
-        where activity.attributes.isAccountWide {
-            observePushToken(for: activity)
-        }
         await retryPendingAccountWideTokenRegistration()
+        await reconcileAccountWideActivityTarget()
     }
 
     /// End every running agent-runs activity. `immediate` dismisses without the
@@ -209,6 +285,7 @@ final class LiveActivityService {
     func prepareForAccountSignOut() {
         accountObserversSuspended = true
         accountTokenStore.clear()
+        accountTokenQueue.discardPending()
         for activity in Activity<ADEAgentRunsAttributes>.activities
         where activity.attributes.isAccountWide {
             perActivityTokenTasks[activity.id]?.cancel()
@@ -272,11 +349,33 @@ final class LiveActivityService {
         activityUpdatesTask?.cancel()
         activityUpdatesTask = Task { @MainActor [weak self] in
             for await activity in Activity<ADEAgentRunsAttributes>.activityUpdates {
-                if activity.attributes.isAccountWide,
-                   (self?.accountObserversSuspended == true
-                    || !AccountService.shared.isSignedIn) {
-                    await activity.end(nil, dismissalPolicy: .immediate)
-                    continue
+                if activity.attributes.isAccountWide {
+                    switch accountWideActivityObservationAction(
+                        phase: AccountService.shared.phase,
+                        accountObserversSuspended: self?.accountObserversSuspended == true
+                    ) {
+                    case .waitForAccount:
+                        // A push-to-start wake commonly races cached Clerk
+                        // restoration. Ending here loses the activity before
+                        // ActivityKit can hand us its update token.
+                        continue
+                    case .observe:
+                        guard accountWideActivityMatchesCurrentOwnership(
+                            attributesEpoch: activity.attributes.ownershipEpoch,
+                            contentEpoch: activity.content.state.ownershipEpoch,
+                            currentOwnership: AccountService.shared.attentionDeviceOwnership
+                        ) else {
+                            await activity.end(nil, dismissalPolicy: .immediate)
+                            continue
+                        }
+                        self?.scheduleAccountWideActivityReconciliation(
+                            preferredActivityId: activity.id
+                        )
+                        continue
+                    case .end:
+                        await activity.end(nil, dismissalPolicy: .immediate)
+                        continue
+                    }
                 }
                 self?.observePushToken(for: activity)
             }
@@ -284,15 +383,32 @@ final class LiveActivityService {
     }
 
     private func observePushToken(for activity: Activity<ADEAgentRunsAttributes>) {
-        guard !activity.attributes.isAccountWide
-                || (!accountObserversSuspended
-                    && AccountService.shared.isSignedIn) else {
-            return
+        if activity.attributes.isAccountWide {
+            guard accountWideActivityObservationAction(
+                phase: AccountService.shared.phase,
+                accountObserversSuspended: accountObserversSuspended
+            ) == .observe,
+            accountWideActivityMatchesCurrentOwnership(
+                attributesEpoch: activity.attributes.ownershipEpoch,
+                contentEpoch: activity.content.state.ownershipEpoch,
+                currentOwnership: AccountService.shared.attentionDeviceOwnership
+            ) else {
+                return
+            }
         }
         // Replace any prior observer for this activity so a re-attach on
         // foreground doesn't stack duplicate reporters.
         perActivityTokenTasks[activity.id]?.cancel()
         perActivityTokenTasks[activity.id] = Task { [weak self] in
+            // The async sequence reports rotations, but an activity recovered
+            // after a background launch can already have its current token.
+            // Publish it eagerly so the relay never waits for another change.
+            if let tokenData = activity.pushToken {
+                await self?.report(
+                    token: tokenData.adePushHexString,
+                    accountWide: activity.attributes.isAccountWide
+                )
+            }
             for await tokenData in activity.pushTokenUpdates {
                 await self?.report(
                     token: tokenData.adePushHexString,
@@ -322,14 +438,7 @@ final class LiveActivityService {
                 activityId: Self.activityId,
                 token: hex
             ) else { return }
-            let reported = await AccountService.shared.reportAttentionActivityToken(
-                deviceId: pending.deviceId,
-                activityId: pending.activityId,
-                token: pending.token
-            )
-            if reported {
-                accountTokenStore.clear(ifMatching: pending)
-            }
+            _ = await submitAccountTokenRegistration(pending)
             // Account-wide activities are account-only by construction. On
             // auth/network failure the durable retry remains; never leak the
             // token into the paired-machine route below.
@@ -353,13 +462,121 @@ final class LiveActivityService {
               pending.accountWide else {
             return
         }
-        let reported = await AccountService.shared.reportAttentionActivityToken(
-            deviceId: pending.deviceId,
-            activityId: pending.activityId,
-            token: pending.token
-        )
-        if reported {
-            accountTokenStore.clear(ifMatching: pending)
+        _ = await submitAccountTokenRegistration(pending)
+    }
+
+    private func submitAccountTokenRegistration(
+        _ pending: PendingAccountActivityTokenRegistration
+    ) async -> Bool {
+        await accountTokenQueue.submit(pending) { [weak self] registration in
+            guard let self else { return false }
+            let reported = await AccountService.shared.reportAttentionActivityToken(
+                deviceId: registration.deviceId,
+                activityId: registration.activityId,
+                token: registration.token
+            )
+            if reported {
+                self.accountTokenStore.clear(ifMatching: registration)
+            }
+            return reported
+        }
+    }
+
+    private func scheduleAccountWideActivityReconciliation(
+        preferredActivityId: String? = nil
+    ) {
+        Task { @MainActor [weak self] in
+            // ActivityKit may yield the update just before its `activities`
+            // collection reflects it. One actor turn keeps reconciliation from
+            // publishing a false empty token in that gap.
+            await Task.yield()
+            await self?.reconcileAccountWideActivityTarget(
+                preferredActivityId: preferredActivityId
+            )
+        }
+    }
+
+    /// Reconcile Relay's accepted-start state with ActivityKit's actual device
+    /// state. APNs accepting a push only means it accepted delivery; if the
+    /// activity never materialized or its token handoff was lost, Relay must
+    /// be told there is no active target so it can safely retry the start.
+    private func reconcileAccountWideActivityTarget(
+        preferredActivityId: String? = nil
+    ) async {
+        guard accountWideActivityObservationAction(
+            phase: AccountService.shared.phase,
+            accountObserversSuspended: accountObserversSuspended
+        ) == .observe else {
+            return
+        }
+        if let preferredActivityId {
+            pendingPreferredAccountActivityId = preferredActivityId
+        }
+        if accountReconciliationInFlight {
+            accountReconciliationPending = true
+            return
+        }
+        accountReconciliationInFlight = true
+        defer { accountReconciliationInFlight = false }
+        repeat {
+            accountReconciliationPending = false
+            let preferredActivityId = pendingPreferredAccountActivityId
+            pendingPreferredAccountActivityId = nil
+            await reconcileAccountWideActivityTargetOnce(
+                preferredActivityId: preferredActivityId
+            )
+        } while accountReconciliationPending
+    }
+
+    private func reconcileAccountWideActivityTargetOnce(
+        preferredActivityId: String?
+    ) async {
+        let allAccountActivities = Activity<ADEAgentRunsAttributes>.activities.filter {
+            $0.attributes.isAccountWide
+        }
+        let currentOwnership = AccountService.shared.attentionDeviceOwnership
+        let activities = allAccountActivities.filter {
+            accountWideActivityMatchesCurrentOwnership(
+                attributesEpoch: $0.attributes.ownershipEpoch,
+                contentEpoch: $0.content.state.ownershipEpoch,
+                currentOwnership: currentOwnership
+            )
+        }
+        for activity in allAccountActivities where !activities.contains(where: {
+            $0.id == activity.id
+        }) {
+            perActivityTokenTasks[activity.id]?.cancel()
+            perActivityTokenTasks[activity.id] = nil
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        guard !activities.isEmpty else {
+            await report(token: "", accountWide: true)
+            return
+        }
+
+        let canonicalId: String
+        if let preferredActivityId,
+           activities.contains(where: { $0.id == preferredActivityId }) {
+            canonicalId = preferredActivityId
+        } else {
+            canonicalId = preferredAccountWideActivityId(activities.map {
+                AccountWideActivityCandidate(
+                    id: $0.id,
+                    updatedAt: $0.content.state.updatedAt
+                )
+            }) ?? activities[0].id
+        }
+
+        for activity in activities where activity.id != canonicalId {
+            // Cancel first: an observer reaching natural completion after this
+            // duplicate ends must not publish an empty token over the canonical
+            // activity's live update token.
+            perActivityTokenTasks[activity.id]?.cancel()
+            perActivityTokenTasks[activity.id] = nil
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        if let canonical = activities.first(where: { $0.id == canonicalId }) {
+            observePushToken(for: canonical)
         }
     }
 

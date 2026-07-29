@@ -166,6 +166,7 @@ export type PushPublisherDeps = {
     machineKey: string;
     deviceId?: string | null;
   } | null;
+  getAccountOwnerId?: () => string | null;
   /** Test seams. */
   now?: () => number;
   flushDebounceMs?: number;
@@ -491,6 +492,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
+  const lastMachineSnapshotItems = new Map<string, AttentionItem>();
+  let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
   const lastAlertFingerprintByKey = new Map<string, Map<string, string>>();
   let lastAttentionFingerprint: string | null = null;
@@ -566,6 +569,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     recentRuns.delete(sessionId);
     return run;
+  };
+
+  const markRunUpdated = (run: AgentRunState): void => {
+    run.lastActiveAt = Math.max(now(), run.lastActiveAt + 1);
   };
 
   const runSubject = (run: AgentRunState): string => run.agent?.trim() || run.title?.trim() || "Agent";
@@ -751,6 +758,81 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       };
     });
     return [...runItems, ...prItems];
+  };
+
+  const mergeMachineAcknowledgments = (items: AttentionItem[]): AttentionItem[] =>
+    items.map((item) => {
+      const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+      const acknowledgment = deps.store.getAttentionAcknowledgment?.(
+        item.id,
+        accountOwnerId,
+      );
+      if (
+        !acknowledgment
+        || acknowledgment.accountOwnerId !== accountOwnerId
+        || acknowledgment.sourceRevision < item.revision
+      ) return item;
+      return {
+        ...item,
+        seenAt: acknowledgment.seenAt,
+        dismissedAt: acknowledgment.dismissedAt,
+      };
+    });
+
+  const reconcileMachineAcknowledgments = async (
+    currentItems: readonly AttentionItem[],
+  ): Promise<void> => {
+    if (typeof deps.relayClient.acknowledgeAttention !== "function") return;
+    const currentById = new Map(currentItems.map((item) => [item.id, item]));
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    const pending = (deps.store.listPendingAttentionAcknowledgments?.() ?? [])
+      .filter((acknowledgment) => {
+        const current = currentById.get(acknowledgment.itemId);
+        return Boolean(
+          current
+          && acknowledgment.accountOwnerId === accountOwnerId
+          && acknowledgment.sourceRevision >= current.revision,
+        );
+      });
+    for (let offset = 0; offset < pending.length; offset += 64) {
+      const batch = pending.slice(offset, offset + 64);
+      // Preserve each timestamp pair exactly. Acknowledgments made at different
+      // times cannot be collapsed into one relay mutation without lying about
+      // when the user reviewed or dismissed the item.
+      const groups = new Map<string, typeof batch>();
+      for (const acknowledgment of batch) {
+        const key = `${acknowledgment.seenAt}\u0000${acknowledgment.dismissedAt ?? ""}`;
+        const group = groups.get(key) ?? [];
+        group.push(acknowledgment);
+        groups.set(key, group);
+      }
+      for (const group of groups.values()) {
+        if ((deps.getAccountOwnerId?.()?.trim() || null) !== accountOwnerId) {
+          return;
+        }
+        try {
+          const result = await deps.relayClient.acknowledgeAttention({
+            itemIds: group.map((acknowledgment) => acknowledgment.itemId),
+            seenAt: group[0]!.seenAt,
+            ...(group[0]!.dismissedAt
+              ? { dismissedAt: group[0]!.dismissedAt }
+              : {}),
+            expectedAccountOwnerId: accountOwnerId,
+          });
+          if (result) {
+            deps.store.markAttentionAcknowledgmentsSynced?.(
+              group.map((acknowledgment) => ({
+                itemId: acknowledgment.itemId,
+                accountOwnerId: acknowledgment.accountOwnerId,
+                updatedAt: acknowledgment.updatedAt,
+              })),
+            );
+          }
+        } catch (error) {
+          logWarn("attention.machine_ack_reconcile_failed", error);
+        }
+      }
+    }
   };
 
   const enqueueAlert = (alert: PendingAlert): void => {
@@ -1022,6 +1104,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       fingerprint === lastAttentionFingerprint
       && nowMs - lastAttentionPublishedAt < ATTENTION_HEARTBEAT_MS
     ) {
+      await reconcileMachineAcknowledgments(items);
       return "unchanged";
     }
     try {
@@ -1033,6 +1116,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (result) {
         lastAttentionFingerprint = fingerprint;
         lastAttentionPublishedAt = nowMs;
+        await reconcileMachineAcknowledgments(items);
         return result.unchanged === true || result.suppressed === true
           ? "unchanged"
           : "published";
@@ -1368,7 +1452,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
 
     const run = ensureRun(sessionId, scopeKey);
-    run.lastActiveAt = now();
+    markRunUpdated(run);
 
     switch (event.type) {
       case "approval_request": {
@@ -1489,14 +1573,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // stale so `pruneRuns` can retire it RUNNING_TTL_MS later. Refreshing it
       // on every idle heartbeat (idle = no output, not real activity) would
       // reset that 2h clock and hold the stale Live Activity open forever.
-      if (phase !== "stale") existing.lastActiveAt = now();
+      if (phase !== "stale") markRunUpdated(existing);
       return;
     }
     // A chat run with the same session id would mean a chat-owned shell that
     // resolveCliSession failed to filter — never downgrade a chat run.
     if (existing && existing.kind === "chat") return;
     const run = ensureRun(signal.sessionId, scopeKey, "cli");
-    run.lastActiveAt = now();
+    markRunUpdated(run);
     run.phase = phase;
     if (!run.lane) {
       run.lane = scopes.get(scopeKey)?.resolveLaneName?.(signal.laneId) ?? signal.laneId ?? null;
@@ -1510,7 +1594,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const run = runs.get(event.sessionId);
     if (run && run.kind === "cli") {
       run.phase = event.exitCode == null || event.exitCode === 0 ? "completed" : "failed";
-      run.lastActiveAt = now();
+      markRunUpdated(run);
       recentRuns.set(run.sessionId, { ...run });
       scheduleFlush(false);
     }
@@ -1586,11 +1670,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     notification: PushPrNotification,
     resolveLaneName?: (laneId: string) => string | null | undefined,
   ): void => {
-    const eventStamp = now();
     const lane = notification.laneId
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
     const activityId = prActivityId(scopeKey, notification);
+    const eventStamp = Math.max(
+      now(),
+      (prActivities.get(activityId)?.updatedAt ?? -1) + 1,
+    );
     prActivities.set(activityId, {
       id: activityId,
       scopeKey,
@@ -1776,7 +1863,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         : run.lane;
       run.phase = "waiting_for_input";
       run.detail = request.message;
-      run.lastActiveAt = now();
+      markRunUpdated(run);
       run.metaResolved = true;
       // An explicit ask supersedes any pending approval on the same session:
       // clear the stale approval item + its queued alert/dedupe so the next
@@ -1876,12 +1963,109 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       };
     },
 
+    async getMachineAttentionSnapshot(): Promise<AttentionSnapshot> {
+      const nowMs = now();
+      const { machineKey } = deps.store.getOrCreateIdentity();
+      const items = mergeMachineAcknowledgments(
+        sortAttentionItems(buildAttentionItems(nowMs))
+          .slice(0, ATTENTION_PUBLISH_MAX_ITEMS),
+      );
+      const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
+      const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+      const machine = items[0]?.machine ?? {
+        machineKey,
+        accountMachineKey: accountMachineIdentity?.machineKey ?? null,
+        deviceId: accountMachineIdentity?.deviceId ?? null,
+        name: deps.machineName,
+        online: true,
+        lastSeenAt: null,
+      };
+      lastMachineSnapshotItems.clear();
+      for (const item of items) lastMachineSnapshotItems.set(item.id, item);
+      lastMachineSnapshotAccountOwnerId = accountOwnerId;
+      return {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        scope: "machine",
+        accountOwnerId,
+        streamId: `machine:${machineKey}`,
+        revision: items.reduce(
+          (revision, item) => Math.max(revision, item.revision),
+          0,
+        ),
+        generatedAt: new Date(nowMs).toISOString(),
+        machines: [machine],
+        items,
+        tombstones: [],
+      };
+    },
+
     async acknowledgeAttention(args: {
       itemIds: string[];
       seenAt?: string;
       dismissedAt?: string | null;
     }): Promise<void> {
       await deps.relayClient.acknowledgeAttention?.(args);
+    },
+
+    async acknowledgeMachineAttention(args: {
+      itemIds: string[];
+      sourceRevisions: Record<string, number>;
+      expectedAccountOwnerId: string | null;
+      seenAt?: string;
+      dismissedAt?: string | null;
+    }): Promise<void> {
+      const currentAccountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+      const expectedAccountOwnerId = args.expectedAccountOwnerId?.trim() || null;
+      if (expectedAccountOwnerId !== currentAccountOwnerId) {
+        throw new Error(
+          "The ADE account changed after this machine Attention snapshot loaded. Refresh and try again.",
+        );
+      }
+      if (lastMachineSnapshotAccountOwnerId !== currentAccountOwnerId) {
+        throw new Error(
+          "Refresh machine Attention after changing ADE accounts, then try again.",
+        );
+      }
+      const items = args.itemIds.flatMap((itemId) => {
+        const item = lastMachineSnapshotItems.get(itemId);
+        return item ? [item] : [];
+      });
+      if (items.length !== args.itemIds.length) {
+        throw new Error(
+          "This machine can only acknowledge items from its latest Attention snapshot. Refresh and try again.",
+        );
+      }
+      const staleItem = items.find((item) =>
+        args.sourceRevisions[item.id] !== item.revision);
+      if (staleItem) {
+        throw new Error(
+          "This Attention item changed after it loaded. Refresh before acknowledging the newer state.",
+        );
+      }
+      const updatedAt = new Date(now()).toISOString();
+      const seenAt = args.seenAt?.trim() || updatedAt;
+      if (Number.isNaN(Date.parse(seenAt))) {
+        throw new Error("Attention seenAt must be an ISO timestamp.");
+      }
+      if (
+        typeof args.dismissedAt === "string"
+        && Number.isNaN(Date.parse(args.dismissedAt))
+      ) {
+        throw new Error("Attention dismissedAt must be an ISO timestamp.");
+      }
+      deps.store.recordAttentionAcknowledgments?.({
+        items: items.map((item) => ({ id: item.id, revision: item.revision })),
+        accountOwnerId: currentAccountOwnerId,
+        seenAt,
+        ...(args.dismissedAt === null || typeof args.dismissedAt === "string"
+          ? { dismissedAt: args.dismissedAt }
+          : {}),
+        updatedAt,
+      });
+      // Reconcile only after the normal Attention publish path has made the
+      // source revision available to the account relay. An immediate ack can
+      // succeed against zero rows and falsely clear the durable pending state.
+      scheduleFlush(true);
     },
 
     async reportAttentionPresence(presence: AttentionPresence): Promise<void> {

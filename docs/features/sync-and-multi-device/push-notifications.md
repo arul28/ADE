@@ -36,17 +36,21 @@ prPollingService ─┘          │
                     │                       │
                     │ account snapshots     │ APNs alert / Live Activity
                     ▼                       ▼
-         Desktop + iOS Attention       iPhone system surfaces
+ Desktop + web + ADE Code + iOS        iPhone system surfaces
                     │
                     └─ desktop renderer snapshot
                               ▼
                      native ADE Notch helper
 ```
 
-Each brain publishes a bounded full snapshot for its machine. The relay merges
-machine snapshots into an account revision stream. Signed-in desktop and iOS
-clients read that stream incrementally, acknowledge items, report presence, and
-update account/device preferences.
+Each brain publishes a bounded full snapshot for its machine, covering every
+project currently hosted by that brain rather than the project selected in any
+one client. The relay merges machine snapshots into an account revision stream.
+Signed-in desktop, hosted web, ADE Code, and iOS clients read that stream
+incrementally through an account-scoped path independent of navigation
+selection. They acknowledge items, report presence where supported, and update
+account/device preferences. Exact destinations still identify the owning
+machine, project, session, event, or PR tab.
 
 The legacy paired-machine push routes remain available for older clients. Once
 an account Attention publish succeeds, the brain suppresses duplicate legacy
@@ -83,6 +87,14 @@ Source revisions are independent from account cursor revisions. Tombstones
 carry the source revision that deleted the item, so delayed snapshots cannot
 resurrect old work and delayed tombstones cannot remove a newer item.
 
+Snapshots also carry their explicit `scope` (`account` or `machine`), the
+`accountOwnerId` that was current when they loaded, and a user-facing
+`availability` state. Mutations are fenced to that loaded owner. Machine-scope
+acknowledgments additionally include the exact source revision for every item,
+so a stale click cannot mark a newer failure or a different account's item as
+seen. The brain persists machine acknowledgments by account owner + item and
+rechecks ownership around each asynchronous relay reconciliation.
+
 ## Relay and trust model
 
 The Worker lives in `apps/push-relay/`.
@@ -94,9 +106,21 @@ Machine publishing requires both:
 
 Account clients use the verified bearer token for snapshot, acknowledgment,
 presence, preferences, device registration, and activity-token routes. Clerk
-production and optional secondary/development issuers are verified separately.
-The relay hashes verified issuer plus subject into the D1 account key so equal
-opaque subjects from different Clerk instances cannot share data.
+production and secondary/development issuers are configured as complete,
+distinct issuer/JWKS/OAuth-client triples and selected by the token's exact
+`iss`. Verification accepts RS256 only. Clerk native session tokens may omit
+`aud`; OAuth access tokens that carry audience metadata must match the
+configured OAuth client through `aud` or `azp`. The relay hashes verified
+issuer plus subject into the D1 account key so equal opaque subjects from
+different Clerk instances cannot share data.
+
+JWKS transport/parse failures are a configuration/service outage (`503`), not
+a false sign-out (`401`). Deployment runs schema/trigger validation separately
+from authentication verification: it refuses to start without both Clerk
+secret triples and short-lived primary/secondary smoke tokens, deploys, checks
+the fixed `/health` authentication flags, then calls the real authenticated
+account snapshot endpoint once per issuer. A green migration or Worker upload
+therefore cannot mask an account endpoint that rejects every valid user.
 
 Every iOS installation also persists a positive, JavaScript-safe monotonic
 `ownershipEpoch`. Account device PUT and DELETE bodies both carry that epoch.
@@ -151,6 +175,9 @@ The publisher:
   desktop project;
 - keeps recent terminal outcomes long enough for acknowledgment;
 - emits exact PR tabs and exact session pending-item/event anchors;
+- persists seen/dismissed mutations made while the account stream is degraded,
+  partitioned by account owner and source revision, then reconciles them only
+  after a successful account publish;
 - skips duplicate legacy notifications and Live Activities after a successful
   account publish.
 
@@ -205,15 +232,29 @@ notifying events use active interruption.
 
 ## Desktop Attention
 
-The renderer keeps the account snapshot warm even when `/attention` is not
-open, so the sidebar badge and ADE Notch stay truthful.
+`AttentionAccountCoordinator` in Electron main owns desktop reads and
+mutations. For a signed-in user it talks directly to the account relay; it does
+not ask the window's selected local or remote brain to proxy the account
+snapshot. An old, disconnected, or unauthenticated selected machine therefore
+cannot poison the global account view. One rejected relay request may force a
+safe account-token refresh; a final auth/configuration failure becomes
+actionable availability copy instead of exposing a raw RPC stack.
 
-Desktop reads and mutates Attention through a dedicated machine-scoped brain
-method. It never follows the window's current local/remote project binding, so
-the welcome screen and a window viewing another machine still show the signed-in
-desktop user's own account stream.
+If account service is unavailable, the coordinator may ask **this Mac's local
+brain** for a machine snapshot and labels it degraded. A signed-out desktop uses
+the same local-only path and offers sign-in. If neither source is safe, the
+surface reports which component failed and how to recover rather than inventing
+an empty account.
 
-The Attention route provides:
+`useAttentionSync` remains mounted in `AppShell`, so the global-header control
+and ADE Notch stay truthful across project switches and while `/attention` is
+closed. The header count represents work waiting on the user (`needs_you`,
+failed/blocked, and done-but-unreviewed); live work is an ambient pulse rather
+than an inflated inbox count. Its keyboard-accessible popover groups Needs you,
+Failing or blocked, Done unreviewed, and Live now across machines/projects. The
+full Attention Center is the secondary Open all/history destination.
+
+The full route provides:
 
 - Needs-you/inbox, live, and recent views;
 - all-machine, machine, and project scopes;
@@ -223,8 +264,39 @@ The Attention route provides:
 - account delivery/privacy controls.
 
 Presence reports include foreground state, whether an ambient Attention surface
-is visible, and the currently visible item ids. Acknowledgments are optimistic
-with rollback when the account write fails.
+is visible, and the currently visible item ids. An item is marked seen only
+after its exact destination opens successfully. Account changes and stale
+machine revisions fail closed and require a refresh.
+
+## Hosted web Attention
+
+The hosted browser adapter reads account Attention directly from the relay with
+its in-memory Clerk access token, independently of the paired machine and
+selected project used for Work, Files, and PR commands. It validates the entire
+snapshot/preferences contract at the network boundary and performs at most one
+forced token refresh after a 401.
+
+Signed-out compatibility environments may read a real machine snapshot only
+from their explicitly paired host through the viewer-allowed
+`attention.getMachineSnapshot` command. Their acknowledgments return through
+`attention.acknowledgeMachine` with the loaded account owner and source
+revision. An older host that lacks those actions produces an Update host state;
+the adapter never converts an unsupported call into an empty list. If the
+browser account changes after a snapshot loads, opening or acknowledging that
+snapshot is rejected until Attention refreshes under the new owner.
+
+## ADE Code Attention
+
+`/attention` opens an account-wide right pane grouped by needs-you, failures,
+done-but-unreviewed, live, and recent work. The TUI calls machine-global
+`attention.call`, not the selected project's action scope, so changing lanes or
+projects does not change the account source. Enter opens the exact ADE
+destination first and only then sends the revision/owner-fenced seen mutation.
+
+When signed out, ADE Code asks the connected host for its real machine snapshot
+and labels the subset. Account failure may degrade to that same connected-host
+view. A host without the Attention capability remains connected but shows its
+name with update-and-restart guidance instead of a blank pane.
 
 ## ADE Notch
 
@@ -251,13 +323,26 @@ On a MacBook with a physical notch:
   housing;
 - the black silhouette remains visually connected to the hardware notch.
 
-On other displays it uses the same top-center virtual island behavior.
+On a display without a physical notch, ADE uses a menu-bar status item as the
+persistent entry rather than pretending the display has hardware it does not.
+The status item uses the shipped ADE app icon plus a small
+idle/live/needs-you/error state badge. Hover or click opens a transient,
+screen-edge-safe panel anchored under that icon; the resting top-center
+imitation notch is absent. Right-click uses the same icon as the anchor for
+controls.
 
 Interaction rules:
 
 - compact state identifies focused work and phase with a real provider mark;
-- hover opens immediately and close uses short cancellable hysteresis;
-- needs-you can open automatically; ordinary running work remains calm;
+- the user can choose Compact + peek, Reveal on hover, or Click only, disable
+  the tall expanded panel, or hide ADE Notch entirely;
+- Reveal on hover is dormant until the pointer enters a bounded top-edge or
+  status-item hot zone; Click only never grows on hover;
+- right-click anywhere on the physical surface or the menu-bar item opens the
+  same native menu: Open Attention Center, Refresh, presentation mode, expanded
+  panel policy, and a confirmed Hide action with restore guidance;
+- ordinary running work and needs-you changes update status without overriding
+  the user's reveal policy;
 - incoming updates do not replace a card currently under the pointer;
 - completion remains until seen/dismissed;
 - celebrations are bounded one-shot effects and respect Reduce Motion;
@@ -296,6 +381,11 @@ prioritizes and caps up to three agent rows and two PR rows.
 - Disabling Live Activities actively ends an existing account activity.
 - When `hideDetails` is enabled, per-device content is redacted before APNs
   delivery while preserving internal ids needed for exact routing.
+- Account-wide starts and content carry the installation's non-PII monotonic
+  `ownershipEpoch`. The app ends activities whose attribute/content epochs do
+  not match the current account owner. The widget extension applies the same
+  check before rendering and shows only a neutral Updating ADE state during the
+  brief interval before the app can end a delayed old-account activity.
 
 The Lock Screen and Dynamic Island lead with one focused item and show a small
 overflow count instead of presenting a miniature monitoring dashboard. Each

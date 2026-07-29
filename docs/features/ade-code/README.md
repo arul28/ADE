@@ -25,6 +25,8 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/adeRpcServer.ts` | Runtime JSON-RPC and ADE action dispatcher used by the TUI/CLI. After a successful user-issued meaningful mutation it records one local usage event, attributing `ade-code` / `ade-cli` clients to `tui`; agent-owned run/step/chat calls and read-only actions are excluded. |
 | `apps/ade-cli/src/tuiClient/cli.tsx` | TUI entry: argv parsing, project discovery, connection bootstrap, Ink mount. Built to `apps/ade-cli/dist/tuiClient/cli.mjs`. |
 | `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. It joins chat/terminal lists with `session.list` lifecycle fields and dispatches `/chat ask`, `/chat note`, `/chat settle`, and `/chat unsettle` through the session action domain; settling a row that is awaiting input or explicitly requesting attention asks the backend to dismiss that pending input in the same settlement transaction. The target-addressable `/session snooze` / `wake` / `settle` / `unsettle` / `keep-active` commands are parsed in `sessionLifecycle.ts` and dispatched from here, with `components/Drawer.tsx` and `components/RightPane.tsx` rendering the resulting snooze/woke row markers. Owns startup reconnect/retry UI, the debounced/cached `@` mention loader, cursor-relative `/command` + `@file` trigger detection via the shared `apps/desktop/src/shared/composerTriggers.ts` module (mid-sentence slash completion on Tab/Enter, colored `@file`/`/command` chip tokens painted into the prompt rows through `segmentPromptLineText` + `findConfirmedComposerTokens`), smart-link prompt styling/summary strips, terminal mode restoration on exit/heartbeat shutdown, and the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. It also owns cache-first chat revisits and the two-stage older-history path: drain the already-hydrated local snapshot buffer, then request byte-cursor pages with bounded retry while preserving the cursor on transient failure. Also backs `/skills` by listing Agent Skill roots from project, user, inherited, and bundled ADE locations, independent of the active provider. |
+| `apps/ade-cli/src/tuiClient/attentionPane.ts` | Account-first `/attention` model: loads through machine-global `attention.call`, groups the shared Attention contract, derives exact ADE links, labels machine fallback honestly, and sends account-owner/source-revision-fenced seen mutations only after navigation succeeds. |
+| `apps/ade-cli/src/tuiClient/components/AttentionPaneView.tsx` | Calm right-pane rendering for Needs you, Failing or blocked, Done unreviewed, Live now, and Recent groups, including machine/project context, offline last-known labels, recovery copy, and keyboard hints. |
 | `apps/ade-cli/src/tuiClient/promptSmartLinks.ts` | ADE Code's capability-adapted smart-link helpers. Formats a one-row violet provider/label strip from the shared `smartLinks.ts` catalog and makes character Backspace/Delete remove the whole URL when the cursor intersects it; the prompt still contains and sends the canonical raw URL. |
 | `apps/ade-cli/src/tuiClient/productAnalytics.ts` | Pure TUI screen normalization plus runtime `analytics.capture` calls. `app.tsx` records a deduplicated open and normalized screen changes; it never owns a PostHog client, reads terminal/chat content, or emits per-render/poll events. Accepted events share the machine runtime's consent and 200-event daily budget. See [logging and product analytics](../../logging.md). |
 | `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts` | Pure state/actions for the provider-native session browser. Filters and clamps rows, consumes the shared Continue/Copy policy, puts `Open existing ADE session` first for imported rows, and exposes only Copy actions after it so Enter never re-imports the original session. |
@@ -100,6 +102,23 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 `ade code --embedded` (or `ade --headless code`) skips the machine runtime and builds an `AdeRuntime` in-process via `loadEmbeddedAdeCli()`, which dynamic-imports `bootstrap` and `adeRpcServer` from the `ade-cli` package itself. Used for headless or development environments where `ade serve` is not present. This mode is single-project, single-process: closing the TUI tears the runtime down.
 
 `forceEmbedded` and `requireSocket` are mutually exclusive — `connectToAde` rejects the combination.
+
+### Account-wide Attention
+
+`/attention` is a machine-global right-pane utility, not a view of the selected
+lane or project. A signed-in TUI asks `attention.call/getSnapshot` for the
+consolidated account stream. The runtime's account coordinator can read the
+relay independently of the current project, while each item retains its owning
+machine/project/session/PR destination. Enter opens that exact destination and
+only then marks the loaded revision seen.
+
+When signed out, ADE Code asks the connected host for
+`getMachineSnapshot` and labels the result This machine only. A temporary
+account failure may degrade to the same real host snapshot. A legacy host that
+does not implement Attention remains connected in limited mode and shows an
+Update `<host>` / restart-brain recovery message instead of an empty pane.
+Account changes and stale source revisions reject the mutation until the pane
+refreshes.
 
 ## Initialize handshake
 
@@ -232,6 +251,7 @@ Right pane (open contextual content):
 | `/session settle [session-id] [outcome]` | Mark a session settled, declaring the settle at the override tier. |
 | `/session unsettle [session-id]` | Return a session to the derived lifecycle rules. |
 | `/session keep-active [session-id]` | Pin a session active so it never settles on its own. This is the only way to un-settle a clean-exit row, which derives its settle and has no timestamp for unsettle to clear. |
+| `/attention` | Open account-wide Attention in the right pane. Signed-out or degraded mode is labeled as connected-machine-only; `Enter` opens the exact destination and `R` refreshes. |
 | `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
 | `/output-style [style]` | List or select the active Claude output style (Claude only). |
 | `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |

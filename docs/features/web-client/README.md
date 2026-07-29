@@ -142,6 +142,14 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.
+- `apps/desktop/src/renderer/webclient/adapter/attention.ts` - account-first
+  Attention adapter. Signed-in reads/ACKs/presence/preferences go directly to
+  the Clerk-authenticated push relay and are fenced to the owner that loaded
+  the snapshot, so the selected project or paired machine cannot block the
+  account view. Signed-out legacy environments may read/acknowledge only their
+  explicitly paired host through `attention.getMachineSnapshot` and
+  `attention.acknowledgeMachine`; unsupported older hosts surface update
+  guidance rather than an invented empty snapshot.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - affirmative
   browser-local analytics preference, runtime-scoped status/capture calls, and
   per-connection consent reassertion. A failed opt-out acknowledgement closes
@@ -339,6 +347,11 @@ Reused desktop renderer (web-mode adaptation):
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
+- `apps/desktop/src/renderer/components/attention/HeaderAttentionControl.tsx`
+  and `AttentionCenter.tsx` - the project-independent header drawer and its
+  secondary Open all/history route. Attention is a global utility route, not
+  another selected-machine tab, so it is intentionally separate from
+  `WEB_CLIENT_TAB_PATHS`.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
@@ -718,12 +731,15 @@ host places the browser at its current watermark; the accepted hello triggers
 a full-domain refresh, and subsequent compact invalidation batches remain live
 refresh hints rather than replicated state.
 
-Because there is no local replica, every read is a live relay round-trip to the
-machine — where the desktop renderer would hit its in-process cr-sqlite. Two
-adapter-side measures keep that from turning routine UI into a burst of
-redundant relay traffic. First, read commands and file-list requests pass
-through a short (3 s) **coalescing read cache**: concurrent identical reads join
-one in-flight request and reuse its result for the TTL window, while any
+Because there is no local replica, project/runtime reads are live transport
+round-trips to the selected machine — where the desktop renderer would hit its
+in-process cr-sqlite. Account Attention is the deliberate exception: a
+signed-in browser reads the consolidated push-relay stream directly, so changing
+the selected machine/project cannot narrow or block the account inbox. Two
+adapter-side measures keep ordinary machine reads from turning routine UI into
+a burst of redundant relay traffic. First, read commands and file-list requests
+pass through a short (3 s) **coalescing read cache**: concurrent identical reads
+join one in-flight request and reuse its result for the TTL window, while any
 mutation or sync-driven invalidation drops the affected entries.
 Second, the PRs surface **batches** its reads: instead of separate `prs.list` /
 `prs.getForLane` / `listWithConflicts` round-trips it hydrates a single
@@ -731,6 +747,15 @@ coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
 `prsInvalidated` event triggers exactly one aggregate refresh rather than an
 empty-list marker. These caches are freshness hints over the authoritative
 relay reads, not a persisted store.
+
+The Attention adapter maintains a separate incremental account cursor and
+validates every item, destination, action, machine, project, tombstone, and
+preference object before exposing it through `window.ade`. A 401 may trigger one
+forced access-token refresh; malformed or still-unauthorized responses stay
+visible as account-service failures. Machine fallback uses the loaded
+machine-snapshot owner and per-item source revision on acknowledgment, and an
+account switch rejects stale opens/ACKs until a fresh snapshot establishes the
+new scope.
 
 The same absence shapes session lifecycle. Settle, unsettle, keep-active,
 snooze, and wake are all available in ADE Web, but where desktop and iOS write

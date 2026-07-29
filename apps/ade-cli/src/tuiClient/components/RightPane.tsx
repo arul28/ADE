@@ -74,6 +74,7 @@ import {
   type FeedbackFormState,
   type FeedbackType,
 } from "../feedbackForm";
+import { AttentionPaneView } from "./AttentionPaneView";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
 // pane build a giant row array on every scroll. The window only shows
@@ -107,6 +108,7 @@ const DEFAULT_PANE_WIDTH = 38;
 const LANE_FILE_PREVIEW_ROWS = 5;
 const EXTERNAL_SESSION_ROW_WINDOW = 4;
 export const DETAILS_BODY_MAX_LINES = 26;
+
 
 // ---------------------------------------------------------------------------
 // Actions for the lane-details pane (5 rows · wireframe)
@@ -1738,6 +1740,10 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
     case "status":
       // Flat key/value list — scrolls by row count.
       return content.rows.length;
+    case "attention":
+      // Selection keeps the focused account item visible; the pane owns its
+      // compact window rather than participating in generic line scrolling.
+      return 0;
     case "empty":
     case "form":
     case "chat-info":
@@ -2237,6 +2243,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: "HELP" };
     case "status":
       return { title: "STATUS" };
+    case "attention":
+      return { title: "ATTENTION", hint: content.model.snapshot.scope === "machine" ? "THIS MACHINE" : "ACCOUNT" };
     case "diff":
       return { title: content.title.toUpperCase() };
     case "list":
@@ -2328,6 +2336,10 @@ function RightPaneComponent({
       ) : null}
 
       {content.kind === "help" ? <HelpPane content={content} width={paneWidth} /> : null}
+
+      {content.kind === "attention" ? (
+        <AttentionPaneView content={content} selectedIndex={selectedIndex} width={paneWidth} />
+      ) : null}
 
       {content.kind === "status" ? (
         <Box flexDirection="column">

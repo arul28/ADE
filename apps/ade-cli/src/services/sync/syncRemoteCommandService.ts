@@ -4533,6 +4533,65 @@ function registerPushRemoteCommands({ args, register }: RemoteCommandRegistratio
   };
 
   register(
+    "attention.getMachineSnapshot",
+    { viewerAllowed: true },
+    publisher
+      ? async () => publisher.getMachineAttentionSnapshot()
+      : unavailable("attention.getMachineSnapshot"),
+    "runtime",
+  );
+
+  register(
+    "attention.acknowledgeMachine",
+    { viewerAllowed: true, queueable: false },
+    publisher
+      ? async (payload) => {
+        const itemIds = Array.isArray(payload.itemIds)
+          ? payload.itemIds
+            .filter((value): value is string =>
+              typeof value === "string" && value.trim().length > 0)
+            .map((value) => value.trim())
+            .slice(0, 64)
+          : [];
+        if (itemIds.length === 0) {
+          throw new Error("attention.acknowledgeMachine requires at least one item id.");
+        }
+        const sourceRevisions = isRecord(payload.sourceRevisions)
+          ? Object.fromEntries(
+              Object.entries(payload.sourceRevisions)
+                .filter((entry): entry is [string, number] =>
+                  Number.isFinite(entry[1])),
+            )
+          : {};
+        if (itemIds.some((itemId) => !Number.isFinite(sourceRevisions[itemId]))) {
+          throw new Error(
+            "attention.acknowledgeMachine requires the source revision for every item.",
+          );
+        }
+        if (
+          payload.expectedAccountOwnerId !== null
+          && typeof payload.expectedAccountOwnerId !== "string"
+        ) {
+          throw new Error(
+            "attention.acknowledgeMachine requires the machine snapshot account owner.",
+          );
+        }
+        await publisher.acknowledgeMachineAttention({
+          itemIds,
+          sourceRevisions,
+          expectedAccountOwnerId: asTrimmedString(payload.expectedAccountOwnerId),
+          ...(typeof payload.seenAt === "string" ? { seenAt: payload.seenAt } : {}),
+          ...(payload.dismissedAt === null || typeof payload.dismissedAt === "string"
+            ? { dismissedAt: payload.dismissedAt }
+            : {}),
+        });
+        return { ok: true };
+      }
+      : unavailable("attention.acknowledgeMachine"),
+    "runtime",
+  );
+
+  register(
     PUSH_REGISTER_DEVICE_ACTION as SyncRemoteCommandAction,
     { viewerAllowed: true },
     publisher

@@ -1,5 +1,10 @@
 import Foundation
 
+public struct ADEAccountDeviceOwnershipState: Codable, Equatable {
+    public let ownershipEpoch: Int
+    public let ownerId: String?
+}
+
 /// Shared access point for the App Group used by the main app and the Widget
 /// extension.
 ///
@@ -117,6 +122,22 @@ public enum ADESharedContainer {
     public static func clearAttentionSnapshot() {
         defaults.removeObject(forKey: attentionSnapshotKey)
         defaults.synchronize()
+    }
+
+    /// Shared ownership fence used by Live Activity rendering. The widget
+    /// extension must be able to reject stale account content before the main
+    /// app wakes and ends the ActivityKit instance.
+    public static func readAccountDeviceOwnershipState() -> ADEAccountDeviceOwnershipState? {
+        guard let data = defaults.data(forKey: accountDeviceOwnershipStateKey),
+              let state = try? JSONDecoder().decode(
+                  ADEAccountDeviceOwnershipState.self,
+                  from: data
+              ),
+              state.ownershipEpoch > 0,
+              state.ownershipEpoch <= 9_007_199_254_740_991 else {
+            return nil
+        }
+        return state
     }
 
     /// Relay timestamps include fractional seconds while Swift-written widget
