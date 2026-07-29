@@ -312,18 +312,21 @@ Runtime support files outside `services/sync/`:
   mismatch, invalid tokens, and configuration failures so lease owners retry
   only transient failures.
 - `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
-  account-machine list/delete/adoption for ADE Code and the runtime. Directory
-  401 responses trigger one forced token refresh and exact request retry; a
-  final 401/403 is `auth_expired`, while transport/server failures remain
-  `unavailable`. Adoption fences persistence against the captured account
-  owner and session generation before and after pairing, rolling back a newly
-  written account-owned credential if sign-out or an account switch wins the
-  race. The directory's `online` field is a short presence lease, not a
-  transport verdict: a machine with a verified secure Relay endpoint remains
-  connectable after that presence bit expires. Every HTTP operation carries
-  one bounded correlation id across the initial request and its one auth-refresh
-  retry, so a user-visible failure can be joined to the Worker's structured
-  lifecycle record without logging an account token or response body.
+  account-machine list/delete/rename/adoption for ADE Code and the runtime.
+  Rename writes the account-owned `customName` field without changing the
+  hostname reported by publisher heartbeats; clearing the custom name restores
+  the reported hostname as the display fallback. Directory 401 responses
+  trigger one forced token refresh and exact request retry; a final 401/403 is
+  `auth_expired`, while transport/server failures remain `unavailable`.
+  Adoption fences persistence against the captured account owner and session
+  generation before and after pairing, rolling back a newly written
+  account-owned credential if sign-out or an account switch wins the race. The
+  directory's `online` field is a short presence lease, not a transport verdict:
+  a machine with a verified secure Relay endpoint remains connectable after
+  that presence bit expires. Every HTTP operation carries one bounded
+  correlation id across the initial request and its one auth-refresh retry, so
+  a user-visible failure can be joined to the Worker's structured lifecycle
+  record without logging an account token or response body.
 - `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
@@ -1393,18 +1396,25 @@ therefore distinguish "no current heartbeat" from "no usable endpoint" and
 keep a row connectable while at least one directory-verified secure route
 remains. The authenticated hello is the final availability and identity check.
 
-Directory list, delete, and publish operations retry one 401 with a forced
-access-token refresh. Only a repeated 401/403 is classified as
+Directory list, delete, rename, and publish operations retry one 401 with a
+forced access-token refresh. Only a repeated 401/403 is classified as
 `auth_expired`; timeouts, server failures, and temporary token-verifier/JWKS
-failures remain retryable and do not erase pairing trust. Account adoption
-captures the account owner/session generation and rechecks it before and after
-credential persistence so a late result cannot recreate trust after sign-out
-or an account switch. Once the host has minted a device-bound paired secret,
-that host-issued direct trust is distinct from the account session that found
-the machine: sign-out removes directory visibility and Relay authorization but
-does not delete the secret needed for LAN/Tailscale reconnect. Forgetting the
-machine is the explicit trust-deletion boundary. Signing into a different
-account cannot use the previous account's directory or Relay lease.
+failures remain retryable and do not erase pairing trust. Rename is an
+owner-scoped `PATCH /account/machines/:machineKey` with an additive, nullable
+`customName` capped at 80 characters. Registration updates the reported
+hostname and reachability lease but never overwrites that custom name. Clients
+preserve both values and use `customName`, then the reported hostname, as the
+display precedence.
+
+Account adoption captures the account owner/session generation and rechecks it
+before and after credential persistence so a late result cannot recreate trust
+after sign-out or an account switch. Once the host has minted a device-bound
+paired secret, that host-issued direct trust is distinct from the account
+session that found the machine: sign-out removes directory visibility and
+Relay authorization but does not delete the secret needed for LAN/Tailscale
+reconnect. Forgetting the machine is the explicit trust-deletion boundary.
+Signing into a different account cannot use the previous account's directory
+or Relay lease.
 
 Relay has two related but distinct leases. The machine's control tunnel may
 survive a transient refresh failure only until its last known account-token
