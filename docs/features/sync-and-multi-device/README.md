@@ -884,7 +884,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   without them; there is no stored enablement or user kill-switch. The store
   derives the controller-facing
   `wss://<relay>/connect/<machineKey>` URL and the canonical host/pipe
-  HMAC signing strings shared with the `apps/tunnel-relay` worker.
+  HMAC signing strings shared with the `apps/tunnel-relay` worker. The claim
+  and host requests also decide where the relay's Durable Object is placed:
+  the worker derives a location hint from the requesting machine's geography
+  so the object is created near the machine rather than near whichever request
+  arrives first. Cloudflare honors a hint only at creation, so an existing
+  machineKey keeps its original placement.
 - `syncTunnelClientService.ts` — the brain-side tunnel client. When the
   machine has a current ADE account lease it keeps an outbound WebSocket
   registered with the relay worker (HMAC-signed host/pipe upgrades,
