@@ -665,6 +665,9 @@ struct WorkRootScreen: View {
         if newCount == 0, selectedSessionTransitionId != nil {
           selectedSessionTransitionId = nil
         }
+        if newCount == 0 {
+          syncService.clearOpenWorkSessionRoute()
+        }
       }
       .sheet(item: $bulkExportShare) { share in
         WorkActivityViewController(items: share.items)
@@ -825,6 +828,7 @@ struct WorkRootScreen: View {
             ))
             await Task.yield()
             path = fresh
+            syncService.persistOpenWorkSessionRoute(sessionId: sessionId)
             Task { @MainActor in
               await reload(refreshRemote: true)
             }
@@ -836,6 +840,7 @@ struct WorkRootScreen: View {
             fresh.append(WorkSessionRoute(sessionId: session.id))
             await Task.yield()
             path = fresh
+            syncService.persistOpenWorkSessionRoute(sessionId: session.id)
             Task { @MainActor in
               await reload(refreshRemote: true)
             }
@@ -850,6 +855,7 @@ struct WorkRootScreen: View {
             fresh.append(WorkSessionRoute(sessionId: chatSessionId))
             await Task.yield()
             path = fresh
+            syncService.persistOpenWorkSessionRoute(sessionId: chatSessionId)
             Task { @MainActor in
               await reload(refreshRemote: true)
             }

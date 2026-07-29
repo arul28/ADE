@@ -34,12 +34,10 @@ struct WorkChatCrossProjectContext: Equatable {
   let displayName: String
 }
 
-/// How the hub decided to open a chat: still deciding, a lightweight
-/// cross-project quick look (no project switch), after a full activation, or
-/// failed (activation error or timeout) with a message and a Retry affordance.
+/// How the hub decided to open a chat: still switching/hydrating its project,
+/// activated and ready to open, or failed with a Retry affordance.
 private enum HubChatOpenMode: Equatable {
   case deciding
-  case crossProject(WorkChatCrossProjectContext, TerminalSessionSummary)
   case activated(TerminalSessionSummary?)
   case failed(String)
 }
@@ -93,6 +91,13 @@ func hubChatActivationOutcome(
   return .failed("The machine could not switch to \(projectName). Check that it is online, then try again.")
 }
 
+/// Hub chat taps are project navigation. A non-active owner always activates
+/// before the destination renders, even when the host could serve a
+/// cross-project transcript quick look.
+func hubChatRequiresProjectActivation(isActiveProject: Bool) -> Bool {
+  !isActiveProject
+}
+
 /// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
 /// can render immediately. A foreign session never enters the phone's active
 /// project DB; a same-project session may simply be ahead of CRDT replication.
@@ -121,26 +126,6 @@ private struct HubChatCover: View {
         switch mode {
         case .deciding:
           HubChatActivatingView(projectName: target.project.displayName, onClose: onClose)
-        case .crossProject(let context, let sessionStub):
-          // Lightweight cross-project quick look: stream the transcript from the
-          // foreign project WITHOUT switching the phone's active project. Lane/PR
-          // affordances are hidden (showsLaneActions: false) and gated off inside
-          // the view; sending / approving still work via scoped commands.
-          WorkSessionDestinationView(
-            sessionId: target.chat.id,
-            initialOpeningPrompt: nil,
-            initialSession: sessionStub,
-            initialChatSummary: nil,
-            initialTranscript: nil,
-            transitionNamespace: nil,
-            isLive: true,
-            navigationChrome: .pushedDetail,
-            forceFreshTranscriptOnOpen: true,
-            showsLaneActions: false,
-            lanes: target.lane.map { [$0.asLaneSummary()] } ?? [],
-            crossProjectContext: context
-          )
-          .id(target.id)
         case .activated(let sessionStub):
           WorkSessionDestinationView(
             sessionId: target.chat.id,
@@ -178,29 +163,17 @@ private struct HubChatCover: View {
   private func decideAndOpen() async {
     let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
     // Already the active project → the full-detail path (existing infra).
-    if syncService.isActiveProject(target.project) {
+    if !hubChatRequiresProjectActivation(
+      isActiveProject: syncService.isActiveProject(target.project)
+    ) {
       mode = .activated(sessionStub)
       return
     }
-    // Cross-project quick look when the host supports it (newer brain): stream
-    // the foreign chat in place, no project switch. Chat sessions only — CLI
-    // sessions have no chat transcript JSONL to stream, so they take the
-    // activation path below and open as a terminal.
-    if syncService.supportsCrossProjectChat, let sessionStub {
-      mode = .crossProject(
-        WorkChatCrossProjectContext(
-          projectId: target.project.id,
-          projectRootPath: target.project.rootPath,
-          displayName: target.project.displayName
-        ),
-        sessionStub
-      )
-      return
-    }
-    // Fallback for hosts without cross-project support (e.g. the currently
-    // published brain): activate the project first (keeping the hub), then
-    // render the chat once the switch lands. A failed switch never opens the
-    // chat against the wrong project — it reports the failure with Retry.
+    // A Hub row is navigation, not a quick-look read: activate the owning
+    // project first (keeping the Hub mounted under this cover), show the
+    // switch/hydration state, then open the requested chat. This guarantees a
+    // non-active project's row is never a silent no-op and leaves the phone in
+    // the project the user explicitly chose.
     startActivationWatchdog()
     await syncService.openProjectForHubChat(target.project)
     activationWatchdog?.cancel()

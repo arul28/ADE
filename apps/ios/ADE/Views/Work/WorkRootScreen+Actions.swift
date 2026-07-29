@@ -585,6 +585,7 @@ extension WorkRootScreen {
     Task { @MainActor in
       await Task.yield()
       path.append(WorkSessionRoute(sessionId: session.id))
+      syncService.persistOpenWorkSessionRoute(sessionId: session.id)
       navigationMutationPending = false
     }
   }
@@ -609,6 +610,7 @@ extension WorkRootScreen {
     var fresh = NavigationPath()
     fresh.append(WorkSessionRoute(sessionId: request.sessionId))
     path = fresh
+    syncService.persistOpenWorkSessionRoute(sessionId: request.sessionId)
     await AccountService.shared.acknowledgeAttentionNavigation(
       request.attentionItemId
     )

@@ -1860,6 +1860,26 @@ func syncShouldRestoreProjectRoute(
   return age >= 0 && age < syncProjectRouteRestoreWindow
 }
 
+/// Restore a work-chat pane only when it belongs to the same still-valid
+/// project route. Keeping this decision beside the project marker prevents a
+/// stale session id from being opened under a different active project.
+func syncRestoredWorkSessionId(
+  savedSessionId: String?,
+  savedProjectId: String?,
+  activeProjectId: String?,
+  savedAt: Date?,
+  now: Date = Date()
+) -> String? {
+  guard syncShouldRestoreProjectRoute(
+    savedProjectId: savedProjectId,
+    activeProjectId: activeProjectId,
+    savedAt: savedAt,
+    now: now
+  ) else { return nil }
+  let sessionId = savedSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return sessionId.isEmpty ? nil : sessionId
+}
+
 func syncDiscoveredHostsEqualForPresentation(
   _ left: DiscoveredSyncHost,
   _ right: DiscoveredSyncHost
@@ -3085,6 +3105,7 @@ final class SyncService: ObservableObject {
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
   private let lastProjectRouteIdKey = "ade.sync.lastProjectRoute.projectId"
   private let lastProjectRouteSavedAtKey = "ade.sync.lastProjectRoute.savedAt"
+  private let lastProjectRouteWorkSessionIdKey = "ade.sync.lastProjectRoute.workSessionId"
   private let activeProjectIdKey = "ade.sync.activeProjectId"
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
@@ -3413,6 +3434,7 @@ final class SyncService: ObservableObject {
     guard !projectHubPresented, let activeProjectId else {
       defaults.removeObject(forKey: lastProjectRouteIdKey)
       defaults.removeObject(forKey: lastProjectRouteSavedAtKey)
+      defaults.removeObject(forKey: lastProjectRouteWorkSessionIdKey)
       return
     }
     defaults.set(activeProjectId, forKey: lastProjectRouteIdKey)
@@ -3423,6 +3445,23 @@ final class SyncService: ObservableObject {
     let stored = UserDefaults.standard.double(forKey: lastProjectRouteSavedAtKey)
     guard stored > 0 else { return nil }
     return Date(timeIntervalSince1970: stored)
+  }
+
+  /// Persist the open Work chat as part of the recent project route. The
+  /// session id is an opaque local navigation key; no transcript or prompt
+  /// content enters preferences.
+  func persistOpenWorkSessionRoute(sessionId: String) {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !projectHubPresented, activeProjectId != nil else { return }
+    UserDefaults.standard.set(trimmed, forKey: lastProjectRouteWorkSessionIdKey)
+    persistProjectRouteMarker()
+  }
+
+  /// Backing out of chat returns the saved route to the Work root. A later
+  /// process reclaim must not reopen a pane the user explicitly closed.
+  func clearOpenWorkSessionRoute() {
+    UserDefaults.standard.removeObject(forKey: lastProjectRouteWorkSessionIdKey)
+    persistProjectRouteMarker()
   }
 
   func showProjectHub() {
@@ -4266,6 +4305,9 @@ final class SyncService: ObservableObject {
       terminalSnapshotRequestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
       resetLanePayloadSignatures()
+      // A pane belongs to the old project. Callers that intentionally open a
+      // chat after the switch record the new session once activation lands.
+      UserDefaults.standard.removeObject(forKey: lastProjectRouteWorkSessionIdKey)
     }
     activeProjectId = projectId
     activeProjectRootPath = nextRootPath
@@ -4489,6 +4531,9 @@ final class SyncService: ObservableObject {
     // (true) and would erase the very value we are about to check.
     let savedProjectRouteId = UserDefaults.standard.string(forKey: lastProjectRouteIdKey)
     let savedProjectRouteAt = loadProjectRouteMarkerSavedAt()
+    let savedProjectRouteWorkSessionId = UserDefaults.standard.string(
+      forKey: lastProjectRouteWorkSessionIdKey
+    )
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
@@ -4524,6 +4569,17 @@ final class SyncService: ObservableObject {
       // explicitly — otherwise a device that keeps getting reclaimed would keep
       // replaying a marker that never refreshes and expire mid-session.
       persistProjectRouteMarker()
+      if let restoredSessionId = syncRestoredWorkSessionId(
+        savedSessionId: savedProjectRouteWorkSessionId,
+        savedProjectId: savedProjectRouteId,
+        activeProjectId: activeProjectId,
+        savedAt: savedProjectRouteAt
+      ) {
+        requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+          sessionId: restoredSessionId
+        )
+        persistOpenWorkSessionRoute(sessionId: restoredSessionId)
+      }
     }
     pendingOperationCount = loadPendingOperations().count
     pendingChatCreations = loadPendingChatCreations()
@@ -8994,7 +9050,14 @@ final class SyncService: ObservableObject {
         type: "chat_subscribe",
         requestId: nil,
         payload: payload
-      ) else { return false }
+      ) else {
+        if requestSnapshot {
+          recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
+          stalledChatSnapshotSessionIds.insert(trimmedSessionId)
+          localStateRevision += 1
+        }
+        return false
+      }
       // This subscribe establishes a fresh snapshot generation. If a history
       // page lands before its ack, recording that page re-arms the stale-ack
       // guard below.

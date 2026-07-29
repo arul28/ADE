@@ -23427,6 +23427,11 @@ final class HubChatActivationOutcomeTests: XCTestCase {
     XCTAssertEqual(outcome, .activated)
   }
 
+  func testNonActiveHubChatAlwaysActivatesItsProject() {
+    XCTAssertTrue(hubChatRequiresProjectActivation(isActiveProject: false))
+    XCTAssertFalse(hubChatRequiresProjectActivation(isActiveProject: true))
+  }
+
   func testFailedActivationSurfacesSyncLastError() {
     let outcome = hubChatActivationOutcome(
       projectName: "ADE",
@@ -23584,6 +23589,94 @@ final class SyncProjectRouteRestoreTests: XCTestCase {
         savedAt: now.addingTimeInterval(600),
         now: now
       )
+    )
+  }
+
+  func testRestoresTheSameOpenWorkChatWithTheRecentProject() {
+    XCTAssertEqual(
+      syncRestoredWorkSessionId(
+        savedSessionId: "chat-42",
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      ),
+      "chat-42"
+    )
+  }
+
+  func testDoesNotRestoreAWorkChatUnderADifferentProject() {
+    XCTAssertNil(
+      syncRestoredWorkSessionId(
+        savedSessionId: "chat-42",
+        savedProjectId: "project-a",
+        activeProjectId: "project-b",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+
+  func testDoesNotRestoreAnEmptyWorkChatRoute() {
+    XCTAssertNil(
+      syncRestoredWorkSessionId(
+        savedSessionId: "  ",
+        savedProjectId: "project-a",
+        activeProjectId: "project-a",
+        savedAt: now.addingTimeInterval(-120),
+        now: now
+      )
+    )
+  }
+}
+
+/// Each initial-hydration leg owns an independent domain status. A single
+/// failure must leave the other cached/ready surfaces renderable and give the
+/// failed surface an explicit Retry notice instead of a blank root.
+final class SyncPartialHydrationRenderingTests: XCTestCase {
+  func testEverySingleLegFailureHasAnErrorNoticeWhileOtherLegsStayReady() {
+    for failedDomain in [SyncDomain.lanes, .work, .prs] {
+      var statuses = Dictionary(
+        uniqueKeysWithValues: [SyncDomain.lanes, .work, .prs].map {
+          ($0, SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: Date()))
+        }
+      )
+      statuses[failedDomain] = SyncDomainStatus(
+        phase: .failed,
+        lastError: "Timed out loading fresh data.",
+        lastHydratedAt: nil
+      )
+
+      let notice = statuses[failedDomain]?.inlineHydrationFailureNotice(for: failedDomain)
+      XCTAssertNotNil(notice, "\(failedDomain) must render a Retry notice")
+      XCTAssertEqual(notice?.message, "Timed out loading fresh data.")
+      for healthyDomain in statuses.keys where healthyDomain != failedDomain {
+        XCTAssertEqual(statuses[healthyDomain]?.phase, .ready)
+        XCTAssertNil(statuses[healthyDomain]?.inlineHydrationFailureNotice(for: healthyDomain))
+      }
+    }
+  }
+
+  func testBlankHydrationErrorStillProducesConcreteCopy() {
+    let status = SyncDomainStatus(phase: .failed, lastError: "  \n ", lastHydratedAt: nil)
+    let notice = status.inlineHydrationFailureNotice(for: .work)
+    XCTAssertEqual(notice?.title, "Work hydration failed")
+    XCTAssertTrue(notice?.message.contains("Fresh data could not be loaded") == true)
+  }
+}
+
+final class WorkChatTranscriptLoadStateTests: XCTestCase {
+  func testWhitespaceFailureCannotRenderABlankErrorCard() {
+    XCTAssertEqual(
+      workChatTranscriptFailureMessage(" \n "),
+      "The machine didn’t answer the transcript request."
+    )
+  }
+
+  func testHostFailureCopyIsPreservedForRetryState() {
+    XCTAssertEqual(
+      workChatTranscriptFailureMessage("  The transcript request timed out.  "),
+      "The transcript request timed out."
     )
   }
 }
