@@ -470,7 +470,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const apply = (snapshot: SyncRoleSnapshot | null | undefined) => {
       if (cancelled) return;
-      setSyncRelayHealth(snapshot?.routeHealth?.relay ?? null);
+      const next = snapshot?.routeHealth?.relay ?? null;
+      // getStatus rebuilds routeHealth.relay as a fresh object every call, so
+      // committing it unconditionally would re-render the whole shell on every
+      // peer/status push. Only the fields the banner reads matter here.
+      setSyncRelayHealth((prev) => (
+        prev?.enabled === next?.enabled
+        && prev?.relayControlConnected === next?.relayControlConnected
+        && prev?.relayControlSuppressed === next?.relayControlSuppressed
+        && prev?.relayControlFailingSinceMs === next?.relayControlFailingSinceMs
+        && prev?.relayControlSuppressedReason === next?.relayControlSuppressedReason
+        && prev?.skipReason === next?.skipReason
+        && prev?.lastControlError === next?.lastControlError
+          ? prev
+          : next
+      ));
     };
     // Prefer the LOCAL snapshot: relay control belongs to the physical machine
     // this window runs on, not to whichever runtime a remote-bound project routes to.

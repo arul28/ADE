@@ -1642,12 +1642,16 @@ export async function createAdeRuntime(args: {
   // Only the runtime that holds the machine-wide sync host lease may register
   // the relay tunnel. See relayTunnelAuthorityGate for why the old
   // "has a listener" gate let secondary brains evict the real host.
-  const { createRelayTunnelAuthorityGate } = await import(
-    "./services/sync/relayTunnelAuthorityGate"
-  );
+  const [{ createRelayTunnelAuthorityGate }, { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }] =
+    await Promise.all([
+      import("./services/sync/relayTunnelAuthorityGate"),
+      import("./services/sync/syncHostSingleton"),
+    ]);
   const relayTunnelGate = createRelayTunnelAuthorityGate({
-    hasSyncListener: resolvedArgs.syncRuntime?.sharedSyncListener != null,
+    hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
     tunnel: syncTunnelClientService,
+    holdsLease: holdsSyncHostSingleton,
+    subscribe: onSyncHostSingletonAuthorityChanged,
     logger,
   });
 

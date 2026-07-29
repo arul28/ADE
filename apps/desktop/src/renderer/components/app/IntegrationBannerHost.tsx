@@ -94,6 +94,24 @@ export function deriveRelayOutageState(
   return nowMs - failingSince > RELAY_OUTAGE_GRACE_MS ? "down" : null;
 }
 
+/**
+ * Milliseconds until an ongoing outage becomes reportable, or null when no
+ * deadline is pending. Shares the predicate above so the timer and the banner
+ * can never disagree about what counts as an outage.
+ */
+export function relayGraceRemainingMs(
+  relay: RelayRouteHealth | null | undefined,
+  nowMs: number,
+): number | null {
+  if (deriveRelayOutageState(relay, nowMs) != null) return null;
+  const failingSince = relay?.relayControlFailingSinceMs;
+  if (relay?.enabled !== true || relay.relayControlConnected === true || failingSince == null) {
+    return null;
+  }
+  const remaining = RELAY_OUTAGE_GRACE_MS - (nowMs - failingSince);
+  return remaining > 0 ? remaining : null;
+}
+
 export function IntegrationBannerHost({
   currentProjectRoot,
   githubStatus,
@@ -207,23 +225,16 @@ export function IntegrationBannerHost({
   // no timer exists at all.
   const [relayGraceTick, setRelayGraceTick] = useState(0);
   useEffect(() => {
-    if (!relayHealth || relayHealth.enabled !== true) return;
-    if (relayHealth.relayControlConnected === true) return;
-    if (relayHealth.relayControlSuppressed === true) return;
-    const failingSince = relayHealth.relayControlFailingSinceMs;
-    if (failingSince == null) return;
-    const remaining = RELAY_OUTAGE_GRACE_MS - (Date.now() - failingSince);
-    if (remaining <= 0) return;
+    const remaining = relayGraceRemainingMs(relayHealth, Date.now());
+    if (remaining == null) return;
     const timer = setTimeout(() => setRelayGraceTick((tick) => tick + 1), remaining + 250);
     return () => clearTimeout(timer);
   }, [relayHealth, relayGraceTick]);
 
-  // `relayGraceTick` is not an input to the decision — it is the signal that the
-  // grace timer fired and the clock is worth re-reading.
-  const relayOutage = useMemo(
-    () => deriveRelayOutageState(relayHealth, Date.now()),
-    [relayHealth, relayGraceTick],
-  );
+  // Not a memo: the input is the wall clock. `relayGraceTick` exists only to
+  // force the re-render when the grace timer fires. The result is a string or
+  // null, so downstream dep lists stay stable.
+  const relayOutage = deriveRelayOutageState(relayHealth, Date.now());
 
   // Clear-on-recovery: when a banner's underlying condition is HEALTHY, drop any
   // dismissal recorded for it so a later regression to the SAME state resurfaces a

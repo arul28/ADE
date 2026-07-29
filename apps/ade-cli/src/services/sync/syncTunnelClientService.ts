@@ -118,6 +118,8 @@ type SyncTunnelClientArgs = {
   controlJsonPingIntervalMs?: number;
   controlJsonPongDeadlineMs?: number;
   controlReadyStableMs?: number;
+  /** Test seam for the post-eviction re-arm interval. */
+  controlReplacedRearmMs?: number;
   reconnectBackoffMs?: (attempt: number) => number;
   createWebSocket?: (
     url: string,
@@ -158,8 +160,22 @@ export const RELAY_CONTROL_REPLACED_MESSAGE =
   "Another ADE process owns the relay connection for this machine.";
 /** Fixed floor for post-eviction redials; jittered up, never down. */
 export const CONTROL_REPLACED_RETRY_BASE_MS = 60_000;
-/** After this many evictions the client stops dialing until re-armed. */
+/**
+ * Evictions tolerated before the client stops dialing. The budget counts only
+ * evictions that never recovered — a control socket that reaches the stability
+ * window resets it — so this bounds one continuous war, not a lifetime.
+ */
 export const MAX_CONTROL_REPLACED_REATTEMPTS = 3;
+/**
+ * How long a stopped client waits before trying once more.
+ *
+ * Giving up permanently would be wrong: the rival process usually exits
+ * (a dev brain is killed, an old app quits) and nothing else would ever redial,
+ * leaving relay dead until a restart while the UI tells the user that quitting
+ * the other process fixes it. Re-arming on a long timer makes that advice true
+ * at a cost of three dials per interval, nowhere near the ~4s war.
+ */
+export const CONTROL_REPLACED_REARM_MS = 10 * 60_000;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
 export const BRIDGE_VALIDATION_LEASE_MS = 2_000;
 export const CONTROL_READY_STABLE_MS = 5_000;
@@ -229,9 +245,10 @@ export function computeBackoffMs(
   const previous = Number.isFinite(previousDelayMs) && previousDelayMs > 0
     ? previousDelayMs
     : BACKOFF_MIN_MS;
+  // `previous` is at least BACKOFF_MIN_MS, so the ceiling is always above the
+  // floor and no clamp is needed here.
   const ceiling = Math.min(BACKOFF_CAP_MS, Math.max(exponential, previous * 3));
-  const floor = Math.min(BACKOFF_MIN_MS, ceiling);
-  return Math.floor(floor + random() * (ceiling - floor));
+  return Math.floor(BACKOFF_MIN_MS + random() * (ceiling - BACKOFF_MIN_MS));
 }
 
 type ControlOpenMessage = {
@@ -344,6 +361,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let controlReplacedAttempts = 0;
   let controlReplacedStopped = false;
   let controlSuppressedReason: string | null = null;
+  let controlReplacedRearmTimer: NodeJS.Timeout | null = null;
   let controlFailingSinceMs: number | null = null;
   let started = false;
   let stopped = false;
@@ -611,6 +629,21 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   /**
+   * Forget the eviction regime. One definition, used by every reset site, so
+   * the "which subset does this one clear" divergence cannot creep back in.
+   */
+  const resetControlEvictionState = (): void => {
+    controlReplacedAttempts = 0;
+    controlReplacedStopped = false;
+    controlSuppressedReason = null;
+    if (controlReplacedRearmTimer) {
+      clearTimeout(controlReplacedRearmTimer);
+      controlReplacedRearmTimer = null;
+    }
+    if (lastError === RELAY_CONTROL_REPLACED_MESSAGE) lastError = null;
+  };
+
+  /**
    * Handle a relay eviction. Another ADE process on this machine registered the
    * same machineKey, so redialing immediately just evicts it right back — the
    * exact loop that made relay permanently unusable while two brains ran. Back
@@ -628,7 +661,16 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       log.warn?.("sync_tunnel.control_replaced_stopped", {
         attempts: controlReplacedAttempts,
         reason: RELAY_CONTROL_REPLACED_MESSAGE,
+        rearmInMs: args.controlReplacedRearmMs ?? CONTROL_REPLACED_REARM_MS,
       });
+      controlReplacedRearmTimer ??= (() => {
+        const timer = setTimeout(() => {
+          controlReplacedRearmTimer = null;
+          clearControlSuppression();
+        }, args.controlReplacedRearmMs ?? CONTROL_REPLACED_REARM_MS);
+        timer.unref?.();
+        return timer;
+      })();
       return;
     }
     // Fixed 60s floor, jittered upward only, so two evicting processes cannot
@@ -650,10 +692,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const clearControlSuppression = (): void => {
     if (controlReplacedAttempts === 0 && !controlSuppressedReason && !controlReplacedStopped) return;
     const wasStopped = controlReplacedStopped;
-    controlReplacedAttempts = 0;
-    controlReplacedStopped = false;
-    controlSuppressedReason = null;
-    if (lastError === RELAY_CONTROL_REPLACED_MESSAGE) lastError = null;
+    resetControlEvictionState();
     attempt = 0;
     lastBackoffDelayMs = 0;
     log.info?.("sync_tunnel.control_suppression_cleared", { wasStopped });
@@ -926,7 +965,17 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
               || validatedBridgeKey !== bridgeValidationIdentity().key
             ) return;
             attempt = 0;
+            // Decorrelated jitter samples from the PREVIOUS delay, so leaving
+            // this at a 60s cap would make the first drop after a healthy
+            // session wait up to a minute instead of a second.
+            lastBackoffDelayMs = 0;
             lastControlError = null;
+            // A control socket that survived the stability window proves the
+            // eviction war is over. Without this the budget only ever counted
+            // up, so four self-healed evictions over a long-running brain would
+            // stop relay for good — and `ade doctor` would keep reporting a
+            // healthy relay as owned by another process, forever.
+            resetControlEvictionState();
             log.info?.("sync_tunnel.control_ready", {
               machineKey: id.machineKey,
               controlEpoch: socketTransportMode === "epoch" ? controlEpoch : null,
@@ -1836,9 +1885,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       started = false;
       // A stop/start cycle is how the lease gate hands relay ownership between
       // runtimes, so it must not inherit the previous owner's eviction state.
-      controlReplacedAttempts = 0;
-      controlReplacedStopped = false;
-      controlSuppressedReason = null;
+      resetControlEvictionState();
       lastBackoffDelayMs = 0;
       detachHostListener?.();
       detachHostListener = null;

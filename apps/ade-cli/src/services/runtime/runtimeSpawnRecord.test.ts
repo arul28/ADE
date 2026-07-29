@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  clearRuntimeSpawnRecord,
   hasRecentRuntimeSpawn,
   readRuntimeSpawnRecord,
   recordRuntimeSpawn,
@@ -10,6 +12,21 @@ import {
 } from "./runtimeSpawnRecord";
 
 const sockets = ["/tmp/ade-runtime-spawn-record-test.sock", "/tmp/other/ade.sock"];
+const originalAdeHome = process.env.ADE_HOME;
+let tempAdeHome = "";
+
+// Records live under the machine ADE home; without an override the suite would
+// write into the developer's real ~/.ade.
+beforeAll(() => {
+  tempAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-spawn-record-home-"));
+  process.env.ADE_HOME = tempAdeHome;
+});
+
+afterAll(() => {
+  if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalAdeHome;
+  if (tempAdeHome) fs.rmSync(tempAdeHome, { recursive: true, force: true });
+});
 
 afterEach(() => {
   for (const socketPath of sockets) {
@@ -40,6 +57,15 @@ describe("runtimeSpawnRecord", () => {
   it("allows a new spawn when the recorded brain is gone", () => {
     // pid 1 is always alive, so use an implausible-but-valid pid instead.
     recordRuntimeSpawn(socketPath, 2_147_483_646);
+    expect(hasRecentRuntimeSpawn(socketPath)).toBe(false);
+  });
+
+  // A deliberate shutdown makes the record stale immediately: the pid may
+  // outlive the shutdown, and the replacement spawn must not be suppressed.
+  it("stops suppressing once the record is cleared", () => {
+    recordRuntimeSpawn(socketPath, process.pid);
+    expect(hasRecentRuntimeSpawn(socketPath)).toBe(true);
+    clearRuntimeSpawnRecord(socketPath);
     expect(hasRecentRuntimeSpawn(socketPath)).toBe(false);
   });
 

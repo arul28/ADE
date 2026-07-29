@@ -1,7 +1,4 @@
-import {
-  holdsSyncHostSingleton,
-  onSyncHostSingletonAuthorityChanged,
-} from "./syncHostSingleton";
+import type { TunnelHostListener } from "./syncTunnelClientService";
 
 /**
  * Decides whether THIS runtime may hold the machine's relay tunnel.
@@ -22,6 +19,7 @@ import {
 export type RelayTunnelGateTunnel = {
   start(): Promise<void>;
   stop(): Promise<void>;
+  attachHostListener(listener: TunnelHostListener | null): void;
   clearControlSuppression(): void;
 };
 
@@ -37,54 +35,106 @@ export type RelayTunnelAuthorityGate = {
   dispose(): void;
 };
 
-export type RelayTunnelAuthorityGateDeps = {
-  /** Test seams; production uses the process-wide lease registry. */
-  holdsLease?: () => boolean;
-  subscribe?: (handler: (held: boolean) => void) => () => void;
+/**
+ * How long authority must stay lost before the tunnel is torn down.
+ *
+ * A project switch deactivates the previous sync host BEFORE activating the
+ * target (ProjectScopeRegistry.performSyncHostSwitch), so within one brain the
+ * lease legitimately reads "not held" for the width of that handoff. Reacting
+ * to that transient would stop and restart the machine's relay tunnel — and
+ * churn the account-directory publisher — on every project switch. A real loss
+ * of authority outlives this window; a handoff never does.
+ */
+export const SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS = 5_000;
+
+export type RelayTunnelAuthorityGateArgs = {
+  /**
+   * The brain-level shared listener the relay bridges into, or null for a
+   * runtime that does not host phone sync at all.
+   */
+  hostListener: TunnelHostListener | null;
+  tunnel: RelayTunnelGateTunnel;
+  holdsLease: () => boolean;
+  subscribe: (handler: (held: boolean) => void) => () => void;
+  logger?: RelayTunnelGateLogger;
+  /** Test seam. */
+  releaseGraceMs?: number;
 };
 
 export function createRelayTunnelAuthorityGate(
-  args: {
-    hasSyncListener: boolean;
-    tunnel: RelayTunnelGateTunnel;
-    logger?: RelayTunnelGateLogger;
-  },
-  deps: RelayTunnelAuthorityGateDeps = {},
+  args: RelayTunnelAuthorityGateArgs,
 ): RelayTunnelAuthorityGate {
-  const holdsLease = deps.holdsLease ?? holdsSyncHostSingleton;
-  const subscribe = deps.subscribe ?? onSyncHostSingletonAuthorityChanged;
   const log = args.logger;
+  const graceMs = args.releaseGraceMs ?? SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS;
+  const hasSyncListener = args.hostListener != null;
   let running = false;
+  let releaseTimer: NodeJS.Timeout | null = null;
+  // Whether this gate has ever seen authority go away. A gate constructed while
+  // the lease is already held (opening a second project) must not re-arm the
+  // eviction suppression: that would reset the 4505 re-attempt budget and let
+  // the war restart on every project open.
+  let observedRelease = false;
 
-  const apply = (held: boolean): void => {
-    const shouldRun = args.hasSyncListener && held;
-    if (shouldRun === running) return;
-    running = shouldRun;
-    if (shouldRun) {
-      // Winning the lease makes this runtime the legitimate owner, so an
-      // earlier eviction no longer describes reality.
+  const clearReleaseTimer = (): void => {
+    if (!releaseTimer) return;
+    clearTimeout(releaseTimer);
+    releaseTimer = null;
+  };
+
+  const startTunnel = (): void => {
+    running = true;
+    // Re-attach on every start. `stop()` drops the listener reference, and it
+    // is otherwise attached exactly once per runtime at construction — so a
+    // gate-driven stop/start cycle would come back with a live control socket
+    // and no bridge, rejecting every phone connect with "host sync listener
+    // unavailable" until the brain restarted.
+    args.tunnel.attachHostListener(args.hostListener);
+    if (observedRelease) {
+      // Re-winning the lease makes this runtime the legitimate owner again, so
+      // an earlier eviction no longer describes reality.
       args.tunnel.clearControlSuppression();
-      void args.tunnel.start().catch((error) => {
-        log?.warn?.("sync.tunnel_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      return;
     }
+    void args.tunnel.start().catch((error) => {
+      log?.warn?.("sync.tunnel_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const stopTunnel = (): void => {
+    running = false;
     log?.info?.("sync.tunnel_stopped_without_sync_host_lease", {
       reason: "This runtime no longer holds the machine-wide sync host lease.",
     });
     void args.tunnel.stop().catch(() => {});
   };
 
-  const release = subscribe(apply);
-  const held = holdsLease();
-  if (!(args.hasSyncListener && held)) {
+  const apply = (held: boolean): void => {
+    const shouldRun = hasSyncListener && held;
+    if (shouldRun) {
+      clearReleaseTimer();
+      if (running) return;
+      startTunnel();
+      return;
+    }
+    if (!held) observedRelease = true;
+    if (!running || releaseTimer) return;
+    releaseTimer = setTimeout(() => {
+      releaseTimer = null;
+      if (args.holdsLease() && hasSyncListener) return;
+      stopTunnel();
+    }, graceMs);
+    releaseTimer.unref?.();
+  };
+
+  const release = args.subscribe(apply);
+  const held = args.holdsLease();
+  if (!(hasSyncListener && held)) {
     log?.info?.("sync.tunnel_start_skipped", {
-      reason: args.hasSyncListener
+      reason: hasSyncListener
         ? "This runtime does not hold the machine-wide sync host lease; another ADE process owns phone sync and the relay."
         : "This runtime does not host the shared sync listener.",
-      hasSyncListener: args.hasSyncListener,
+      hasSyncListener,
       holdsSyncHostLease: held,
     });
   }
@@ -92,6 +142,9 @@ export function createRelayTunnelAuthorityGate(
 
   return {
     isRunning: () => running,
-    dispose: () => release(),
+    dispose: () => {
+      clearReleaseTimer();
+      release();
+    },
   };
 }

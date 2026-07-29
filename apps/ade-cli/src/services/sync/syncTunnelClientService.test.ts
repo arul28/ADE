@@ -17,6 +17,7 @@ import {
   MAX_PENDING_TUNNEL_BYTES,
   MAX_RELAY_WEBSOCKET_FRAME_BYTES,
   parseControlMessage,
+  CONTROL_REPLACED_REARM_MS,
   CONTROL_REPLACED_RETRY_BASE_MS,
   MAX_CONTROL_REPLACED_REATTEMPTS,
   RELAY_CLOSE_BRIDGE_REJECTED,
@@ -2691,11 +2692,13 @@ describe("createSyncTunnelClientService", () => {
 });
 
 describe("relay control eviction (close 4505)", () => {
+  const REARM_MS = 5 * CONTROL_REPLACED_RETRY_BASE_MS;
   const createEvictedService = (sockets: StubWebSocket[]) =>
     createSyncTunnelClientService({
       getSyncPort: () => null,
       getRelayBridgeProof: () => null,
       configStore: fakeStore(),
+      controlReplacedRearmMs: REARM_MS,
       createWebSocket: (url) => {
         const socket = new StubWebSocket(url);
         sockets.push(socket);
@@ -2760,11 +2763,18 @@ describe("relay control eviction (close 4505)", () => {
       }
 
       // 1 initial dial + MAX_CONTROL_REPLACED_REATTEMPTS retries, then silence
-      // — no timer left to fire, however long we wait.
+      // until the re-arm interval. The final round already consumed
+      // CONTROL_REPLACED_RETRY_BASE_MS of it.
       expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 1);
-      await vi.advanceTimersByTimeAsync(10 * CONTROL_REPLACED_RETRY_BASE_MS);
+      await vi.advanceTimersByTimeAsync(REARM_MS - CONTROL_REPLACED_RETRY_BASE_MS - 1_000);
       expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 1);
       expect(service.getStatus().controlSuppressedReason).toBe(RELAY_CONTROL_REPLACED_MESSAGE);
+
+      // Then it tries again: the rival usually exits, and giving up forever
+      // would leave relay dead while the UI claims quitting it brings it back.
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 2);
+      expect(service.getStatus().controlSuppressed).toBe(false);
     } finally {
       await service.dispose();
       random.mockRestore();

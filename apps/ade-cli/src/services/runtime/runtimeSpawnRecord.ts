@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 /**
  * Remembers the last brain this machine spawned for a given RPC socket.
@@ -22,17 +23,27 @@ export type RuntimeSpawnRecord = {
   spawnedAtMs: number;
 };
 
-/** How long a recorded spawn suppresses another one. */
+/**
+ * How long a recorded spawn suppresses another one. Sized to a cold brain
+ * start on a large repo, which is the window during which a second spawn is
+ * pure harm; past it, a brain that still has not bound its socket is wedged
+ * and a replacement is the right answer.
+ */
 export const RUNTIME_SPAWN_RECORD_GRACE_MS = 30_000;
 
+// Under ~/.ade rather than the system temp dir. On Linux/WSL os.tmpdir() is the
+// world-writable /tmp, where another local user could pre-create the record as
+// a symlink (writeFileSync follows it) or plant a live pid to suppress this
+// user's brain spawns indefinitely. The machine layout dir is ADE-owned and
+// created 0700.
 function recordDir(): string {
-  return path.join(os.tmpdir(), "ade-runtime-spawns");
+  return path.join(resolveMachineAdeLayout().runtimeDir, "spawns");
 }
 
 export function runtimeSpawnRecordPath(socketPath: string): string {
-  // Socket paths are absolute and may collide on basename alone, so key on the
-  // full path with separators flattened.
-  const key = socketPath.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(-120);
+  // Hash rather than sanitize-and-truncate: two socket paths sharing a suffix
+  // must not share a record and suppress each other's spawns.
+  const key = createHash("sha256").update(socketPath).digest("hex").slice(0, 32);
   return path.join(recordDir(), `${key}.json`);
 }
 
@@ -73,6 +84,19 @@ export function recordRuntimeSpawn(socketPath: string, pid: number): void {
     });
   } catch {
     // The record is an optimization; never fail a spawn over it.
+  }
+}
+
+/**
+ * Drop the record after deliberately shutting a spawned brain down. Its pid can
+ * outlive the shutdown by a moment, and without this the stale record would
+ * suppress the replacement spawn the shutdown exists to make room for.
+ */
+export function clearRuntimeSpawnRecord(socketPath: string): void {
+  try {
+    fs.rmSync(runtimeSpawnRecordPath(socketPath), { force: true });
+  } catch {
+    // Advisory only.
   }
 }
 

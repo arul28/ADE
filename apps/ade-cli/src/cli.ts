@@ -13351,6 +13351,23 @@ function createSocketConnection(socketPath: string): net.Socket {
   return net.createConnection(socketPath);
 }
 
+/**
+ * Refuse to run a brain whose RPC socket is already owned. Shared by the
+ * pre-startup claim and the bind path so the error contract (message, cause,
+ * `socket_owned_by_other` code that project recovery keys on) lives once.
+ */
+async function assertBrainSocketUnowned(socketPath: string): Promise<void> {
+  const liveness = await probeLocalSocketForLiveness(socketPath);
+  if (liveness !== "live" && liveness !== "unknown") return;
+  throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
+    socketPath,
+    cause: liveness === "live"
+      ? "Another ADE brain is accepting connections on this socket."
+      : "ADE could not prove the existing socket is stale.",
+    nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+  }), { code: "socket_owned_by_other" as const });
+}
+
 async function probeLocalSocketForLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
   if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
     return "unknown";
@@ -14992,10 +15009,16 @@ async function spawnMachineRuntimeDaemon(
   // immortal brains, all of them fighting over the same relay slot. If we
   // already spawned one for this socket and it is still alive and recent, let
   // it finish coming up instead of adding a rival.
+  //
+  // Report success: a spawn for this socket IS in flight, so the caller should
+  // go on to its connect-with-retry rather than fail immediately. Returning
+  // false here would turn a slow brain start into a hard error for the second
+  // of two concurrent commands — and on the build-mismatch path, where the old
+  // brain has already been shut down, would leave the machine with none.
   const { hasRecentRuntimeSpawn, recordRuntimeSpawn } = await import(
     "./services/runtime/runtimeSpawnRecord"
   );
-  if (hasRecentRuntimeSpawn(socketPath)) return false;
+  if (hasRecentRuntimeSpawn(socketPath)) return true;
 
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
@@ -15099,6 +15122,11 @@ async function connectMachineRuntimeDaemon(
         throw manualMachineRuntimeSpawnBlockedError(socketPath);
       }
       await shutdownMachineRuntimeDaemon(client);
+      // We just shut a brain down on purpose. If it was one we spawned, its
+      // record would otherwise suppress the very replacement this path exists
+      // to start, because the pid can outlive the shutdown by a moment.
+      const { clearRuntimeSpawnRecord } = await import("./services/runtime/runtimeSpawnRecord");
+      clearRuntimeSpawnRecord(socketPath);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
@@ -16207,16 +16235,11 @@ async function runServe(
   // stacked up on one dev socket, all of them still dialing the relay. A brain
   // that cannot own its socket has no reason to exist, so fail fast.
   if (!isAdeRuntimeNamedPipePath(socketPath) && fs.existsSync(socketPath)) {
-    const liveness = await probeLocalSocketForLiveness(socketPath);
-    if (liveness === "live" || liveness === "unknown") {
+    try {
+      await assertBrainSocketUnowned(socketPath);
+    } catch (error) {
       await disposeServeResources();
-      throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-        socketPath,
-        cause: liveness === "live"
-          ? "Another ADE brain is accepting connections on this socket."
-          : "ADE could not prove the existing socket is stale.",
-        nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-      }), { code: "socket_owned_by_other" as const });
+      throw error;
     }
   }
 
@@ -16256,16 +16279,7 @@ async function runServe(
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     if (fs.existsSync(socketPath)) {
-      const liveness = await probeLocalSocketForLiveness(socketPath);
-      if (liveness === "live" || liveness === "unknown") {
-        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-          socketPath,
-          cause: liveness === "live"
-            ? "Another ADE brain is accepting connections on this socket."
-            : "ADE could not prove the existing socket is stale.",
-          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        }), { code: "socket_owned_by_other" as const });
-      }
+      await assertBrainSocketUnowned(socketPath);
       try {
         fs.unlinkSync(socketPath);
       } catch {}
@@ -16305,9 +16319,11 @@ async function runServe(
     // here", so like the relay tunnel it belongs to whichever brain actually
     // holds the machine-wide sync host lease. A second brain publishing its own
     // endpoints points phones at a runtime that does not host sync.
-    const { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged } = await import(
-      "./services/sync/syncHostSingleton"
-    );
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+      await Promise.all([
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/relayTunnelAuthorityGate"),
+      ]);
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -16329,19 +16345,41 @@ async function runServe(
       });
       accountMachinePublisher.start();
     };
-    releaseAccountPublisherAuthoritySubscription = onSyncHostSingletonAuthorityChanged((held) => {
+    // A project switch deactivates the previous sync host before activating the
+    // target, so authority momentarily reads false inside one brain. Without the
+    // grace the publisher would be destroyed and rebuilt on every switch, and
+    // `ade doctor` would report "Account-directory publishing has not started"
+    // in the gap. Only a loss that outlives the handoff is a real one.
+    let accountPublisherReleaseTimer: NodeJS.Timeout | null = null;
+    const cancelAccountPublisherRelease = (): void => {
+      if (!accountPublisherReleaseTimer) return;
+      clearTimeout(accountPublisherReleaseTimer);
+      accountPublisherReleaseTimer = null;
+    };
+    const unsubscribeAccountPublisherAuthority = onSyncHostSingletonAuthorityChanged((held) => {
       if (held) {
+        cancelAccountPublisherRelease();
         startAccountMachinePublisher();
         return;
       }
-      headlessProjectLogger.info("account_publisher.stopped_without_sync_host_lease", {
-        reason: "This brain no longer holds the machine-wide sync host lease.",
-      });
-      // The publisher cannot be restarted after dispose, so a later lease
-      // acquisition rebuilds it above.
-      accountMachinePublisher?.dispose();
-      accountMachinePublisher = null;
+      if (!accountMachinePublisher || accountPublisherReleaseTimer) return;
+      accountPublisherReleaseTimer = setTimeout(() => {
+        accountPublisherReleaseTimer = null;
+        if (holdsSyncHostSingleton()) return;
+        headlessProjectLogger.info("account_publisher.stopped_without_sync_host_lease", {
+          reason: "This brain no longer holds the machine-wide sync host lease.",
+        });
+        // The publisher cannot be restarted after dispose, so a later lease
+        // acquisition rebuilds it above.
+        accountMachinePublisher?.dispose();
+        accountMachinePublisher = null;
+      }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
+      accountPublisherReleaseTimer.unref?.();
     });
+    releaseAccountPublisherAuthoritySubscription = () => {
+      cancelAccountPublisherRelease();
+      unsubscribeAccountPublisherAuthority();
+    };
     if (holdsSyncHostSingleton()) {
       startAccountMachinePublisher();
     } else {
