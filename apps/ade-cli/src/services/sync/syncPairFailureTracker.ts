@@ -5,9 +5,9 @@
  * requesting address, and one global circuit breaker. The per-device and
  * per-address buckets are the ones that describe a real user fumbling a 6-digit
  * code, so they keep the tight threshold. The global bucket used to share that
- * same threshold, which meant five bad PINs typed on ONE phone locked pairing
+ * same threshold, which meant a handful of bad PINs typed on ONE phone locked pairing
  * (and account adoption, which consults the same cooldown) for every device in
- * the house for ten minutes. It is a last-resort defence against guessing
+ * the house. It is a last-resort defence against guessing
  * distributed across many addresses, so it sits far above the point where an
  * honest household is still trying.
  *
@@ -17,9 +17,12 @@
  * device that actually failed.
  */
 
-export const PAIR_FAILURE_THRESHOLD = 5;
-export const PAIR_GLOBAL_FAILURE_THRESHOLD = 25;
-export const PAIR_COOLDOWN_MS = 10 * 60_000;
+// Tuned for onboarding friendliness over strictness: a fumbling human gets ten
+// tries and a two-minute wait, which still prices a 6-digit LAN brute force out
+// of reach (worst case ~7 codes/min sustained against a 1e6 space).
+export const PAIR_FAILURE_THRESHOLD = 10;
+export const PAIR_GLOBAL_FAILURE_THRESHOLD = 50;
+export const PAIR_COOLDOWN_MS = 2 * 60_000;
 export const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
 
 export type PairFailureEntry = {
