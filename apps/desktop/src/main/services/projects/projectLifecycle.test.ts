@@ -56,6 +56,7 @@ function makeProjectConfigDb() {
     setJson: vi.fn((key: string, value: unknown) => {
       store.set(key, value);
     }),
+    all: vi.fn(() => []),
     run: vi.fn(),
   } as any;
 }
@@ -363,6 +364,50 @@ describe("createAdeProjectService.clearLocalData", () => {
     expect(fs.existsSync(layout.transcriptsDir)).toBe(false);
     expect(fs.readFileSync(path.join(layout.cacheDir, "keep.json"), "utf8")).toBe("cache");
     expect(fs.readFileSync(path.join(layout.secretsDir, "keep"), "utf8")).toBe("secret");
+  });
+
+  it("preserves attachment-backed proof rows when clearing artifact packs", async () => {
+    const root = makeTempDir("ade-project-clear-artifact-rows-");
+    const layout = resolveAdeLayout(root);
+    const db = await openKvDb(path.join(layout.adeDir, "ade.db"), createLogger());
+    const now = "2026-07-29T00:00:00.000Z";
+    insertProject(db, "project-1", root, now);
+    const service = createAdeProjectService({
+      projectRoot: root,
+      db,
+      projectId: "project-1",
+      logger: createLogger(),
+      projectConfigService: {
+        get: () => ({ validation: { ok: true, issues: [] } }),
+      },
+    });
+    const artifactFile = path.join(layout.artifactsDir, "computer-use", "proof.png");
+    const attachmentFile = path.join(layout.adeDir, "attachments", "prompt.png");
+    fs.mkdirSync(path.dirname(artifactFile), { recursive: true });
+    fs.mkdirSync(path.dirname(attachmentFile), { recursive: true });
+    fs.writeFileSync(artifactFile, "proof");
+    fs.writeFileSync(attachmentFile, "attachment");
+    const insertArtifact = (id: string, uri: string) => {
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, 'project-1', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', 'image/png', '{}', null, ?)`,
+        [id, id, uri, now],
+      );
+    };
+    insertArtifact("stored-proof", "ade-artifact://project/.ade/artifacts/computer-use/proof.png");
+    insertArtifact("stored-attachment", ".ade/attachments/prompt.png");
+
+    service.clearLocalData({ packs: true });
+
+    expect(fs.existsSync(artifactFile)).toBe(false);
+    expect(fs.existsSync(attachmentFile)).toBe(true);
+    expect(db.all<{ id: string }>("select id from computer_use_artifacts order by id")).toEqual([
+      { id: "stored-attachment" },
+    ]);
+    db.close();
   });
 });
 

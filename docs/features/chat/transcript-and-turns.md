@@ -254,6 +254,13 @@ implements a two-layer transform:
      that omits `rows`/`metrics` patches rather than blanks them — which keeps
      the row at its original position and preserves the virtualizer's measured
      height as a long-running card (CI, a build, an artifact pull) progresses.
+     When a detail refresh fails, `degradedReason` does not destructively
+     replace an earlier rich payload: rows/progress/metrics survive with
+     `stale: true`, and a first-time empty failure renders `detail unavailable`
+     plus its retry action instead of a false-green zero-count card. Emitters
+     may provide `durationMs` only for a real measured run; the renderer labels
+     the card update span as `tracked` so it is never presented as work time.
+     `rowsTruncated` becomes a compact `+N more` summary.
      It is deliberately NOT activity: it is never classified by
      `classifyActivityPhaseRow` and never bundled, so an interleaved
      reasoning/work phase cannot swallow it. The payload contract and its
@@ -409,10 +416,29 @@ not `@tanstack/react-virtual`. The pieces:
   above the viewport changed height so the visible content stays still.
 
 Below `VIRTUALIZATION_THRESHOLD` rows the list skips all of this and
-renders every row directly. Notable rendering rules:
+renders every row directly. The transcript has one responsive content-width
+contract: `chatAppearance.ts` publishes `--chat-content-width` as
+`min(100%, clamp(720px, 62vw, 1180px))` and aliases the older
+`--chat-column` variable to it. Prose, composer, cards, plans, file changes,
+activity details, and pills all use that token, while the JS
+`resolveChatContentWidthPx()` mirror supplies floating-pane layout math.
 
-- Assistant message cards constrain to `max-w-[78ch]` for readability.
-- Turn dividers (`ChatTurnDivider`) separate consecutive turns.
+Card rows compose `chatCardPrimitives.tsx`: a fixed 16 px glyph column,
+flexible title/content column, and auto-sized meta/action column. Passing
+one-line facts use a hairline row, live/detail-bearing work uses an inset, and
+failures use an amber rail. The same primitives back `AdeCard`,
+`CodexPlanCard`, files changed, tool/work rows, and settled subagent rows.
+
+Notable rendering rules:
+
+- Assistant messages and transcript cards share the responsive content width.
+- Completed-turn dividers show local time and measured duration. Tool activity
+  and proof each have independent collapsed controls. Chat-owned proof is
+  bucketed into turns by `artifact.createdAt`; expanding `N proof` renders the
+  horizontal `ChatProofFilmstrip` immediately below that divider. The filmstrip
+  is chronological, starts collapsed, and never moves to a pinned thread
+  footer. Local project-relative URIs render through the artifact protocol;
+  remote items fall back to their kind label and open the runtime-backed drawer.
 - Code blocks in assistant messages render through `HighlightedCode`.
 - User messages animate in with a `motion/react` spring transition, and
   over-long ones (>600 chars or >8 lines) collapse behind a CSS gradient

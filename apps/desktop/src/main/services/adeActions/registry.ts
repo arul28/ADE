@@ -237,6 +237,19 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // without a chat binding at CTO role; session-bound agents must never read
   // or mutate this private composer state through `ade actions`.
   chat: ["listPromptStashes", "createPromptStash", "deletePromptStash"],
+  // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
+  // Session-bound agents use the dedicated RPC tools, which derive an owner
+  // and filesystem jail from their authenticated chat context.
+  computer_use_artifacts: [
+    "deleteArtifacts",
+    "getOwnerSnapshot",
+    "ingest",
+    "listArtifacts",
+    "listBrokenArtifacts",
+    "pruneBrokenArtifacts",
+    "recoverArtifact",
+    "updateArtifactReview",
+  ],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -800,7 +813,18 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
-  computer_use_artifacts: ["getOwnerSnapshot", "getBackendStatus", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
+  computer_use_artifacts: [
+    "deleteArtifacts",
+    "getOwnerSnapshot",
+    "getBackendStatus",
+    "ingest",
+    "listArtifacts",
+    "listBrokenArtifacts",
+    "pruneBrokenArtifacts",
+    "readArtifactPreview",
+    "recoverArtifact",
+    "updateArtifactReview",
+  ],
   ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],

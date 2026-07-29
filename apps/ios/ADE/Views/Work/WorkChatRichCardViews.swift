@@ -3954,6 +3954,7 @@ struct WorkAdeCardView: View {
   /// Amber whenever anything on the card is in a warning tone (the contract's
   /// failure state), emerald for a settled all-good card, accent otherwise.
   private var accentTone: WorkAdeCardTone {
+    if card.degradedReason != nil { return .warning }
     if let progress = card.progress, progress.failed > 0 { return .warning }
     if card.metrics.contains(where: { $0.tone == .warning })
       || card.rows.contains(where: { $0.tone == .warning }) {
@@ -4018,13 +4019,14 @@ struct WorkAdeCardView: View {
   // MARK: Rich body
 
   private var richBody: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6) {
       header
+      if card.degradedReason != nil || card.isStale == true { degradedStatus }
       if !card.metrics.isEmpty { metricsRow }
       if !visibleRows.isEmpty { detailRows }
       if !availableActions.isEmpty { actionsRow }
     }
-    .padding(.vertical, 10)
+    .padding(.vertical, 8)
   }
 
   private var header: some View {
@@ -4042,6 +4044,11 @@ struct WorkAdeCardView: View {
           .truncationMode(.middle)
       }
       Spacer(minLength: 6)
+      if let durationMs = card.durationMs {
+        Text(formattedDuration(milliseconds: durationMs))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+      }
       if let deeplink, let label = workAdeCardNavLabel(card.navTarget) {
         Button {
           onOpenDeeplink(deeplink)
@@ -4059,6 +4066,22 @@ struct WorkAdeCardView: View {
       }
     }
     .padding(.horizontal, 12)
+  }
+
+  private var degradedStatus: some View {
+    HStack(spacing: 5) {
+      Image(systemName: "exclamationmark.circle")
+        .font(.system(size: 9, weight: .semibold))
+      Text(card.isStale == true ? "Earlier detail · refresh unavailable" : "Detail unavailable")
+        .font(.caption2)
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.warning)
+    .padding(.horizontal, 12)
+    .accessibilityLabel(
+      card.degradedReason.map { "Card detail unavailable. \($0)" }
+        ?? "Card detail may be stale"
+    )
   }
 
   @ViewBuilder
@@ -4096,7 +4119,11 @@ struct WorkAdeCardView: View {
   /// Cap the detail list: the transcript row is a summary, and the full list
   /// lives behind the card's nav target.
   private var visibleRows: [WorkAdeCardRow] {
-    Array(card.rows.prefix(4))
+    workAdeCardVisibleRows(card)
+  }
+
+  private var hiddenRowCount: Int {
+    workAdeCardHiddenRowCount(card)
   }
 
   private var detailRows: some View {
@@ -4124,8 +4151,8 @@ struct WorkAdeCardView: View {
           }
         }
       }
-      if card.rows.count > visibleRows.count {
-        Text("+\(card.rows.count - visibleRows.count) more")
+      if hiddenRowCount > 0 {
+        Text("+\(hiddenRowCount) more")
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -4198,6 +4225,22 @@ struct WorkAdeCardView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
   }
+}
+
+func workAdeCardVisibleRows(_ card: WorkAdeCardModel) -> [WorkAdeCardRow] {
+  Array(workAdeCardCandidateRows(card).prefix(4))
+}
+
+func workAdeCardHiddenRowCount(_ card: WorkAdeCardModel) -> Int {
+  let candidates = workAdeCardCandidateRows(card)
+  return (card.rowsTruncated ?? 0) + max(0, candidates.count - workAdeCardVisibleRows(card).count)
+}
+
+private func workAdeCardCandidateRows(_ card: WorkAdeCardModel) -> [WorkAdeCardRow] {
+  guard card.variant == "pr_ci" else { return card.rows }
+  // Mobile's selected checks treatment is failures-only. A green run stays
+  // one line; failed checks earn the small amount of transcript space.
+  return card.rows.filter { $0.icon == .fail || $0.tone == .warning }
 }
 
 func workAdeCardToneColor(_ tone: WorkAdeCardTone) -> Color {

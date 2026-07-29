@@ -136,6 +136,8 @@ export function buildCleanupTarget(
     }
     case "recovery_backups":
       return { kind: "recovery_backup", path: p };
+    case "proof_attachments":
+      return { kind: "proof_attachments", path: p };
     case "build_release":
     case "caches":
       if (CACHE_SEGMENT.test(p)) return { kind: "rebuildable_cache", path: p };
@@ -143,7 +145,7 @@ export function buildCleanupTarget(
       if (TMP_STAGING.test(p)) return { kind: "stale_tmp_staging", path: p };
       return null;
     default:
-      return null; // chats_history, proof_attachments, database
+      return null; // chats_history, database
   }
 }
 
@@ -165,7 +167,10 @@ export function cleanableEntries(
     if (!target) continue;
     if (categoryId === "lanes_worktrees") {
       if (item.safety !== "review_first") continue;
-    } else if (categoryId !== "recovery_backups") {
+    } else if (categoryId !== "recovery_backups" && categoryId !== "proof_attachments") {
+      // Proof is `review_first` by design — it is user data, not derived data.
+      // It is removable on purpose, just never as part of a bulk "safe" sweep
+      // (see `buildSafeCleanupPlan`, which only considers caches/build files).
       if (item.safety !== "safe_to_remove") continue;
     }
     out.push({ item, target });

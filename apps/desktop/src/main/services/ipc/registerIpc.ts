@@ -568,7 +568,9 @@ import type {
   BudgetCapConfig,
   ComputerUseArtifactListArgs,
   ComputerUseArtifactReviewArgs,
-  ComputerUseArtifactRouteArgs,
+  ComputerUseArtifactBrokenRecord,
+  ComputerUseArtifactDeleteArgs,
+  ComputerUseArtifactDeleteResult,
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
@@ -7757,9 +7759,24 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.computerUseRouteArtifact, async (_event, arg: ComputerUseArtifactRouteArgs): Promise<ComputerUseArtifactView> => {
+  ipcMain.handle(IPC.computerUseDeleteArtifacts, async (_event, arg: ComputerUseArtifactDeleteArgs): Promise<ComputerUseArtifactDeleteResult> => {
     const ctx = ensureComputerUseBroker();
-    return ctx.computerUseArtifactBrokerService.routeArtifact(arg);
+    return ctx.computerUseArtifactBrokerService.deleteArtifacts(arg);
+  });
+
+  ipcMain.handle(IPC.computerUseListBrokenArtifacts, async (_event, arg: { limit?: number } = {}): Promise<ComputerUseArtifactBrokenRecord[]> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.listBrokenArtifacts(arg);
+  });
+
+  ipcMain.handle(IPC.computerUsePruneBrokenArtifacts, async (): Promise<ComputerUseArtifactDeleteResult> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.pruneBrokenArtifacts();
+  });
+
+  ipcMain.handle(IPC.computerUseRecoverArtifact, async (_event, arg: { artifactId: string }): Promise<ComputerUseArtifactView> => {
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.recoverArtifact(arg);
   });
 
   ipcMain.handle(IPC.computerUseUpdateArtifactReview, async (_event, arg: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> => {

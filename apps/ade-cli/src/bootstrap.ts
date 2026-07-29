@@ -1581,6 +1581,11 @@ export async function createAdeRuntime(args: {
     captureAnalytics: (input) => {
       productAnalyticsService.capture(input);
     },
+  // Removing proof files from Settings must drop their records too,
+  // otherwise the drawer keeps listing items whose bytes are gone.
+  purgeProofRecordsUnder: (removedPath) => {
+    computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
+  },
   });
   const budgetCapService = createBudgetCapService({
     db,

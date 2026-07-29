@@ -72,12 +72,21 @@ export function formatDurationMs(ms: number | null): string {
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
-/** Format subagent activity durations using the chat cards' rounded compact style. */
+/**
+ * Format subagent activity durations using the chat cards' rounded compact style.
+ *
+ * Carries an hour unit: without one, 2h56m printed as `176m`, which no reader
+ * parses as "nearly three hours".
+ */
 export function formatSubagentDurationMs(value: number | null | undefined): string | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
   const roundedSeconds = Math.max(1, Math.round(value / 1000));
-  if (roundedSeconds >= 60) return `${Math.round(value / 60_000)}m`;
-  return `${roundedSeconds}s`;
+  if (roundedSeconds < 60) return `${roundedSeconds}s`;
+  const roundedMinutes = Math.round(value / 60_000);
+  if (roundedMinutes < 60) return `${roundedMinutes}m`;
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
 /** Format elapsed time since a given ISO timestamp. */

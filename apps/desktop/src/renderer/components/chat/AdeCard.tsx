@@ -2,19 +2,30 @@ import { useEffect, useState } from "react";
 import {
   ArrowSquareOut,
   CaretRight,
-  CheckCircle,
-  Circle,
-  DotsThree,
-  File as FileIcon,
-  Info,
-  SpinnerGap,
-  XCircle,
+  Cube,
+  GitMerge,
+  Warning,
+  type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatSubagentDurationMs } from "../../lib/format";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { CHAT_TRANSCRIPT_GLASS_CARD_CLASS } from "./chatTranscriptChrome";
-import { chatChipToneClass } from "./chatSurfaceTheme";
+import {
+  CHAT_CARD_MICRO_TEXT,
+  CHAT_CARD_WIDTH_CLASS,
+  ChatCard,
+  ChatCardButton,
+  ChatCardChip,
+  ChatCardDetail,
+  ChatCardDetailRow,
+  ChatCardDiffStat,
+  ChatCardMeter,
+  ChatCardRow,
+  ChatCardSub,
+  ChatCardTitle,
+  type ChatCardTone,
+} from "./chatCardPrimitives";
 import {
   adeCardDeeplink,
   adeCardFallbackText,
@@ -23,66 +34,84 @@ import {
   normalizeAdeCardTone,
   type AdeCardIcon,
   type AdeCardPayload,
-  type AdeCardTone,
 } from "../../../shared/adeCard";
-import type { ChatSurfaceChipTone } from "../../../shared/types";
 
 /**
  * The `ade_card` renderer.
  *
- * Structurally and stylistically a sibling of `SubagentActivityCards.tsx` — same
- * `max-w-[min(100%,70ch)]` shell, same `calc(var(--chat-radius-card)-6px)` radius,
- * same `--chat-font-size`-relative type scale, same one-line ` · `-joined status,
- * same whole-card-clickable-with-identical-inner-markup pattern. It also inherits
- * that file's tone policy: THERE IS NO RED HERE. A failed thing is amber, and the
- * detail lives in the row's `detail` column rather than a red error block.
+ * Built entirely from `./chatCardPrimitives` — the `[glyph | content | meta]`
+ * grid, `CHAT_CARD_WIDTH_CLASS`, and the shared tone vocabulary — so an
+ * `ade_card` lines up column-for-column with every other transcript row rather
+ * than inventing its own indent and its own width.
  *
- * A variant this build does not recognize renders `fallbackText` + the deeplink
- * instead of nothing — that degradation is the reason one wire contract can ship
- * across three independent release trains.
+ * Shape follows the state, not the variant name:
+ *
+ * - a green/quiet result is ONE line (no box, hairline rule);
+ * - a failure gets an amber rail and lists only the rows that failed;
+ * - a live card gets an inset box and a progress meter.
+ *
+ * Tone policy inherited from `shared/adeCard.ts`: THERE IS NO RED HERE. A failed
+ * thing is amber, and its detail lives in the row's detail column rather than a
+ * red error block. A variant this build does not recognize renders
+ * `fallbackText` + the deeplink instead of nothing — that degradation is the
+ * reason one wire contract can ship across three independent release trains.
  */
 
-const TONE_TEXT_CLASS: Record<AdeCardTone, string> = {
-  neutral: "text-fg/45",
-  accent: "text-[color:var(--chat-accent)]",
-  success: "text-emerald-300/80",
-  warning: "text-amber-200/85",
-};
-
-const TONE_CHIP_TONE: Record<AdeCardTone, ChatSurfaceChipTone> = {
-  neutral: "muted",
-  accent: "accent",
-  success: "success",
-  warning: "warning",
-};
-
-/** Progress-bar segment fills. Failure is amber, per the house policy above. */
-const PROGRESS_SEGMENT_CLASS: Record<"passed" | "failed" | "running" | "queued", string> = {
-  passed: "bg-emerald-400/70",
-  failed: "bg-amber-400/80",
-  running: "bg-[color:var(--chat-accent)]",
-  queued: "bg-white/12",
-};
-
-function RowGlyph({ icon, tone }: { icon: AdeCardIcon | undefined; tone: AdeCardTone }) {
-  const className = cn("shrink-0", TONE_TEXT_CLASS[tone]);
+/** Semantic row glyph → the shared tone vocabulary. */
+function rowToneForIcon(icon: AdeCardIcon | undefined, declared: ChatCardTone): ChatCardTone {
   switch (icon) {
     case "pass":
-      return <CheckCircle size={11} weight="bold" className="shrink-0 text-emerald-400/85" aria-hidden />;
+      return "ok";
     case "fail":
-      return <XCircle size={11} weight="bold" className="shrink-0 text-amber-300/85" aria-hidden />;
+      return "warn";
     case "running":
-      return <SpinnerGap size={11} weight="bold" className="shrink-0 motion-safe:animate-spin text-[color:var(--chat-accent)]" aria-hidden />;
-    case "queued":
-      return <Circle size={9} weight="regular" className="shrink-0 text-fg/30" aria-hidden />;
+      return "running";
     case "skipped":
-      return <DotsThree size={11} weight="bold" className="shrink-0 text-fg/30" aria-hidden />;
+      return "idle";
+    case "queued":
     case "file":
-      return <FileIcon size={11} weight="regular" className={className} aria-hidden />;
     case "info":
     default:
-      return <Info size={11} weight="regular" className={className} aria-hidden />;
+      return declared;
   }
+}
+
+function toneOf(value: string | null | undefined): ChatCardTone {
+  switch (normalizeAdeCardTone(value)) {
+    case "success":
+      return "ok";
+    case "warning":
+      return "warn";
+    case "accent":
+      return "running";
+    default:
+      return "neutral";
+  }
+}
+
+/** Head glyph per variant family. Everything else falls back to the tone glyph. */
+function variantIcon(variant: string): PhosphorIcon | undefined {
+  if (variant === "pr_merged" || variant === "pr_merge_ready") return GitMerge;
+  if (variant === "pr_conflict") return Warning;
+  if (variant === "proof_artifact") return Cube;
+  return undefined;
+}
+
+/**
+ * `+23,574 / −912` when the emitter shipped additions/deletions metrics, so a PR
+ * card can be one line with the diff in the meta column instead of two chips.
+ */
+function diffStatFromMetrics(card: AdeCardPayload): { additions: number; deletions: number } | null {
+  const read = (label: string): number | null => {
+    const metric = (card.metrics ?? []).find((entry) => entry.label === label);
+    if (!metric) return null;
+    const parsed = Number.parseInt(metric.value.replace(/[^0-9]/g, ""), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const additions = read("additions");
+  const deletions = read("deletions");
+  if (additions == null && deletions == null) return null;
+  return { additions: additions ?? 0, deletions: deletions ?? 0 };
 }
 
 function liveElapsedText(startedAt: string | null | undefined, nowMs: number): string | null {
@@ -90,6 +119,20 @@ function liveElapsedText(startedAt: string | null | undefined, nowMs: number): s
   const start = Date.parse(startedAt);
   if (!Number.isFinite(start)) return null;
   return formatSubagentDurationMs(Math.max(0, nowMs - start));
+}
+
+/**
+ * The span between the card's first and last emit. NOT a run duration — a CI
+ * card that is re-polled for three hours has a three-hour span and a three-
+ * minute run. Labelled `tracked` wherever it appears so the two never read as
+ * the same number.
+ */
+function trackedSpanText(card: AdeCardPayload): string | null {
+  if (!card.createdAt || !card.updatedAt) return null;
+  const span = Date.parse(card.updatedAt) - Date.parse(card.createdAt);
+  if (!Number.isFinite(span) || span < 60_000) return null;
+  const text = formatSubagentDurationMs(span);
+  return text ? `tracked ${text}` : null;
 }
 
 export function AdeCard({
@@ -114,39 +157,6 @@ export function AdeCard({
   const known = isKnownAdeCardVariant(card.variant);
   const deeplink = adeCardDeeplink(card.navTarget);
   const navigable = Boolean(card.navTarget);
-
-  const elapsed = isLive
-    ? liveElapsedText(card.createdAt, nowMs)
-    : formatSubagentDurationMs(
-        card.createdAt && card.updatedAt
-          ? Math.max(0, Date.parse(card.updatedAt) - Date.parse(card.createdAt))
-          : null,
-      );
-
-  const metrics = card.metrics ?? [];
-  const rows = card.rows ?? [];
-  const actions = (card.actions ?? []).filter((action) => (
-    (action.id === "open" && navigable) || onAction != null
-  ));
-  const progress = card.progress ?? null;
-  const progressTotal = adeCardProgressTotal(progress);
-  const hasWarning = metrics.some((metric) => normalizeAdeCardTone(metric.tone) === "warning")
-    || rows.some((row) => normalizeAdeCardTone(row.tone) === "warning")
-    || (progress?.failed ?? 0) > 0;
-
-  const cardShell = cn(
-    "w-full max-w-[min(100%,70ch)] overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border transition-colors",
-    hasWarning
-      ? "border-amber-400/16 bg-amber-400/[0.05] hover:border-amber-300/26"
-      : "border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_6%,transparent)] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]",
-  );
-
-  const statusParts = [
-    isLive ? "running" : "done",
-    card.subtitle?.trim() || null,
-    elapsed,
-  ].filter((part): part is string => Boolean(part));
-
   const openCard = () => {
     if (card.navTarget) navigateToAppTarget(card.navTarget);
   };
@@ -155,7 +165,7 @@ export function AdeCard({
   if (!known) {
     const text = adeCardFallbackText(card);
     return (
-      <div className={cn(CHAT_TRANSCRIPT_GLASS_CARD_CLASS, "w-full max-w-[min(100%,70ch)] px-3.5 py-2.5")}>
+      <div className={cn(CHAT_TRANSCRIPT_GLASS_CARD_CLASS, CHAT_CARD_WIDTH_CLASS, "px-3.5 py-2.5")}>
         <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/62">
           {text}
         </div>
@@ -174,132 +184,121 @@ export function AdeCard({
     );
   }
 
-  // Built ONCE and rendered byte-identically whether or not the card navigates —
-  // the navigable/passive split must never change the layout it wraps.
+  const metrics = card.metrics ?? [];
+  const rows = card.rows ?? [];
+  const progress = card.progress ?? null;
+  const progressTotal = adeCardProgressTotal(progress);
+  const degradedReason = card.degradedReason?.trim() || null;
+  const failedCount = Math.max(0, progress?.failed ?? 0);
+  const warnRows = rows.filter((row) => normalizeAdeCardTone(row.tone) === "warning" || row.icon === "fail");
+  const hasWarning = failedCount > 0
+    || warnRows.length > 0
+    || metrics.some((metric) => normalizeAdeCardTone(metric.tone) === "warning" && metric.value !== "0");
+
+  // The two clocks are deliberately different numbers with different labels.
+  const realDuration = formatSubagentDurationMs(card.durationMs ?? null);
+  const elapsed = isLive ? liveElapsedText(card.createdAt, nowMs) : null;
+  const tracked = !isLive && !realDuration ? trackedSpanText(card) : null;
+
+  const headTone: ChatCardTone = isLive ? "running" : hasWarning ? "warn" : degradedReason ? "neutral" : "ok";
+  const diff = diffStatFromMetrics(card);
+
+  // A card only earns a box when it has something to put in one. A passing
+  // result collapses to a single hairline row.
+  const detailRows = hasWarning ? warnRows : rows;
+  const showDetail = detailRows.length > 0 && (hasWarning || isLive || card.variant === "proof_artifact");
+  const skin = hasWarning ? "rail" : showDetail || isLive || degradedReason ? "inset" : "line";
+
+  const metaParts = [
+    hasWarning && progress ? `${progress.passed} passed` : null,
+    !hasWarning && !isLive && progressTotal > 0 ? `${progressTotal} job${progressTotal === 1 ? "" : "s"}` : null,
+    realDuration ? `ran ${realDuration}` : null,
+    elapsed,
+    tracked,
+  ].filter((part): part is string => Boolean(part));
+
+  const actions = (card.actions ?? []).filter((action) => (
+    (action.id === "open" && navigable) || onAction != null
+  ));
+
   const inner = (
     <>
-      {progress && progressTotal > 0 ? (
-        <div className="flex h-[2px] w-full overflow-hidden" aria-hidden>
-          {(["passed", "failed", "running", "queued"] as const).map((bucket) => {
-            const value = Math.max(0, progress[bucket]);
-            if (value <= 0) return null;
-            return (
-              <span
-                key={bucket}
-                className={PROGRESS_SEGMENT_CLASS[bucket]}
-                style={{ flex: `${value} 0 0%` }}
-              />
-            );
-          })}
+      <ChatCardRow
+        tone={headTone}
+        icon={variantIcon(card.variant)}
+        align={card.subtitle || degradedReason ? "top" : "center"}
+        meta={diff ? <ChatCardDiffStat additions={diff.additions} deletions={diff.deletions} /> : metaParts.join(" · ")}
+        action={navigable && !actions.length ? (
+          // A span, not a button: the whole card already navigates, and nesting
+          // a second button here would make the card ambiguous to assistive
+          // tech (and to `getByRole("button")`).
+          <span className={cn("inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-fg/40", CHAT_CARD_MICRO_TEXT)}>
+            open
+            <CaretRight size={10} weight="bold" aria-hidden />
+          </span>
+        ) : null}
+      >
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <ChatCardTitle className="shrink">{card.title}</ChatCardTitle>
+          {card.stale ? <ChatCardChip tone="idle" title="Shown from the last successful update">stale</ChatCardChip> : null}
+          {degradedReason ? <ChatCardChip tone="warn">detail unavailable</ChatCardChip> : null}
+        </div>
+        {card.subtitle?.trim() ? <ChatCardSub className="mt-0.5">{card.subtitle.trim()}</ChatCardSub> : null}
+        {degradedReason ? <ChatCardSub className="mt-0.5 text-amber-100/60">{degradedReason}</ChatCardSub> : null}
+      </ChatCardRow>
+
+      {/* A meter only says something while work is still in flight. */}
+      {isLive && progress && progressTotal > 0 ? (
+        <ChatCardMeter progress={progress} className="ml-[26px] mt-2" />
+      ) : null}
+
+      {/* Chips are for counts the head line cannot carry (a diff already did). */}
+      {!diff && metrics.length && (hasWarning || isLive || card.variant === "proof_artifact") ? (
+        <div className="ml-[26px] mt-2 flex flex-wrap items-center gap-1.5">
+          {metrics.map((metric) => (
+            <ChatCardChip key={`${metric.label}:${metric.value}`} tone={toneOf(metric.tone)}>
+              <span className="font-bold">{metric.value}</span> <span className="opacity-70">{metric.label}</span>
+            </ChatCardChip>
+          ))}
         </div>
       ) : null}
 
-      <div className="flex items-start gap-3 px-3.5 py-3">
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center self-start pt-0.5">
-          {isLive ? (
-            <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin text-[color:var(--chat-accent)]" aria-hidden />
-          ) : hasWarning ? (
-            <XCircle size={13} weight="bold" className="text-amber-300/85" aria-hidden />
-          ) : (
-            <CheckCircle size={13} weight="bold" className="text-[color:var(--chat-accent)]" aria-hidden />
-          )}
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/82">
-              {card.title}
-            </span>
-            {navigable ? (
-              <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">
-                open
-                <CaretRight size={11} weight="bold" aria-hidden />
-              </span>
-            ) : null}
-          </div>
-
-          {statusParts.length ? (
-            <div className="mt-1 min-w-0 truncate whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/45">
-              {statusParts.join(" · ")}
+      {showDetail ? (
+        <ChatCardDetail>
+          {detailRows.map((row, index) => (
+            <ChatCardDetailRow
+              key={`${index}:${row.text}`}
+              tone={rowToneForIcon(row.icon, toneOf(row.tone))}
+              label={row.text}
+              path={row.icon === "file"}
+              title={row.detail ?? row.text}
+              value={row.detail?.trim() || undefined}
+            />
+          ))}
+          {card.rowsTruncated && card.rowsTruncated > 0 ? (
+            <div className={cn("pl-5 pt-1 text-fg/35", CHAT_CARD_MICRO_TEXT)}>
+              +{card.rowsTruncated} more
             </div>
           ) : null}
-
-          {metrics.length ? (
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {metrics.map((metric) => {
-                const tone = normalizeAdeCardTone(metric.tone);
-                return (
-                  <span
-                    key={`${metric.label}:${metric.value}`}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums",
-                      chatChipToneClass(TONE_CHIP_TONE[tone]),
-                    )}
-                  >
-                    <span className="font-bold">{metric.value}</span>
-                    <span className="opacity-70">{metric.label}</span>
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {rows.length ? (
-            <ul className="mt-1.5 flex flex-col gap-0.5">
-              {rows.map((row, index) => {
-                const tone = normalizeAdeCardTone(row.tone);
-                return (
-                  <li
-                    key={`${index}:${row.text}`}
-                    className="flex min-w-0 items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]"
-                  >
-                    <RowGlyph icon={row.icon} tone={tone} />
-                    <span className={cn("min-w-0 flex-1 truncate", TONE_TEXT_CLASS[tone])}>{row.text}</span>
-                    {row.detail?.trim() ? (
-                      <span
-                        className="shrink-0 truncate font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/32"
-                        title={row.detail}
-                      >
-                        {row.detail}
-                      </span>
-                    ) : null}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : null}
-        </div>
-      </div>
+        </ChatCardDetail>
+      ) : null}
 
       {actions.length ? (
-        <div
-          className={cn(
-            "flex flex-wrap items-center gap-1.5 border-t px-3.5 py-2",
-            hasWarning ? "border-amber-300/10" : "border-white/[0.05]",
-          )}
-        >
+        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2">
           {actions.map((action) => (
-            <button
+            <ChatCardButton
               key={action.id}
-              type="button"
-              onClick={(clickEvent) => {
-                // The whole card is clickable; an action must not also navigate.
-                clickEvent.stopPropagation();
+              primary={action.kind === "primary"}
+              onClick={() => {
                 if (action.id === "open" && card.navTarget) {
                   openCard();
                   return;
                 }
                 onAction?.(action.id);
               }}
-              className={cn(
-                "inline-flex items-center rounded-md border px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
-                action.kind === "primary"
-                  ? "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-[color:var(--chat-accent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)]"
-                  : "border-white/[0.08] bg-white/[0.03] text-fg/55 hover:text-fg/75",
-              )}
             >
               {action.label}
-            </button>
+            </ChatCardButton>
           ))}
         </div>
       ) : null}
@@ -311,7 +310,9 @@ export function AdeCard({
     // buttons, and a button inside a button is invalid markup that React and
     // the browser both mishandle.
     return (
-      <div
+      <ChatCard
+        skin={skin}
+        tone={headTone}
         role="button"
         tabIndex={0}
         onClick={openCard}
@@ -326,12 +327,12 @@ export function AdeCard({
           }
         }}
         title={deeplink ?? "Open"}
-        className={cn(cardShell, "cursor-pointer text-left")}
+        className="cursor-pointer text-left transition-colors hover:bg-white/[0.045]"
       >
         {inner}
-      </div>
+      </ChatCard>
     );
   }
 
-  return <div className={cardShell}>{inner}</div>;
+  return <ChatCard skin={skin} tone={headTone}>{inner}</ChatCard>;
 }

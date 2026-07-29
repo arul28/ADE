@@ -62,3 +62,27 @@ describe("browserMock prompt stashes", () => {
     await expect(window.ade.agentChat.promptStashes.list()).resolves.not.toContainEqual(created);
   });
 });
+
+describe("browserMock proof contracts", () => {
+  it("returns complete delete, prune, and recovery results", async () => {
+    await expect(window.ade.computerUse.deleteArtifacts({ artifactId: "proof-1" })).resolves.toEqual({
+      deleted: [],
+      missing: [],
+      failed: [],
+      freedBytes: 0,
+    });
+    await expect(window.ade.computerUse.pruneBrokenArtifacts()).resolves.toEqual({
+      deleted: [],
+      missing: [],
+      failed: [],
+      freedBytes: 0,
+    });
+    await expect(window.ade.computerUse.recoverArtifact({ artifactId: "proof-1" })).resolves.toMatchObject({
+      id: "browser-proof-recovered",
+      availability: "available",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+    });
+  });
+});

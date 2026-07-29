@@ -63,6 +63,15 @@ export type ComputerUseArtifactRecord = {
   storageKind: "file" | "url";
   mimeType: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Lane the capture belongs to, resolved at ingest from the owning chat
+   * session. Null for artifacts captured before the column existed, or for
+   * captures with no lane-bound owner. Deleting a lane deletes its artifacts.
+   *
+   * Optional on the wire: a paired phone or web client can be talking to a host
+   * that predates the column, and an absent value means "unknown", not "none".
+   */
+  laneId?: string | null;
   createdAt: string;
 };
 
@@ -80,6 +89,12 @@ export type ComputerUseArtifactIngestionRequest = {
   backend: ComputerUseBackendDescriptor;
   inputs: ComputerUseArtifactInput[];
   owners?: ComputerUseArtifactOwner[];
+  /**
+   * Absolute directory the caller's relative `input.path` values are relative
+   * to. Agents run inside lane worktrees, not the project root, so without this
+   * a relative path resolves against the wrong tree and the capture is lost.
+   */
+  callerRoot?: string | null;
 };
 
 export type ComputerUseArtifactIngestionResult = {
@@ -99,11 +114,29 @@ export type ComputerUseArtifactWorkflowState =
   | "published"
   | "dismissed";
 
+/**
+ * Whether the bytes behind an artifact record can actually be shown.
+ *
+ * `unimported` is the historic failure mode: ingest persisted a raw relative
+ * path instead of copying the file into `.ade/artifacts`, so the record exists
+ * but never had bytes to serve. Kept as a distinct state from `missing_file` so
+ * the UI can say what happened rather than "preview unavailable".
+ */
+export type ComputerUseArtifactAvailability =
+  | "available"
+  | "missing_file"
+  | "unimported";
+
 export type ComputerUseArtifactView = ComputerUseArtifactRecord & {
   links: ComputerUseArtifactLink[];
   reviewState: ComputerUseArtifactReviewState;
   workflowState: ComputerUseArtifactWorkflowState;
   reviewNote: string | null;
+  /**
+   * Absent when the payload came from a host that predates availability
+   * reporting; treat that as `"available"` and let the preview read decide.
+   */
+  availability?: ComputerUseArtifactAvailability;
 };
 
 export type ComputerUseArtifactListArgs = {
@@ -115,9 +148,41 @@ export type ComputerUseArtifactListArgs = {
   limit?: number;
 };
 
-export type ComputerUseArtifactRouteArgs = {
+export type ComputerUseArtifactDeleteArgs = {
+  artifactId?: string | null;
+  artifactIds?: string[] | null;
+};
+
+export type ComputerUseArtifactDeleteOutcome = {
   artifactId: string;
-  owner: ComputerUseArtifactOwner;
+  title: string;
+  /** True when a file was actually unlinked from `.ade/artifacts`. */
+  fileRemoved: boolean;
+  /** Absolute path of the removed file, when one was resolvable. */
+  path: string | null;
+  freedBytes: number;
+};
+
+export type ComputerUseArtifactDeleteResult = {
+  deleted: ComputerUseArtifactDeleteOutcome[];
+  /** Ids with no matching row — delete is idempotent, these are not failures. */
+  missing: string[];
+  failed: Array<{ artifactId: string; reason: string }>;
+  freedBytes: number;
+};
+
+export type ComputerUseArtifactBrokenRecord = {
+  artifactId: string;
+  title: string;
+  kind: ComputerUseArtifactKind;
+  uri: string;
+  createdAt: string;
+  /** Why the artifact cannot be rendered. */
+  reason: "missing_file" | "outside_artifact_store";
+  /** Lane the capture was recorded in, when known. */
+  laneId: string | null;
+  /** Absolute path this record still resolves to inside a surviving worktree. */
+  recoverablePath: string | null;
 };
 
 export type ComputerUseArtifactReviewArgs = {
@@ -184,7 +249,7 @@ export type ComputerUseOwnerSnapshotArgs = {
 };
 
 export type ComputerUseEventPayload = {
-  type: "artifact-ingested" | "artifact-linked" | "artifact-reviewed";
+  type: "artifact-ingested" | "artifact-linked" | "artifact-reviewed" | "artifact-deleted";
   artifactId: string;
   at: string;
   owner?: ComputerUseArtifactOwner | null;

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { deletePullRequestRowsByIds, deletePullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
-import { isWithinDir, normalizeBranchName } from "../shared/utils";
+import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -165,6 +165,39 @@ type SessionLinearIssueLinkRow = {
 
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
+
+/**
+ * Proof artifacts a lane owns, so deleting the lane can delete them.
+ *
+ * A capture belongs to the lane when its `lane_id` says so (populated at
+ * ingest) or when it carries an explicit `lane` link (pre-migration rows). A
+ * capture that is *also* attached to a chat session living in a different lane
+ * is excluded — deleting one lane must not remove proof another lane's chat
+ * still shows.
+ *
+ * Parameter order: projectId, laneId, laneId, laneId.
+ */
+const LANE_OWNED_ARTIFACT_IDS_SQL = `
+  select a.id
+  from computer_use_artifacts a
+  where a.project_id = ?
+    and (
+      a.lane_id = ?
+      or exists (
+        select 1 from computer_use_artifact_links l
+        where l.artifact_id = a.id and l.owner_kind = 'lane' and l.owner_id = ?
+      )
+    )
+    and not exists (
+      select 1
+      from computer_use_artifact_links l2
+      join terminal_sessions s on s.id = l2.owner_id
+      where l2.artifact_id = a.id
+        and l2.owner_kind = 'chat_session'
+        and s.lane_id is not null
+        and s.lane_id <> ?
+    )
+`;
 
 function isPermissionError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -3011,6 +3044,96 @@ export function createLaneService({
     }
   };
 
+  /**
+   * Absolute paths of the proof files owned by a lane, resolved through the
+   * same `.ade/artifacts` jail the broker and the `ade-artifact://` handler
+   * enforce. Anything that does not land inside the artifact store is skipped
+   * rather than unlinked — a lane delete must never be able to remove a file
+   * outside ADE's own storage.
+   *
+   * Must be called before `cleanupLaneDatabaseRows`, which removes the rows
+   * these paths are read from.
+   */
+  const collectLaneArtifactFilePaths = (laneId: string): string[] => {
+    const artifactsDir = resolveAdeLayout(projectRoot).artifactsDir;
+    let ownedIds: Set<string>;
+    let rows: Array<{ id: string; uri: string | null }>;
+    try {
+      ownedIds = new Set(db.all<{ id: string }>(
+        `
+          with lane_owned_artifacts as (
+            ${LANE_OWNED_ARTIFACT_IDS_SQL}
+          )
+          select id from lane_owned_artifacts
+        `,
+        [projectId, laneId, laneId, laneId],
+      ).map((row) => row.id));
+      rows = db.all<{ id: string; uri: string | null }>(
+        `
+          select id, uri
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+        `,
+        [projectId],
+      );
+    } catch (error) {
+      logger.warn("lane.delete.artifact_paths_query_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    const resolveJailedArtifactPath = (rawUri: string | null): string | null => {
+      const uri = typeof rawUri === "string" ? rawUri.trim() : "";
+      if (!uri || /^https?:\/\//i.test(uri)) return null;
+      let relative = uri;
+      if (/^ade-artifact:\/\/project(?:\/|$)/i.test(relative)) {
+        try {
+          relative = decodeURIComponent(new URL(relative).pathname.replace(/^\/+/, ""));
+        } catch {
+          return null;
+        }
+      }
+      const absolute = path.resolve(path.isAbsolute(relative) ? relative : path.join(projectRoot, relative));
+      try {
+        return resolvePathWithinRoot(artifactsDir, absolute, { allowMissing: true });
+      } catch {
+        return null;
+      }
+    };
+    const survivorPaths = new Set(
+      rows
+        .filter((row) => !ownedIds.has(row.id))
+        .map((row) => resolveJailedArtifactPath(row.uri))
+        .filter((candidate): candidate is string => Boolean(candidate)),
+    );
+    const paths = new Set<string>();
+    for (const row of rows) {
+      if (!ownedIds.has(row.id)) continue;
+      const jailed = resolveJailedArtifactPath(row.uri);
+      if (jailed && !survivorPaths.has(jailed)) paths.add(jailed);
+    }
+    return [...paths];
+  };
+
+  const removeLaneArtifactFiles = (laneId: string, filePaths: string[]): number => {
+    let removed = 0;
+    for (const filePath of filePaths) {
+      try {
+        fs.rmSync(filePath, { force: true });
+        removed += 1;
+      } catch (error) {
+        logger.warn("lane.delete.artifact_file_remove_failed", {
+          laneId,
+          filePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return removed;
+  };
+
   const cleanupLaneDatabaseRows = (laneId: string): void => {
     db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
@@ -3049,6 +3172,68 @@ export function createLaneService({
           )
       `,
       [projectId, laneId, laneId, laneId],
+    );
+    // Proof captured in this lane goes with the lane. Transfer shared captures
+    // to a surviving chat's lane before deleting this lane's ownership; the
+    // later delete can then collect the capture when its final lane is removed.
+    // This has to run while `terminal_sessions` still exists because both the
+    // transfer and the guard that spares shared captures join that table.
+    db.run(
+      `
+        update computer_use_artifacts as a
+        set lane_id = (
+          select s.lane_id
+          from computer_use_artifact_links l
+          join terminal_sessions s on s.id = l.owner_id
+          join lanes surviving_lane on surviving_lane.id = s.lane_id
+          where l.artifact_id = a.id
+            and l.owner_kind = 'chat_session'
+            and s.lane_id is not null
+            and s.lane_id <> ?
+            and surviving_lane.project_id = ?
+          order by l.created_at asc, s.id asc
+          limit 1
+        )
+        where a.project_id = ?
+          and (
+            a.lane_id = ?
+            or exists (
+              select 1 from computer_use_artifact_links owned_link
+              where owned_link.artifact_id = a.id
+                and owned_link.owner_kind = 'lane'
+                and owned_link.owner_id = ?
+            )
+          )
+          and exists (
+            select 1
+            from computer_use_artifact_links surviving_link
+            join terminal_sessions surviving_session on surviving_session.id = surviving_link.owner_id
+            join lanes surviving_lane on surviving_lane.id = surviving_session.lane_id
+            where surviving_link.artifact_id = a.id
+              and surviving_link.owner_kind = 'chat_session'
+              and surviving_session.lane_id is not null
+              and surviving_session.lane_id <> ?
+              and surviving_lane.project_id = ?
+          )
+      `,
+      [laneId, projectId, projectId, laneId, laneId, laneId, projectId],
+    );
+    db.run(`delete from computer_use_artifacts where id in (${LANE_OWNED_ARTIFACT_IDS_SQL})`, [
+      projectId, laneId, laneId, laneId,
+    ]);
+    // Links for the deleted artifacts, plus links from surviving (shared)
+    // artifacts to the chat sessions this lane is about to remove.
+    db.run(
+      `
+        delete from computer_use_artifact_links
+        where artifact_id not in (select id from computer_use_artifacts)
+           or (
+             owner_kind = 'chat_session'
+             and owner_id in (select id from terminal_sessions where lane_id = ?)
+           )
+           or (owner_kind = 'lane' and owner_id = ?)
+      `,
+      [laneId, laneId],
     );
     db.run("delete from claude_sessions where lane_id = ?", [laneId]);
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
@@ -6103,6 +6288,10 @@ export function createLaneService({
         });
 
         await runStep("database_cleanup", async () => {
+          // Read the proof file paths before the rows go, then unlink only
+          // after the transaction commits: a rollback must not leave files
+          // deleted out from under rows that survived.
+          const laneArtifactFiles = collectLaneArtifactFilePaths(laneId);
           db.run("begin immediate");
           try {
             cleanupLaneDatabaseRows(laneId);
@@ -6115,6 +6304,11 @@ export function createLaneService({
             }
             throw error;
           }
+          const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+          if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
+          return removedProofFiles === laneArtifactFiles.length
+            ? { detail: `${removedProofFiles} proof file(s) removed` }
+            : { detail: `${removedProofFiles} of ${laneArtifactFiles.length} proof file(s) removed; see logs` };
         });
 
         invalidateLaneListCache();

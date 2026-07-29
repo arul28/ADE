@@ -2958,6 +2958,93 @@ describe("ade_card transcript rows", () => {
     expect(merged.metrics).toEqual([{ label: "files", value: "1" }]);
   });
 
+  // `buildPrCiCard` ALWAYS writes `rows` and `progress`, so the "omitted means
+  // partial patch" comment was not enough on its own: a poll that came back
+  // from a rate-limited GitHub used to overwrite a good card with `rows: []`
+  // and an all-zero progress bar.
+  it("preserves prior detail — and marks it stale — when a degraded re-emit lands", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({
+        variant: "pr_ci",
+        rows: [{ icon: "fail", text: "test-desktop" }],
+        progress: { passed: 28, failed: 2, running: 0, queued: 0 },
+        metrics: [{ label: "failed", value: "2" }],
+      })),
+      env("2026-07-27T10:00:01.000Z", card({
+        variant: "pr_ci",
+        rows: [],
+        progress: { passed: 0, failed: 0, running: 0, queued: 0 },
+        metrics: [],
+        degradedReason: "HTTP 403: rate limited",
+        actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+      })),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.rows).toEqual([{ icon: "fail", text: "test-desktop" }]);
+    expect(merged.progress).toEqual({ passed: 28, failed: 2, running: 0, queued: 0 });
+    expect(merged.metrics).toEqual([{ label: "failed", value: "2" }]);
+    expect(merged.stale).toBe(true);
+    expect(merged.degradedReason).toBe("HTTP 403: rate limited");
+    expect(merged.actions).toEqual([{ id: "retry", label: "Retry", kind: "primary" }]);
+  });
+
+  it("clears stale degradation state and retry actions as soon as healthy detail returns", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({ rows: [{ icon: "fail", text: "lint" }] })),
+      env("2026-07-27T10:00:01.000Z", card({
+        rows: [],
+        degradedReason: "HTTP 403",
+        actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+      })),
+      env("2026-07-27T10:00:02.000Z", card({ rows: [{ icon: "pass", text: "lint" }] })),
+    ]);
+
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.stale).toBe(false);
+    expect(merged.rows).toEqual([{ icon: "pass", text: "lint" }]);
+    expect(merged.degradedReason).toBeUndefined();
+    expect(merged.actions).toEqual([]);
+  });
+
+  it("clears stale degradation state when a healthy detail refresh is genuinely empty", () => {
+    const emptyProgress = { passed: 0, failed: 0, running: 0, queued: 0 };
+    const rows = collapseChatTranscriptEvents([
+      env("2026-07-27T10:00:00.000Z", card({
+        variant: "pr_ci",
+        rows: [{ icon: "fail", text: "lint" }],
+        metrics: [{ label: "failed", value: "1" }],
+        progress: { ...emptyProgress, failed: 1 },
+      })),
+      env("2026-07-27T10:00:01.000Z", card({
+        variant: "pr_ci",
+        rows: [],
+        metrics: [],
+        progress: emptyProgress,
+        degradedReason: "HTTP 403",
+        actions: [{ id: "retry", label: "Retry", kind: "primary" }],
+      })),
+      env("2026-07-27T10:00:02.000Z", card({
+        variant: "pr_ci",
+        rows: [],
+        metrics: [],
+        progress: emptyProgress,
+      })),
+    ]);
+
+    const merged = rows[0]!.event;
+    if (merged.type !== "ade_card") throw new Error("Expected ade_card");
+    expect(merged.stale).toBe(false);
+    expect(merged.rows).toEqual([]);
+    expect(merged.metrics).toEqual([]);
+    expect(merged.progress).toEqual(emptyProgress);
+    expect(merged.degradedReason).toBeUndefined();
+    expect(merged.actions).toEqual([]);
+  });
+
   it("keeps distinct cardIds as distinct rows", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-07-27T10:00:00.000Z", card({ cardId: "run-1" })),

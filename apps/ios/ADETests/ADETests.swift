@@ -7389,6 +7389,7 @@ final class ADETests: XCTestCase {
         storage_kind text not null,
         mime_type text,
         metadata_json text not null default '{}',
+        lane_id text,
         created_at text not null
       );
       create table if not exists computer_use_artifact_links (
@@ -7408,11 +7409,11 @@ final class ADETests: XCTestCase {
         ('runtime-project', '/tmp/project-one/', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z');
       insert into computer_use_artifacts (
         id, project_id, artifact_kind, backend_style, backend_name, source_tool_name, original_type,
-        title, description, uri, storage_kind, mime_type, metadata_json, created_at
+        title, description, uri, storage_kind, mime_type, metadata_json, lane_id, created_at
       ) values (
         'artifact-1', 'runtime-project', 'screenshot', 'manual', 'ade-cli', 'proof attach', 'screenshot',
         'Runtime proof', 'Attached while the runtime project id was canonical', 'ade-artifact://project/proof.png',
-        'file', 'image/png', '{}', '2026-04-22T02:05:00.000Z'
+        'file', 'image/png', '{}', 'lane-proof', '2026-04-22T02:05:00.000Z'
       );
       insert into computer_use_artifact_links (
         id, artifact_id, project_id, owner_kind, owner_id, relation, metadata_json, created_at
@@ -7426,8 +7427,147 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(artifacts.map(\.id), ["artifact-1"])
     XCTAssertEqual(artifacts.first?.title, "Runtime proof")
+    XCTAssertEqual(artifacts.first?.laneId, "lane-proof")
 
     database.close()
+  }
+
+  func testAdeCardDecodesTruthfulDurationAndDegradedMetadata() throws {
+    let payload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks detail unavailable",
+        "rows": [{"icon": "fail", "text": "test-desktop"}],
+        "durationMs": 183000,
+        "degradedReason": "GitHub rate limited the detail request",
+        "stale": true,
+        "rowsTruncated": 7
+      }
+      """.utf8)
+    )
+
+    let card = makeWorkAdeCardModel(from: payload)
+
+    XCTAssertEqual(card.durationMs, 183_000)
+    XCTAssertEqual(card.degradedReason, "GitHub rate limited the detail request")
+    XCTAssertEqual(card.isStale, true)
+    XCTAssertEqual(card.rowsTruncated, 7)
+
+    let recoveredPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks passed",
+        "rows": [{"icon": "pass", "text": "test-desktop"}],
+        "durationMs": 190000,
+        "stale": false,
+        "rowsTruncated": 0
+      }
+      """.utf8)
+    )
+    let recovered = card.merging(makeWorkAdeCardModel(from: recoveredPayload))
+    XCTAssertEqual(recovered.rows.map(\.text), ["test-desktop"])
+    XCTAssertEqual(recovered.rows.map(\.icon), [.pass])
+    XCTAssertNil(recovered.degradedReason)
+    XCTAssertEqual(recovered.isStale, false)
+    XCTAssertEqual(recovered.rowsTruncated, 0)
+
+    let blankReasonPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks passed",
+        "degradedReason": "  \\n  "
+      }
+      """.utf8)
+    )
+    XCTAssertNil(makeWorkAdeCardModel(from: blankReasonPayload).degradedReason)
+  }
+
+  func testAdeCardFailureSummaryCountsOnlyLocallyOmittedFailures() throws {
+    let payload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks failed",
+        "rows": [
+          {"icon": "fail", "text": "failure-1"},
+          {"icon": "fail", "text": "failure-2"},
+          {"icon": "fail", "text": "failure-3"},
+          {"icon": "fail", "text": "failure-4"},
+          {"icon": "fail", "text": "failure-5"},
+          {"icon": "fail", "text": "failure-6"},
+          {"icon": "pass", "text": "passing-1"},
+          {"icon": "pass", "text": "passing-2"}
+        ],
+        "rowsTruncated": 3
+      }
+      """.utf8)
+    )
+    let card = makeWorkAdeCardModel(from: payload)
+
+    XCTAssertEqual(workAdeCardVisibleRows(card).map(\.text), [
+      "failure-1", "failure-2", "failure-3", "failure-4",
+    ])
+    XCTAssertEqual(workAdeCardHiddenRowCount(card), 5)
+  }
+
+  func testAdeCardPreservesKnownProgressAcrossDegradedZeroUpdate() throws {
+    let detailedPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks failed",
+        "rows": [{"icon": "fail", "text": "test-desktop"}],
+        "progress": {"passed": 28, "failed": 2, "running": 0, "queued": 0}
+      }
+      """.utf8)
+    )
+    let degradedPayload = try JSONDecoder().decode(
+      AgentChatAdeCardPayload.self,
+      from: Data("""
+      {
+        "cardId": "ci-927",
+        "variant": "pr_ci",
+        "state": "terminal",
+        "title": "Checks",
+        "fallbackText": "Checks detail unavailable",
+        "rows": [],
+        "progress": {"passed": 0, "failed": 0, "running": 0, "queued": 0},
+        "degradedReason": "GitHub rate limited the detail request"
+      }
+      """.utf8)
+    )
+
+    let detailed = makeWorkAdeCardModel(from: detailedPayload)
+    let degraded = detailed.merging(makeWorkAdeCardModel(from: degradedPayload))
+
+    XCTAssertEqual(degraded.progress?.passed, 28)
+    XCTAssertEqual(degraded.progress?.failed, 2)
+    XCTAssertEqual(degraded.rows.map(\.text), ["test-desktop"])
+    XCTAssertEqual(degraded.degradedReason, "GitHub rate limited the detail request")
+    XCTAssertEqual(degraded.isStale, true)
   }
 
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {

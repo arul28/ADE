@@ -2,7 +2,7 @@ import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
-import type { AdeCardPayload } from "../../../desktop/src/shared/adeCard";
+import { adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -39,6 +39,43 @@ export function webSearchResultDomain(url: string | undefined | null): string {
     const host = url.replace(/^[a-z]+:\/\//i, "").split(/[/?#]/)[0] ?? "";
     return host.replace(/^www\./, "");
   }
+}
+
+/**
+ * Repeat card emits are patches, not replacements. Match the desktop merge
+ * contract so a failed refresh cannot erase detail that the TUI already showed
+ * as trustworthy; keep it visible and label it stale until a healthy emit
+ * replaces it.
+ */
+function mergeAdeCardPayload(existing: AdeCardPayload, incoming: AdeCardPayload): AdeCardPayload {
+  const merged: AdeCardPayload = { ...existing, ...incoming };
+  const incomingRows = incoming.rows ?? [];
+  const incomingMetrics = incoming.metrics ?? [];
+  const incomingProgressTotal = adeCardProgressTotal(incoming.progress);
+  const existingHadDetail = (existing.rows?.length ?? 0) > 0
+    || (existing.metrics?.length ?? 0) > 0
+    || adeCardProgressTotal(existing.progress) > 0;
+  const incomingHasDetail = incomingRows.length > 0
+    || incomingMetrics.length > 0
+    || incomingProgressTotal > 0;
+
+  if (existingHadDetail && (!incomingHasDetail || incoming.degradedReason)) {
+    if (!incomingRows.length && existing.rows?.length) merged.rows = existing.rows;
+    if (!incomingMetrics.length && existing.metrics?.length) merged.metrics = existing.metrics;
+    if (incomingProgressTotal === 0 && existing.progress) merged.progress = existing.progress;
+    if (existing.rowsTruncated != null && incoming.rowsTruncated == null) {
+      merged.rowsTruncated = existing.rowsTruncated;
+    }
+    merged.stale = true;
+    return merged;
+  }
+
+  if (incomingHasDetail) {
+    merged.stale = incoming.stale ?? false;
+    merged.degradedReason = incoming.degradedReason ?? undefined;
+    merged.actions = incoming.actions ?? [];
+  }
+  return merged;
 }
 
 export function webSearchResultPreviewLines(
@@ -583,7 +620,7 @@ export function renderChatLines(args: {
       const existing = adeCardsById.get(cardId);
       adeCardsById.set(cardId, {
         firstIndex: existing?.firstIndex ?? entry.index,
-        card: existing ? { ...existing.card, ...event } : event,
+        card: existing ? mergeAdeCardPayload(existing.card, event) : event,
       });
       continue;
     }

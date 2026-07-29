@@ -102,6 +102,29 @@ export type AdeCardPayload = {
   turnId?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * How long the work the card describes actually took.
+   *
+   * Distinct from `updatedAt − createdAt`, which is only the span between the
+   * card's own status transitions. Rendering the span as if it were a duration
+   * is how a 3-minute CI run came to read `176m`. Emitters set this only when
+   * they genuinely know the run's wall time.
+   */
+  durationMs?: number | null;
+  /**
+   * Set when the emitter could NOT fetch the card's detail (API error, 403,
+   * rate limit). A zero-count card is then honestly "detail unavailable"
+   * instead of a content-free false-green.
+   */
+  degradedReason?: string | null;
+  /**
+   * Set by the transcript merge when a degraded re-emit lands on top of a card
+   * that already had rich detail: the earlier `rows`/`progress`/`metrics` are
+   * preserved and shown as stale rather than blanked.
+   */
+  stale?: boolean;
+  /** Rows the emitter dropped to keep the card short. Rendered as `+N more`. */
+  rowsTruncated?: number;
 };
 
 export const ADE_CARD_TONES: readonly AdeCardTone[] = ["neutral", "accent", "success", "warning"];

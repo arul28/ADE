@@ -3768,6 +3768,11 @@ app.whenReady().then(async () => {
       captureAnalytics: (input) => {
         productAnalyticsService.capture(input);
       },
+    // Removing proof files from Settings must drop their records too,
+    // otherwise the drawer keeps listing items whose bytes are gone.
+    purgeProofRecordsUnder: (removedPath) => {
+      computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
+    },
     });
 
     // Phone sync is owned by the per-machine ADE service. The desktop

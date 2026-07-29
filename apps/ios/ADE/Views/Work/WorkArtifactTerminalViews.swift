@@ -41,83 +41,135 @@ struct WorkArtifactView: View {
   let content: WorkLoadedArtifactContent?
   let onAppear: () -> Void
   let onOpenImage: (UIImage) -> Void
+  @State private var isExpanded = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: workArtifactKindIcon(artifact))
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-          .frame(width: 36, height: 36)
-          .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        VStack(alignment: .leading, spacing: 3) {
-          Text(artifact.title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-            .truncationMode(.tail)
-          Text([workArtifactKindLabel(artifact.artifactKind), relativeTimestamp(artifact.createdAt)].joined(separator: " · "))
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 0)
-      }
-
-      Group {
-        switch content {
-        case .image(let image):
-          Button {
-            onOpenImage(image)
-          } label: {
-            Image(uiImage: image)
-              .resizable()
-              .scaledToFit()
-              .frame(maxWidth: .infinity)
-              .frame(height: 180)
-              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        isExpanded.toggle()
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: workArtifactKindIcon(artifact))
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(width: 16)
+          VStack(alignment: .leading, spacing: 3) {
+            Text(artifact.title)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .truncationMode(.tail)
+            Text([workArtifactKindLabel(artifact.artifactKind), relativeTimestamp(artifact.createdAt)].joined(separator: " · "))
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
           }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Open artifact image \(artifact.title)")
-        case .video(let url):
-          WorkArtifactVideoPlayerView(url: url)
-        case .remoteURL(let url):
-          if artifact.artifactKind == "video_recording" {
-            WorkArtifactVideoPlayerView(url: url)
-          } else {
-            AsyncImage(url: url) { image in
-              image
+          Spacer(minLength: 0)
+          compactPreview
+          Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(artifact.title), proof added")
+      .accessibilityHint(isExpanded ? "Collapses proof preview" : "Expands proof preview")
+
+      if isExpanded {
+        Group {
+          switch content {
+          case .image(let image):
+            Button {
+              onOpenImage(image)
+            } label: {
+              Image(uiImage: image)
                 .resizable()
                 .scaledToFit()
-            } placeholder: {
-              ProgressView()
+                .frame(maxWidth: .infinity)
+                .frame(height: 180)
+                .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            .frame(height: 180)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open artifact image \(artifact.title)")
+          case .video(let url):
+            WorkArtifactVideoPlayerView(url: url)
+          case .remoteURL(let url):
+            if artifact.artifactKind == "video_recording" {
+              WorkArtifactVideoPlayerView(url: url)
+            } else {
+              AsyncImage(url: url) { image in
+                image
+                  .resizable()
+                  .scaledToFit()
+              } placeholder: {
+                ProgressView()
+              }
+              .frame(height: 180)
+              .frame(maxWidth: .infinity)
+              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+          case .text(let text):
+            WorkStructuredOutputBlock(title: "Artifact", text: text)
+          case .error(let message):
+            WorkArtifactInlineStatus(icon: "photo", message: message, tint: ADEColor.textMuted)
+          case .none:
+            HStack(spacing: 10) {
+              ProgressView()
+              Text("Loading artifact preview…")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
           }
-        case .text(let text):
-          WorkStructuredOutputBlock(title: "Artifact", text: text)
-        case .error(let message):
-          WorkArtifactInlineStatus(icon: "photo", message: message, tint: ADEColor.textMuted)
-        case .none:
-          HStack(spacing: 10) {
-            ProgressView()
-            Text("Loading artifact preview…")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(12)
-          .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
       }
     }
-    .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .task {
       onAppear()
+    }
+  }
+
+  @ViewBuilder
+  private var compactPreview: some View {
+    switch content {
+    case .image(let image):
+      Image(uiImage: image)
+        .resizable()
+        .scaledToFill()
+        .frame(width: 40, height: 30)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    case .remoteURL(let url) where workArtifactIsImage(artifact):
+      AsyncImage(url: url) { image in
+        image.resizable().scaledToFill()
+      } placeholder: {
+        Color.clear
+      }
+      .frame(width: 40, height: 30)
+      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    case .video, .remoteURL:
+      Image(systemName: "play.rectangle.fill")
+        .foregroundStyle(ADEColor.accent)
+        .frame(width: 40, height: 30)
+    case .text:
+      Image(systemName: "doc.text.fill")
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 40, height: 30)
+    case .error:
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(ADEColor.warning)
+        .frame(width: 40, height: 30)
+    case .none:
+      ProgressView()
+        .controlSize(.mini)
+        .frame(width: 40, height: 30)
     }
   }
 }

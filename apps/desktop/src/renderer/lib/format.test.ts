@@ -54,4 +54,13 @@ describe("formatSubagentDurationMs", () => {
     expect(formatSubagentDurationMs(59_999)).toBe("1m");
     expect(formatSubagentDurationMs(60_000)).toBe("1m");
   });
+
+  // Without an hour unit, 2h56m printed as `176m` — which no reader parses as
+  // "nearly three hours".
+  it("carries an hour unit instead of counting past 60 minutes", () => {
+    expect(formatSubagentDurationMs(59 * 60_000)).toBe("59m");
+    expect(formatSubagentDurationMs(60 * 60_000)).toBe("1h");
+    expect(formatSubagentDurationMs(176 * 60_000)).toBe("2h 56m");
+    expect(formatSubagentDurationMs(25 * 60 * 60_000)).toBe("25h");
+  });
 });

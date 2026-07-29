@@ -227,6 +227,91 @@ describe("PR chat cards", () => {
     });
   });
 
+  // `total === 0` had no coverage at all, and it is the branch that rendered a
+  // content-free `[passing status]` chip under a green check while GitHub was
+  // returning 403 — the two zero-count cases are not the same fact.
+  it("reports a genuinely empty check set as a plain status, not as degraded", () => {
+    const card = buildPrCiCard({ pr: pr({ checksStatus: "passing" }), runs: [], checks: [] });
+    expect(card.degradedReason).toBeUndefined();
+    expect(card.actions).toBeUndefined();
+    expect(card.metrics).toEqual([{ label: "status", value: "passing", tone: "success" }]);
+  });
+
+  it("says the detail is unavailable — never a false green — when the fetch failed", () => {
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "passing" }),
+      runs: [],
+      checks: [],
+      fetchError: "HTTP 403: API rate limit exceeded",
+    });
+    expect(card.degradedReason).toContain("403");
+    expect(card.metrics).toEqual([]);
+    expect(card.actions).toEqual([{ id: "retry", label: "Retry", kind: "primary" }]);
+    expect(card.fallbackText).toContain("detail unavailable");
+  });
+
+  it("keeps partial rows while marking a one-endpoint failure as degraded", () => {
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "passing" }),
+      runs: [],
+      checks: [check("Vercel")],
+      fetchError: "HTTP 403: API rate limit exceeded",
+    });
+    expect(card.degradedReason).toContain("403");
+    expect(card.rows?.[0]?.text).toBe("Vercel");
+    expect(card.actions).toEqual([{ id: "retry", label: "Retry", kind: "primary" }]);
+    expect(card.fallbackText).toContain("job detail unavailable in part");
+  });
+
+  it("counts the rows it dropped instead of silently capping at three", () => {
+    const jobs = ["a", "b", "c", "d", "e"].map((name, index) => ({
+      id: index + 1,
+      name,
+      status: "completed" as const,
+      conclusion: "success" as const,
+      startedAt: null,
+      completedAt: null,
+      htmlUrl: null,
+      steps: [],
+    }));
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "passing" }),
+      runs: [run({ status: "completed", conclusion: "success", jobs })],
+      checks: [],
+    });
+    expect(card.rows).toHaveLength(3);
+    expect(card.rowsTruncated).toBe(2);
+  });
+
+  it("surfaces the fetch failure instead of swallowing it into an empty array", async () => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    await emitPrCardsForChange({
+      change: {
+        pr: pr({ checksStatus: "passing" }),
+        previousState: "open",
+        previousChecksStatus: "pending",
+        previousReviewStatus: "requested",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      dataSource: {
+        getActionRuns: vi.fn().mockRejectedValue(new Error("HTTP 403: rate limited")),
+        getChecks: vi.fn().mockRejectedValue(new Error("HTTP 403: rate limited")),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: {
+        listSessions: vi.fn().mockResolvedValue([session("newer", "2026-07-27T12:00:00.000Z")]),
+        emitAdeCard,
+      },
+    });
+
+    const ciCard = emitAdeCard.mock.calls
+      .map(([call]) => call.card)
+      .find((card) => card.variant === "pr_ci");
+    expect(ciCard?.degradedReason).toContain("403");
+  });
+
   it("bounds long review bodies before persisting them into a chat transcript", () => {
     const card = buildPrReviewCard({
       pr: pr({ reviewStatus: "changes_requested" }),

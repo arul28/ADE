@@ -1,8 +1,17 @@
 import { useState } from "react";
 import { motion } from "motion/react";
+import { ListChecks } from "@phosphor-icons/react";
 import type { AgentChatEvent, AgentChatPlanStep } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { ChatMarkdown } from "../chatMarkdown";
+import {
+  CHAT_CARD_WIDTH_CLASS,
+  ChatCardDetail,
+  ChatCardDetailRow,
+  ChatCardRow,
+  ChatCardTitle,
+  type ChatCardTone,
+} from "../chatCardPrimitives";
 
 type PlanEvent = Extract<AgentChatEvent, { type: "plan" }>;
 
@@ -10,8 +19,6 @@ type CodexPlanCardProps = {
   event: PlanEvent;
   onOpenInfo?: () => void;
 };
-
-const VIOLET = "#A78BFA";
 
 function PlanMarkdown({ markdown }: { markdown: string }) {
   return (
@@ -21,27 +28,12 @@ function PlanMarkdown({ markdown }: { markdown: string }) {
   );
 }
 
-function PlanGlyph({ status }: { status: AgentChatPlanStep["status"] }) {
-  if (status === "in_progress") {
-    return (
-      <span aria-hidden className="font-semibold text-violet-300" style={{ color: VIOLET }}>
-        {"◐"}
-      </span>
-    );
-  }
-  if (status === "completed") {
-    return (
-      <span aria-hidden className="text-emerald-300/85">{"●"}</span>
-    );
-  }
-  if (status === "failed") {
-    return (
-      <span aria-hidden className="text-red-300/85">{"✕"}</span>
-    );
-  }
-  return (
-    <span aria-hidden className="text-fg/30">{"○"}</span>
-  );
+/** Step status → the shared tone vocabulary. A failed step is amber, not red. */
+function planStepTone(status: AgentChatPlanStep["status"]): ChatCardTone {
+  if (status === "completed") return "ok";
+  if (status === "in_progress") return "running";
+  if (status === "failed") return "warn";
+  return "neutral";
 }
 
 export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
@@ -75,71 +67,66 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.14, ease: "easeOut" }}
       className={cn(
-        "relative overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.025]",
-        onOpenInfo && "cursor-pointer transition-colors hover:border-violet-300/25 hover:bg-violet-500/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
+        // Checklist shape: one head row, one detail row per step. Same
+        // `[glyph | content | meta]` grid and same width token as every other
+        // transcript card.
+        CHAT_CARD_WIDTH_CLASS,
+        "relative overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] bg-white/[0.03] px-3 py-2.5",
+        onOpenInfo && "cursor-pointer transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
       )}
     >
-      <div className="flex items-baseline justify-between gap-3 px-4 pb-1 pt-3">
-        <h3 className="text-[length:calc(var(--chat-font-size)*13/14)] font-semibold tracking-[-0.005em] text-violet-100">
-          {stateLabel}
-        </h3>
-        {steps.length ? (
-          <span className="text-[length:calc(var(--chat-font-size)*11/14)] text-violet-200/45">
-            {steps.filter((s) => s.status === "completed").length}
-            /
-            {steps.length}
-          </span>
+      <ChatCardRow
+        tone={event.state === "complete" ? "ok" : "running"}
+        icon={ListChecks}
+        align={event.explanation ? "top" : "center"}
+        meta={steps.length ? `${steps.filter((s) => s.status === "completed").length}/${steps.length}` : null}
+      >
+        <ChatCardTitle>{stateLabel}</ChatCardTitle>
+        {event.explanation ? (
+          <p className="mt-1 whitespace-normal text-[length:calc(var(--chat-font-size)*10.5/14)] leading-snug text-fg/62">
+            {event.explanation}
+          </p>
         ) : null}
-      </div>
-
-      {event.explanation ? (
-        <p className="px-4 pb-2 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/72">
-          {event.explanation}
-        </p>
-      ) : null}
+      </ChatCardRow>
 
       {steps.length ? (
-        <ul className="space-y-1 px-4 pb-3 pt-1">
-          {steps.map((step, idx) => {
-            const isActive = step.status === "in_progress";
-            const isComplete = step.status === "completed";
-            return (
-              <li
-                key={`${step.text}:${idx}`}
-                className={cn(
-                  "flex items-start gap-2.5 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.45]",
-                  isActive ? "text-violet-100" : isComplete ? "text-fg/40 line-through decoration-fg/15" : "text-fg/72",
-                )}
-              >
-                <span className="mt-[1px] inline-flex w-3 shrink-0 justify-center text-[13px] leading-none">
-                  <PlanGlyph status={step.status} />
-                </span>
-                <span className="min-w-0 flex-1">{step.text}</span>
-              </li>
-            );
-          })}
-        </ul>
+        <ChatCardDetail>
+          {steps.map((step, idx) => (
+            <ChatCardDetailRow
+              key={`${step.text}:${idx}`}
+              tone={planStepTone(step.status)}
+              strike={step.status === "completed"}
+              label={step.text}
+              title={step.text}
+            />
+          ))}
+        </ChatCardDetail>
       ) : !hasStreaming ? (
-        <div className="px-4 pb-3 text-[length:calc(var(--chat-font-size)*11/14)] italic text-fg/35">
+        <div className="ml-[26px] mt-1 text-[length:calc(var(--chat-font-size)*10.5/14)] italic text-fg/35">
           Drafting steps…
         </div>
       ) : null}
 
       {showCompletedMarkdownInline ? (
-        <div className="border-t border-violet-400/10 px-4 pb-3 pt-2">
+        <div className="mt-2 border-t border-white/[0.06] pt-2">
           <PlanMarkdown markdown={streamingTrimmed} />
         </div>
       ) : null}
 
       {showMarkdownToggle ? (
-        <div className="flex items-center justify-end gap-2 border-t border-violet-400/10 px-4 py-1.5">
+        <div className="mt-2 flex items-center justify-end gap-2 border-t border-white/[0.06] pt-1.5">
           <button
             type="button"
             onClick={(clickEvent) => {
               clickEvent.stopPropagation();
               setLiveOpen((v) => !v);
             }}
-            className="inline-flex items-center gap-1 rounded text-[length:calc(var(--chat-font-size)*10/14)] text-violet-200/55 transition-colors hover:text-violet-100"
+            onKeyDown={(keyboardEvent) => {
+              if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+                keyboardEvent.stopPropagation();
+              }
+            }}
+            className="inline-flex items-center gap-1 rounded text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 transition-colors hover:text-fg/80"
             aria-expanded={liveOpen}
           >
             <span aria-hidden>{liveOpen ? "▾" : "▸"}</span>
@@ -149,7 +136,7 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
       ) : null}
 
       {showMarkdownToggle && liveOpen ? (
-        <div className="border-t border-violet-400/10 bg-violet-950/15 px-4 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/55">
+        <div className="mt-1.5 rounded-md bg-black/20 px-2.5 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/55">
           <PlanMarkdown markdown={streamingTrimmed} />
         </div>
       ) : null}

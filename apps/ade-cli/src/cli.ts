@@ -1935,9 +1935,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
     $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof rm artifact-id                      Delete stored proof and its record
+    $ ade proof broken --text                       List proof whose stored file is unavailable
+    $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
+    $ ade proof prune                               Preview broken proof records (does not delete)
+    $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
 `,
   "ios-sim": `${ADE_BANNER}
   iOS Simulator
@@ -8744,16 +8749,20 @@ function buildProofPlan(args: string[]): CliPlan {
         actionCallStep(
           "result",
           "ingest_computer_use_artifacts",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { callerRoot: process.cwd() }),
         ),
       ],
     };
   if (sub === "attach") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    const attachedPath = requireValue(
+    const rawPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
       "path",
     );
+    // The agent runs in its lane worktree; the runtime that stores the artifact
+    // runs at the project root. Resolve here, where the caller's cwd is known,
+    // so a relative path never has to be guessed at on the other side.
+    const attachedPath = path.resolve(process.cwd(), rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -8769,6 +8778,7 @@ function buildProofPlan(args: string[]): CliPlan {
             backendStyle: "manual",
             backendName: "ade-cli",
             toolName: "proof attach",
+            callerRoot: process.cwd(),
             ...proofOwnerBase(),
             inputs: [
               {
@@ -8780,6 +8790,65 @@ function buildProofPlan(args: string[]): CliPlan {
             ],
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "rm" || sub === "remove" || sub === "delete") {
+    const ids: string[] = [];
+    const explicitId = readValue(args, ["--id", "--artifact-id"]);
+    if (explicitId) ids.push(explicitId);
+    for (;;) {
+      const next = firstPositional(args);
+      if (!next) break;
+      ids.push(next);
+    }
+    if (!ids.length) requireValue(null, "artifact id");
+    return {
+      kind: "execute",
+      label: "proof rm",
+      steps: [
+        actionCallStep(
+          "result",
+          "delete_computer_use_artifacts",
+          collectGenericObjectArgs(args, { artifactIds: ids }),
+        ),
+      ],
+    };
+  }
+  if (sub === "prune") {
+    const broken = readFlag(args, ["--broken"]);
+    return {
+      kind: "execute",
+      label: broken ? "proof prune --broken" : "proof prune",
+      steps: [
+        broken
+          ? actionCallStep("result", "prune_broken_computer_use_artifacts", {})
+          : actionCallStep("result", "list_broken_computer_use_artifacts", {}),
+      ],
+    };
+  }
+  if (sub === "broken")
+    return {
+      kind: "execute",
+      label: "proof broken",
+      steps: [
+        actionCallStep(
+          "result",
+          "list_broken_computer_use_artifacts",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "recover") {
+    const artifactId = requireValue(
+      readValue(args, ["--id", "--artifact-id"]) ?? firstPositional(args),
+      "artifact id",
+    );
+    return {
+      kind: "execute",
+      label: "proof recover",
+      steps: [
+        actionCallStep("result", "recover_computer_use_artifact", { artifactId }),
       ],
     };
   }
@@ -10376,6 +10445,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
                 backendStyle: "manual",
                 backendName: "ade-browser",
                 toolName: "browser proof",
+                callerRoot: process.cwd(),
                 ...ownerBase,
                 inputs: [
                   {

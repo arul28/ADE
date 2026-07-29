@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   CaretDown,
+  CaretRight,
   FileCode,
   FilePlus,
   FileX,
@@ -15,6 +16,12 @@ import type {
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
 import { BottomDrawerSection } from "./BottomDrawerSection";
+import {
+  CHAT_CARD_WIDTH_CLASS,
+  ChatCardDiffStat,
+  ChatCardRow,
+  ChatCardTitle,
+} from "./chatCardPrimitives";
 
 /* ── Helpers ── */
 
@@ -348,6 +355,14 @@ function NestedFileChangesSection({
   );
 }
 
+/**
+ * Turn-level "files changed" — ONE line by default.
+ *
+ * `7 files changed` with the diff stat in the meta column and a `diff ›`
+ * affordance; the browser only unfolds when asked. It uses the shared
+ * `[glyph | content | meta]` grid so its title and numbers sit in the same
+ * columns as the CI, PR and agent cards above and below it.
+ */
 export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesPanel({
   turnSummary,
   threadSummaries,
@@ -361,15 +376,27 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
   const turnFiles = useMemo(() => aggregateFiles([turnSummary]), [turnSummary]);
   if (!turnFiles.length) return null;
 
+  const additions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);
+
   return (
-    <details className="group rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-left outline-none">
-        <GitDiff size={12} className="text-fg/42" />
-        <span className="font-sans text-[12px] font-semibold text-fg/74">Files changed</span>
-        <FileChangesSummary files={turnFiles} muted />
-        <span className="ml-auto rounded-md border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/45 transition-colors group-open:text-fg/68">
-          View diffs
-        </span>
+    <details className={cn("group", CHAT_CARD_WIDTH_CLASS)}>
+      <summary className="cursor-pointer list-none border-b border-white/[0.06] px-0.5 py-2 outline-none">
+        <ChatCardRow
+          icon={GitDiff}
+          tone="neutral"
+          meta={<ChatCardDiffStat additions={additions} deletions={deletions} />}
+          action={(
+            <span className="flex items-center gap-0.5 whitespace-nowrap text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/45 transition-colors group-hover:text-fg/80">
+              diff
+              <CaretRight size={10} weight="bold" aria-hidden className="transition-transform group-open:rotate-90" />
+            </span>
+          )}
+        >
+          <ChatCardTitle>
+            {turnFiles.length} file{turnFiles.length === 1 ? "" : "s"} changed
+          </ChatCardTitle>
+        </ChatCardRow>
       </summary>
       <div className="mt-2 space-y-2">
         <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
