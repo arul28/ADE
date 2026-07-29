@@ -3494,11 +3494,11 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
 
 function sessionStatusBucket(argsIn: {
   status: string;
-  lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
   settledAt?: string | null;
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
+  pendingInputItemId?: string | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
@@ -3507,21 +3507,13 @@ function sessionStatusBucket(argsIn: {
   // turn is not running. The tri-state override is consulted at that same
   // declared-settle tier: "active" is an explicit keep-active pin that
   // suppresses settle, "settled" behaves like a declared settle.
-  if (argsIn.attentionRequestedAt) return "awaiting-input";
+  if (argsIn.attentionRequestedAt || argsIn.pendingInputItemId) return "awaiting-input";
   const effectiveSettled = argsIn.settleOverride === "active"
     ? false
     : argsIn.settleOverride === "settled" || Boolean(argsIn.settledAt);
   if (effectiveSettled && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
   if (argsIn.lastTurnFailedAt) return "ended";
   if (argsIn.status === "running") {
-    if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
-    const preview = argsIn.lastOutputPreview ?? "";
-    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
-      return "awaiting-input";
-    }
-    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
-      return "awaiting-input";
-    }
     return "running";
   }
   return "ended";

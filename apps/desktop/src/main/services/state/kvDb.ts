@@ -2036,8 +2036,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       status_note text,
       attention_requested_at text,
       attention_message text,
+      attention_source text,
       last_turn_failed_at text,
       settle_override text,
+      settle_source text,
       snoozed_until text,
       snoozed_at text,
       woke_at text,
@@ -2063,9 +2065,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table terminal_sessions add column status_note text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_requested_at text");
   safeAddColumn(db, "alter table terminal_sessions add column attention_message text");
+  safeAddColumn(db, "alter table terminal_sessions add column attention_source text");
   safeAddColumn(db, "alter table terminal_sessions add column last_turn_failed_at text");
-  // Tri-state settle override ('settled' | 'active' | null) consulted before
-  // the derived exit-0 auto-settle, plus the snooze visibility overlay
+  // Explicit settle override ('settled' | 'active' | null), plus the snooze visibility overlay
   // (snoozed_until / snoozed_at) and its "woke" marker. All nullable with NO
   // unique index: `terminal_sessions` replicates to iOS through cr-sqlite and
   // `crsql_as_crr` rejects any non-PK unique index. The same columns exist in
@@ -2073,6 +2075,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // ensureColumn migrations — a missing iOS half does not fail here, it
   // surfaces as changeset-apply errors on the phone.
   safeAddColumn(db, "alter table terminal_sessions add column settle_override text");
+  safeAddColumn(db, "alter table terminal_sessions add column settle_source text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_until text");
   safeAddColumn(db, "alter table terminal_sessions add column snoozed_at text");
   safeAddColumn(db, "alter table terminal_sessions add column woke_at text");

@@ -313,11 +313,7 @@ export async function wakeSession(
   });
 }
 
-/**
- * Set the tri-state settle override, consulted at the declared-settle tier
- * BEFORE the derived exit-0 rule. "active" is the keep-active pin (the only way
- * to hold a clean-exit row out of the quiet tier); null clears the pin.
- */
+/** Set or clear an explicit settle override. */
 export async function setSessionSettleOverride(
   connection: AdeCodeConnection,
   sessionId: string,

@@ -3,7 +3,6 @@ import {
   runningSessionNeedsAttention,
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
-  sessionNeedsUserInput,
   sessionStatusBucket,
   sessionStatusDot,
 } from "./terminalAttention";
@@ -19,14 +18,14 @@ describe("terminalAttention", () => {
     ).toBe("running");
   });
 
-  it("still detects explicit confirmation prompts", () => {
+  it("keeps prompt-text detection separate from lifecycle attention", () => {
     expect(runningSessionNeedsAttention("Confirm continue? (y/n)")).toBe(true);
     expect(
       sessionStatusBucket({
         status: "running",
         lastOutputPreview: "Confirm continue? (y/n)",
       }),
-    ).toBe("awaiting-input");
+    ).toBe("running");
   });
 
   it("removes cursor save and restore escapes from inline previews", () => {
@@ -93,35 +92,15 @@ describe("terminalAttention", () => {
       })).toBe(false);
     });
 
-    it("highlights agent chats blocked on approval or questions", () => {
+    it("highlights only structured or explicitly declared chat requests", () => {
       expect(sessionNeedsChatTabHighlight({
         runtimeState: "waiting-input",
         toolType: "cursor",
-      })).toBe(true);
+      })).toBe(false);
       expect(sessionNeedsChatTabHighlight({
         runtimeState: "idle",
         toolType: "codex-chat",
         pendingInputItemId: "approval-1",
-      })).toBe(true);
-    });
-  });
-
-  describe("sessionNeedsUserInput", () => {
-    it("keeps idle agent chats out of CLI-style prompt detection", () => {
-      expect(sessionNeedsUserInput({
-        status: "running",
-        lastOutputPreview: "Completed response",
-        runtimeState: "idle",
-        toolType: "claude-chat",
-      })).toBe(false);
-    });
-
-    it("still detects CLI confirmation prompts for CLI headers", () => {
-      expect(sessionNeedsUserInput({
-        status: "running",
-        lastOutputPreview: "Confirm continue? (y/n)",
-        runtimeState: "running",
-        toolType: "claude",
       })).toBe(true);
     });
   });
@@ -148,14 +127,14 @@ describe("terminalAttention", () => {
       expect(dot.label).toBe("Running");
     });
 
-    it("returns a solid (non-spinning) amber dot for a running needs-attention session", () => {
+    it("keeps a prompt-looking running session non-interrupting", () => {
       const dot = sessionStatusDot({
         status: "running",
         lastOutputPreview: "Confirm continue? (y/n)",
       });
       expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("amber");
-      expect(dot.label).toBe("Needs you");
+      expect(dot.cls).toContain("emerald");
+      expect(dot.label).toBe("Running");
     });
 
     it("returns a solid amber dot for an idle chat session", () => {

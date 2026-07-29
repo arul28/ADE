@@ -754,6 +754,7 @@ describe("prMergeAutoSettlementService", () => {
       ["chat-ready"],
       "PR #101 merged",
       "2026-03-24T12:01:05.000Z",
+      "pr_merge",
     );
     expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: "pr-sessions-auto-settled",
@@ -840,6 +841,7 @@ describe("prMergeAutoSettlementService", () => {
       ["chat-ready"],
       "PR #202 merged",
       "2026-03-24T12:03:05.000Z",
+      "pr_merge",
     );
   });
 

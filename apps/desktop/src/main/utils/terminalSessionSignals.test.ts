@@ -66,9 +66,9 @@ describe("terminalSessionSignals", () => {
     expect(normalizeResumeCommand("claude -r abc123", "claude")).toBe("claude --resume abc123");
   });
 
-  it("maps OSC 133 prompt markers to waiting-input", () => {
+  it("does not infer waiting-input from OSC 133 prompt markers", () => {
     const marker = "\u001b]133;A\u0007";
-    expect(runtimeStateFromOsc133Chunk(marker, "running")).toBe("waiting-input");
+    expect(runtimeStateFromOsc133Chunk(marker, "running")).toBe("running");
   });
 
   it("maps OSC 133 command markers to running", () => {

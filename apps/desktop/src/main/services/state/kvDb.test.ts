@@ -287,7 +287,15 @@ describe("terminal_sessions snooze + settle-override schema", () => {
     const columns = db.all<{ name: string; type: string; notnull: number }>(
       "pragma table_info('terminal_sessions')",
     );
-    for (const name of ["settle_override", "snoozed_until", "snoozed_at", "woke_at", "woke_reason"]) {
+    for (const name of [
+      "attention_source",
+      "settle_override",
+      "settle_source",
+      "snoozed_until",
+      "snoozed_at",
+      "woke_at",
+      "woke_reason",
+    ]) {
       const column = columns.find((entry) => entry.name === name);
       expect(column, `${name} column missing`).toBeTruthy();
       expect(column?.type.toLowerCase()).toBe("text");

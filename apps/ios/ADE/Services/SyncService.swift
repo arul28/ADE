@@ -8640,7 +8640,7 @@ final class SyncService: ObservableObject {
   }
 
   /// Set (or clear, with `nil`) the tri-state settle override. `"active"` is the
-  /// "keep active" pin that suppresses settle including the exit-0 auto-settle.
+  /// "keep active" pin that suppresses an explicit settle.
   func setSessionSettleOverride(sessionId: String, override: SessionSettleOverride?) async throws {
     try await sendSessionLifecycleCommand(
       sessionId: sessionId,

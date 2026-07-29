@@ -1272,6 +1272,10 @@ describe("sessionService resume metadata", () => {
     });
 
     service.requestAttention("session-settle", "Need a decision");
+    expect(service.get("session-settle")).toEqual(expect.objectContaining({
+      attentionMessage: "Need a decision",
+      attentionSource: "agent_explicit",
+    }));
     service.settleSession("session-settle", {
       outcome: "  Shipped the fix  ",
       settledAt: "2026-03-17T01:00:00.000Z",
@@ -1284,12 +1288,15 @@ describe("sessionService resume metadata", () => {
     expect(service.get("session-settle")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T01:00:00.000Z",
       statusNote: "Shipped the fix",
+      settleSource: "user",
       attentionRequestedAt: null,
       attentionMessage: null,
+      attentionSource: null,
     }));
 
     service.unsettleSession("session-settle");
     expect(service.get("session-settle")?.settledAt).toBeNull();
+    expect(service.get("session-settle")?.settleSource).toBeNull();
   });
 
   it("bulk settles only rows that were not already settled", async () => {
@@ -1326,6 +1333,7 @@ describe("sessionService resume metadata", () => {
       ["session-settled", "session-other"],
       "PR #841 merged",
       "2026-03-17T03:00:00.000Z",
+      "pr_merge",
     )).toEqual(["session-other"]);
     expect(service.get("session-settled")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T01:00:00.000Z",
@@ -1333,6 +1341,7 @@ describe("sessionService resume metadata", () => {
     }));
     expect(service.get("session-other")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T03:00:00.000Z",
+      settleSource: "pr_merge",
       statusNote: "PR #841 merged",
     }));
   });
@@ -1627,7 +1636,7 @@ describe("sessionService snooze overlay", () => {
     expect(service.get("session-cli")?.wokeAt).toBeTruthy();
   });
 
-  it("does NOT wake a snoozed session on a clean exit 0 (that is the settled path)", async () => {
+  it("does NOT wake a snoozed session on a clean exit 0", async () => {
     const { service } = await makeService("ade-session-service-snooze-exit-zero-");
     service.create({
       sessionId: "session-cli-clean",

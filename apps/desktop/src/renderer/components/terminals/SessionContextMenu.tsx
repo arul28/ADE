@@ -142,12 +142,6 @@ export function SessionContextMenu({
   const isSnoozed = isSessionSnoozed(session);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled";
-  /**
-   * A DERIVED settle — a clean exit-0 (or a `settleOverride: "settled"`) with no
-   * `settledAt` — used to fall out of every branch here and end up with no
-   * lifecycle action at all. The keep-active override is the unsettle for those
-   * rows: it outranks the derived rule so the row leaves the quiet tier.
-   */
   const isDeclaredSettled = Boolean(session.settledAt);
   const chooseSnooze = (key: SnoozeDurationKey) => {
     void snoozeSessionForDuration(session, key, Date.now(), binding);

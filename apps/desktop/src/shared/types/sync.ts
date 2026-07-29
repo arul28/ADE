@@ -651,7 +651,7 @@ export type SyncRosterChat = {
   /**
    * Additive settled-lifecycle projection. Optional so current phones remain
    * compatible with older hosts and current hosts remain compatible with older
-   * phones. `exitCode` is needed for canonical clean-exit auto-settle.
+   * phones. `exitCode` is needed to distinguish clean ends from failures.
    */
   settledAt?: string | null;
   statusNote?: string | null;

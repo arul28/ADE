@@ -616,7 +616,7 @@ struct WorkSessionListRow: View {
   }
 
   /// "Keep active" only means something once a row would otherwise read settled
-  /// — either declared or auto-settled by a clean exit.
+  /// — explicitly declared by an agent, user, operator, or merge policy.
   private var canKeepActive: Bool {
     lifecycleAvailable
       && session.resolvedSettleOverride != .active

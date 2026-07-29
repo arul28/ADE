@@ -76,7 +76,9 @@ into the Work list:
 - `ade chat unsettle` returns the row to the active lifecycle.
 
 `buildAdeCliGuidance` exposes these commands in the injected agent prompt so the
-state change is an explicit agent decision, not a transcript-text heuristic.
+state change is an explicit agent decision, not a transcript-text or terminal
+marker heuristic. Settlement means the original objective is fully delivered
+and verified; a completed turn or clean CLI exit alone remains active/ended.
 SDK-backed Claude, Codex, Cursor, Droid, and OpenCode chats receive
 `ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for an
 orchestration lead), and their persistent guidance names the concrete

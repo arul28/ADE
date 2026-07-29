@@ -3648,11 +3648,13 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var statusNote: String? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
+  var attentionSource: String? = nil
   var lastTurnFailedAt: String? = nil
   /// Tri-state settle override (`"settled"` / `"active"` / nil), consulted at
-  /// the declared-settle tier BEFORE the derived exit-0 rule. Mirrors the
+  /// the declared-settle tier. Mirrors the
   /// desktop `SessionSettleOverride`.
   var settleOverride: String? = nil
+  var settleSource: String? = nil
   /// Snooze visibility overlay. `snoozedUntil` is the derived-expiry deadline
   /// (no scheduler exists — every surface compares it to now); `snoozedAt` is
   /// the load-bearing baseline for the early-wake error comparison.
@@ -3701,8 +3703,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.statusNote == rhs.statusNote
       && lhs.attentionRequestedAt == rhs.attentionRequestedAt
       && lhs.attentionMessage == rhs.attentionMessage
+      && lhs.attentionSource == rhs.attentionSource
       && lhs.lastTurnFailedAt == rhs.lastTurnFailedAt
       && lhs.settleOverride == rhs.settleOverride
+      && lhs.settleSource == rhs.settleSource
       && lhs.snoozedUntil == rhs.snoozedUntil
       && lhs.snoozedAt == rhs.snoozedAt
       && lhs.wokeAt == rhs.wokeAt
@@ -3750,8 +3754,10 @@ extension TerminalSessionSummary {
     case statusNote
     case attentionRequestedAt
     case attentionMessage
+    case attentionSource
     case lastTurnFailedAt
     case settleOverride
+    case settleSource
     case snoozedUntil
     case snoozedAt
     case wokeAt
@@ -3793,8 +3799,10 @@ extension TerminalSessionSummary {
     statusNote = try container.decodeIfPresent(String.self, forKey: .statusNote)
     attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
     attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
+    attentionSource = try container.decodeIfPresent(String.self, forKey: .attentionSource)
     lastTurnFailedAt = try container.decodeIfPresent(String.self, forKey: .lastTurnFailedAt)
     settleOverride = try container.decodeIfPresent(String.self, forKey: .settleOverride)
+    settleSource = try container.decodeIfPresent(String.self, forKey: .settleSource)
     snoozedUntil = try container.decodeIfPresent(String.self, forKey: .snoozedUntil)
     snoozedAt = try container.decodeIfPresent(String.self, forKey: .snoozedAt)
     wokeAt = try container.decodeIfPresent(String.self, forKey: .wokeAt)

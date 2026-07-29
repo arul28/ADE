@@ -310,7 +310,9 @@ non-empty line, capped at 220 chars. Preview is flushed to
 runtime state changes, when the preview changes more than 1.2 s after
 the previous signal, or as a 10 s heartbeat. Runtime states:
 `running`, `waiting-input`, `idle`, `exited`, `killed`. `idle` is
-inferred from OSC 133 prompt markers.
+inferred from output silence. OSC 133 `B`/`C` markers may confirm running, but
+prompt markers never infer `waiting-input`; only explicit or
+provider-structured lifecycle requests raise attention.
 
 ### Process tree termination
 

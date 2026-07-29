@@ -1843,7 +1843,7 @@ describe("createPushPublisherService flush", () => {
       run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
     ])).toBe(1);
     const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
-    expect(waitingRun.phase).toBe("waiting_for_input");
+    expect(waitingRun.phase).toBe("stale");
 
     publisher.dispose();
   });

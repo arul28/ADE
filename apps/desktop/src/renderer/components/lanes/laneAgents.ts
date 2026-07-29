@@ -38,9 +38,10 @@ function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
 }
 
 function cliActivity(summary: TerminalSessionSummary): LaneAgentActivity {
+  if (summary.pendingInputItemId || summary.attentionRequestedAt) return "awaiting-input";
   switch (summary.runtimeState) {
     case "running": return "working";
-    case "waiting-input": return "awaiting-input";
+    case "waiting-input": return "idle";
     case "exited":
     case "killed": return "ended";
     default: return "idle";
@@ -86,7 +87,7 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
     modelId: null,
     providerLabel: cliProviderLabel(summary.toolType),
     activity: cliActivity(summary),
-    lastHint: summary.runtimeState === "waiting-input"
+    lastHint: summary.pendingInputItemId || summary.attentionRequestedAt
       ? "Awaiting your input"
       : summary.summary?.trim() || summary.lastOutputPreview?.trim() || null,
     lastActivityAt: summary.endedAt ?? summary.startedAt,

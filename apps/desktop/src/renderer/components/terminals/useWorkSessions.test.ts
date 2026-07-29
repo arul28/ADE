@@ -1593,9 +1593,8 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running", "session-ended"]);
     });
     expect(result.current.runningFiltered.map((s) => s.id)).toEqual(["session-running"]);
-    // exit-0 shells auto-settle (clean exit IS the done declaration).
-    expect(result.current.endedFiltered.map((s) => s.id)).toEqual([]);
-    expect(result.current.settledFiltered.map((s) => s.id)).toEqual(["session-ended"]);
+    expect(result.current.endedFiltered.map((s) => s.id)).toEqual(["session-ended"]);
+    expect(result.current.settledFiltered.map((s) => s.id)).toEqual([]);
   });
 
   it("partitions snoozed rows out of the flat sidebar buckets and back once the snooze lapses", async () => {
@@ -1644,11 +1643,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.settledFiltered.map((s) => s.id)).toEqual([]);
   });
 
-  // Regression: "Until I'm asked" snooze hid a needs-you row forever. All three
-  // early-wake triggers were chat-only, and a tracked CLI row's needs-input
-  // state is DERIVED (no event exists to hook), so a snoozed CLI session that
-  // hit a permission prompt could never come back. Snooze must yield to a
-  // raised hand at filing time.
+  // Regression: "Until I'm asked" snooze hid an explicitly raised hand.
   it("does NOT file a snoozed needs-you row as snoozed in the flat sidebar buckets", async () => {
     const nowMs = Date.now();
     const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
@@ -1656,6 +1651,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     const snoozedCliNeedsYou = makeSession("session-cli-needs-you", "lane-1", {
       toolType: "claude" as const,
       runtimeState: "waiting-input" as const,
+      attentionRequestedAt: iso(-1_000),
       snoozedUntil: iso(100 * 365 * 24 * 3600_000),
       snoozedAt: iso(-60_000),
     });
@@ -2370,10 +2366,9 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
       organization: "all-lanes-by-status",
       collapsedGroupIds: ["status:running"],
     });
-    // The exit-0 session lands in the settled tier, not ended.
-    expect(byStatus.groups.map((group) => group.id)).toEqual(["status:running", "status:awaiting-input", "status:settled"]);
+    expect(byStatus.groups.map((group) => group.id)).toEqual(["status:running", "status:ended"]);
     expect(byStatus.groups[0]!.collapsed).toBe(true);
-    expect(byStatus.sessionIds).toEqual(["session-a2", "session-c1"]);
+    expect(byStatus.sessionIds).toEqual(["session-c1"]);
 
     const byTime = buildWorkTabGroupModel({
       sessions,
@@ -2402,6 +2397,7 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
         runtimeState: "exited" as const,
         exitCode: 0,
         endedAt: iso(-60_000),
+        settledAt: iso(-30_000),
       }),
     ];
     const lanes = [
@@ -2428,10 +2424,7 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     expect(model.groups[2]!.sessionIds).toEqual(["session-settled"]);
   });
 
-  // Regression: "Until I'm asked" snooze hid a needs-you row forever — the
-  // grouped status path lifted snoozed rows out of Your-move with no filing
-  // exception, and no early-wake event exists for a tracked CLI row (its
-  // needs-input state is derived).
+  // Regression: "Until I'm asked" snooze hid an explicitly raised hand.
   it("does NOT file a snoozed needs-you row into the Snoozed group", () => {
     const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
     const iso = (offsetMs: number) => new Date(nowMs + offsetMs).toISOString();
@@ -2441,6 +2434,7 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
       makeSession("session-cli-needs-you", "lane-a", {
         toolType: "claude" as const,
         runtimeState: "waiting-input" as const,
+        attentionRequestedAt: iso(-1_000),
         snoozedUntil: iso(100 * 365 * 24 * 3600_000),
         snoozedAt: iso(-60_000),
       }),

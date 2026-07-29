@@ -12,8 +12,6 @@ import {
 } from "./sessionCanonicalState";
 
 const NOW = Date.parse("2026-07-06T12:00:00.000Z");
-const promptLikePreview = (preview: string | null | undefined) =>
-  Boolean(preview && /\(y\/n\)/i.test(preview));
 const chatTools = new Set(["claude-chat", "cursor"]);
 const isChatTool = (toolType: string | null | undefined) => Boolean(toolType && chatTools.has(toolType));
 
@@ -23,7 +21,6 @@ function state(overrides: Partial<CanonicalSessionInputs>) {
     runtimeState: "running",
     toolType: "claude",
     nowMs: NOW,
-    previewSuggestsNeedsInput: promptLikePreview,
     isChatTool,
     ...overrides,
   });
@@ -32,12 +29,11 @@ function state(overrides: Partial<CanonicalSessionInputs>) {
 describe("canonicalSessionState precedence", () => {
   const silentSince = new Date(NOW - SESSION_STALE_AFTER_MS - 1_000).toISOString();
 
-  // Table: deterministic signals must outrank everything below them, and the
-  // preview heuristic must never outvote a deterministic runtime state.
+  // Table: explicit and structured signals must outrank everything below them.
   const cases: Array<[string, Partial<CanonicalSessionInputs>, string, string | null]> = [
     ["pendingInputItemId wins over stale silence", { pendingInputItemId: "i-1", lastActivityAt: silentSince }, "needs_you", "Needs you"],
-    ["waiting-input wins over stale silence", { runtimeState: "waiting-input", lastActivityAt: silentSince }, "needs_you", "Needs you"],
-    ["waiting-input wins even when preview looks calm", { runtimeState: "waiting-input", lastOutputPreview: "compiling..." }, "needs_you", "Needs you"],
+    ["runtime waiting-input does not outvote stale silence", { runtimeState: "waiting-input", lastActivityAt: silentSince }, "stale", "Stale"],
+    ["runtime waiting-input alone stays non-interrupting", { runtimeState: "waiting-input", lastOutputPreview: "compiling..." }, "running", null],
     ["pendingInputItemId wins on an ended session", { pendingInputItemId: "i-1", status: "detached", exitCode: 1 }, "needs_you", "Needs you"],
     ["disposed session is stopped, not failed", { status: "disposed", runtimeState: "killed", exitCode: null }, "stopped", null],
     ["user-stop signal is stopped, not failed", { status: "disposed", runtimeState: "killed", exitCode: 130 }, "stopped", null],
@@ -46,12 +42,12 @@ describe("canonicalSessionState precedence", () => {
     ["killed runtime is failed", { status: "detached", runtimeState: "killed", exitCode: null }, "failed", "Failed"],
     ["running + silent past threshold is stale", { lastActivityAt: silentSince }, "stale", "Stale"],
     ["stale wins over a prompt-looking preview", { lastActivityAt: silentSince, lastOutputPreview: "continue? (y/n)" }, "stale", "Stale"],
-    ["heuristic upgrades plain running LAST", { lastOutputPreview: "continue? (y/n)" }, "needs_you", "Needs you"],
+    ["prompt-looking output alone stays running", { lastOutputPreview: "continue? (y/n)" }, "running", null],
     ["plain running stays running (no badge)", { lastOutputPreview: "compiling..." }, "running", null],
     ["idle chat is ready (no badge)", { runtimeState: "idle", toolType: "claude-chat" }, "ready", null],
     ["idle CLI is idle (no badge)", { runtimeState: "idle" }, "idle", null],
     ["heuristic does NOT fire on idle sessions", { runtimeState: "idle", lastOutputPreview: "continue? (y/n)" }, "idle", null],
-    ["clean exit auto-settles (no badge)", { status: "detached", exitCode: 0 }, "settled", null],
+    ["clean exit stays ended until explicitly settled", { status: "detached", exitCode: 0 }, "ended", null],
     ["unknown exit stays ended (no badge)", { status: "detached", exitCode: null, runtimeState: "exited" }, "ended", null],
     ["detached chat is ended, not perpetually ready", { status: "detached", toolType: "claude-chat", exitCode: null }, "ended", null],
     ["declared settle wins over failure", { status: "detached", exitCode: 2, settledAt: "2026-07-06T11:00:00.000Z" }, "settled", null],
@@ -89,17 +85,14 @@ describe("stale boundary", () => {
 });
 
 describe("settle override tri-state", () => {
-  // The bug this exists to fix: exit 0 auto-settles WITHOUT stamping
-  // settled_at, so the row had no lifecycle action at all and was pinned to
-  // the quiet tier forever.
   const cleanExit: Partial<CanonicalSessionInputs> = { status: "detached", exitCode: 0, runtimeState: "exited" };
 
-  it("null override leaves the derived exit-0 auto-settle intact", () => {
-    expect(state({ ...cleanExit }).phase).toBe("settled");
-    expect(state({ ...cleanExit, settleOverride: null }).phase).toBe("settled");
+  it("null override leaves a clean exit ended", () => {
+    expect(state({ ...cleanExit }).phase).toBe("ended");
+    expect(state({ ...cleanExit, settleOverride: null }).phase).toBe("ended");
   });
 
-  it("'active' override beats the derived exit-0 rule", () => {
+  it("'active' override leaves an undeclared clean exit ended", () => {
     const result = state({ ...cleanExit, settleOverride: "active" });
     expect(result.phase).toBe("ended");
     expect(result.badge).toBeNull();
@@ -160,10 +153,7 @@ describe("snooze is a visibility overlay, not a phase", () => {
 });
 
 // Regression: an "Until I'm asked" snooze (~100 years) hid a needs-you row
-// forever. Every early-wake trigger (`ade chat ask`, chat turn failure, chat
-// turn complete) was chat-only, and a tracked CLI row's needs-input state is
-// DERIVED (runtime "waiting-input" / preview heuristic) with no event to hook —
-// so the filing rule, not an event, is what has to bring the row back.
+// forever. The filing rule must yield to explicit or structured attention.
 describe("snooze filing yields to a raised hand (isSessionFiledAsSnoozed)", () => {
   const snoozedUntil = new Date(NOW + 60_000).toISOString();
   const snoozedAt = new Date(NOW - 60_000).toISOString();
@@ -183,7 +173,7 @@ describe("snooze filing yields to a raised hand (isSessionFiledAsSnoozed)", () =
     expect(isSessionSnoozed(snoozed, NOW)).toBe(true);
     expect(canonicalSessionState({
       status: "running",
-      runtimeState: "waiting-input",
+      pendingInputItemId: "question-1",
       nowMs: NOW,
     }).phase).toBe("needs_you");
   });

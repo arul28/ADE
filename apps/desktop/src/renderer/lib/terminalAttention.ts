@@ -150,7 +150,6 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     nowMs: session.nowMs,
-    previewSuggestsNeedsInput: runningSessionNeedsAttention,
     isChatTool: isChatToolType,
   });
 }
@@ -171,22 +170,6 @@ export function sessionInlineStatusLabel(session: SessionCanonicalUiInput): stri
   return null;
 }
 
-export function sessionNeedsUserInput(args: {
-  status: TerminalSessionStatus;
-  lastOutputPreview: string | null;
-  runtimeState?: TerminalRuntimeState;
-  toolType?: TerminalToolType | null;
-  pendingInputItemId?: string | null;
-  attentionRequestedAt?: string | null;
-}): boolean {
-  if (args.runtimeState === "waiting-input") return true;
-  if (args.pendingInputItemId) return true;
-  if (args.attentionRequestedAt) return true;
-  if (isChatToolType(args.toolType)) return false;
-  if (args.status !== "running") return false;
-  return runningSessionNeedsAttention(args.lastOutputPreview);
-}
-
 /** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */
 export function sessionNeedsChatTabHighlight(args: {
   runtimeState?: TerminalRuntimeState;
@@ -195,7 +178,6 @@ export function sessionNeedsChatTabHighlight(args: {
   attentionRequestedAt?: string | null;
 }): boolean {
   if (!isChatToolType(args.toolType)) return false;
-  if (args.runtimeState === "waiting-input") return true;
   if (args.pendingInputItemId) return true;
   if (args.attentionRequestedAt) return true;
   return false;

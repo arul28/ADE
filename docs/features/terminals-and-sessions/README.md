@@ -206,14 +206,13 @@ Shared types and IPC:
   surface and the `terminal` ADE action domain.
 - `apps/desktop/src/shared/sessionCanonicalState.ts` — canonical phase and
   status-bucket derivation shared by desktop and mirrored on iOS. Precedence is
-  deterministic attention → declared settle at rest → stopped/failure/clean
-  exit → stale/running/resting. It is the source of the one-word row capsule,
+  explicit/structured attention → declared settle at rest → stopped/failure/
+  clean exit → stale/running/resting. It is the source of the one-word row capsule,
   Work grouping, and the loud-vs-quiet attention split.
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
-  *before* the derived exit-0 rule: `"settled"` behaves like a declared settle,
-  and `"active"` is an explicit keep-active pin so a clean PTY exit is no
-  longer auto-settled with no `settled_at` and therefore no lifecycle action.
+  `"settled"` behaves like a declared settle, and `"active"` is an explicit
+  keep-active pin that suppresses a declared settle.
   It is cleared on real activity at the same write sites that clear
   `settled_at` (PTY output, `touchSessionActivity`, turn start, attention
   request, turn failure).
@@ -231,9 +230,8 @@ Shared types and IPC:
   `woke_reason` so the UI can show a "woke" marker until the row is visited.
   A session that **ends in failure** (non-zero exit, or a `"failed"` end that
   never got an exit code) is an early-wake trigger too, at the `end` /
-  `reconcileStaleRunningSessions` write sites — a clean exit 0 is the settled
-  path and never wakes. Because CLI "needs input" is purely *derived* (there is
-  no event to hook), filing also yields to it: `isSessionFiledAsSnoozed`
+  `reconcileStaleRunningSessions` write sites. Filing yields to an explicit or
+  provider-structured hand raise: `isSessionFiledAsSnoozed`
   (`shared/sessionCanonicalState.ts`, mirrored in
   `WorkSessionCanonicalState.swift`) returns false for a `needs_you` phase, so a
   snoozed row that is blocked on the user stays in its normal section on every
@@ -960,10 +958,9 @@ Renderer surfaces:
   a pointer edge. The menu carries one exhaustive lifecycle block holding every
   action that changes where the sidebar files the row: **Snooze…** expands into
   the four durations (or **Wake now**, with the wake label, when the row is
-  already snoozed), and settle actions branch on whether the settle was
-  *declared* or *derived*. A declared settle has a `settled_at` for Unsettle to
-  clear; a derived settle — a clean exit 0, or `settleOverride: "settled"` —
-  has nothing to clear, so the keep-active pin is its only unsettle. A row
+  already snoozed), and settle actions operate only on explicit declarations.
+  A declared settle has a `settled_at` for Unsettle to clear, while
+  `settleOverride` can explicitly pin either state. A row
   reaching the end of that block with nothing rendered would be a row the user
   cannot un-hide, which is why the block is kept exhaustive.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
@@ -1222,8 +1219,8 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
 
 6. **Classify and settle** — `canonicalSessionState()` projects persisted
    facts in a fixed order. Deterministic pending input or `ade chat ask` is
-   loud `needs_you`; an explicit `settledAt` wins at rest; disposed and failed
-   sessions remain distinct; a non-chat exit code 0 auto-classifies as settled;
+   loud `needs_you`; an explicit `settledAt` wins at rest; disposed, failed,
+   and cleanly ended sessions remain distinct; exit code 0 does not settle;
    a still-running session with no activity for three hours is `stale` but is
    not settled. Chat idle between turns is the quiet `ready` phase. Explicit
    Settle/Unsettle is available from the session context menu and multi-select
@@ -1240,17 +1237,21 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    because the process is active again. Scheduled/background wakes are
    different: an explicitly settled chat shows running while the unattended
    turn streams, retains `settledAt`, and returns to Settled when it rests.
-   `ade chat ask` clears settle, persists the blocking question, marks a live
-   tracked CLI as waiting-input, and publishes a time-sensitive push; the next
-   user turn clears it. `ade chat note ""` clears only the status line.
+   `ade chat ask` clears settle, persists the blocking question and its
+   `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
+   publishes a time-sensitive push; the next user turn clears it. Provider
+   structured input carries its own pending item id. OSC markers and
+   prompt-looking output never create `Needs you`. `ade chat note ""` clears
+   only the status line.
 
    Beyond the binary settle there is a tri-state **settle override**
    (`terminal_sessions.settle_override`). `"settled"` behaves like a declared
-   settle; `"active"` is the explicit keep-active pin, and it is the only way to
-   hold a clean-exit row in the active tier because those rows derive their
-   settle and have no `settled_at` for unsettle to clear; `null` returns the row
-   to the derived rules. An explicit settle drops a stale `"active"` pin, and
-   unsettle drops only a `"settled"` pin.
+   settle; `"active"` is the explicit keep-active pin; `null` returns the row
+   to the declared rules. An explicit settle drops a stale `"active"` pin, and
+   unsettle drops only a `"settled"` pin. `attention_source` and
+   `settle_source` record whether the current declaration came from an agent,
+   user, provider request, operator, or lane PR merge; Session Info displays
+   that provenance.
 
 8. **Snooze and early wake** — snooze is a synced **visibility overlay**, never
    a lifecycle phase: `canonicalSessionState()` does not read it, only the
@@ -1266,10 +1267,10 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    the row has been visited.
 
    Two halves keep the hand-raise contract honest for **non-chat** sessions,
-   whose needs-input state is derived and whose failures are not chat turns:
+   whose failures are not chat turns:
    a session that ends in failure (non-zero exit code, or a `"failed"` end with
    no exit code) wakes with reason `error` at the end write sites — exit 0 does
-   not, because a clean exit is the settled path; and every Snoozed group files
+   not because it is not a failure; and every Snoozed group files
    through `isSessionFiledAsSnoozed(session, phase)`, which yields to a
    `needs_you` phase, so a snoozed row blocked on the user is never hidden even
    under an "Until I'm asked" (~100 year) deadline. The desktop flat list and
@@ -1411,7 +1412,7 @@ Sessions:
 | `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
 | `ade.sessions.settle` / `.unsettle` | Set or clear `settled_at` for one session. Settle accepts `{ outcome?, dismissPendingInput? }`; dismissal is handled atomically by `settleTerminalSession` before the settle mutation. |
 | `ade.sessions.settleMany` / `.unsettleMany` | bulk lifecycle mutation used by the Work multi-select footer; settle returns only newly-settled ids for precise undo |
-| `ade.sessions.setSettleOverride` | tri-state settle pin: `"settled"` behaves like a declared settle, `"active"` is the keep-active pin that beats the derived exit-0 auto-settle, `null` hands the row back to the derived rules |
+| `ade.sessions.setSettleOverride` | tri-state settle pin: `"settled"` behaves like a declared settle, `"active"` suppresses a declared settle, `null` hands the row back to declared lifecycle state |
 | `ade.sessions.snooze` / `.snoozeMany` | set `snoozed_until` (+ `snoozed_at`) and clear any stale woke marker. Snooze is a **visibility overlay**, not a lifecycle phase — `canonicalSessionState()` never reads it. Bulk returns the ids it changed. |
 | `ade.sessions.wake` / `.wakeMany` | clear the snooze now and record `woke_reason` (`timer \| needs_you \| error \| turn_complete \| manual`, default `manual`). Bulk returns the ids that were actually snoozed. |
 | `ade.sessions.clearWokeMarker` | drop `woke_at`/`woke_reason` once the user has visited the row |
@@ -1485,11 +1486,9 @@ runtime and agent chat runtime both layer the same identity envs
   is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
-- **A derived settle has no `settled_at` to clear.** Clean exit-0 rows and
-  `settleOverride: "settled"` rows are settled by derivation, so plain Unsettle
-  does nothing to them; the `"active"` keep-active pin is their only unsettle.
-  Any new lifecycle surface must branch on declared-vs-derived or it will ship a
-  row the user cannot get out of the quiet tier.
+- **Process exit is not settlement.** A clean exit-0 row remains ended until an
+  agent/user declaration or the enabled PR-merge policy settles it. New
+  lifecycle surfaces must not infer task completion from process mechanics.
 - **Settlement is not a pending-input response.** Never restore the old
   renderer sequence of `respondToInput` then settle. A provider decline may
   resume work, Codex plan declines may stage a revision, and a stale persisted

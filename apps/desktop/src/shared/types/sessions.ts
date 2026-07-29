@@ -69,17 +69,7 @@ export function isTrackedAgentCliToolType(
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
-/**
- * Tri-state settle override (terminal_sessions.settle_override). It is
- * consulted by `canonicalSessionState()` BEFORE the derived "exit 0 means
- * done" rule:
- *   null       — no override; the derived rules decide,
- *   "settled"  — behaves exactly like a declared settle,
- *   "active"   — explicit keep-active pin that beats derived settle, so a
- *                clean PTY exit stops being permanently pinned to the quiet
- *                tier with no lifecycle action available.
- * Cleared on real activity at the same write sites that clear `settled_at`.
- */
+/** Explicit settle pin. Cleared on activity with `settled_at`. */
 export type SessionSettleOverride = "settled" | "active";
 
 /**
@@ -215,14 +205,17 @@ export type TerminalSessionSummary = {
   statusNote?: string | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
+  /** Auditable owner of the current explicit attention declaration. */
+  attentionSource?: SessionAttentionSource | null;
   lastTurnFailedAt?: string | null;
   /**
    * Tri-state settle override (terminal_sessions.settle_override). Optional for
    * migration tolerance; null/undefined both mean "no override". Unlike
-   * `settledAt` this is a *lifecycle* control that outranks the derived
-   * exit-0 auto-settle in `canonicalSessionState()`.
+   * `settledAt` this is an explicit lifecycle control.
    */
   settleOverride?: SessionSettleOverride | null;
+  /** Auditable owner/policy that declared the current settled state. */
+  settleSource?: SessionSettleSource | null;
   /**
    * Snooze is a synced VISIBILITY OVERLAY, never a lifecycle phase — it does
    * not touch `canonicalSessionState()`, only where the UI files the row.
@@ -270,6 +263,9 @@ export type TerminalSessionSummary = {
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
 };
+
+export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
+export type SessionSettleSource = "agent_explicit" | "user" | "pr_merge" | "operator";
 
 export type TerminalSessionDetail = TerminalSessionSummary & {
   // Reserved for future expansion (goal/tool templates, derived deltas, etc.)

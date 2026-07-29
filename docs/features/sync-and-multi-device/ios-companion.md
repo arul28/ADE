@@ -1596,7 +1596,7 @@ iOS mirrors `apps/desktop/src/shared/sessionCanonicalState.ts` in
 `WorkSessionCanonicalState.swift`. The precedence and visual vocabulary match
 desktop: deterministic approval/question/`ade chat ask` is `Needs you`; an
 explicit settle applies only while the session is at rest; failed and stopped
-remain distinct; a non-chat exit code 0 is settled; and a running row with a
+remain distinct; a clean process exit is merely ended; and a running row with a
 real activity timestamp at least three hours old is `Stale`, not settled.
 
 The replicated `terminal_sessions` lifecycle columns flow through
@@ -1616,11 +1616,9 @@ The phone carries the full lifecycle, not a read-only view of it. Two
 mechanisms sit on top of the derivation and both are mirrored here.
 
 `settle_override` is a tri-state (`null | "settled" | "active"`) consulted at
-the **declared**-settle tier — before the derived "exit code 0 means done"
-rule. `"settled"` behaves like a declared settle; `"active"` is an explicit
-keep-active pin and is the only way to un-settle a clean-exit row, because such
-a row derives its settle and has no `settled_at` for unsettle to clear; `null`
-returns the row to the derived rules. The override is cleared on real activity
+the declared-settle tier. `"settled"` behaves like a declared settle;
+`"active"` is an explicit keep-active pin; `null` returns the row to the
+persisted lifecycle state. The override is cleared on real activity
 at the same write sites that clear `settled_at`.
 
 Snooze is a synced **visibility overlay**, never a lifecycle phase — the Swift
@@ -1634,7 +1632,7 @@ the row. Waking stamps `woke_at` / `woke_reason`
 (`timer | needs_you | error | turn_complete | manual`) so the row can explain
 its return until it is visited, at which point `clearWokeMarker` drops it. Early
 wake also fires for a session that ends in failure (non-zero exit, or a
-`"failed"` end with no exit code); a clean exit 0 is the settled path and never
+`"failed"` end with no exit code); a clean exit 0 is not a failure and never
 wakes. Filing yields to a raised hand: `isSessionFiledAsSnoozed(session, phase)`
 returns false for a `needs_you` phase, so a snoozed row blocked on the user
 stays in its normal section rather than disappearing into the snoozed tail.

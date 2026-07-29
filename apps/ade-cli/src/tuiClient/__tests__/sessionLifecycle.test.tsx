@@ -313,16 +313,17 @@ describe("lifecycle markers", () => {
 
   // Regression: an "Until I'm asked" snooze (~100 years) marked a blocked row
   // `z wakes when asked` forever. Every early-wake trigger was chat-only, and a
-  // tracked CLI row's needs-input state is derived with no event to hook — so a
+  // explicit and structured needs-input states raise a hand — so a
   // needs-you row must never READ as snoozed either.
   it("does NOT mark a snoozed row as snoozed while it is asking for you", () => {
     const snooze = {
       snoozedUntil: new Date(NOW + 100 * 365 * 86_400_000).toISOString(),
       snoozedAt: new Date(NOW).toISOString(),
     };
-    // Every deterministic hand-raise a text row can see.
-    expect(sessionLifecycleMarker({ ...snooze, runtimeState: "waiting-input" }, { nowMs: NOW })).toBeNull();
-    expect(sessionLifecycleMarker({ ...snooze, awaitingInput: true }, { nowMs: NOW })).toBeNull();
+    // Runtime/prompt inference is non-interrupting; only explicit or
+    // provider-structured requests raise the hand.
+    expect(sessionLifecycleMarker({ ...snooze, runtimeState: "waiting-input" }, { nowMs: NOW })?.kind).toBe("snoozed");
+    expect(sessionLifecycleMarker({ ...snooze, awaitingInput: true }, { nowMs: NOW })?.kind).toBe("snoozed");
     expect(sessionLifecycleMarker({ ...snooze, pendingInputItemId: "item-1" }, { nowMs: NOW })).toBeNull();
     expect(sessionLifecycleMarker(
       { ...snooze, attentionRequestedAt: "2026-07-26T11:59:00.000Z" },

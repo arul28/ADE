@@ -760,11 +760,10 @@ Every row also carries one exhaustive lifecycle block holding each action that
 changes where the sidebar files it. **Snooze…** expands in place into the four
 durations (`1 hour`, `Until this evening`, `Until tomorrow 9am`,
 `Until I'm asked`); an already-snoozed row instead shows **Wake now** with its
-wake label. Settle actions branch on declared vs derived: a declared settle has
-`settledAt` for **Unsettle** to clear and can additionally be pinned with
-**Keep active**, while a derived settle — a clean exit 0, or
-`settleOverride: "settled"` — has nothing to clear, so writing the `"active"`
-keep-active pin *is* its unsettle. The block is kept exhaustive on purpose: a
+wake label. Settle actions operate on explicit declarations: a declared settle
+has `settledAt` for **Unsettle** to clear and can additionally be pinned with
+**Keep active**, while `settleOverride` explicitly pins either state. The block
+is kept exhaustive on purpose: a
 row that reaches the end of it with nothing rendered is a row the user cannot
 un-hide. All writes go through
 `components/terminals/sessionLifecycleActions.ts`, which also owns the

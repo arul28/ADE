@@ -92,6 +92,7 @@ export function projectChatOntoSession(
       runtimeState: "waiting-input",
       chatIdleSinceAt: null,
       pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+      attentionSource: "provider_structured",
     };
   }
   if (chat.status === "active") {

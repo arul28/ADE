@@ -101,33 +101,14 @@ export type LaneListSnapshotOptions = {
 
 export const OPTIONAL_LANE_ENRICHMENT_BUDGET_MS = 250;
 
-const IDLE_ATTENTION_TOOL_TYPES = new Set([
-  "claude",
-  "codex",
-  "cursor-cli",
-  "droid",
-  "opencode",
-  "claude-orchestrated",
-  "codex-orchestrated",
-  "opencode-orchestrated",
-  "aider",
-  "continue",
-]);
-
-function idleRuntimeNeedsAttention(toolType: string | null | undefined): boolean {
-  if (isChatToolType(toolType)) return true;
-  if (!toolType) return false;
-  return IDLE_ATTENTION_TOOL_TYPES.has(toolType.trim().toLowerCase());
-}
-
 function sessionStatusBucket(args: {
   status: string;
-  lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
   toolType?: string | null;
   settledAt?: string | null;
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
+  pendingInputItemId?: string | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // `ade chat ask` escalation outranks everything; a declared settle maps to
@@ -136,25 +117,13 @@ function sessionStatusBucket(args: {
   // The tri-state override is consulted at the same declared-settle tier:
   // "active" is an explicit keep-active pin, "settled" acts like a declared
   // settle. Mirrors canonicalSessionState in shared/sessionCanonicalState.ts.
-  if (args.attentionRequestedAt) return "awaiting-input";
+  if (args.attentionRequestedAt || args.pendingInputItemId) return "awaiting-input";
   const effectiveSettled = args.settleOverride === "active"
     ? false
     : args.settleOverride === "settled" || Boolean(args.settledAt);
   if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
   if (args.lastTurnFailedAt) return "ended";
-  if (args.status === "running") {
-    if (args.runtimeState === "waiting-input") return "awaiting-input";
-    if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "awaiting-input";
-    const preview = args.lastOutputPreview ?? "";
-    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
-      return "awaiting-input";
-    }
-    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
-      return "awaiting-input";
-    }
-    return "running";
-  }
-  if (isChatToolType(args.toolType)) return "awaiting-input";
+  if (args.status === "running") return "running";
   return "ended";
 }
 
