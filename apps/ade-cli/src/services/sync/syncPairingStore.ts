@@ -283,13 +283,24 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       const expiresAtMs = Date.now() + PAIRING_ROTATION_WINDOW_MS;
       records[peer.deviceId] = {
         ...committedView(existing),
-        // Only the secret and the privileges it carries wait for the
-        // acknowledgement. Descriptive fields are not credentials, so a phone
-        // that was renamed shows its new name immediately instead of after a
-        // handshake the user cannot see.
+        // Descriptive fields are not credentials, so a phone that was renamed
+        // shows its new name immediately instead of after a handshake the user
+        // cannot see.
         peerName: replacement.peerName,
         peerPlatform: replacement.peerPlatform,
         peerDeviceType: replacement.peerDeviceType,
+        // Elevations wait for proof; reductions must not. Staging a PIN
+        // re-pair's declassification would leave the record account-owned, so
+        // the next account switch would revoke the very pairing the user just
+        // re-established at the Mac. Same reasoning for a lost runtime-host
+        // grant: withdrawing authority late is a privilege leak, withdrawing it
+        // early costs at most one re-grant.
+        accountOwnerUserId: replacement.accountOwnerUserId === null
+          ? null
+          : existing.accountOwnerUserId ?? null,
+        runtimeHostGranted: replacement.runtimeHostGranted === false
+          ? false
+          : existing.runtimeHostGranted,
         pendingRotation: { expiresAtMs, record: replacement },
       };
       writeRecords(records);

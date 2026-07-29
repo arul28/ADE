@@ -342,3 +342,56 @@ describe("PIN re-pair staged rotation", () => {
     expect(store.verifySecret(peer.deviceId, original.secret)).toBeNull();
   });
 });
+
+describe("staged re-pair privilege direction", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  const PIN = "428193";
+
+  function createStore() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rotation-privilege-"));
+    roots.push(root);
+    const pinStore = createSyncPinStore({ filePath: path.join(root, "pin.json") });
+    pinStore.setPin(PIN);
+    return createSyncPairingStore({ filePath: path.join(root, "paired.json"), pinStore });
+  }
+
+  const desktopPeer = {
+    deviceId: "desktop-rotation",
+    deviceName: "MacBook Pro",
+    platform: "macOS",
+    deviceType: "desktop",
+    siteId: "desktop-rotation-site",
+    dbVersion: 0,
+  } satisfies SyncPeerMetadata;
+
+  // A staged rotation must never park a privilege the re-pair took away: the
+  // committed record is what every gate reads, so a late withdrawal is a leak.
+  it("withdraws a runtime-host grant immediately even though the secret stages", () => {
+    const store = createStore();
+    store.pairPeer(desktopPeer, PIN, { allowDirectPinRuntimeHost: true });
+    expect(store.getPairingRecord(desktopPeer.deviceId)?.runtimeHostGranted).toBe(true);
+
+    // Re-pairing over Relay cannot authorize a runtime host.
+    const rotated = store.pairPeer(desktopPeer, PIN, { allowDirectPinRuntimeHost: false });
+
+    expect(store.hasPendingRotation(desktopPeer.deviceId)).toBe(true);
+    expect(store.getPairingRecord(desktopPeer.deviceId)?.runtimeHostGranted).toBe(false);
+    expect(store.authenticate(desktopPeer.deviceId, rotated.secret)).toBe(true);
+    expect(store.getPairingRecord(desktopPeer.deviceId)?.runtimeHostGranted).toBe(false);
+  });
+
+  it("keeps an existing grant while a re-pair that would elevate is unproven", () => {
+    const store = createStore();
+    store.pairPeer(desktopPeer, PIN, { allowDirectPinRuntimeHost: true });
+    store.pairPeer(desktopPeer, PIN, { allowDirectPinRuntimeHost: true });
+
+    expect(store.getPairingRecord(desktopPeer.deviceId)?.runtimeHostGranted).toBe(true);
+  });
+});
