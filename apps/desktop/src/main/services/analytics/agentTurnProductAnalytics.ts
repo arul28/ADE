@@ -33,6 +33,13 @@ export function captureAgentTurnSettledAnalytics(args: {
 
   if (event.status === "completed") {
     analytics.captureInternal({
+      event: "ade_app_installed",
+      surface: "api",
+      properties: {
+        install_source: "unknown",
+      },
+    });
+    analytics.captureInternal({
       event: "ade_activated",
       surface: "api",
       projectId,

@@ -12,9 +12,7 @@ type DetectInstallSourceArgs = {
   execPath: string;
   resourcesPath?: string | null;
   configuredSource?: string | null;
-  homebrewPrefix?: string | null;
   realpath?: (candidate: string) => string;
-  exists?: (candidate: string) => boolean;
 };
 
 function canonicalPath(
@@ -42,12 +40,6 @@ export function detectInstallSource(args: DetectInstallSourceArgs): ProductAnaly
     .flatMap((candidate) => [candidate, canonicalPath(candidate, realpath)])
     .filter((candidate): candidate is string => Boolean(candidate));
   if (candidates.some((candidate) => /(?:^|[/\\])(?:homebrew|caskroom)(?:[/\\]|$)/i.test(candidate))) {
-    return "homebrew";
-  }
-
-  const homebrewPrefix = canonicalPath(args.homebrewPrefix, realpath);
-  const exists = args.exists ?? fs.existsSync;
-  if (homebrewPrefix && exists(path.join(homebrewPrefix, "Caskroom", "ade"))) {
     return "homebrew";
   }
 

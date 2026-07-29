@@ -734,6 +734,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       state = rollQuotaDay(readState(args.stateFilePath, now()), now());
       if (!state.enabled) return { accepted: false, reason: "disabled" };
       if (state.identifiedUserHash === userHash) return { accepted: false, reason: "duplicate" };
+      const posthog = ensureClient(state);
+      if (!posthog) return { accepted: false, reason: "disabled" };
+      // A rollover summary belongs to the identity that accumulated it. Emit
+      // it before detaching that account so an account switch cannot attribute
+      // the prior account's quota usage to the new anonymous or known user.
+      emitPendingBudgetSummary(state, posthog);
       // Detach the prior account before attempting the new identify. If the
       // identify is then suppressed by a quota or transport failure, later
       // events remain anonymous instead of leaking into the prior account.
@@ -755,9 +761,6 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         writeState(args.stateFilePath, state);
         return { accepted: false, reason: "rate_limited" };
       }
-      const posthog = ensureClient(state);
-      if (!posthog) return { accepted: false, reason: "disabled" };
-      emitPendingBudgetSummary(state, posthog);
       if (state.quota.accepted >= dailyBudget) {
         incrementDrop(state.quota, "daily_budget");
         writeState(args.stateFilePath, state);

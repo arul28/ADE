@@ -653,19 +653,27 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
   };
 }
 
+export function syncAccountAnalyticsIdentity(
+  status: AccountAuthStatus,
+  analytics?: AccountAnalyticsIdentity,
+): AccountAuthStatus {
+  if (status.signedIn) {
+    analytics?.identifyAccount(status.userId);
+  } else {
+    analytics?.resetAccountIdentity();
+  }
+  return status;
+}
+
 export function createAccountActionDomainService(
   service: AccountAuthService,
   analytics?: AccountAnalyticsIdentity,
 ): AccountActionDomainService {
-  const identifyStatus = (status: AccountAuthStatus): AccountAuthStatus => {
-    if (status.signedIn) analytics?.identifyAccount(status.userId);
-    return status;
-  };
   return {
     startLogin: () => service.startLogin(),
     pollLogin: async (args) => {
       const result = await service.pollLogin(readNonEmptyString(args?.sessionId) ?? "");
-      identifyStatus(result.authStatus);
+      syncAccountAnalyticsIdentity(result.authStatus, analytics);
       return result;
     },
     startDeviceLogin: (args) => service.startDeviceLogin({
@@ -673,10 +681,10 @@ export function createAccountActionDomainService(
     }),
     pollDeviceLogin: async (args) => {
       const result = await service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? "");
-      identifyStatus(result.authStatus);
+      syncAccountAnalyticsIdentity(result.authStatus, analytics);
       return result;
     },
-    status: () => identifyStatus(service.getStatus()),
+    status: () => syncAccountAnalyticsIdentity(service.getStatus(), analytics),
     cancelLogin: (args) => service.cancelLogin(readNonEmptyString(args?.sessionId) ?? ""),
     signOut: () => {
       const status = service.signOut();

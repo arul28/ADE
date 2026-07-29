@@ -20,13 +20,14 @@ describe("detectInstallSource", () => {
     expect(detectInstallSource({
       isPackaged: true,
       execPath: "/private/tmp/ADE.app/Contents/MacOS/ADE",
-      homebrewPrefix: "/opt/homebrew",
-      exists: (candidate) => candidate === "/opt/homebrew/Caskroom/ade",
-    })).toBe("homebrew");
+      resourcesPath: "/private/tmp/ADE.app/Contents/Resources",
+      realpath: (candidate) => candidate,
+    })).toBe("unknown");
     expect(detectInstallSource({
       isPackaged: true,
-      execPath: "/private/tmp/ADE.app/Contents/MacOS/ADE",
-      exists: () => false,
-    })).toBe("unknown");
+      execPath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      resourcesPath: "/Applications/ADE.app/Contents/Resources",
+      realpath: (candidate) => candidate,
+    })).toBe("direct_download");
   });
 });

@@ -705,6 +705,45 @@ describe("productAnalyticsService", () => {
     fs.rmSync(first.root, { recursive: true, force: true });
   });
 
+  it("attributes a rolled quota summary to the prior account before switching identities", () => {
+    let nowMs = Date.parse("2026-07-13T23:59:00.000Z");
+    const first = makeHarness({ now: () => nowMs });
+    expect(first.service.identifyAccount("account_one").accepted).toBe(true);
+    const priorIdentity = first.messages[0]?.distinctId;
+    const statePath = path.join(first.root, "analytics.json");
+    const persisted = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      quota: { accepted: number; dropped: number };
+    };
+    persisted.quota.accepted = 5;
+    persisted.quota.dropped = 2;
+    fs.writeFileSync(statePath, `${JSON.stringify(persisted)}\n`);
+
+    nowMs = Date.parse("2026-07-14T00:01:00.000Z");
+    const restarted = makeHarness({
+      root: first.root,
+      messages: first.messages,
+      now: () => nowMs,
+    });
+    expect(restarted.service.identifyAccount("account_two")).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+
+    expect(first.messages[1]).toMatchObject({
+      event: "ade_analytics_budget",
+      distinctId: priorIdentity,
+      properties: {
+        sent_count: 5,
+        dropped_count: 2,
+      },
+    });
+    expect(first.messages[2]).toMatchObject({
+      event: "$identify",
+    });
+    expect(first.messages[2]?.distinctId).not.toBe(priorIdentity);
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
   it("normalizes persisted identify quotas and rejects timestamps outside the active minute", () => {
     const nowMs = Date.parse("2026-07-13T12:00:00.000Z");
     const first = makeHarness({ now: () => nowMs });
@@ -832,7 +871,7 @@ describe("product analytics producers", () => {
       event: settledEvent({ status: "failed", sessionId: "session-2" }),
     });
 
-    expect(captures).toHaveLength(4);
+    expect(captures).toHaveLength(5);
     expect(captures[0]).toEqual({
       event: "ade_work_session_completed",
       surface: "api",
@@ -847,15 +886,20 @@ describe("product analytics producers", () => {
         source: "runtime",
       },
     });
-    expect(captures[1]).toMatchObject({
+    expect(captures[1]).toEqual({
+      event: "ade_app_installed",
+      surface: "api",
+      properties: { install_source: "unknown" },
+    });
+    expect(captures[2]).toMatchObject({
       event: "ade_activated",
       properties: { trigger: "work_session_completed" },
     });
-    expect(captures[2]).toMatchObject({
+    expect(captures[3]).toMatchObject({
       event: "ade_work_session_completed",
       properties: { feature: "chat", outcome: "failure" },
     });
-    expect(captures[3]).toMatchObject({
+    expect(captures[4]).toMatchObject({
       event: "ade_error",
       sessionId: "session-2",
       properties: { feature: "chat", error_kind: "other", recoverable: true },
