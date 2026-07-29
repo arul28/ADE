@@ -8749,7 +8749,7 @@ function buildProofPlan(args: string[]): CliPlan {
         actionCallStep(
           "result",
           "ingest_computer_use_artifacts",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { callerRoot: process.cwd() }),
         ),
       ],
     };
@@ -10445,6 +10445,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
                 backendStyle: "manual",
                 backendName: "ade-browser",
                 toolName: "browser proof",
+                callerRoot: process.cwd(),
                 ...ownerBase,
                 inputs: [
                   {

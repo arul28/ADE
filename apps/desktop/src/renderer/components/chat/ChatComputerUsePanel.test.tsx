@@ -187,7 +187,10 @@ describe("proof rendering", () => {
       title: "Lost proof",
       availability: "unimported",
       uri: "shots/proof.png",
-      metadata: { sourcePath: "shots/proof.png" },
+      metadata: {
+        sourcePath: "shots/proof.png",
+        callerRoot: "/project/.ade/worktrees/lane-a",
+      },
     });
     render(<ChatComputerUsePanel snapshot={snapshotOf([broken])} onRefresh={vi.fn()} />);
 
@@ -199,6 +202,35 @@ describe("proof rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Locate Lost proof in its lane" }));
     await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-4" }));
+  });
+
+  it("offers recovery for a local source URI but not an HTTP source URI", async () => {
+    const recoverArtifact = vi.fn().mockResolvedValue({});
+    (window.ade as any).computerUse.recoverArtifact = recoverArtifact;
+
+    const localUri = artifact(8, {
+      title: "URI proof",
+      availability: "unimported",
+      metadata: {
+        sourceUri: "shots/from-uri.png",
+        callerRoot: "/project/.ade/worktrees/lane-b",
+      },
+    });
+    const remoteUri = artifact(9, {
+      title: "Remote proof",
+      availability: "unimported",
+      metadata: { sourceUri: "https://example.com/proof.png" },
+    });
+    render(
+      <ChatComputerUsePanel
+        snapshot={snapshotOf([localUri, remoteUri])}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Locate URI proof in its lane" }));
+    await waitFor(() => expect(recoverArtifact).toHaveBeenCalledWith({ artifactId: "artifact-8" }));
+    expect(screen.queryByRole("button", { name: "Locate Remote proof in its lane" })).toBeNull();
   });
 
   it("surfaces a failed delete instead of silently doing nothing", async () => {

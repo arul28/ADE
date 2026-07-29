@@ -5922,6 +5922,29 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes the caller cwd when ingesting proof directly", () => {
+    const plan = buildCliPlan([
+      "proof",
+      "ingest",
+      "--input-json",
+      JSON.stringify({
+        backendStyle: "external_cli",
+        backendName: "agent-browser",
+        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+      }),
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") throw new Error("Expected proof ingest to produce an execute plan");
+
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "ingest_computer_use_artifacts",
+      arguments: {
+        callerRoot: process.cwd(),
+        inputs: [{ kind: "screenshot", path: "shots/proof.png" }],
+      },
+    });
+  });
+
   it("resolves a relative proof attach path against the caller's cwd", () => {
     // The agent's cwd is its lane worktree; the runtime storing the artifact
     // runs at the project root. Resolving here is what stops the runtime from
@@ -9959,6 +9982,7 @@ describe("ADE CLI", () => {
       arguments: {
         backendName: "ade-browser",
         toolName: "browser proof",
+        callerRoot: process.cwd(),
         inputs: [
           {
             kind: "screenshot",

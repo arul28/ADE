@@ -67,9 +67,19 @@ function isBrokenArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifactAvailability(artifact) !== "available";
 }
 
+function localSourceValue(value: unknown): string | null {
+  const source = typeof value === "string" ? value.trim() : "";
+  return source && !externalArtifactUrl(source) ? source : null;
+}
+
+function recoverableArtifactSource(artifact: ComputerUseArtifactView): string | null {
+  return localSourceValue(artifact.metadata?.sourcePath)
+    ?? localSourceValue(artifact.metadata?.sourceUri);
+}
+
 function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
-  const source = artifact.metadata?.sourcePath ?? artifact.metadata?.absolutePath;
-  const value = typeof source === "string" ? source.trim() : "";
+  const value = recoverableArtifactSource(artifact)
+    ?? localSourceValue(artifact.metadata?.absolutePath);
   if (!value) return null;
   const segments = value.split(/[\\/]/).filter(Boolean);
   return segments.length > 2 ? `…/${segments.slice(-2).join("/")}` : value;
@@ -470,7 +480,7 @@ function DrawerProofTile({
   const previewUnavailable = !storedFileMissing
     && (mediaFailed || (loaded && !preview && (image || video)));
   const hasPreviewProblem = storedFileMissing || previewUnavailable;
-  const recoverable = typeof artifact.metadata?.sourcePath === "string";
+  const recoverable = recoverableArtifactSource(artifact) !== null;
 
   useEffect(() => {
     setMediaFailed(false);
