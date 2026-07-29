@@ -325,14 +325,25 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     accountCancellable = AccountService.shared.objectWillChange
       .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
       .sink { [weak self] _ in
-        Task { @MainActor in self?.refreshPushSnapshot() }
+        Task { @MainActor in
+          guard let self else { return }
+          if let syncService = self.boundService {
+            self.refresh(from: syncService)
+          } else {
+            self.refreshPushSnapshot()
+          }
+        }
       }
   }
 
   private func refresh(from syncService: SyncService) {
     let activeProfile = syncService.activeHostProfile
     let health = syncService.connectionHealth
-    let hostDisplayName = Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName)
+    let hostDisplayName = accountMachinePresentationName(
+      hostIdentity: activeProfile?.hostIdentity,
+      fallback: Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName),
+      machines: AccountService.shared.machines
+    )
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
     let displayedDiscovery = syncDiscoveredHostsForDisplay(
       savedHosts: syncService.savedReconnectHosts,
@@ -700,7 +711,6 @@ struct SettingsMachinesSection: View {
     let routeHint: String
     let online: Bool
     let isCurrent: Bool
-    let lastSeenAt: Date?
     let kind: Kind
   }
 
@@ -742,7 +752,6 @@ struct SettingsMachinesSection: View {
           ),
           online: machine.online,
           isCurrent: current,
-          lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
           kind: .account(machine)
         )
       )
@@ -781,7 +790,6 @@ struct SettingsMachinesSection: View {
         ),
         online: online,
         isCurrent: current,
-        lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt),
         kind: .saved(host)
       ))
     }
@@ -874,28 +882,42 @@ struct SettingsMachinesSection: View {
     let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
-      MachineRowView(
-        deviceSymbol: deviceSymbol(entry),
-        title: entry.name,
-        routeHint: entry.routeHint,
-        online: entry.online,
-        isAuthenticatedCurrent: entry.isCurrent,
-        statusPill: entry.isCurrent ? .connected : nil,
-        affordance: rowAffordance(entry, isConnecting: isConnecting),
-        surface: .row,
-        onRename: accountMachine(from: entry).map { machine in
-          { renamingMachine = machine }
+      ZStack(alignment: .trailing) {
+        Button {
+          connect(entry)
+        } label: {
+          MachineRowView(
+            deviceSymbol: deviceSymbol(entry),
+            title: entry.name,
+            routeHint: entry.routeHint,
+            online: entry.online,
+            isAuthenticatedCurrent: entry.isCurrent,
+            statusPill: entry.isCurrent ? .connected : nil,
+            affordance: rowAffordance(entry, isConnecting: isConnecting),
+            surface: .row
+          )
         }
-      )
-      .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .onTapGesture {
-        guard tappable else { return }
-        connect(entry)
+        .buttonStyle(ADEScaleButtonStyle())
+        .disabled(!tappable)
+        .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : "saved connection")")
+        .accessibilityHint(tappable ? "Connect." : "")
+
+        if let machine = accountMachine(from: entry) {
+          Button {
+            renamingMachine = machine
+          } label: {
+            Image(systemName: "pencil")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 44, height: 44)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .padding(.trailing, 58)
+          .accessibilityLabel("Rename \(entry.name)")
+        }
       }
       .opacity(tappable || entry.isCurrent ? 1 : 0.72)
-      .accessibilityAddTraits(tappable ? .isButton : [])
-      .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : "saved connection")")
-      .accessibilityHint(tappable ? "Connect." : "")
 
       if let error = rowErrors[entry.id] {
         VStack(alignment: .leading, spacing: 7) {
@@ -988,82 +1010,6 @@ struct SettingsMachinesSection: View {
           ADEHaptics.error()
           rowErrors[entry.id] = syncService.lastError ?? "ADE could not reconnect to \(host.hostName)."
         }
-      }
-    }
-  }
-}
-
-private struct SettingsMachineRenameSheet: View {
-  @Environment(\.dismiss) private var dismiss
-  @ObservedObject private var account = AccountService.shared
-
-  let machine: AccountMachine
-  @State private var name: String
-  @State private var isSaving = false
-  @State private var errorText: String?
-
-  init(machine: AccountMachine) {
-    self.machine = machine
-    _name = State(initialValue: machine.displayName)
-  }
-
-  var body: some View {
-    NavigationStack {
-      VStack(alignment: .leading, spacing: 14) {
-        TextField("Machine name", text: $name)
-          .textInputAutocapitalization(.words)
-          .submitLabel(.done)
-          .textFieldStyle(.roundedBorder)
-          .disabled(isSaving)
-          .onSubmit { save(trimmedName) }
-
-        if let errorText {
-          Text(errorText)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-        }
-
-        Button("Save") { save(trimmedName) }
-          .buttonStyle(.borderedProminent)
-          .disabled(isSaving || trimmedName.isEmpty || trimmedName.count > 80)
-          .frame(maxWidth: .infinity)
-
-        if machine.customName != nil {
-          Button("Use hostname") { save(nil) }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .disabled(isSaving)
-            .frame(maxWidth: .infinity, minHeight: 44)
-        }
-      }
-      .padding(20)
-      .adeScreenBackground()
-      .navigationTitle("Rename machine")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-            .disabled(isSaving)
-        }
-      }
-    }
-  }
-
-  private var trimmedName: String {
-    name.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private func save(_ customName: String?) {
-    guard !isSaving else { return }
-    isSaving = true
-    errorText = nil
-    Task {
-      do {
-        try await account.renameMachine(machine, customName: customName)
-        dismiss()
-      } catch {
-        errorText = error.localizedDescription
-        isSaving = false
       }
     }
   }

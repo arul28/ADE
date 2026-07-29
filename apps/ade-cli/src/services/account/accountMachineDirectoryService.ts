@@ -13,6 +13,7 @@ import type {
   AdeAccountMachinesResult,
 } from "../../../../desktop/src/shared/types/account";
 import {
+  accountMachineDisplayName,
   accountMachineSecureSyncEndpoints,
   createAccountDirectoryCorrelationId,
   fetchAccountMachines,
@@ -454,6 +455,7 @@ export class AccountMachineDirectoryService {
       throw new Error("Your ADE account changed before this machine could be saved. Try again.");
     }
     const firstEndpoint = credentials.endpoints[0];
+    const displayName = accountMachineDisplayName(machine);
     const fallbackHostname = (() => {
       if (!firstEndpoint) return machine.name ?? machine.machineKey;
       try {
@@ -463,7 +465,7 @@ export class AccountMachineDirectoryService {
       }
     })();
     const target: RemoteRuntimeTarget = (this.options.targetRegistry ?? new RemoteTargetRegistry()).save({
-      name: machine.name ?? credentials.hostIdentity.name,
+      name: displayName ?? credentials.hostIdentity.name,
       hostname: fallbackHostname,
       transport: "paired",
       pairedMachine: {
@@ -482,7 +484,7 @@ export class AccountMachineDirectoryService {
       targetId: target.id,
       machineKey: machine.machineKey,
       deviceId: hostDeviceId,
-      name: machine.name ?? credentials.hostIdentity.name,
+      name: displayName ?? credentials.hostIdentity.name,
     };
   }
 

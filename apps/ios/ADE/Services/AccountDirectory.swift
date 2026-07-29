@@ -123,6 +123,28 @@ private struct AccountMachinesResponse: Codable {
   let machines: [AccountMachine]
 }
 
+func accountMachinePresentationName(
+  hostIdentity: String?,
+  fallback: String?,
+  machines: [AccountMachine]
+) -> String? {
+  let identity = hostIdentity?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+  if let identity, !identity.isEmpty,
+     let machine = machines.first(where: {
+       $0.machineKey.lowercased() == identity
+         || $0.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == identity
+     }) {
+    return machine.displayName
+  }
+  guard let fallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !fallback.isEmpty else {
+    return nil
+  }
+  return fallback
+}
+
 /// Thin HTTP client for the account-directory Worker. The official Worker URL
 /// ships in the app build settings and can be overridden by another build;
 /// when it's absent or unreachable, callers degrade to a quiet empty state and

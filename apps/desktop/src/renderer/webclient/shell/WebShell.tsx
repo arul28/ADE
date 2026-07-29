@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { buildDeeplink } from "../../../shared/deeplinks";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
+import {
+  accountMachineConnectionState,
+  accountMachineDisplayName,
+} from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import { browserAccountIsSignedIn, type BrowserAccountSnapshot } from "../account/client";
@@ -150,7 +153,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
               >
                 <span style={{ display: "grid", minWidth: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textSecondary }}>
-                    {machine.name ?? "Unnamed machine"}
+                    {accountMachineDisplayName(machine) ?? "Unnamed machine"}
                   </span>
                   <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
                     {machine.lastSeenAt == null ? "Last seen unknown" : `Last seen ${new Date(machine.lastSeenAt).toLocaleString()}`}

@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
+  accountMachineDisplayName,
   accountMachinePairedSyncEndpoints,
   accountMachineSecureSyncEndpoints,
 } from "../../../shared/accountDirectory";
@@ -453,7 +454,7 @@ export class AdeSyncClient {
         ])];
         return {
           envId: existing?.envId ?? uuid(),
-          machineName: args.machine.name ?? helloOk.brain.deviceName,
+          machineName: accountMachineDisplayName(args.machine) ?? helloOk.brain.deviceName,
           hostDeviceId: expectedHostDeviceId,
           accountOwnerUserId: existing?.accountOwnerUserId == null && existing
             ? null

@@ -88,9 +88,6 @@ export type AdeAccountMachineRemovalResult = {
   machineKey: string;
 };
 
-/** Updated directory record after changing or clearing its account-wide name. */
-export type AdeAccountMachineRenameResult = AdeAccountMachine;
-
 /** Token-free result of adopting an account-directory machine for paired use. */
 export type AdeAccountMachinePairResult = {
   targetId: string;

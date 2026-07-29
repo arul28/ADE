@@ -1931,6 +1931,22 @@ final class ADETests: XCTestCase {
       """.data(using: .utf8))
     let machine = try JSONDecoder().decode(AccountMachine.self, from: data)
     XCTAssertEqual(machine.displayName, "Studio")
+    XCTAssertEqual(
+      accountMachinePresentationName(
+        hostIdentity: "machine-key",
+        fallback: "Reported hostname",
+        machines: [machine]
+      ),
+      "Studio"
+    )
+    XCTAssertEqual(
+      accountMachinePresentationName(
+        hostIdentity: "other-machine",
+        fallback: "Connected hostname",
+        machines: [machine]
+      ),
+      "Connected hostname"
+    )
   }
 
   func testHubFirstConnectExpandsOnlyActiveProject() {

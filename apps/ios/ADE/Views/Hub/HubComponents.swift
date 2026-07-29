@@ -89,6 +89,7 @@ private struct HubCircularButton: View {
 /// Compact "● Machine" pill — tap opens connection settings.
 struct HubConnectionPill: View {
   @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var account = AccountService.shared
 
   private var tint: Color {
     let health = syncService.connectionHealth
@@ -101,7 +102,11 @@ struct HubConnectionPill: View {
   }
 
   private var label: String {
-    if let host = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
+    if let host = accountMachinePresentationName(
+      hostIdentity: syncService.activeHostProfile?.hostIdentity,
+      fallback: syncService.hostName,
+      machines: account.machines
+    ) {
       return host
     }
     switch syncService.connectionHealth.transport {

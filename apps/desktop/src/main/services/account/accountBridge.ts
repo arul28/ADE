@@ -15,6 +15,7 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
+import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createFileLogger, type Logger } from "../logging/logger";
 import os from "node:os";
@@ -265,13 +266,16 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (result.state === "ok") {
         accountMachineNames.clear();
         for (const machine of result.machines) {
-          const name = machine.name?.trim() || machine.machineKey;
+          const name = accountMachineDisplayName(machine) || machine.machineKey;
           accountMachineNames.set(machine.machineKey, name);
           if (machine.deviceId?.trim()) {
             accountMachineNames.set(machine.deviceId.trim(), name);
           }
           if (machine.name?.trim()) {
             accountMachineNames.set(machine.name.trim().toLowerCase(), name);
+          }
+          if (machine.customName?.trim()) {
+            accountMachineNames.set(machine.customName.trim().toLowerCase(), name);
           }
         }
       }

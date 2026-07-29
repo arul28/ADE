@@ -214,7 +214,7 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
   return {
     machineKey,
     deviceId: optionalBoundedString(value.deviceId, MAX_ID_CHARS),
-    name: customName ?? reportedName,
+    name: reportedName,
     customName,
     platform: optionalBoundedString(value.platform, MAX_LABEL_CHARS),
     deviceType: optionalBoundedString(value.deviceType, MAX_LABEL_CHARS),
@@ -227,6 +227,10 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     lastSeenAt,
     online: value.online === true,
   };
+}
+
+export function accountMachineDisplayName(machine: AdeAccountMachine): string | null {
+  return machine.customName?.trim() || machine.name?.trim() || null;
 }
 
 export function parseAccountMachinesPayload(payload: unknown): AdeAccountMachine[] {
@@ -684,16 +688,21 @@ export function selectAccountMachine(
   if (stableMatch && byStableId.length === 1) return stableMatch;
   if (byStableId.length > 1) {
     const choices = byStableId.map(
-      (machine) => `${machine.name ?? "Unnamed machine"} (${machine.machineKey})`,
+      (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
     );
     throw new Error(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
 
-  const byName = machines.filter((machine) => machine.name?.trim().toLowerCase() === needle);
+  const byName = machines.filter((machine) =>
+    machine.customName?.trim().toLowerCase() === needle
+    || machine.name?.trim().toLowerCase() === needle
+  );
   const nameMatch = byName[0];
   if (nameMatch && byName.length === 1) return nameMatch;
   if (byName.length > 1) {
-    const choices = byName.map((machine) => `${machine.name ?? "Unnamed machine"} (${machine.machineKey})`);
+    const choices = byName.map(
+      (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
+    );
     throw new Error(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
   throw new Error(`Account machine not found: ${query}`);

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { CaretDown, CaretUp, Check, Cloud, PencilSimple, PlugsConnected, X } from "@phosphor-icons/react";
 import type { AdeAccountMachine } from "../../../shared/types";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
+import {
+  accountMachineConnectionState,
+  accountMachineDisplayName,
+} from "../../../shared/accountDirectory";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import {
@@ -66,26 +69,29 @@ export function AccountMachineRow({
   onRenamed,
 }: AccountMachineRowProps) {
   const { machine } = row;
+  const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
   const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(machine.name ?? "");
+  const [renameValue, setRenameValue] = useState(displayName);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
   useEffect(() => {
-    if (!renaming) setRenameValue(machine.name ?? "");
-  }, [machine.name, renaming]);
+    if (!renaming) setRenameValue(displayName);
+  }, [displayName, renaming]);
   const connectionState = accountMachineConnectionState(machine);
   const available = connectionState === "available";
   const trulyOffline = !machine.online;
   const needsSetup = connectionState === "unreachable";
   const canExplain = trulyOffline || needsSetup;
 
-  const saveRename = async (customName: string | null = renameValue) => {
+  const saveRename = async (customName?: string | null) => {
     const api = window.ade.account;
     if (!api?.renameMachine) return;
+    const nextName = customName === undefined ? renameValue.trim() : customName;
+    if (nextName !== null && !nextName) return;
     setRenameBusy(true);
     setRenameError(null);
     try {
-      await api.renameMachine(machine.machineKey, customName);
+      await api.renameMachine(machine.machineKey, nextName);
       setRenaming(false);
       onRenamed?.();
     } catch (error) {
@@ -165,7 +171,7 @@ export function AccountMachineRow({
                   </button>
                 </form>
               ) : (
-                <span style={nameStyle}>{machine.name ?? "Unnamed machine"}</span>
+                <span style={nameStyle}>{displayName}</span>
               )}
             </div>
             <div style={{ ...subTextStyle, display: "flex", alignItems: "center", gap: 5 }}>
@@ -181,13 +187,23 @@ export function AccountMachineRow({
             {!renaming ? (
               <button
                 type="button"
-                aria-label={`Rename ${machine.name ?? "machine"}`}
+                aria-label={`Rename ${displayName}`}
                 disabled={busy}
                 onClick={() => setRenaming(true)}
                 style={outlineButton({ height: 30, padding: "0 8px", fontSize: 11 })}
               >
                 <PencilSimple size={13} weight="bold" />
                 Rename
+              </button>
+            ) : null}
+            {machine.customName && !renaming ? (
+              <button
+                type="button"
+                disabled={busy || renameBusy}
+                onClick={() => void saveRename(null)}
+                style={outlineButton({ height: 30, padding: "0 8px", fontSize: 11 })}
+              >
+                Use hostname
               </button>
             ) : null}
             {available ? (

@@ -92,6 +92,7 @@ function accountMachineMatchesNearby(
   if (accountDeviceId && discoveredDeviceId) {
     return accountDeviceId === discoveredDeviceId;
   }
+  // Nearby discovery advertises the reported hostname, never the account label.
   const accountName = accountMachine.name?.trim().toLowerCase() ?? "";
   const discoveredName = discoveredMachine.machineName.trim().toLowerCase();
   return Boolean(accountName && discoveredName && accountName === discoveredName);

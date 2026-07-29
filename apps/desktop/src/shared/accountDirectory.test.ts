@@ -1,22 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
   accountMachineAdoptionRoutes,
+  accountMachineDisplayName,
   parseAccountMachine,
 } from "./accountDirectory";
 import type { AdeAccountMachine } from "./types/account";
 
 describe("accountMachineAdoptionRoutes", () => {
-  it("prefers customName while preserving the additive directory field", () => {
-    expect(parseAccountMachine({
+  it("preserves the hostname and prefers customName only for display", () => {
+    const machine = parseAccountMachine({
       machineKey: "machine-studio",
       name: "arul-macbook",
       customName: "Build Mac",
       reachableEndpoints: [],
       online: true,
-    })).toMatchObject({
-      name: "Build Mac",
+    });
+    expect(machine).toMatchObject({
+      name: "arul-macbook",
       customName: "Build Mac",
     });
+    expect(accountMachineDisplayName(machine!)).toBe("Build Mac");
   });
 
   it("orders validated LAN, tailnet, and relay routes", () => {

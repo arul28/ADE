@@ -37,6 +37,7 @@ import {
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
   accountMachineAdoptionRoutes,
+  accountMachineDisplayName,
   accountMachinePairedSyncEndpoints,
   resolveAccountHelloPairing,
   type AccountMachineAdoptionRoute,
@@ -1128,7 +1129,7 @@ export class DesktopPairedMachineStore {
       );
     }
     throw new Error(
-      `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${
+      `Could not connect to ${accountMachineDisplayName(machine) ?? machine.machineKey} with your ADE account. ${
         visibleFailures.join("; ")
       }`,
     );

@@ -490,7 +490,11 @@ async function handleRename(
      where user_id = ? and machine_key = ?
   `).bind(userId, machineKey).first<MachineRow>();
   if (!row) return json({ error: "machine not found" }, { status: 404 });
-  return json(machineRecord(row));
+  return json({
+    ...machineRecord(row),
+    online: typeof row.last_seen_at === "number"
+      && Date.now() - row.last_seen_at <= onlineWindowMs(env),
+  });
 }
 
 function trustedWebClientOrigin(env: Env): string | null {

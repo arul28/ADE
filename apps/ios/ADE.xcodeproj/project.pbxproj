@@ -191,6 +191,7 @@
 		F10000000000000000000004 /* SettingsPinSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000004 /* SettingsPinSheet.swift */; };
 		F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000005 /* SettingsAppearanceSection.swift */; };
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
+		F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsMachineRenameSheet.swift */; };
 		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
 		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
 		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
@@ -488,6 +489,7 @@
 		F20000000000000000000004 /* SettingsPinSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPinSheet.swift; path = ADE/Views/Settings/SettingsPinSheet.swift; sourceTree = "<group>"; };
 		F20000000000000000000005 /* SettingsAppearanceSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAppearanceSection.swift; path = ADE/Views/Settings/SettingsAppearanceSection.swift; sourceTree = "<group>"; };
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
+		F20000000000000000000007 /* SettingsMachineRenameSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachineRenameSheet.swift; path = ADE/Views/Settings/SettingsMachineRenameSheet.swift; sourceTree = "<group>"; };
 		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
 		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
@@ -867,6 +869,7 @@
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
+				F20000000000000000000007 /* SettingsMachineRenameSheet.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
 				C5A00000000000000000000B /* SSHPairingViewState.swift */,
@@ -1441,6 +1444,7 @@
 				F10000000000000000000004 /* SettingsPinSheet.swift in Sources */,
 				F10000000000000000000005 /* SettingsAppearanceSection.swift in Sources */,
 				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
+				F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,
 				G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */,

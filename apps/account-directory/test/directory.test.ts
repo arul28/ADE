@@ -1108,6 +1108,7 @@ describe("machine directory", () => {
       machineKey: "machine-a",
       name: "Machine machine-a",
       customName: "Studio Mac",
+      online: true,
     }));
 
     const listed = await handleRequest(request("GET", "/account/machines", token), env);

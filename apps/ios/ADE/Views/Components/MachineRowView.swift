@@ -60,7 +60,6 @@ struct MachineRowView: View {
   var statusPill: StatusPill?
   var affordance: Affordance
   var surface: Surface = .row
-  var onRename: (() -> Void)?
 
   private let cornerRadius: CGFloat = 16
 
@@ -86,20 +85,7 @@ struct MachineRowView: View {
 
       Spacer(minLength: 8)
 
-      HStack(spacing: 4) {
-        if let onRename {
-          Button(action: onRename) {
-            Image(systemName: "pencil")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(width: 44, height: 44)
-              .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Rename \(title)")
-        }
-        trailing
-      }
+      trailing
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 13)
