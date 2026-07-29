@@ -6,6 +6,7 @@ import {
   generateConnectionId,
   handleRequest,
   hmacSha256Hex,
+  locationHintForGeo,
   routeTunnelPath,
   verifySignedQuery,
   type TunnelRelayEnv,
@@ -201,13 +202,105 @@ describe("routeTunnelPath", () => {
       id: "abcdef01",
     });
     expect(routeTunnelPath(`/connect/${MACHINE_KEY}`)).toEqual({ kind: "connect", machineKey: MACHINE_KEY });
+    expect(routeTunnelPath(`/prewarm/${MACHINE_KEY}`)).toEqual({ kind: "prewarm", machineKey: MACHINE_KEY });
   });
 
   it("rejects bad machine keys and connection ids", () => {
     expect(routeTunnelPath("/host/not-hex")).toBeNull();
     expect(routeTunnelPath(`/host/${MACHINE_KEY}/pipe/NOThex!`)).toBeNull();
     expect(routeTunnelPath(`/machines/${MACHINE_KEY}/publish`)).toBeNull();
+    expect(routeTunnelPath("/prewarm/not-hex")).toBeNull();
+    expect(routeTunnelPath(`/prewarm/${MACHINE_KEY}/extra`)).toBeNull();
     expect(routeTunnelPath("/unknown")).toBeNull();
+  });
+});
+
+describe("locationHintForGeo", () => {
+  it("splits the two-region continents on longitude", () => {
+    expect(locationHintForGeo({ continent: "NA", longitude: "-122.33" })).toBe("wnam"); // Seattle
+    expect(locationHintForGeo({ continent: "NA", longitude: "-73.94" })).toBe("enam"); // New York
+    expect(locationHintForGeo({ continent: "EU", longitude: "-0.13" })).toBe("weur"); // London
+    expect(locationHintForGeo({ continent: "EU", longitude: "30.52" })).toBe("eeur"); // Kyiv
+    expect(locationHintForGeo({ continent: "AS", longitude: "55.27" })).toBe("me"); // Dubai
+    expect(locationHintForGeo({ continent: "AS", longitude: "139.69" })).toBe("apac"); // Tokyo
+  });
+
+  it("maps the single-region continents", () => {
+    expect(locationHintForGeo({ continent: "sa", longitude: "-46.63" })).toBe("sam");
+    expect(locationHintForGeo({ continent: "AF", longitude: "18.42" })).toBe("afr");
+    expect(locationHintForGeo({ continent: "OC", longitude: "151.21" })).toBe("oc");
+  });
+
+  it("falls back to the larger half when the longitude is missing or junk", () => {
+    expect(locationHintForGeo({ continent: "NA" })).toBe("enam");
+    expect(locationHintForGeo({ continent: "EU", longitude: "not-a-number" })).toBe("weur");
+    expect(locationHintForGeo({ continent: "AS", longitude: 999 })).toBe("apac");
+    // An empty longitude is missing data, not the prime meridian — `Number("")`
+    // is 0, which would otherwise read as a real coordinate and pick `me`.
+    expect(locationHintForGeo({ continent: "AS", longitude: "" })).toBe("apac");
+    expect(locationHintForGeo({ continent: "AS", longitude: "  " })).toBe("apac");
+  });
+
+  it("declines to hint when the geography is unknown", () => {
+    // `request.cf` is absent under `wrangler dev` and for unrecognized regions;
+    // Cloudflare's own placement is the right answer there.
+    expect(locationHintForGeo(undefined)).toBeUndefined();
+    expect(locationHintForGeo(null)).toBeUndefined();
+    expect(locationHintForGeo({})).toBeUndefined();
+    expect(locationHintForGeo({ continent: "XX", longitude: "10" })).toBeUndefined();
+  });
+});
+
+describe("Durable Object placement", () => {
+  function routerHarness(): { env: TunnelRelayEnv; hints: Array<string | undefined> } {
+    const hints: Array<string | undefined> = [];
+    const stub = { fetch: async () => new Response("routed") } as unknown as DurableObjectStub;
+    const env = {
+      TUNNEL: {
+        idFromName: (name: string) => name as unknown as DurableObjectId,
+        get: (_id: DurableObjectId, options?: { locationHint?: string }) => {
+          hints.push(options?.locationHint);
+          return stub;
+        },
+      } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+    return { env, hints };
+  }
+
+  function geoRequest(path: string, cf?: Record<string, unknown>): Request {
+    const request = new Request(`https://relay.test${path}`);
+    return (cf ? Object.assign(request, { cf }) : request) as Request;
+  }
+
+  it("hints placement from the machine's own routes", async () => {
+    const { env, hints } = routerHarness();
+    const cf = { continent: "NA", longitude: "-122.33" };
+
+    await handleRequest(geoRequest(`/machines/${MACHINE_KEY}/claim`, cf), env);
+    await handleRequest(geoRequest(`/host/${MACHINE_KEY}`, cf), env);
+
+    expect(hints).toEqual(["wnam", "wnam"]);
+  });
+
+  it("never lets a phone's location place a machine's object", async () => {
+    const { env, hints } = routerHarness();
+    // A travelling phone must not drag the object away from the machine, and a
+    // pipe/prewarm arrives long after placement is already settled.
+    const cf = { continent: "AS", longitude: "139.69" };
+
+    await handleRequest(geoRequest(`/connect/${MACHINE_KEY}`, cf), env);
+    await handleRequest(geoRequest(`/prewarm/${MACHINE_KEY}`, cf), env);
+    await handleRequest(geoRequest(`/host/${MACHINE_KEY}/pipe/abcdef01`, cf), env);
+
+    expect(hints).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("omits the hint entirely when the request carries no geography", async () => {
+    const { env, hints } = routerHarness();
+
+    await handleRequest(geoRequest(`/machines/${MACHINE_KEY}/claim`), env);
+
+    expect(hints).toEqual([undefined]);
   });
 });
 

@@ -117,17 +117,36 @@ export class TunnelDurableObject implements DurableObject {
     { frames: (string | ArrayBuffer)[]; bytes: number }
   >();
   private readonly terminalSocketLogs = new WeakSet<WebSocket>();
+  // Pure overhead removal for the hot path; the socket's own attachment stays
+  // authoritative. Hibernation drops instance memory, so every read falls back
+  // to the durable copy (or a tag scan) and repopulates itself after a wake.
+  private readonly cachedAttachments = new WeakMap<WebSocket, SocketAttachment>();
+  private readonly cachedPartners = new WeakMap<WebSocket, WebSocket>();
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: TunnelRelayEnv,
   ) {}
 
+  /**
+   * The only writer of a socket attachment, so the instance cache can never
+   * drift from the durable copy that survives hibernation.
+   */
+  private writeAttachment(ws: WebSocket, attachment: SocketAttachment): void {
+    ws.serializeAttachment(attachment);
+    this.cachedAttachments.set(ws, attachment);
+  }
+
   /** One-time deploy migration for hibernated pre-epoch socket attachments. */
   private normalizedAttachment(ws: WebSocket): SocketAttachment | null {
+    const cached = this.cachedAttachments.get(ws);
+    if (cached) return cached;
     const attachment = ws.deserializeAttachment() as SocketAttachment | null;
     if (!attachment?.role) return null;
-    if (attachment.epoch) return attachment;
+    if (attachment.epoch) {
+      this.cachedAttachments.set(ws, attachment);
+      return attachment;
+    }
     const migrated = {
       ...attachment,
       epoch: LEGACY_CONTROL_EPOCH,
@@ -135,8 +154,16 @@ export class TunnelDurableObject implements DurableObject {
         ? { legacyStateUnknown: true as const }
         : {}),
     } satisfies SocketAttachment;
-    ws.serializeAttachment(migrated);
+    this.writeAttachment(ws, migrated);
     return migrated;
+  }
+
+  /** Drops both caches for a socket that has reached a terminal state. */
+  private forgetSocket(ws: WebSocket): void {
+    const partner = this.cachedPartners.get(ws);
+    if (partner) this.cachedPartners.delete(partner);
+    this.cachedPartners.delete(ws);
+    this.cachedAttachments.delete(ws);
   }
 
   private epochOf(attachment: SocketAttachment | null): string | null {
@@ -152,7 +179,26 @@ export class TunnelDurableObject implements DurableObject {
     if (route.kind === "host") return this.handleHost(request, url, route.machineKey);
     if (route.kind === "pipe") return this.handlePipe(request, url, route.machineKey, route.id);
     if (route.kind === "connect") return this.handleConnect(request, url);
+    if (route.kind === "prewarm") return this.handlePrewarm(request);
     return new Response("not found", { status: 404 });
+  }
+
+  /**
+   * Cheapest possible probe: simply reaching this object is what un-hibernates
+   * it, so a client that expects to connect shortly can pay the wake cost up
+   * front. Deliberately read-only — no attachment migration, no storage, no
+   * alarm, no signal to the host — so a prewarm can never perturb a live
+   * tunnel. Carries the same authorization stance as `/connect`: the
+   * machineKey is the secret, and nothing here is actionable without it.
+   */
+  private handlePrewarm(request: Request): Response {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response("method not allowed", { status: 405 });
+    }
+    const control = this.state.getWebSockets("control").some((ws) => (
+      this.isOpen(ws) && (ws.deserializeAttachment() as SocketAttachment | null)?.role === "control"
+    ));
+    return jsonResponse({ ok: true, control }, { headers: { "cache-control": "no-store" } });
   }
 
   private async handleClaim(request: Request): Promise<Response> {
@@ -441,7 +487,7 @@ export class TunnelDurableObject implements DurableObject {
     if (attachment.id) tags.push(`conn:${attachment.id}`);
     tags.push(`epoch:${epoch}`);
     this.state.acceptWebSocket(server, tags);
-    server.serializeAttachment({ ...attachment, epoch, ts: Date.now() } satisfies SocketAttachment);
+    this.writeAttachment(server, { ...attachment, epoch, ts: Date.now() } satisfies SocketAttachment);
     if (afterAccept) afterAccept(server);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -486,17 +532,26 @@ export class TunnelDurableObject implements DurableObject {
         ? "client"
         : null;
     if (!partnerRole) return null;
+    // The cache is only ever a hint, re-checked against the very predicate the
+    // scan uses, so a socket that closed since it was cached falls through.
+    const cached = this.cachedPartners.get(ws);
+    if (cached && this.isPartnerOf(cached, att, partnerRole)) return cached;
     for (const candidate of this.state.getWebSockets(`conn:${att.id}`)) {
-      if (candidate === ws || !this.isOpen(candidate)) continue;
-      const candidateAttachment = this.normalizedAttachment(candidate);
-      if (
-        candidateAttachment?.role === partnerRole
-        && this.epochOf(candidateAttachment) === this.epochOf(att)
-      ) {
-        return candidate;
-      }
+      if (candidate === ws || !this.isPartnerOf(candidate, att, partnerRole)) continue;
+      this.cachedPartners.set(ws, candidate);
+      this.cachedPartners.set(candidate, ws);
+      return candidate;
     }
+    this.cachedPartners.delete(ws);
     return null;
+  }
+
+  private isPartnerOf(candidate: WebSocket, att: SocketAttachment, partnerRole: SocketRole): boolean {
+    if (!this.isOpen(candidate)) return false;
+    const candidateAttachment = this.normalizedAttachment(candidate);
+    return candidateAttachment?.role === partnerRole
+      && candidateAttachment.id === att.id
+      && this.epochOf(candidateAttachment) === this.epochOf(att);
   }
 
   private controlMessageMatchesEpoch(messageEpoch: unknown, attachment: SocketAttachment): boolean {
@@ -532,8 +587,8 @@ export class TunnelDurableObject implements DurableObject {
       ...cleanPartnerAttachment
     } = partnerAttachment;
     const migratedSource = { ...sourceAttachment, established: true, ts: now } satisfies SocketAttachment;
-    ws.serializeAttachment(migratedSource);
-    partner.serializeAttachment({
+    this.writeAttachment(ws, migratedSource);
+    this.writeAttachment(partner, {
       ...cleanPartnerAttachment,
       established: true,
       ts: now,
@@ -661,7 +716,7 @@ export class TunnelDurableObject implements DurableObject {
         // buffered data exists, never the ADE frame/token itself. A reconstructed
         // instance can then fail loudly instead of silently losing the hello.
         att = { ...att, legacyBuffered: true, ts: Date.now() };
-        ws.serializeAttachment(att satisfies SocketAttachment);
+        this.writeAttachment(ws, att satisfies SocketAttachment);
       }
     } else if (att.role === "pipe") {
       this.closePair(ws, att, CLOSE_NOT_READY, "relay bridge not ready");
@@ -673,17 +728,19 @@ export class TunnelDurableObject implements DurableObject {
   private touch(ws: WebSocket, att: SocketAttachment): void {
     const now = Date.now();
     if (now - att.ts < ACTIVITY_WRITE_THROTTLE_MS) return;
-    ws.serializeAttachment({ ...att, ts: now } satisfies SocketAttachment);
+    this.writeAttachment(ws, { ...att, ts: now } satisfies SocketAttachment);
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
     this.logSocketTerminal(ws, "socket_closed", code);
     this.teardownPartner(ws, code, reason);
+    this.forgetSocket(ws);
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
     this.logSocketTerminal(ws, "socket_error", CLOSE_PARTNER_CLOSED);
     this.teardownPartner(ws, CLOSE_PARTNER_CLOSED, "partner error");
+    this.forgetSocket(ws);
   }
 
   private logSocketTerminal(ws: WebSocket, kind: "socket_closed" | "socket_error", code: number): void {
@@ -766,8 +823,8 @@ export class TunnelDurableObject implements DurableObject {
       legacyStateUnknown: _legacyStateUnknown,
       ...cleanClientAttachment
     } = clientAttachment;
-    client.serializeAttachment({ ...cleanClientAttachment, established: true, ts: now } satisfies SocketAttachment);
-    pipe.serializeAttachment({ ...pipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+    this.writeAttachment(client, { ...cleanClientAttachment, established: true, ts: now } satisfies SocketAttachment);
+    this.writeAttachment(pipe, { ...pipeAttachment, established: true, ts: now } satisfies SocketAttachment);
   }
 
   private closePair(
