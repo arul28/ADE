@@ -48,6 +48,8 @@ import {
   encodeEnvelopeFrames,
   encodeEnvelopeText,
   encodeEnvelopeTextWithCompression,
+  isBrowserSyncProtocolVersionSupported,
+  MAX_ENVELOPE_CHUNK_ID_BYTES,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
   parseEnvelopeChunkPayload,
 } from "../wireProtocol";
@@ -64,6 +66,19 @@ import {
   accountLeaseOwnerForActiveConnection,
   reconcileActiveAccountLease,
 } from "../../account/leaseMonitor";
+
+function deterministicIncompressibleText(length: number): string {
+  const bytes = Buffer.allocUnsafe(length);
+  let state = 0x9e3779b9;
+  for (let index = 0; index < bytes.length; index += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    bytes[index] = state & 0xff;
+  }
+  return bytes.toString("base64");
+}
 
 const hostPeer: SyncPeerMetadata = {
   deviceId: "host-device",
@@ -516,6 +531,14 @@ describe("browser sync DPoP", () => {
 });
 
 describe("browser sync envelope codec", () => {
+  it("accepts every integer inside a supported version interval", () => {
+    expect(isBrowserSyncProtocolVersionSupported(1, 1, 2)).toBe(true);
+    expect(isBrowserSyncProtocolVersionSupported(2, 1, 2)).toBe(true);
+    expect(isBrowserSyncProtocolVersionSupported(0, 1, 2)).toBe(false);
+    expect(isBrowserSyncProtocolVersionSupported(3, 1, 2)).toBe(false);
+    expect(isBrowserSyncProtocolVersionSupported(1.5, 1, 2)).toBe(false);
+  });
+
   it.each([
     [0, "host"],
     [2, "client"],
@@ -581,6 +604,47 @@ describe("browser sync envelope codec", () => {
       action: "chat.send",
     });
   });
+
+  it.each([
+    { compressed: false, chunked: false },
+    { compressed: true, chunked: false },
+    { compressed: false, chunked: true },
+    { compressed: true, chunked: true },
+  ])(
+    "round-trips browser→host with compressed=$compressed chunked=$chunked",
+    async ({ compressed, chunked }) => {
+      const input = {
+        type: "command" as const,
+        requestId: `matrix-${compressed}-${chunked}`,
+        payload: {
+          commandId: "matrix-command",
+          action: "chat.send",
+          args: { text: deterministicIncompressibleText(96 * 1024) },
+        },
+      };
+      const frames = await encodeEnvelopeFrames(input, {
+        compression: compressed ? { codec: "deflate", thresholdBytes: 512 } : null,
+        maxFrameBytes: chunked ? 32 * 1024 : null,
+      });
+      expect(frames.length > 1).toBe(chunked);
+
+      let encoded = frames[0];
+      if (chunked) {
+        const assembler = createEnvelopeChunkAssembler();
+        let reassembled: string | null = null;
+        for (const frame of [...frames].reverse()) {
+          const outer = await decodeEnvelopeText(frame);
+          const chunk = parseEnvelopeChunkPayload(outer.payload);
+          expect(chunk).not.toBeNull();
+          reassembled = assembler.add(chunk!) ?? reassembled;
+        }
+        encoded = reassembled!;
+      }
+      const parsed = parseSyncEnvelope(encoded);
+      expect(parsed.compression).toBe(compressed ? "deflate" : "none");
+      expect(parsed.payload).toEqual(input.payload);
+    },
+  );
 
   it("inflates negotiated host deflate envelopes in the browser codec", async () => {
     const text = encodeSyncEnvelope({
@@ -649,6 +713,23 @@ describe("browser sync envelope codec", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("bounds chunk ids and aggregate buffered bytes", () => {
+    expect(parseEnvelopeChunkPayload({
+      chunkId: "x".repeat(MAX_ENVELOPE_CHUNK_ID_BYTES + 1),
+      index: 0,
+      total: 1,
+      part: "",
+    })).toBeNull();
+
+    const assembler = createEnvelopeChunkAssembler({
+      maxEnvelopeBytes: 8,
+      maxBufferedBytes: 8,
+    });
+    assembler.add({ chunkId: "one", index: 0, total: 2, part: "MTIzNDU=" });
+    assembler.add({ chunkId: "two", index: 0, total: 2, part: "Njc4OQ==" });
+    expect(assembler.pendingCount()).toBe(1);
   });
 
   it("inflates host gzip envelopes and rejects oversize declarations", async () => {
@@ -945,6 +1026,27 @@ describe("browser sync connection and client", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("clears partial envelope chunks before trying the next route candidate", () => {
+    const script = createSocketFactory(() => {});
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const internals = connection as unknown as {
+      envelopeChunks: ReturnType<typeof createEnvelopeChunkAssembler>;
+      cleanupSocket(): void;
+    };
+    internals.envelopeChunks.add({
+      chunkId: "failed-candidate",
+      index: 0,
+      total: 2,
+      part: "Zmlyc3Q=",
+    });
+    expect(internals.envelopeChunks.pendingCount()).toBe(1);
+
+    internals.cleanupSocket();
+
+    expect(internals.envelopeChunks.pendingCount()).toBe(0);
+    connection.dispose();
   });
 
   it("rejects a saved browser pairing when the host only supports legacy changeset hints", async () => {

@@ -51,7 +51,8 @@ export type ApplyRemoteChangesResult = {
   rebuiltFts: boolean;
 };
 
-export type SyncProtocolVersion = 1;
+/** Any integer in the runtime's advertised supported version interval. */
+export type SyncProtocolVersion = number;
 
 /** Additive hello capability for in-place ADE Relay account reauthorization. */
 export const SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY = "relayReauthorizeV1" as const;
@@ -934,19 +935,7 @@ export type SyncHelloOkPayload = {
   };
 };
 
-export type SyncHelloErrorPayload = {
-  code:
-    | "auth_failed"
-    | "invalid_hello"
-    | "relay_account_required"
-    | "connection_attempt_superseded"
-    | "protocol_version_mismatch";
-  message: string;
-  /** Present for a typed protocol-version rejection. */
-  receivedVersion?: number;
-  currentVersion?: number;
-  minSupportedVersion?: number;
-  updateTarget?: "client" | "host";
+type SyncHelloErrorHost = {
   /**
    * Identity of the machine that rejected this hello. Lets a client tell
    * "the machine I'm paired with revoked this device" (safe to drop the
@@ -960,6 +949,20 @@ export type SyncHelloErrorPayload = {
     name?: string;
   };
 };
+
+export type SyncHelloErrorPayload =
+  | (SyncHelloErrorHost & {
+      code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
+      message: string;
+    })
+  | (SyncHelloErrorHost & {
+      code: "protocol_version_mismatch";
+      message: string;
+      receivedVersion: number;
+      currentVersion: number;
+      minSupportedVersion: number;
+      updateTarget: "client" | "host";
+    });
 
 export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback" | "relay";
 

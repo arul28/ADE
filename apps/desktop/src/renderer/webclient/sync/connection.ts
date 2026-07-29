@@ -211,7 +211,9 @@ export class SyncConnectionError extends Error {
   }
 }
 
-function protocolVersionMismatchMessage(payload: SyncHelloErrorPayload): string {
+function protocolVersionMismatchMessage(
+  payload: Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }>,
+): string {
   if (payload.updateTarget === "host") {
     return "Update ADE on your Mac to connect to this browser.";
   }
@@ -1475,6 +1477,7 @@ export class SyncConnection {
     const terminalError = this.relayAuthorizationTerminalError;
     const closeGeneration = ++this.connectionGeneration;
     this.stopTimers();
+    this.envelopeChunks.reset();
     this.ws = null;
     this.latestHello = null;
     this.emit("close", { code: event.code, reason: event.reason });
@@ -1552,6 +1555,7 @@ export class SyncConnection {
   private cleanupSocket(): void {
     this.connectionGeneration += 1;
     this.stopTimers();
+    this.envelopeChunks.reset();
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;

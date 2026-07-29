@@ -8,7 +8,9 @@ import {
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
   FORWARD_DATA_CHUNK_BYTES,
+  isSyncProtocolVersionSupported,
   MAX_CHANNEL_ID_CHARS,
+  MAX_ENVELOPE_CHUNK_ID_BYTES,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
   normalizeChannelId,
   parseSyncEnvelope,
@@ -187,6 +189,26 @@ describe("createSyncEnvelopeChunkAssembler", () => {
       vi.useRealTimers();
     }
   });
+
+  it("caps aggregate buffered bytes across concurrent chunk sets", () => {
+    const assembler = createSyncEnvelopeChunkAssembler({
+      maxEnvelopeBytes: 8,
+      maxBufferedBytes: 8,
+    });
+    expect(assembler.add({
+      chunkId: "one",
+      index: 0,
+      total: 2,
+      part: Buffer.from("12345").toString("base64"),
+    })).toBeNull();
+    expect(assembler.add({
+      chunkId: "two",
+      index: 0,
+      total: 2,
+      part: Buffer.from("6789").toString("base64"),
+    })).toBeNull();
+    expect(assembler.pendingCount()).toBe(1);
+  });
 });
 
 describe("parseSyncEnvelopeChunkPayload", () => {
@@ -194,6 +216,12 @@ describe("parseSyncEnvelopeChunkPayload", () => {
     expect(parseSyncEnvelopeChunkPayload(null)).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "a", index: 2, total: 2, part: "" })).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "", index: 0, total: 1, part: "" })).toBeNull();
+    expect(parseSyncEnvelopeChunkPayload({
+      chunkId: "x".repeat(MAX_ENVELOPE_CHUNK_ID_BYTES + 1),
+      index: 0,
+      total: 1,
+      part: "",
+    })).toBeNull();
     expect(parseSyncEnvelopeChunkPayload({ chunkId: "a", index: 0, total: 1, part: "abc" })).toEqual({
       chunkId: "a",
       index: 0,
@@ -204,6 +232,14 @@ describe("parseSyncEnvelopeChunkPayload", () => {
 });
 
 describe("parseSyncEnvelope", () => {
+  it("accepts every integer inside a supported version interval", () => {
+    expect(isSyncProtocolVersionSupported(1, 1, 2)).toBe(true);
+    expect(isSyncProtocolVersionSupported(2, 1, 2)).toBe(true);
+    expect(isSyncProtocolVersionSupported(0, 1, 2)).toBe(false);
+    expect(isSyncProtocolVersionSupported(3, 1, 2)).toBe(false);
+    expect(isSyncProtocolVersionSupported(1.5, 1, 2)).toBe(false);
+  });
+
   it.each([
     [0, "client"],
     [2, "host"],

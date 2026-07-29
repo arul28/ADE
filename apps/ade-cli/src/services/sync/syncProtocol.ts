@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { deflateSync, gunzipSync, gzipSync, inflateSync } from "node:zlib";
 import {
+  SYNC_APPLICATION_COMPRESSION_CODECS,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  type SyncApplicationCompressionCodec,
   type SyncCompressionCodec,
   type SyncEnvelope,
   type SyncEnvelopeChunkPayload,
@@ -23,6 +25,7 @@ export const FORWARD_DATA_CHUNK_BYTES = 64 * 1024;
 export const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 export const BACKPRESSURE_POLL_MS = 25;
 export const MAX_CHANNEL_ID_CHARS = 128;
+export const MAX_ENVELOPE_CHUNK_ID_BYTES = 128;
 
 /** Hello capability a client declares when it can reassemble envelope_chunk frames. */
 export { SYNC_CHUNKED_ENVELOPES_CAPABILITY };
@@ -35,6 +38,38 @@ export const SYNC_RUNTIME_ONLY_CAPABILITY = "runtimeOnly";
 // comfortably under that even after the base64 + wrapper overhead of a chunk.
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
 export const SYNC_ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
+
+export function normalizeSyncApplicationCompressionOffer(
+  value: unknown,
+): SyncApplicationCompressionCodec[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const supported = SYNC_APPLICATION_COMPRESSION_CODECS as readonly string[];
+  return value.filter(
+    (codec): codec is SyncApplicationCompressionCodec =>
+      typeof codec === "string" && supported.includes(codec),
+  );
+}
+
+export function negotiateSyncApplicationCompression(
+  offered: readonly string[] | null | undefined,
+): SyncApplicationCompressionCodec | null {
+  if (!Array.isArray(offered)) return null;
+  const supported = SYNC_APPLICATION_COMPRESSION_CODECS as readonly string[];
+  return offered.find(
+    (codec): codec is SyncApplicationCompressionCodec => supported.includes(codec),
+  ) ?? null;
+}
+
+export function isSyncProtocolVersionSupported(
+  value: unknown,
+  minSupportedVersion = SYNC_PROTOCOL_MIN_SUPPORTED,
+  currentVersion = SYNC_PROTOCOL_VERSION,
+): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= minSupportedVersion
+    && value <= currentVersion;
+}
 
 export function decodeStrictBase64(value: unknown): Buffer | null {
   if (typeof value !== "string") return null;
@@ -100,7 +135,7 @@ export class SyncProtocolVersionMismatchError extends Error {
     this.updateTarget = updateTarget;
   }
 
-  toHelloErrorPayload(): SyncHelloErrorPayload {
+  toHelloErrorPayload(): Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }> {
     return {
       code: this.code,
       message: this.message,
@@ -110,6 +145,48 @@ export class SyncProtocolVersionMismatchError extends Error {
       updateTarget: this.updateTarget,
     };
   }
+}
+
+type VersionMismatchSocket = {
+  send(data: string, callback?: (error?: Error) => void): void;
+  close(code?: number, reason?: string): void;
+};
+
+export function sendSyncProtocolVersionMismatchAndClose(
+  socket: VersionMismatchSocket,
+  error: SyncProtocolVersionMismatchError,
+  beforeClose?: () => void,
+): Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }> {
+  const payload = error.toHelloErrorPayload();
+  const response = encodeSyncEnvelope({
+    type: "hello_error",
+    requestId: error.requestId,
+    payload,
+    compressionThresholdBytes: Number.POSITIVE_INFINITY,
+    compressionCodec: "none",
+  });
+  let closed = false;
+  const closeForMismatch = (): void => {
+    if (closed) return;
+    closed = true;
+    beforeClose?.();
+    try {
+      socket.close(
+        SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
+        "Sync protocol version mismatch",
+      );
+    } catch {
+      // The typed frame was already attempted.
+    }
+  };
+  try {
+    socket.send(response, closeForMismatch);
+    const fallback = setTimeout(closeForMismatch, 1_000);
+    fallback.unref?.();
+  } catch {
+    closeForMismatch();
+  }
+  return payload;
 }
 
 type EncodeEnvelopeArgs = {
@@ -212,7 +289,11 @@ export function encodeSyncEnvelopeFrames(
 export function parseSyncEnvelopeChunkPayload(payload: unknown): SyncEnvelopeChunkPayload | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
-  const chunkId = typeof record.chunkId === "string" && record.chunkId.trim() ? record.chunkId : null;
+  const chunkId = typeof record.chunkId === "string"
+    && record.chunkId.trim()
+    && Buffer.byteLength(record.chunkId, "utf8") <= MAX_ENVELOPE_CHUNK_ID_BYTES
+    ? record.chunkId
+    : null;
   const index = typeof record.index === "number" && Number.isInteger(record.index) && record.index >= 0 ? record.index : null;
   const total = typeof record.total === "number" && Number.isInteger(record.total) && record.total > 0 ? record.total : null;
   const part = typeof record.part === "string" ? record.part : null;
@@ -230,12 +311,15 @@ export function createSyncEnvelopeChunkAssembler(options: {
   maxConcurrentChunks?: number;
   maxTotalParts?: number;
   maxEnvelopeBytes?: number;
+  maxBufferedBytes?: number;
   timeoutMs?: number;
 } = {}) {
   const maxConcurrentChunks = options.maxConcurrentChunks ?? 8;
   const maxTotalParts = options.maxTotalParts ?? 512;
   const maxEnvelopeBytes = options.maxEnvelopeBytes ?? 32 * 1024 * 1024;
+  const maxBufferedBytes = options.maxBufferedBytes ?? maxEnvelopeBytes;
   const timeoutMs = options.timeoutMs ?? SYNC_ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS;
+  let bufferedBytes = 0;
   const buffers = new Map<string, {
     total: number;
     parts: Map<number, Buffer>;
@@ -247,6 +331,7 @@ export function createSyncEnvelopeChunkAssembler(options: {
     const buffer = buffers.get(chunkId);
     if (!buffer) return;
     clearTimeout(buffer.timeout);
+    bufferedBytes -= buffer.bytes;
     buffers.delete(chunkId);
   };
 
@@ -276,12 +361,16 @@ export function createSyncEnvelopeChunkAssembler(options: {
       }
       const previous = buffer.parts.get(payload.index);
       const nextBytes = buffer.bytes - (previous?.byteLength ?? 0) + decodedPart.byteLength;
-      if (nextBytes > maxEnvelopeBytes) {
+      const nextBufferedBytes = bufferedBytes
+        - (previous?.byteLength ?? 0)
+        + decodedPart.byteLength;
+      if (nextBytes > maxEnvelopeBytes || nextBufferedBytes > maxBufferedBytes) {
         remove(payload.chunkId);
         return null;
       }
       buffer.parts.set(payload.index, decodedPart);
       buffer.bytes = nextBytes;
+      bufferedBytes = nextBufferedBytes;
       if (buffer.parts.size < buffer.total) return null;
       remove(payload.chunkId);
       const segments: Buffer[] = [];
@@ -310,10 +399,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
   if (
     typeof receivedVersion === "number"
     && Number.isInteger(receivedVersion)
-    && (
-      receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED
-      || receivedVersion > SYNC_PROTOCOL_VERSION
-    )
+    && !isSyncProtocolVersionSupported(receivedVersion)
   ) {
     const rawRequestId = (decoded as { requestId?: unknown }).requestId;
     throw new SyncProtocolVersionMismatchError(
@@ -321,7 +407,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
       typeof rawRequestId === "string" && rawRequestId.trim() ? rawRequestId.trim() : null,
     );
   }
-  if (receivedVersion !== SYNC_PROTOCOL_VERSION) {
+  if (!isSyncProtocolVersionSupported(receivedVersion)) {
     throw new Error(`Invalid sync protocol version: ${String(receivedVersion ?? "unknown")}`);
   }
 

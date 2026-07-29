@@ -12,6 +12,7 @@ export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
 export const ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
+export const MAX_ENVELOPE_CHUNK_ID_BYTES = 128;
 
 export type EncodeEnvelopeInput = {
   type: SyncEnvelope["type"];
@@ -35,6 +36,17 @@ export class BrowserSyncProtocolVersionMismatchError extends Error {
     this.name = "BrowserSyncProtocolVersionMismatchError";
     this.updateTarget = updateTarget;
   }
+}
+
+export function isBrowserSyncProtocolVersionSupported(
+  value: unknown,
+  minSupportedVersion = SYNC_PROTOCOL_MIN_SUPPORTED,
+  currentVersion = SYNC_PROTOCOL_VERSION,
+): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= minSupportedVersion
+    && value <= currentVersion;
 }
 
 function normalizeOptionalString(value: string | null | undefined): string | null {
@@ -228,14 +240,11 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
   if (
     typeof receivedVersion === "number"
     && Number.isInteger(receivedVersion)
-    && (
-      receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED
-      || receivedVersion > SYNC_PROTOCOL_VERSION
-    )
+    && !isBrowserSyncProtocolVersionSupported(receivedVersion)
   ) {
     throw new BrowserSyncProtocolVersionMismatchError(receivedVersion);
   }
-  if (receivedVersion !== SYNC_PROTOCOL_VERSION) {
+  if (!isBrowserSyncProtocolVersionSupported(receivedVersion)) {
     throw new Error(`Invalid sync protocol version: ${String(receivedVersion ?? "unknown")}`);
   }
   if (envelope.compression === "gzip" || envelope.compression === "deflate") {
@@ -278,11 +287,15 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
 export function parseEnvelopeChunkPayload(payload: unknown): SyncEnvelopeChunkPayload | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const value = payload as Partial<SyncEnvelopeChunkPayload>;
-  const chunkId = typeof value.chunkId === "string" && value.chunkId.trim() ? value.chunkId : null;
+  const chunkId = typeof value.chunkId === "string"
+    && value.chunkId.trim()
+    && new TextEncoder().encode(value.chunkId).byteLength <= MAX_ENVELOPE_CHUNK_ID_BYTES
+    ? value.chunkId
+    : null;
   const index = typeof value.index === "number" && Number.isInteger(value.index) && value.index >= 0 ? value.index : null;
   const total = typeof value.total === "number" && Number.isInteger(value.total) && value.total > 0 ? value.total : null;
   const part = typeof value.part === "string" ? value.part : null;
-  if (!chunkId || index == null || total == null || !part || index >= total) return null;
+  if (!chunkId || index == null || total == null || part == null || index >= total) return null;
   return { chunkId, index, total, part };
 }
 
@@ -290,12 +303,15 @@ export function createEnvelopeChunkAssembler(options: {
   maxConcurrentChunks?: number;
   maxTotalParts?: number;
   maxEnvelopeBytes?: number;
+  maxBufferedBytes?: number;
   timeoutMs?: number;
 } = {}) {
   const maxConcurrentChunks = options.maxConcurrentChunks ?? 8;
   const maxTotalParts = options.maxTotalParts ?? 512;
   const maxEnvelopeBytes = options.maxEnvelopeBytes ?? 32 * 1024 * 1024;
+  const maxBufferedBytes = options.maxBufferedBytes ?? maxEnvelopeBytes;
   const timeoutMs = options.timeoutMs ?? ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS;
+  let bufferedBytes = 0;
   const chunks = new Map<string, {
     total: number;
     parts: Map<number, Uint8Array>;
@@ -306,6 +322,7 @@ export function createEnvelopeChunkAssembler(options: {
     const entry = chunks.get(chunkId);
     if (!entry) return;
     clearTimeout(entry.timeout);
+    bufferedBytes -= entry.bytes;
     chunks.delete(chunkId);
   };
   return {
@@ -339,12 +356,16 @@ export function createEnvelopeChunkAssembler(options: {
       }
       const previous = entry.parts.get(payload.index);
       const nextBytes = entry.bytes - (previous?.byteLength ?? 0) + decoded.byteLength;
-      if (nextBytes > maxEnvelopeBytes) {
+      const nextBufferedBytes = bufferedBytes
+        - (previous?.byteLength ?? 0)
+        + decoded.byteLength;
+      if (nextBytes > maxEnvelopeBytes || nextBufferedBytes > maxBufferedBytes) {
         remove(payload.chunkId);
         return null;
       }
       entry.parts.set(payload.index, decoded);
       entry.bytes = nextBytes;
+      bufferedBytes = nextBufferedBytes;
       if (entry.parts.size < entry.total) return null;
       remove(payload.chunkId);
       const bytes: Uint8Array[] = [];

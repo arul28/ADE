@@ -100,7 +100,6 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import {
-  SYNC_APPLICATION_COMPRESSION_CODECS,
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
@@ -196,11 +195,13 @@ import {
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
   mapPlatform,
+  negotiateSyncApplicationCompression,
+  normalizeSyncApplicationCompressionOffer,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
+  sendSyncProtocolVersionMismatchAndClose,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SyncProtocolVersionMismatchError,
-  SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
   type ParsedSyncEnvelope,
@@ -1512,20 +1513,8 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
     },
     auth: normalizedAuth,
-    compression: Array.isArray(value?.compression)
-      ? value.compression
-        .filter((codec): codec is SyncApplicationCompressionCodec =>
-          typeof codec === "string"
-          && (SYNC_APPLICATION_COMPRESSION_CODECS as readonly string[]).includes(codec))
-      : undefined,
+    compression: normalizeSyncApplicationCompressionOffer(value?.compression),
   };
-}
-
-export function negotiateSyncApplicationCompression(
-  offered: readonly string[] | null | undefined,
-): SyncApplicationCompressionCodec | null {
-  if (!Array.isArray(offered)) return null;
-  return offered.includes("deflate") ? "deflate" : null;
 }
 
 type ParsedAccountChallenge = {
@@ -3328,35 +3317,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
       } catch (error) {
         if (error instanceof SyncProtocolVersionMismatchError) {
-          const response = encodeSyncEnvelope({
-            type: "hello_error",
-            requestId: error.requestId,
-            payload: error.toHelloErrorPayload(),
-            compressionThresholdBytes: Number.POSITIVE_INFINITY,
-            compressionCodec: "none",
-          });
-          let closed = false;
-          const closeForMismatch = () => {
-            if (closed) return;
-            closed = true;
-            clearPeerAuthTimeout(peer);
-            try {
-              peer.ws.close(
-                SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE,
-                "Sync protocol version mismatch",
-              );
-            } catch {
-              // The typed frame was already attempted.
-            }
-          };
-          try {
-            peer.ws.send(response, closeForMismatch);
-            const fallback = setTimeout(closeForMismatch, 1_000);
-            fallback.unref?.();
-          } catch {
-            closeForMismatch();
-          }
-          const payload = error.toHelloErrorPayload();
+          const payload = sendSyncProtocolVersionMismatchAndClose(
+            peer.ws,
+            error,
+            () => {
+              clearPeerAuthTimeout(peer);
+            },
+          );
           args.logger.warn("sync_host.protocol_version_mismatch", {
             receivedVersion: payload.receivedVersion,
             currentVersion: payload.currentVersion,

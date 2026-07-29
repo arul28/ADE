@@ -1,4 +1,5 @@
 import Combine
+import CoreFoundation
 import CryptoKit
 import Foundation
 import Network
@@ -1567,7 +1568,12 @@ struct SyncPreprocessedEnvelope {
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
 private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
-private let syncApplicationCompressionCodecs = ["deflate"]
+private let maxSyncEnvelopeChunkIdBytes = 128
+enum SyncWireCompressionCodec: String {
+  case gzip
+  case deflate
+}
+private let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
 private let syncApplicationCompressionThresholdBytes = 512
 private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
 private let syncDefaultMaxFrameBytes = 720 * 1024
@@ -1603,26 +1609,48 @@ func syncProtocolMismatchMessage(_ payload: [String: Any]) -> String {
     : "Update ADE on this iPhone to connect to your Mac.\(versions)"
 }
 
+func syncProtocolVersionNumber(_ value: Any?) -> Int? {
+  guard let number = value as? NSNumber,
+        CFGetTypeID(number) != CFBooleanGetTypeID() else {
+    return nil
+  }
+  let double = number.doubleValue
+  guard double.isFinite,
+        double.rounded(.towardZero) == double,
+        double >= Double(Int.min),
+        double <= Double(Int.max) else {
+    return nil
+  }
+  return Int(double)
+}
+
+func syncProtocolVersionIsSupported(
+  _ version: Int,
+  minSupportedVersion: Int = syncProtocolMinSupported,
+  currentVersion: Int = syncProtocolVersion
+) -> Bool {
+  version >= minSupportedVersion && version <= currentVersion
+}
+
 func syncPreprocessIncoming(
   _ text: String,
   maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
 ) throws -> SyncPreprocessedEnvelope? {
   guard let data = text.data(using: .utf8) else { return nil }
   guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-  if let version = (envelope["version"] as? NSNumber)?.intValue,
-     version < syncProtocolMinSupported || version > syncProtocolVersion {
+  guard let version = syncProtocolVersionNumber(envelope["version"]) else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid sync protocol version."]
+    )
+  }
+  if !syncProtocolVersionIsSupported(version) {
     throw SyncProtocolVersionMismatchError(
       receivedVersion: version,
       currentVersion: syncProtocolVersion,
       minSupportedVersion: syncProtocolMinSupported,
       updateTarget: version < syncProtocolMinSupported ? "host" : "client"
-    )
-  }
-  guard (envelope["version"] as? NSNumber)?.intValue == syncProtocolVersion else {
-    throw NSError(
-      domain: "ADE",
-      code: 4,
-      userInfo: [NSLocalizedDescriptionKey: "Invalid sync protocol version."]
     )
   }
   let type = envelope["type"] as? String ?? ""
@@ -1645,7 +1673,7 @@ func syncEncodeEnvelopeText(
   requestId: String?,
   projectId: String?,
   payload: Any,
-  compressionCodec: String?,
+  compressionCodec: SyncWireCompressionCodec,
   compressionThresholdBytes: Int
 ) throws -> String {
   let payloadData = try adeJSONData(withJSONObject: payload)
@@ -1654,10 +1682,10 @@ func syncEncodeEnvelopeText(
     envelope = [
       "version": syncProtocolVersion,
       "type": type,
-      "compression": compressionCodec ?? "gzip",
+      "compression": compressionCodec.rawValue,
       "payloadEncoding": "base64",
       "payload": (
-        compressionCodec == "deflate"
+        compressionCodec == .deflate
           ? deflateZlib(payloadData)
           : gzip(payloadData)
       ).base64EncodedString(),
@@ -1694,7 +1722,7 @@ func syncEncodeEnvelopeFrames(
   requestId: String?,
   projectId: String?,
   payload: Any,
-  compressionCodec: String?,
+  compressionCodec: SyncWireCompressionCodec,
   compressionThresholdBytes: Int,
   chunkedEnvelopes: Bool,
   maxFrameBytes: Int
@@ -1732,7 +1760,7 @@ func syncEncodeEnvelopeFrames(
         "total": total,
         "part": raw.subdata(in: start..<end).base64EncodedString(),
       ],
-      compressionCodec: nil,
+      compressionCodec: .gzip,
       compressionThresholdBytes: Int.max
     )
     guard frame.utf8.count <= maxFrameBytes else {
@@ -1869,9 +1897,14 @@ struct SyncEnvelopeChunkAssembler {
   private let maxConcurrentChunks = 8
   private let maxTotalParts = 512
   private let maxEnvelopeBytes: Int
+  private let maxBufferedBytes: Int
 
-  init(maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes) {
+  init(
+    maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes,
+    maxBufferedBytes: Int? = nil
+  ) {
     self.maxEnvelopeBytes = max(1, maxEnvelopeBytes)
+    self.maxBufferedBytes = max(1, maxBufferedBytes ?? maxEnvelopeBytes)
   }
 
   mutating func add(
@@ -1881,7 +1914,14 @@ struct SyncEnvelopeChunkAssembler {
     part: String,
     now: TimeInterval = ProcessInfo.processInfo.systemUptime
   ) -> String? {
-    guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+    guard total > 0,
+          index >= 0,
+          index < total,
+          total <= maxTotalParts,
+          !chunkId.isEmpty,
+          chunkId.utf8.count <= maxSyncEnvelopeChunkIdBytes else {
+      return nil
+    }
     let encodedBytes = part.utf8.count
     let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
     guard decodedUpperBound <= maxEnvelopeBytes,
@@ -1909,7 +1949,13 @@ struct SyncEnvelopeChunkAssembler {
     }
     let nextDecodedBytes = buffer.decodedBytes + decodedPart.count
     let nextEncodedBytes = buffer.encodedBytes + encodedBytes
-    guard nextDecodedBytes <= maxEnvelopeBytes, nextEncodedBytes <= maxEnvelopeBytes * 2 else {
+    let previouslyBufferedPartBytes = buffer.parts[index]?.data.count ?? 0
+    let nextBufferedBytes = buffers.values.reduce(0) { $0 + $1.decodedBytes }
+      - previouslyBufferedPartBytes
+      + decodedPart.count
+    guard nextDecodedBytes <= maxEnvelopeBytes,
+          nextEncodedBytes <= maxEnvelopeBytes * 2,
+          nextBufferedBytes <= maxBufferedBytes else {
       buffers.removeValue(forKey: chunkId)
       arrivalOrder.removeAll { $0 == chunkId }
       return nil
@@ -3563,7 +3609,7 @@ final class SyncService: ObservableObject {
   private var supportsChangesetAck = false
   private var supportsChunkedEnvelopes = false
   private var negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
-  private var negotiatedCompressionCodec: String?
+  private var negotiatedCompressionCodec: SyncWireCompressionCodec?
   private var negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
   private var relayAuthorizationLease: SyncRelayAuthorizationLease?
   private var relayReauthorizationTask: Task<Void, Never>?
@@ -15709,10 +15755,10 @@ final class SyncService: ObservableObject {
       negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
     }
     if let compression = payload["compression"] as? [String: Any],
-       compression["codec"] as? String == "deflate",
+       compression["codec"] as? String == SyncWireCompressionCodec.deflate.rawValue,
        let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
        threshold > 0 {
-      negotiatedCompressionCodec = "deflate"
+      negotiatedCompressionCodec = .deflate
       negotiatedCompressionThresholdBytes = threshold
     } else {
       negotiatedCompressionCodec = nil
@@ -16666,7 +16712,7 @@ final class SyncService: ObservableObject {
       requestId: requestId,
       projectId: projectId,
       payload: payload,
-      compressionCodec: compressionCodec,
+      compressionCodec: compressionCodec ?? .gzip,
       compressionThresholdBytes: activeCompressionThreshold,
       chunkedEnvelopes: supportsChunkedEnvelopes,
       maxFrameBytes: negotiatedMaxFrameBytes
