@@ -700,6 +700,7 @@ describe("multi-project RPC server", () => {
         "signOut",
         "listMachines",
         "pairMachine",
+        "renameMachine",
       ]) {
         await expect(
           handler({
@@ -822,6 +823,37 @@ describe("multi-project RPC server", () => {
         result: "test-access-token",
       });
       expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
+  it("rejects a machine rename without an explicit string-or-null custom name", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+      await expect(
+        handler({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "account.call",
+          params: { action: "renameMachine", args: { machine: "mk_studio" } },
+        }),
+      ).rejects.toThrow(/customName to be a string or null/);
       handler.dispose();
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);

@@ -226,6 +226,48 @@ describe("ADE CLI", () => {
       }],
     });
     expect(shouldAutoRegisterProjectForPlan(machines)).toBe(false);
+    const rename = expectExecutePlan(buildCliPlan([
+      "machines",
+      "rename",
+      "mk_studio",
+      "Build Mac",
+    ]));
+    expect(rename).toMatchObject({
+      label: "account machine rename",
+      formatter: "account-machine-rename",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [{
+        method: "account.call",
+        params: {
+          action: "renameMachine",
+          args: { machine: "mk_studio", customName: "Build Mac" },
+        },
+      }],
+    });
+    expect(shouldAutoRegisterProjectForPlan(rename)).toBe(false);
+    expect(expectExecutePlan(buildCliPlan([
+      "machines",
+      "rename",
+      "mk_studio",
+      "--clear",
+    ])).steps[0]).toMatchObject({
+      params: {
+        action: "renameMachine",
+        args: { machine: "mk_studio", customName: null },
+      },
+    });
+    expect(() => buildCliPlan(["machines", "rename", "mk_studio"])).toThrow(
+      /requires a non-empty name or --clear/,
+    );
+    expect(() => buildCliPlan([
+      "machines",
+      "rename",
+      "mk_studio",
+      "Build Mac",
+      "--clear",
+    ])).toThrow(/either a name or --clear/);
     expect(buildCliPlan([
       "machines",
       "connect",
