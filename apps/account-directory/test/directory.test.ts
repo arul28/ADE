@@ -10,6 +10,7 @@ type StoredMachine = {
   machine_key: string;
   device_id: string | null;
   name: string | null;
+  custom_name: string | null;
   platform: string | null;
   device_type: string | null;
   pubkey: string | null;
@@ -159,6 +160,7 @@ class FakeD1Database {
         machine_key: String(values[1]),
         device_id: values[2] == null ? null : String(values[2]),
         name: values[3] == null ? null : String(values[3]),
+        custom_name: null,
         platform: values[4] == null ? null : String(values[4]),
         device_type: values[5] == null ? null : String(values[5]),
         pubkey: values[6] == null ? null : String(values[6]),
@@ -185,10 +187,22 @@ class FakeD1Database {
             ]);
           }
         }
-        Object.assign(existing, row, { created_at: existing.created_at });
+        Object.assign(existing, row, {
+          created_at: existing.created_at,
+          custom_name: existing.custom_name,
+        });
       } else {
         this.rows.push(row);
       }
+      return 1;
+    }
+    if (normalized.includes("update machines") && normalized.includes("set custom_name")) {
+      const [customName, userId, machineKey] = values;
+      const row = this.rows.find((entry) =>
+        entry.user_id === userId && entry.machine_key === machineKey
+      );
+      if (!row) return 0;
+      row.custom_name = customName == null ? null : String(customName);
       return 1;
     }
     if (normalized.includes("delete from machines")) {
@@ -1077,6 +1091,102 @@ describe("machine directory", () => {
     expect(await otherUserList.json()).toEqual({ machines: [] });
   });
 
+  it("renames an owned machine with customName and prefers it over the reported hostname", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+
+    const renamed = await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      token,
+      { customName: "  Studio Mac  " },
+    ), env);
+
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toEqual(expect.objectContaining({
+      machineKey: "machine-a",
+      name: "Machine machine-a",
+      customName: "Studio Mac",
+    }));
+
+    const listed = await handleRequest(request("GET", "/account/machines", token), env);
+    expect(await listed.json()).toEqual({
+      machines: [
+        expect.objectContaining({
+          machineKey: "machine-a",
+          name: "Machine machine-a",
+          customName: "Studio Mac",
+        }),
+      ],
+    });
+  });
+
+  it("does not clobber customName when registration heartbeats report a new hostname", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      token,
+      { customName: "Build Mac" },
+    ), env);
+
+    const heartbeatBody = registerBody("machine-a");
+    heartbeatBody.name = "Renamed Hostname";
+    const heartbeat = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      heartbeatBody,
+    ), env);
+
+    expect(heartbeat.status).toBe(200);
+    expect(await heartbeat.json()).toEqual(expect.objectContaining({
+      name: "Renamed Hostname",
+      customName: "Build Mac",
+    }));
+  });
+
+  it("rejects invalid or cross-account machine renames and allows clearing a customName", async () => {
+    const env = makeEnv();
+    const ownerToken = await mintToken({ sub: "user_1" });
+    const otherToken = await mintToken({ sub: "user_2" });
+    await register(env, ownerToken, "machine-a");
+
+    const missing = await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      otherToken,
+      { customName: "Stolen" },
+    ), env);
+    expect(missing.status).toBe(404);
+
+    const invalid = await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      ownerToken,
+      { customName: "x".repeat(81) },
+    ), env);
+    expect(invalid.status).toBe(400);
+
+    await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      ownerToken,
+      { customName: "Studio" },
+    ), env);
+    const cleared = await handleRequest(request(
+      "PATCH",
+      "/account/machines/machine-a",
+      ownerToken,
+      { customName: null },
+    ), env);
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toEqual(expect.objectContaining({ customName: null }));
+  });
+
   it("echoes safe correlation ids in responses and structured logs", async () => {
     const env = makeEnv();
     const token = await mintToken();
@@ -1289,6 +1399,7 @@ describe("machine directory", () => {
       machine_key: `machine-${index}`,
       device_id: `device-${index}`,
       name: `Machine ${index}`,
+      custom_name: null,
       platform: "macOS",
       device_type: "desktop",
       pubkey: null,
