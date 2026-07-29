@@ -3,10 +3,10 @@
 ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
-eligible routes are ordered **LAN → Tailscale → Relay** for desktop-to-runtime,
-ADE Code, and iOS connections. The account-gated cloud tunnel relay is a
-byte-transport fallback whenever the machine is signed in to an ADE account;
-there is no separate relay toggle. Two
+eligible routes are preferred in **LAN → Tailscale → Relay** order for
+desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
+tunnel relay is an always-eligible byte transport whenever the machine is
+signed in to an ADE account; there is no separate relay toggle. Two
 machines on the same LAN (or Tailscale tailnet) converge their application
 state directly.
 
@@ -101,18 +101,23 @@ same thing: the runtime that is the current **sync authority**.
 
 ## Connection route policy
 
-Every native paired controller uses the same phase order:
+Every native paired controller ranks routes the same way:
 
 1. current LAN endpoints;
 2. current Tailscale/tailnet endpoints;
 3. ADE Relay, only with a fresh matching account proof.
 
-Within the LAN and tailnet phases, current discovery outranks stale saved
-metadata and recent successful endpoints break ties. iOS may race several
-authenticated candidates within a direct phase, but Relay does not race ahead
-of an eligible direct phase; it starts only after direct routes exhaust. ADE
-Code and the desktop paired-runtime pool use the same
-`buildPairedEndpointCandidates` ordering. First-time same-account adoption also
+Within the LAN and tailnet tiers, current discovery outranks stale saved
+metadata and recent successful endpoints break ties. ADE Code and the desktop
+paired-runtime pool walk that ranking as sequential phases through
+`buildPairedEndpointCandidates`. iOS races the whole ranked plan at once
+instead: the same preference decides who is dialed first, but a Relay candidate
+joins the race a few hundred milliseconds behind the leading direct candidate
+rather than waiting for every direct route to exhaust, and is dialed
+immediately when it leads the ranking — which it does when it is the proven
+route for the network the phone is on. iOS also keeps per-network route memory
+and per-endpoint failure memory; see *Route ranking, route memory, and roaming*
+in `ios-companion.md`. First-time same-account adoption also
 uses LAN → tailnet → Relay when the directory row contains a verifiable host
 signing key, because the `ade-adopt-v1` sealed challenge protects the account
 credential on direct routes. An unsigned legacy directory host is Relay-only;
@@ -1111,6 +1116,17 @@ iOS service files (`apps/ios/ADE/Services/`):
   unregistered-worktree discovery, and local project-list hiding for
   "Remove from list" so cached DB rows and runtime catalog rows for
   the same root disappear together.
+- `SyncConnectionRace.swift` — the single happy-eyeballs race that dials
+  direct and Relay candidates together: candidate plan construction, stagger /
+  concurrency / overall budget, the Relay join delay and the separate
+  `accepted` / `ready` deadlines, the coarse network fingerprint (`wired`,
+  `wifi:<own IPv4 /24>`, `cell`) and MRU-capped per-network route memory,
+  per-endpoint failure memory, and the single-flight registry that prevents two
+  concurrent `/connect` dials for one machine.
+- `SyncRecoveryPolicy.swift` — deterministic reconnect, request-timeout, and
+  heartbeat-silence policy, plus the roam-trigger policy: a real
+  interface-set change (failover) or a periodic upgrade probe toward a strictly
+  better transport class are the only reasons a healthy connection is re-raced.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets (per-machine token shelf included).
 
@@ -1343,8 +1359,9 @@ grace. Older peers close exactly when their initial token expires.
   Tailscale IP or DNS name, and only falls back to the opaque `saved` kind for a
   host that no longer matches the live address set. This is what lets the account
   directory publish a LAN-backed saved host as a real LAN endpoint. iOS treats
-  Relay as a separate authenticated fallback phase after direct
-  LAN/Tailscale routes exhaust (see the transport race in
+  Relay as one more authenticated candidate in the same happy-eyeballs race as
+  the direct LAN/Tailscale routes — ranked behind them, but not gated on their
+  exhaustion (see the transport race in
   `ios-companion.md`). Already-paired
   phones also learn the relay URL from `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`) and persist it with the host profile for
@@ -1732,9 +1749,9 @@ feature is merged or because a deliberately isolated-port host is running.
   outbound HMAC-authenticated tunnel to the `apps/tunnel-relay` Cloudflare
   Worker so a phone off the
   LAN/tailnet can dial the machine over TLS with zero configuration.
-  Phones attempt authenticated direct routes in LAN → Tailscale order and use
-  Relay only as the separate fallback phase. Candidate work is bounded, so a
-  stale saved LAN/Tailscale endpoint cannot hold Relay off indefinitely. The relay
+  Phones rank authenticated direct routes LAN → Tailscale ahead of Relay but
+  race all of them together, so a stale saved LAN/Tailscale endpoint cannot hold
+  Relay off; the whole race is bounded by one 10-second budget. The relay
   pipes WebSocket bytes after terminating TLS. The normal ADE hello / PIN /
   paired-secret / DPoP handshake still runs inside that pipe, but it is not
   end-to-end encrypted: the relay can read paired secrets and runtime/sync

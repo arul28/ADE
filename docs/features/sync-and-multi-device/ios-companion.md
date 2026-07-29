@@ -218,10 +218,17 @@ apps/ios/
 │   │   │                             # account-wide "agent runs" activity
 │   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
 │   │   │                               # quota snapshot + refresh state
-│   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, path-change,
-│   │   │                            # heartbeat-silence, and timeout policy
-│   │   ├── SyncConnectionRace.swift # authenticated direct/Relay candidate
-│   │   │                            # race, stagger/budget, and route truth
+│   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, roam-trigger
+│   │   │                            # policy (failover vs upgrade probe),
+│   │   │                            # path-change, heartbeat-silence, and
+│   │   │                            # timeout policy
+│   │   ├── SyncConnectionRace.swift # one happy-eyeballs race over direct +
+│   │   │                            # Relay candidates: stagger/budget/relay
+│   │   │                            # join delay, relay accepted/ready
+│   │   │                            # deadlines, coarse network fingerprint +
+│   │   │                            # per-network route memory, endpoint
+│   │   │                            # failure memory, relay dial single-flight
+│   │   │                            # registry, and route truth
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -425,6 +432,12 @@ apps/ios/
     ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
     │                                # reconciliation, partial-detail retention
     ├── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
+    ├── SyncRecoveryPolicyTests.swift # reconnect/backoff, path-change, and
+    │                                 # roam-trigger (failover vs upgrade) policy
+    ├── SyncTransportSelectionTests.swift # single-race candidate plan, relay
+    │                                     # join delay, network fingerprint +
+    │                                     # route memory, endpoint failure
+    │                                     # memory, relay dial single-flight
     └── WorkSessionCanonicalStateTests.swift # settle-override / snooze / filing
                                      # parity against the shared TS derivation
 ```
@@ -540,7 +553,7 @@ Connection surfaces show an "iPhone isn't on Tailscale" warning card
 (`ADETailscaleOffHintCard` in `ADEDesignSystem.swift`) when the one
 user action that can fix the connection is turning Tailscale on. The
 card is not shown when the phone has a saved ADE relay route, because
-relay is a valid automatic fallback and Tailscale is then only a
+relay is a valid automatic route and Tailscale is then only a
 performance recommendation. Gating is the pure helper
 `syncShouldShowTailscaleOffHint(...)`, exposed as
 `SyncService.tailscaleOffHintVisible`; all of the following must hold:
@@ -687,18 +700,23 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    connect path's recovery sweep. Cloud-relay candidates (full
    `wss://…/connect/<machineKey>` URLs) are zero-config and carry their
    own path/port, so they are never mixed into the host:port TCP probe
-   or fallback-port sweep. Connection proceeds in the same explicit phases as
-   desktop and ADE Code: LAN, then Tailscale, then authenticated Relay.
-   Direct candidates enter an **authenticated** race first; only after that
-   phase exhausts does a separate Relay race begin. A phone with Tailscale
-   disabled skips ineligible tailnet routes but does not promote Relay ahead of
-   a currently usable LAN route. Pairing and ordinary reconnect share this
-   policy, so the route order does not change after a pairing code succeeds.
-   Within each race, candidates start
-   250 ms apart, at most three are active, the whole wave has a 10-second
-   budget, and only a completed `hello_ok` can win. The initial wave covers
-   the best candidate plus transport/route diversity, and failures admit the
-   next ranked route. Every socket in the wave sends the same monotonic
+   or fallback-port sweep; they are ranked as whole routes instead.
+   Direct and Relay candidates then enter **one** authenticated
+   happy-eyeballs race rather than sequential per-transport phases. Transport
+   class still orders the plan (`lan` < `tailnet` < `relay`), so a usable LAN
+   route is dialed first and normally wins outright; a Relay candidate that
+   does not lead the ranking joins the race ~300 ms behind the leading direct
+   candidate, and a Relay candidate that *does* lead — because it is the proven
+   route for this network — is dialed at t=0. That is what makes an off-LAN
+   reconnect as fast as an on-LAN one, instead of paying out the direct budget
+   on candidates that cannot succeed. A phone with Tailscale
+   disabled skips ineligible tailnet routes. Pairing and ordinary reconnect
+   share this policy, so the route order does not change after a pairing code
+   succeeds. Candidates in the opening wave start
+   250 ms apart, at most three sockets are open at once, the whole race has a
+   10-second budget, and only a completed `hello_ok` can win. The opening wave
+   covers the best candidate plus transport/route diversity, and each failure
+   admits the next ranked route. Every socket in the wave sends the same monotonic
    `peer.connectionAttempt` metadata; the host rejects a late losing socket as
    superseded instead of letting it replace the winner.
    Relay routes arrive from the pairing QR and — for already-paired
@@ -728,10 +746,27 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `maximumMessageSize` receive budget.
    Relay candidates first append `ready=2`. A new Worker sends `accepted/v2`
    before bridge setup and `ready/v2` only after both pipe and validated local
-   listener exist; iOS sends no ADE hello before `ready`. If `accepted` does
-   not arrive within 350 ms, the phone closes that socket and retries the same
-   endpoint on a fresh legacy URL. It never downgrades in place, and after
-   `accepted` it waits within the overall hello budget instead of falling back.
+   listener exist; iOS sends no ADE hello before `ready`. The two frames carry
+   separate deadlines because they mean different things. `accepted` is served
+   the instant `/connect` is, so 350 ms of silence genuinely suggests a relay
+   that predates v2; `ready` waits on a hibernating Durable Object waking,
+   signaling the host, and dialing the host's local port, and so gets 7 seconds
+   once `accepted` has arrived. A silent `accepted` window earns one retry of
+   the same endpoint on a fresh legacy URL, but only for an endpoint that has
+   never completed a `?ready=2` handshake (`negotiatedReadyV2` on its saved
+   endpoint state); on an endpoint known to speak ready-v2 the silence is a
+   fault, and redialing would only burn a second tunnel slot against the Durable
+   Object's connection cap. A relay that accepts and then never bridges fails
+   *inside* the race, so the endpoint accumulates the failure and frees its
+   concurrency slot. iOS never downgrades a `ready=2` socket in place.
+   The Clerk account token a Relay hello needs is fetched concurrently with the
+   WebSocket upgrade (`async let`) rather than after it, and a single-flight
+   registry keyed by `<relay host>/<machineKey>` refuses a second simultaneous
+   `/connect` dial for the same machine — two tunnels on one Durable Object
+   consume its 16-connection cap and the orphan is only swept minutes later, so
+   the second dial is turned away instead of being recorded as an endpoint
+   failure. Foregrounding with a relay-capable machine and no live connection
+   warms the Clerk session ahead of the imminent dial.
    An `auth_failed` hello rejection drops the saved pairing **only**
    when the rejecting machine attributed itself (`hello_error.host`)
    and its identity matches the paired machine; unattributed or
@@ -808,6 +843,75 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `LaneSummary.devicesOpen` for other controllers; the phone calls
    `lanes.presence.release` when the user leaves a lane surface and
    re-announces on a 30 s heartbeat (runtime-side TTL is 60 s).
+
+### Route ranking, route memory, and roaming
+
+Sources: `apps/ios/ADE/Services/SyncConnectionRace.swift` (candidate ranking
+constants, the network fingerprint, per-network route memory, endpoint failure
+memory, and the relay dial registry) and
+`apps/ios/ADE/Services/SyncRecoveryPolicy.swift` (the roam-trigger policy).
+
+`syncRankedEndpointAttempts` orders the vetted candidate set by, in priority
+order: not demoted, backed by live discovery, transport class
+(`lan` < `tailnet` < `relay`), then most recent success. Two memories are then
+hoisted in front of that ranking. `syncEndpointAttemptsHoisting` only
+**reorders** the vetted list — it never synthesizes a candidate — so a route
+that address policy or relay-account eligibility already rejected cannot
+re-enter through the front door:
+
+- **`networkRouteMemory`** (on `HostConnectionProfile`, persisted in iOS
+  `UserDefaults` under `ade.sync.hostProfile`) maps a coarse network
+  fingerprint to the endpoint that last authenticated on that network,
+  most-recently-used first and capped at eight entries. The fingerprint is
+  `wired`, `wifi:<the phone's own IPv4 /24>`, or `cell`; the /24 is read off an
+  `en*` interface, which separates home, office, and hotspot well enough for
+  "which route worked here" without the entitlement an SSID lookup would need.
+  The endpoint remembered for the current network leads the plan.
+- **`lastSuccessfulAddress`** is the global last-good and sits directly behind
+  the per-network memory, which outranks it because the global value may belong
+  to an entirely different network.
+
+Two things demote a candidate to the back of the plan. Demotion never removes a
+route, so one that recovers is still tried on every connect:
+
+- **Failure memory.** Each `HostConnectionEndpointState` carries `lastFailedAt`
+  and `consecutiveFailures`. Two or more consecutive failures inside 120 seconds
+  schedule that endpoint last; a success clears the streak. Only failures that
+  say something about the *route* count — a cancelled or superseded attempt, a
+  dial turned away by the relay single-flight registry, a missing account
+  credential, and a missing pinned relay key are facts about this attempt or
+  this device, and leave the endpoint's record untouched.
+- **Path implausibility.** On a path with no Wi-Fi or wired interface, RFC1918
+  addresses, `.local` mDNS names, and IPv6 link-local / unique-local candidates
+  cannot succeed, and each one raced eagerly costs a full socket-open timeout,
+  so they move to the back. Tailnet CGNAT and loopback do not — Tailscale works
+  over cellular, and loopback is the simulator's own route.
+
+**Roaming.** A healthy connection is re-raced only for a reason, and the race is
+make-before-break: the live socket keeps serving traffic and is replaced only
+after a replacement candidate has authenticated. `syncRoamTrigger` recognizes
+exactly two reasons:
+
+- **Failover** — the interface set itself changed
+  (`syncNetworkPathInterfacesChanged` compares satisfied / Wi-Fi / cellular /
+  wired). The route in use may be gone, so every candidate is raced, behind only
+  a 3-second floor that absorbs the burst of `NWPathMonitor` updates a single
+  physical change produces.
+- **Upgrade probe** — nothing changed, but a strictly better transport class
+  looks reachable: a live Bonjour hit on a local-link path for LAN, or this
+  phone actually holding a tailnet address for a machine with a saved tailnet
+  route. At most one quiet attempt every 5 minutes, restricted to classes
+  strictly better than the one in use, and only for a connection at least
+  10 seconds old. New discovery results also run this evaluation, because a
+  phone on stable Wi-Fi can go hours without a path update.
+
+Standing facts are deliberately not triggers. "On cellular with a saved tailnet
+route" stays true forever, so treating it as one turned every path-monitor
+twitch into a full race that tore down a working socket. A race that wins on the
+endpoint already in use likewise keeps the live socket rather than swapping to
+an identical route. Roams own a task separate from the scheduled path reconnect,
+so the follow-up path update for one physical change — which reports no
+interface change — cannot cancel the failover that change just scheduled.
 
 ### Message types
 
@@ -1582,10 +1686,11 @@ The switch is engineered to feel instant rather than blanking to a spinner:
   spinner (`presentation.isSwitching`) and every other row is disabled and dimmed
   to `0.55` opacity (`syncService.isProjectSwitching`), so the list never swaps
   to a full-screen connecting state.
-- **Fast-path reconnect.** After the happy-eyeballs race, `SyncService` pins a
-  proven `lastSuccessfulAddress` + port to the front of the ranked endpoint list
-  when it is the first raced address, so the broader kind/health ranking can't
-  undo a fresh probe win. `hello_ok` is treated as the barrier: restorative
+- **Fast-path reconnect.** The happy-eyeballs race starts from a plan whose
+  front is the endpoint `networkRouteMemory` recorded for the network the phone
+  is currently on, followed by the proven `lastSuccessfulAddress`, so the
+  broader class/health ranking can't push a known-good route down the plan.
+  `hello_ok` is treated as the barrier: restorative
   post-hello work (`restoreTrackedOpenLanesAfterReconnect`,
   `refreshRemoteProjectCatalog`) is moved off the critical path into
   `schedulePostHelloWork` so it no longer holds the reconnect caller — and
@@ -1889,7 +1994,7 @@ different machine's cached limits.
 | SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
 | One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay (same-account `relay` transport after LAN and Tailscale direct routes) | Implemented; fresh in-memory account proof on every Relay connection |
+| Cloud relay (same-account `relay` transport, raced alongside LAN and Tailscale direct routes and ranked behind them) | Implemented; fresh in-memory account proof on every Relay connection, fetched concurrently with the socket upgrade and guarded by a per-machine single-flight dial registry |
 | Project hub + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |

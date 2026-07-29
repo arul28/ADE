@@ -3150,45 +3150,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
-    XCTAssertTrue(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: false,
-        usesWiredEthernet: false
-      )
-    )
-    XCTAssertTrue(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
-    )
-    XCTAssertFalse(
-      syncShouldRoamToTailnet(
-        currentAddress: "100.75.20.63",
-        hasTailnetRoute: true,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
-    )
-    XCTAssertFalse(
-      syncShouldRoamToTailnet(
-        currentAddress: "192.168.1.8",
-        hasTailnetRoute: false,
-        usesWiFi: false,
-        usesCellular: true,
-        usesWiredEthernet: false
-      )
-    )
-  }
-
   func testSyncReducedLoadStartsConservativeThenPromotesOnHealthySamples() {
     XCTAssertTrue(
       syncPrefersReducedNetworkLoad(

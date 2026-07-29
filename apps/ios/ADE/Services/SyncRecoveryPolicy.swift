@@ -75,13 +75,101 @@ enum SyncNetworkPathRecoveryAction: Equatable {
 }
 
 func syncNetworkPathRecoveryAction(
-  shouldRoamToTailnet: Bool,
+  roamTrigger: SyncRoamTrigger?,
   isPathSatisfied: Bool,
   hasLiveConnection: Bool
 ) -> SyncNetworkPathRecoveryAction {
-  if shouldRoamToTailnet, hasLiveConnection { return .attemptAuthenticatedReplacement }
+  if roamTrigger != nil, hasLiveConnection { return .attemptAuthenticatedReplacement }
   guard isPathSatisfied else { return .none }
   return hasLiveConnection ? .cancelScheduledReconnect : .scheduleReconnect
+}
+
+enum SyncRoamTiming {
+  /// Floor between two failover races. Short on purpose: a real interface
+  /// change may mean the current route is gone, and making the user wait out an
+  /// upgrade cooldown to fail over would be a regression. It exists only to
+  /// absorb the burst of NWPathMonitor updates around one physical change.
+  static let pathChangeCooldownSeconds: TimeInterval = 3
+  /// A connection this young has not proven anything yet; upgrading away from
+  /// it is churn. Genuine path changes ignore this — the route may be dead.
+  static let minimumConnectionAgeSeconds: TimeInterval = 10
+  /// How often a healthy connection may spend one quiet attempt looking for a
+  /// better transport when nothing about the network changed.
+  static let upgradeProbeIntervalSeconds: TimeInterval = 300
+}
+
+enum SyncRoamTrigger: Equatable {
+  /// The interface set changed. Race everything: the current route may be gone
+  /// (Tailscale switched off, Wi-Fi dropped) and failing over fast is the point.
+  case pathChange
+  /// Nothing changed, but a strictly better transport class looks reachable.
+  /// One quiet attempt restricted to better-class candidates.
+  case upgradeProbe
+}
+
+struct SyncRoamInputs: Equatable {
+  var hasLiveConnection: Bool
+  var isPathSatisfied: Bool
+  /// True only when the interface set itself changed. Any NWPathMonitor update
+  /// used to qualify, which is why an idle phone on cellular rebuilt its
+  /// connection every 30-70 seconds.
+  var interfacesChanged: Bool
+  var currentRouteKind: SyncConnectionRouteKind?
+  /// Best transport class we have a plausible candidate for right now: a live
+  /// Bonjour hit for LAN, a tailnet interface plus a saved tailnet route, etc.
+  var bestAvailableRouteKind: SyncConnectionRouteKind?
+  var connectionAgeSeconds: TimeInterval?
+  var secondsSinceLastRoamAttempt: TimeInterval?
+
+  init(
+    hasLiveConnection: Bool,
+    isPathSatisfied: Bool,
+    interfacesChanged: Bool,
+    currentRouteKind: SyncConnectionRouteKind? = nil,
+    bestAvailableRouteKind: SyncConnectionRouteKind? = nil,
+    connectionAgeSeconds: TimeInterval? = nil,
+    secondsSinceLastRoamAttempt: TimeInterval? = nil
+  ) {
+    self.hasLiveConnection = hasLiveConnection
+    self.isPathSatisfied = isPathSatisfied
+    self.interfacesChanged = interfacesChanged
+    self.currentRouteKind = currentRouteKind
+    self.bestAvailableRouteKind = bestAvailableRouteKind
+    self.connectionAgeSeconds = connectionAgeSeconds
+    self.secondsSinceLastRoamAttempt = secondsSinceLastRoamAttempt
+  }
+}
+
+/// Whether a healthy connection should be re-raced, and why. Standing facts
+/// ("on cellular, and a tailnet route is saved") are deliberately NOT triggers:
+/// they stay true forever and turned every path update into a full connection
+/// race that replaced a working socket.
+func syncRoamTrigger(_ inputs: SyncRoamInputs) -> SyncRoamTrigger? {
+  guard inputs.hasLiveConnection, inputs.isPathSatisfied else { return nil }
+  let secondsSinceLastRoamAttempt = inputs.secondsSinceLastRoamAttempt ?? .infinity
+  if inputs.interfacesChanged {
+    return secondsSinceLastRoamAttempt >= SyncRoamTiming.pathChangeCooldownSeconds
+      ? .pathChange
+      : nil
+  }
+  guard let currentRouteKind = inputs.currentRouteKind,
+        let bestAvailableRouteKind = inputs.bestAvailableRouteKind,
+        bestAvailableRouteKind < currentRouteKind,
+        (inputs.connectionAgeSeconds ?? 0) >= SyncRoamTiming.minimumConnectionAgeSeconds,
+        secondsSinceLastRoamAttempt >= SyncRoamTiming.upgradeProbeIntervalSeconds
+  else { return nil }
+  return .upgradeProbe
+}
+
+func syncNetworkPathInterfacesChanged(
+  previous: SyncNetworkPathSnapshot?,
+  next: SyncNetworkPathSnapshot
+) -> Bool {
+  guard let previous else { return true }
+  return previous.isSatisfied != next.isSatisfied
+    || previous.usesWiFi != next.usesWiFi
+    || previous.usesCellular != next.usesCellular
+    || previous.usesWiredEthernet != next.usesWiredEthernet
 }
 
 struct SyncRelayAuthorizationLease: Equatable, Sendable {

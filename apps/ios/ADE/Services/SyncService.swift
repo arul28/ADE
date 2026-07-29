@@ -766,9 +766,13 @@ func syncFirstSuccessfulConnectionEndpoint(
 private struct SyncRankedEndpointAttempt {
   var attempt: SyncConnectionEndpointAttempt
   var routeKey: String
-  var kind: Int
+  var kind: SyncConnectionRouteKind
   var succeededAt: TimeInterval
   var isLive: Bool
+  /// Recently failing, or implausible on this network path. This outranks every
+  /// other sort key: an endpoint that cannot work costs a full socket-open
+  /// timeout wherever it sits, so it belongs at the back of the plan.
+  var isDemoted: Bool
   var offset: Int
 }
 
@@ -1070,7 +1074,7 @@ func syncStableHostIdentityChanged(
   return previousIdentity != nextIdentity
 }
 
-private func syncConnectionRouteKey(_ address: String) -> String {
+func syncConnectionRouteKey(_ address: String) -> String {
   let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
   if syncIsFullWebSocketRoute(trimmed) { return trimmed }
   return syncNormalizedRouteHost(trimmed)
@@ -1081,7 +1085,8 @@ func syncEndpointStatesMarkingSucceeded(
   _ states: [HostConnectionEndpointState]?,
   endpoint: String,
   at lastSucceededAt: TimeInterval,
-  retaining endpoints: [String]
+  retaining endpoints: [String],
+  negotiatedReadyV2: Bool? = nil
 ) -> [HostConnectionEndpointState] {
   let retainedKeys = Set((endpoints + [endpoint]).map(syncConnectionRouteKey).filter { !$0.isEmpty })
   var merged: [String: HostConnectionEndpointState] = [:]
@@ -1097,12 +1102,95 @@ func syncEndpointStatesMarkingSucceeded(
     merged[key] = state
   }
   let succeededKey = syncConnectionRouteKey(endpoint)
-  if merged[succeededKey] == nil { order.append(succeededKey) }
+  let previous = merged[succeededKey]
+  if previous == nil { order.append(succeededKey) }
+  // Success clears the failure streak but never the fact that this endpoint has
+  // spoken ready-v2: that is a property of the relay, not of this attempt.
   merged[succeededKey] = HostConnectionEndpointState(
     endpoint: endpoint,
-    lastSucceededAt: lastSucceededAt
+    lastSucceededAt: lastSucceededAt,
+    lastFailedAt: nil,
+    consecutiveFailures: nil,
+    negotiatedReadyV2: negotiatedReadyV2 ?? previous?.negotiatedReadyV2
   )
   return order.compactMap { merged[$0] }
+}
+
+/// Records a failed attempt per endpoint, incrementing its consecutive-failure
+/// streak. Endpoints are never dropped from the plan on the strength of this —
+/// the ranking only schedules them last, so a route that comes back to life is
+/// still tried on every connect.
+func syncEndpointStatesMarkingFailed(
+  _ states: [HostConnectionEndpointState]?,
+  endpoints: [String],
+  at lastFailedAt: TimeInterval
+) -> [HostConnectionEndpointState] {
+  let failedKeys = endpoints.map(syncConnectionRouteKey).filter { !$0.isEmpty }
+  guard !failedKeys.isEmpty else { return states ?? [] }
+  var merged = states ?? []
+  for (key, endpoint) in zip(failedKeys, endpoints) {
+    if let index = merged.firstIndex(where: { syncConnectionRouteKey($0.endpoint) == key }) {
+      merged[index].lastFailedAt = lastFailedAt
+      merged[index].consecutiveFailures = (merged[index].consecutiveFailures ?? 0) + 1
+    } else {
+      merged.append(HostConnectionEndpointState(
+        endpoint: endpoint,
+        lastFailedAt: lastFailedAt,
+        consecutiveFailures: 1
+      ))
+    }
+  }
+  return merged
+}
+
+/// Whether a race failure says anything about the endpoint. Losing the race,
+/// being cancelled, being turned away by the single-flight guard, or lacking an
+/// account credential are facts about this attempt or this device, not about the
+/// route, and must not demote a perfectly healthy endpoint.
+func syncEndpointFailureIsMeaningful(_ error: Error) -> Bool {
+  if error is CancellationError { return false }
+  if error is SyncRelayDialInFlight { return false }
+  if error is SyncRelayAuthorizationRequirement { return false }
+  let nsError = error as NSError
+  // ADE 31: this device could not produce its pinned relay key proof.
+  if nsError.domain == "ADE", nsError.code == 31 { return false }
+  if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return false }
+  return true
+}
+
+/// True for candidates that only make sense on a local link. On a path with no
+/// Wi-Fi or wired interface these cannot succeed, and each one raced eagerly
+/// costs a 5s socket-open timeout. Tailnet CGNAT is excluded — Tailscale works
+/// over cellular — and so is loopback, which is the simulator's own route.
+func syncIsLocalLinkOnlyCandidate(_ address: String) -> Bool {
+  let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !syncIsFullWebSocketRoute(trimmed) else { return false }
+  let host = syncNormalizedRouteHost(trimmed)
+  guard !host.isEmpty, !syncIsTailscaleRoute(host) else { return false }
+  if host == "localhost" || host.hasSuffix(".localhost") { return false }
+  if host.hasSuffix(".local") { return true }
+  if let v4 = IPv4Address(host) {
+    let bytes = v4.rawValue
+    guard bytes.count == 4 else { return false }
+    let a = bytes[0], b = bytes[1]
+    if a == 127 { return false }
+    if a == 10 { return true }
+    if a == 172, (16...31).contains(b) { return true }
+    if a == 192, b == 168 { return true }
+    if a == 169, b == 254 { return true }
+    return false
+  }
+  if let v6 = IPv6Address(host) {
+    let bytes = v6.rawValue
+    guard bytes.count == 16 else { return false }
+    // ::1 stays eligible (the simulator's own route); fc00::/7 unique-local and
+    // fe80::/10 link-local cannot be reached without a local link.
+    if bytes == Data([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) { return false }
+    if (bytes[0] & 0xfe) == 0xfc { return true }
+    if bytes[0] == 0xfe, (bytes[1] & 0xc0) == 0x80 { return true }
+    return false
+  }
+  return false
 }
 
 func syncConnectionEndpointAttempts(
@@ -1134,7 +1222,9 @@ func syncRankedEndpointAttempts(
   relayPort: Int,
   endpointStates: [HostConnectionEndpointState]? = nil,
   lastSuccessfulAddress: String? = nil,
-  liveDirectAddresses: Set<String> = []
+  liveDirectAddresses: Set<String> = [],
+  deprioritizeLocalLinkCandidates: Bool = false,
+  now: TimeInterval = Date().timeIntervalSince1970
 ) -> [SyncConnectionEndpointAttempt] {
   var seenRelayRoutes = Set<String>()
   let relayAttempts = relayRoutes.filter { route in
@@ -1170,22 +1260,33 @@ func syncRankedEndpointAttempts(
   }
   let allPrimary = syncDeduplicatedEndpointAttempts(primaryAttempts + relayAttempts)
   let liveRouteKeys = Set(liveDirectAddresses.map(syncConnectionRouteKey))
+  var stateByRoute: [String: HostConnectionEndpointState] = [:]
+  for state in endpointStates ?? [] {
+    let key = syncConnectionRouteKey(state.endpoint)
+    guard !key.isEmpty else { continue }
+    stateByRoute[key] = state
+  }
 
   func ranked(
     _ attempts: [SyncConnectionEndpointAttempt]
   ) -> [SyncConnectionEndpointAttempt] {
     let decorated = attempts.enumerated().map { offset, attempt in
       let routeKey = syncConnectionRouteKey(attempt.address)
+      let isImplausible = deprioritizeLocalLinkCandidates
+        && syncIsLocalLinkOnlyCandidate(attempt.address)
       return SyncRankedEndpointAttempt(
         attempt: attempt,
         routeKey: routeKey,
-        kind: syncConnectionRouteKind(attempt.address).rawValue,
+        kind: syncConnectionRouteKind(attempt.address),
         succeededAt: succeededAtByRoute[routeKey] ?? -.infinity,
         isLive: liveRouteKeys.contains(routeKey),
+        isDemoted: isImplausible
+          || syncEndpointIsRecentlyFailing(stateByRoute[routeKey], now: now),
         offset: offset
       )
     }
     return decorated.sorted { left, right in
+      if left.isDemoted != right.isDemoted { return !left.isDemoted }
       if left.isLive != right.isLive { return left.isLive }
       if left.kind != right.kind { return left.kind < right.kind }
       if left.succeededAt != right.succeededAt { return left.succeededAt > right.succeededAt }
@@ -1196,6 +1297,26 @@ func syncRankedEndpointAttempts(
   // Give every route one ranked attempt before trying alternate direct ports.
   // This keeps relay first-class instead of placing it behind a port sweep.
   return ranked(allPrimary) + ranked(fallbackAttempts)
+}
+
+/// Moves already-vetted attempts to the front of the plan, most preferred first.
+/// Reordering rather than synthesizing matters: a proven address that is not in
+/// the vetted set — a relay URL while signed out, an address the path filter
+/// rejected — must not re-enter the race through the front door.
+func syncEndpointAttemptsHoisting(
+  _ attempts: [SyncConnectionEndpointAttempt],
+  preferredAddresses: [String]
+) -> [SyncConnectionEndpointAttempt] {
+  var ordered = attempts
+  for address in preferredAddresses.reversed() {
+    let key = syncConnectionRouteKey(address)
+    guard !key.isEmpty,
+          let index = ordered.firstIndex(where: { syncConnectionRouteKey($0.address) == key })
+    else { continue }
+    let hoisted = ordered.remove(at: index)
+    ordered.insert(hoisted, at: 0)
+  }
+  return ordered
 }
 
 func syncProjectSwitchRelayCandidates(
@@ -1646,7 +1767,7 @@ struct SyncReconnectState {
   }
 }
 
-private struct SyncNetworkPathSnapshot: Equatable, Sendable {
+struct SyncNetworkPathSnapshot: Equatable, Sendable {
   let isSatisfied: Bool
   let usesWiFi: Bool
   let usesCellular: Bool
@@ -1779,19 +1900,6 @@ func syncShouldReconnectAfterRequestTimeout(
 ) -> Bool {
   guard let lastInboundMessageAt else { return true }
   return now - lastInboundMessageAt >= silenceThreshold
-}
-
-func syncShouldRoamToTailnet(
-  currentAddress: String?,
-  hasTailnetRoute: Bool,
-  usesWiFi: Bool,
-  usesCellular: Bool,
-  usesWiredEthernet: Bool
-) -> Bool {
-  guard hasTailnetRoute else { return false }
-  let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
-  guard !connectedOverTailnet else { return false }
-  return usesCellular || (!usesWiFi && !usesWiredEthernet)
 }
 
 func syncPrefersReducedNetworkLoad(
@@ -3051,6 +3159,9 @@ final class SyncService: ObservableObject {
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var networkPathReconnectTask: Task<Void, Never>?
+  /// Pending roam (transport upgrade or failover). Deliberately separate from
+  /// `networkPathReconnectTask` — see `scheduleRoamAttempt`.
+  private var roamTask: Task<Void, Never>?
   private var reconnectStabilityTask: Task<Void, Never>?
   private var pendingOperationFlushTask: Task<Void, Never>?
   private var pendingOperationFlushInFlight = false
@@ -3104,6 +3215,17 @@ final class SyncService: ObservableObject {
   private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
   private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
   private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
+  /// Single-flight over relay `/connect` dials, keyed by machine.
+  private var relayDialRegistry = SyncRelayDialRegistry()
+  /// Endpoints that failed during the race for a given connect attempt,
+  /// persisted afterwards so the next connect schedules them behind routes that
+  /// still work. Tagged with the generation so two overlapping attempts cannot
+  /// record each other's failures.
+  private var raceFailedEndpoints: (generation: UInt64, addresses: [String]) = (0, [])
+  /// Uptime of the last roam attempt and of the current connection, for the
+  /// roam cooldown and the minimum-age floor.
+  private var lastRoamAttemptUptime: TimeInterval?
+  private var connectionEstablishedUptime: TimeInterval?
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var remoteProjectCatalog: [MobileProjectSummary] = []
@@ -3985,6 +4107,10 @@ final class SyncService: ObservableObject {
       relayAccountOwnerId: previousProfileMatchesTarget ? previousProfile?.relayAccountOwnerId : nil
     )
 
+    // Retire pending reconnect/roam work first: the new attempt generation frees
+    // this machine's relay dial key, and an uncancelled roam still holding a
+    // socket would leave two tunnels open on the same Durable Object.
+    cancelPendingReconnectTasks()
     let connectAttemptGeneration = beginConnectAttempt()
     do {
       keychain.saveToken(resolvedToken)
@@ -4320,6 +4446,7 @@ final class SyncService: ObservableObject {
       Task { @MainActor in
         self?.bonjourDiscoveredHosts = hosts
         self?.publishMergedDiscoveredHosts()
+        self?.considerTransportUpgrade()
       }
     }
     discoveryBrowser.start()
@@ -4327,6 +4454,7 @@ final class SyncService: ObservableObject {
       Task { @MainActor in
         self?.tailnetDiscoveredHosts = hosts
         self?.publishMergedDiscoveredHosts()
+        self?.considerTransportUpgrade()
       }
     }
     tailnetDiscovery.preferredPortsProvider = { [weak self] in
@@ -4389,6 +4517,7 @@ final class SyncService: ObservableObject {
     projectSelectionTask?.cancel()
     reconnectTask?.cancel()
     networkPathReconnectTask?.cancel()
+    roamTask?.cancel()
     reconnectStabilityTask?.cancel()
     pendingOperationFlushTask?.cancel()
     outboundCursorPersistTask?.cancel()
@@ -4867,6 +4996,42 @@ final class SyncService: ObservableObject {
 
   private func publishMergedDiscoveredHosts() {
     applyDiscoveredHosts(bonjourDiscoveredHosts + tailnetDiscoveredHosts)
+  }
+
+  /// Discovery seeing the machine on the local network is the honest signal
+  /// that a better transport exists — a phone sitting on stable Wi-Fi may get
+  /// no path updates for hours. The roam cooldown still applies, so this cannot
+  /// turn discovery chatter into connection churn.
+  private func considerTransportUpgrade() {
+    guard canSendLiveRequests(),
+          !reconnectConnectInFlight,
+          allowAutoReconnect,
+          !autoReconnectPausedByUser,
+          let snapshot = lastNetworkPathSnapshot,
+          let profile = activeHostProfile ?? loadProfile(),
+          let trigger = evaluateRoamTrigger(
+            snapshot: snapshot,
+            interfacesChanged: false,
+            profile: profile
+          )
+    else { return }
+    scheduleRoamAttempt(trigger, afterNanoseconds: 0)
+  }
+
+  /// Roams own a task separate from `networkPathReconnectTask`. They must not be
+  /// cancelled by the path handler's "connection is healthy, drop the scheduled
+  /// reconnect" branch: path updates arrive in bursts, and the follow-up update
+  /// for one physical change reports no interface change — which would otherwise
+  /// cancel the failover this very change just scheduled.
+  private func scheduleRoamAttempt(_ trigger: SyncRoamTrigger, afterNanoseconds delay: UInt64) {
+    roamTask?.cancel()
+    roamTask = Task { @MainActor [weak self] in
+      if delay > 0 {
+        try? await Task.sleep(nanoseconds: delay)
+      }
+      guard let self, !Task.isCancelled else { return }
+      await self.attemptAuthenticatedPathReplacement(trigger: trigger)
+    }
   }
 
   var canReconnectToSavedHost: Bool {
@@ -5841,6 +6006,8 @@ final class SyncService: ObservableObject {
       autoReconnectAwaitingLiveDiscovery = false
       reconnectTask?.cancel()
       networkPathReconnectTask?.cancel()
+      roamTask?.cancel()
+      roamTask = nil
       reconnectState.reset()
       if reconnectConnectInFlight {
         syncConnectLog.info("ADE_SYNC_TRACE reconnect user override cancels in-flight attempt")
@@ -6048,35 +6215,29 @@ final class SyncService: ObservableObject {
       return
     }
 
-    let connectedOverTailnet = currentAddress.map(syncIsTailscaleRoute) ?? false
-    let hasTailnetRoute = profileHasTailnetRoute(profile)
-    let shouldRoamToTailnet = syncShouldRoamToTailnet(
-      currentAddress: currentAddress,
-      hasTailnetRoute: hasTailnetRoute,
-      usesWiFi: snapshot.usesWiFi,
-      usesCellular: snapshot.usesCellular,
-      usesWiredEthernet: snapshot.usesWiredEthernet
+    let interfacesChanged = syncNetworkPathInterfacesChanged(previous: previous, next: snapshot)
+    let roamTrigger = evaluateRoamTrigger(
+      snapshot: snapshot,
+      interfacesChanged: interfacesChanged,
+      profile: profile
     )
 
     syncConnectLog.info(
-      "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) connectedOverTailnet=\(connectedOverTailnet) hasTailnet=\(hasTailnetRoute) shouldRoamToTailnet=\(shouldRoamToTailnet) current=\(self.currentAddress ?? "none", privacy: .public)"
+      "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) interfacesChanged=\(interfacesChanged) roam=\(String(describing: roamTrigger), privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
     )
     syncChatLog.notice(
-      "path_changed state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(snapshot), privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public) roamToTailnet=\(shouldRoamToTailnet, privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public)"
+      "path_changed state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(snapshot), privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public) roam=\(String(describing: roamTrigger), privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public)"
     )
 
     switch syncNetworkPathRecoveryAction(
-      shouldRoamToTailnet: shouldRoamToTailnet,
+      roamTrigger: roamTrigger,
       isPathSatisfied: snapshot.isSatisfied,
       hasLiveConnection: canSendLiveRequests()
     ) {
     case .attemptAuthenticatedReplacement:
-      networkPathReconnectTask?.cancel()
-      networkPathReconnectTask = Task { @MainActor [weak self] in
-        try? await Task.sleep(nanoseconds: 250_000_000)
-        guard let self, !Task.isCancelled else { return }
-        await self.attemptAuthenticatedPathReplacement()
-      }
+      guard let roamTrigger else { break }
+      // Let the path settle before racing; a handoff emits several updates.
+      scheduleRoamAttempt(roamTrigger, afterNanoseconds: 250_000_000)
     case .cancelScheduledReconnect:
       networkPathReconnectTask?.cancel()
       networkPathReconnectTask = nil
@@ -6087,11 +6248,70 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func attemptAuthenticatedPathReplacement() async {
-    guard canSendLiveRequests(),
-          !reconnectConnectInFlight,
-          let profile = loadProfile(),
+  /// The best transport class we could plausibly reach right now. Plausible
+  /// means observed, not saved: a live Bonjour hit for LAN, this phone actually
+  /// holding a tailnet address for Tailscale. Without that, "a tailnet route is
+  /// saved" stayed true forever and re-raced a healthy connection every time the
+  /// path monitor twitched.
+  private func bestAvailableRouteKind(
+    snapshot: SyncNetworkPathSnapshot,
+    profile: HostConnectionProfile
+  ) -> SyncConnectionRouteKind? {
+    let matchingDiscovery = discoveredHosts.filter { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+    let hasLocalLinkPath = snapshot.usesWiFi || snapshot.usesWiredEthernet
+    let hasLiveLanAddress = matchingDiscovery.contains { host in
+      host.addresses.contains { !syncIsTailscaleRoute($0) }
+    }
+    if hasLocalLinkPath, hasLiveLanAddress { return .lan }
+    if phoneHasTailnetInterface, profileHasTailnetRoute(profile) { return .tailnet }
+    if !relayFallbackCandidates(for: profile).isEmpty { return .relay }
+    return nil
+  }
+
+  private func evaluateRoamTrigger(
+    snapshot: SyncNetworkPathSnapshot,
+    interfacesChanged: Bool,
+    profile: HostConnectionProfile
+  ) -> SyncRoamTrigger? {
+    let now = ProcessInfo.processInfo.systemUptime
+    return syncRoamTrigger(SyncRoamInputs(
+      hasLiveConnection: canSendLiveRequests(),
+      isPathSatisfied: snapshot.isSatisfied,
+      interfacesChanged: interfacesChanged,
+      currentRouteKind: currentAddress.map(syncConnectionRouteKind),
+      bestAvailableRouteKind: bestAvailableRouteKind(snapshot: snapshot, profile: profile),
+      connectionAgeSeconds: connectionEstablishedUptime.map { now - $0 },
+      secondsSinceLastRoamAttempt: lastRoamAttemptUptime.map { now - $0 }
+    ))
+  }
+
+  /// Re-races the connection while the current one keeps serving traffic. The
+  /// live socket is replaced only once a candidate has authenticated, and never
+  /// by the endpoint it is already using.
+  private func attemptAuthenticatedPathReplacement(trigger: SyncRoamTrigger) async {
+    guard canSendLiveRequests(), !reconnectConnectInFlight else {
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE roam skipped trigger=\(String(describing: trigger), privacy: .public) live=\(self.canSendLiveRequests()) connectInFlight=\(self.reconnectConnectInFlight)"
+      )
+      return
+    }
+    guard let profile = loadProfile(),
           let token = tokenForProfile(profile) else { return }
+    let currentRouteAddress = currentAddress
+    let replacement: SyncConnectionReplacement
+    switch trigger {
+    case .pathChange:
+      replacement = SyncConnectionReplacement(currentAddress: currentRouteAddress)
+    case .upgradeProbe:
+      guard let currentRouteKind = currentRouteAddress.map(syncConnectionRouteKind) else { return }
+      replacement = SyncConnectionReplacement(
+        currentAddress: currentRouteAddress,
+        upgradeCeiling: currentRouteKind
+      )
+    }
+    lastRoamAttemptUptime = ProcessInfo.processInfo.systemUptime
     let connectAttemptGeneration = beginConnectAttempt()
     markReconnectConnectInFlight(connectAttemptGeneration)
     defer { clearReconnectConnectInFlight(connectAttemptGeneration) }
@@ -6101,7 +6321,8 @@ final class SyncService: ObservableObject {
         token: token,
         connectAttemptGeneration: connectAttemptGeneration,
         preferLiveCandidatesOnly: false,
-        publishConnecting: false
+        publishConnecting: false,
+        replacement: replacement
       )
     } catch {
       // The current authenticated socket remains authoritative when every
@@ -6120,6 +6341,10 @@ final class SyncService: ObservableObject {
     syncChatLog.notice(
       "network_path_reconnect_scheduled forceReset=\(forceSocketReset, privacy: .public) delayNs=\(delayNanoseconds, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(scheduledConnectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
     )
+    // A roam in flight would otherwise hold `reconnectConnectInFlight` and make
+    // this reconnect a no-op with nothing left to re-arm it.
+    roamTask?.cancel()
+    roamTask = nil
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
@@ -6146,6 +6371,23 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Foregrounding with a relay-capable machine and no live connection means a
+  /// relay dial is about to happen. The hello always fetches a server-fresh
+  /// token (`AccountRelayTokenPolicy` skips the cache), so what this buys is a
+  /// warm TLS connection to Clerk — most of that request's latency — plus an
+  /// early signal when the account can no longer authorize relay.
+  private func warmRelayCredentialIfDialImminent() {
+    guard !canSendLiveRequests(),
+          allowAutoReconnect,
+          !autoReconnectPausedByUser,
+          AccountService.shared.currentPairingAuthorization != nil,
+          let profile = activeHostProfile ?? loadProfile(),
+          tokenForProfile(profile) != nil,
+          !relayFallbackCandidates(for: profile).isEmpty
+    else { return }
+    Task { _ = try? await AccountService.shared.freshRelaySession() }
+  }
+
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
     // Push registration + Live Activity token re-reporting are independent of
@@ -6160,6 +6402,7 @@ final class SyncService: ObservableObject {
        ), relayReauthorizationTask == nil {
       scheduleRelayReauthorization(lease: relayAuthorizationLease, refreshImmediately: true)
     }
+    warmRelayCredentialIfDialImminent()
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       lastError = nil
@@ -11192,6 +11435,7 @@ final class SyncService: ObservableObject {
       && lhs.lastHostDeviceId == rhs.lastHostDeviceId
       && lhs.lastSuccessfulAddress == rhs.lastSuccessfulAddress
       && lhs.endpointStates == rhs.endpointStates
+      && lhs.networkRouteMemory == rhs.networkRouteMemory
       && lhs.accountOwnerId == rhs.accountOwnerId
       && lhs.relayAccountOwnerId == rhs.relayAccountOwnerId
       && lhs.savedAddressCandidates == rhs.savedAddressCandidates
@@ -11704,6 +11948,11 @@ final class SyncService: ObservableObject {
   private func beginConnectAttempt() -> UInt64 {
     connectAttemptGeneration &+= 1
     connectAttemptStartedAt = nil
+    // Dials from the superseded attempt are being cancelled, so their keys must
+    // not block this one — a user-initiated reconnect during an in-flight roam
+    // would otherwise be refused outright with nothing left to retry. Stale
+    // releases are ignored because the registry matches on token.
+    relayDialRegistry.releaseAll()
     return connectAttemptGeneration
   }
 
@@ -12042,6 +12291,50 @@ final class SyncService: ObservableObject {
     return false
   }
 
+  private func currentNetworkFingerprint() -> String? {
+    guard let snapshot = lastNetworkPathSnapshot else { return nil }
+    return syncNetworkFingerprint(
+      usesWiFi: snapshot.usesWiFi,
+      usesCellular: snapshot.usesCellular,
+      usesWiredEthernet: snapshot.usesWiredEthernet,
+      interfaceAddresses: snapshot.usesWiFi ? syncCopyNetworkInterfaceAddresses() : []
+    )
+  }
+
+  /// Persists this race's failures against the saved profile. Kept to a single
+  /// write per race, and skipped entirely when nothing meaningful failed.
+  private func recordEndpointFailures(for generation: UInt64) {
+    guard raceFailedEndpoints.generation == generation else { return }
+    let endpoints = raceFailedEndpoints.addresses
+    raceFailedEndpoints = (generation, [])
+    guard !endpoints.isEmpty, var profile = activeHostProfile ?? loadProfile() else { return }
+    profile.endpointStates = syncEndpointStatesMarkingFailed(
+      profile.endpointStates,
+      endpoints: endpoints,
+      at: Date().timeIntervalSince1970
+    )
+    saveProfile(profile)
+  }
+
+  /// Fetches the Clerk-backed relay session for a candidate, or nil when this
+  /// candidate does not need one. Split out so the fetch can be started as an
+  /// `async let` next to the socket open.
+  private func relaySessionForCandidate(required: Bool) async throws -> AccountPairingSession? {
+    guard required else { return nil }
+    return try await AccountService.shared.freshRelaySession()
+  }
+
+  private func endpointHasNegotiatedReadyV2(
+    _ address: String,
+    profile: HostConnectionProfile
+  ) -> Bool {
+    let key = syncConnectionRouteKey(address)
+    guard !key.isEmpty else { return false }
+    return profile.endpointStates?.first(where: {
+      syncConnectionRouteKey($0.endpoint) == key
+    })?.negotiatedReadyV2 == true
+  }
+
   /// Relay `wss://` candidates for a profile. The endpoint walker ranks these
   /// alongside direct routes and applies last-good stickiness.
   private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
@@ -12138,6 +12431,9 @@ final class SyncService: ObservableObject {
     var task: URLSessionWebSocketTask
     var helloPayload: [String: Any]
     var relayAuthorization: AccountPairingAuthorization?
+    /// This endpoint completed a `?ready=2` handshake, so a future silent
+    /// window on it is a fault rather than evidence of a pre-v2 relay.
+    var negotiatedReadyV2: Bool = false
   }
 
   private enum AuthenticatedConnectionRaceEvent: @unchecked Sendable {
@@ -12151,12 +12447,24 @@ final class SyncService: ObservableObject {
     case timeout
   }
 
+  /// A connect attempt that must respect a connection which is already live.
+  /// Absent (`nil`) is an ordinary connect; present means a roam, which may only
+  /// disturb a healthy socket by genuinely improving on it.
+  private struct SyncConnectionReplacement {
+    /// The endpoint currently in use. Winning the race on it is churn, not a
+    /// roam, so the live socket is kept instead.
+    var currentAddress: String?
+    /// Set for an upgrade probe: only strictly better classes are raced.
+    var upgradeCeiling: SyncConnectionRouteKind?
+  }
+
   private func connectUsingProfile(
     _ profile: HostConnectionProfile,
     token: String,
     connectAttemptGeneration: UInt64,
     preferLiveCandidatesOnly: Bool,
-    publishConnecting: Bool
+    publishConnecting: Bool,
+    replacement: SyncConnectionReplacement? = nil
   ) async throws -> (host: String, port: Int) {
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
@@ -12169,8 +12477,8 @@ final class SyncService: ObservableObject {
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
-    // Relay routes (full wss:// URLs) carry their own path and port. Keep them
-    // out of the direct port sweep and reserve them for the fallback phase.
+    // Relay routes (full wss:// URLs) carry their own path and port, so they are
+    // kept out of the direct port sweep and ranked as whole routes instead.
     let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
     let usableRelayRoutes = AccountService.shared.currentPairingAuthorization == nil ? [] : relayRoutes
     let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
@@ -12202,80 +12510,83 @@ final class SyncService: ObservableObject {
     let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: addresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: addresses, ports: portCandidates)
-    var orderedEndpointAttempts = syncRankedEndpointAttempts(
+    let hasLocalLinkPath = lastNetworkPathSnapshot
+      .map { $0.usesWiFi || $0.usesWiredEthernet } ?? true
+    let rankedAttempts = syncRankedEndpointAttempts(
       directAttempts: racedDirectAttempts,
       relayRoutes: usableRelayRoutes,
       relayPort: portCandidates.first ?? profile.port,
       endpointStates: profile.endpointStates,
       lastSuccessfulAddress: profile.lastSuccessfulAddress,
-      liveDirectAddresses: liveDirectAddressSet
+      liveDirectAddresses: liveDirectAddressSet,
+      deprioritizeLocalLinkCandidates: !hasLocalLinkPath
     )
-    // Last-good starts immediately, but it does not block other transports.
-    if let provenAddress = profile.lastSuccessfulAddress,
-       let provenPort = portCandidates.first {
-      let provenEndpoint = SyncConnectionEndpointAttempt(address: provenAddress, port: provenPort)
-      orderedEndpointAttempts.removeAll { $0 == provenEndpoint }
-      orderedEndpointAttempts.insert(provenEndpoint, at: 0)
+    // What worked on THIS network beats the global last-good, which may belong
+    // to a different one. Both are reorderings of the vetted set, so neither can
+    // reintroduce a candidate that address or relay-authorization policy
+    // already rejected.
+    var orderedEndpointAttempts = syncEndpointAttemptsHoisting(
+      rankedAttempts,
+      preferredAddresses: [
+        syncRememberedEndpoint(
+          in: profile.networkRouteMemory,
+          fingerprint: currentNetworkFingerprint()
+        ),
+        profile.lastSuccessfulAddress,
+      ].compactMap { $0 }
+    )
+    if let upgradeCeiling = replacement?.upgradeCeiling {
+      orderedEndpointAttempts = orderedEndpointAttempts.filter {
+        syncConnectionRouteKind($0.address) < upgradeCeiling
+      }
+      guard !orderedEndpointAttempts.isEmpty else {
+        throw NSError(
+          domain: "ADE",
+          code: 38,
+          userInfo: [NSLocalizedDescriptionKey: "No better route is available for this machine right now."]
+        )
+      }
     }
-
     guard !orderedEndpointAttempts.isEmpty else { throw noConnectableAddressError() }
-    let directRacePlan = syncConnectionRaceCandidatePlan(
-      rankedAttempts: orderedEndpointAttempts.filter {
-        !syncIsFullWebSocketRoute($0.address)
-      }
-    )
-    let relayRacePlan = syncConnectionRaceCandidatePlan(
-      rankedAttempts: orderedEndpointAttempts.filter {
-        syncIsFullWebSocketRoute($0.address)
-      }
-    )
-    if publishConnecting, let first = directRacePlan.first ?? relayRacePlan.first {
+
+    let racePlan = syncConnectionRaceCandidatePlan(rankedAttempts: orderedEndpointAttempts)
+    if publishConnecting, let first = racePlan.first {
       publishSocketConnecting(to: first.endpoint.address)
     }
     let connectedCandidate: AuthenticatedConnectionCandidate
     do {
-      if directRacePlan.isEmpty {
-        connectedCandidate = try await raceAuthenticatedConnectionCandidates(
-          relayRacePlan,
-          profile: profile,
-          pairedSecret: token,
-          connectAttemptGeneration: connectAttemptGeneration
-        )
-      } else {
-        do {
-          connectedCandidate = try await raceAuthenticatedConnectionCandidates(
-            directRacePlan,
-            profile: profile,
-            pairedSecret: token,
-            connectAttemptGeneration: connectAttemptGeneration
-          )
-        } catch {
-          guard !relayRacePlan.isEmpty,
-                isCurrentConnectAttempt(connectAttemptGeneration),
-                !Task.isCancelled else {
-            throw error
-          }
-          syncConnectLog.notice(
-            "ADE_SYNC_TRACE direct routes exhausted; beginning authenticated relay fallback"
-          )
-          connectedCandidate = try await raceAuthenticatedConnectionCandidates(
-            relayRacePlan,
-            profile: profile,
-            pairedSecret: token,
-            connectAttemptGeneration: connectAttemptGeneration
-          )
-        }
-      }
+      connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+        racePlan,
+        profile: profile,
+        pairedSecret: token,
+        connectAttemptGeneration: connectAttemptGeneration
+      )
     } catch {
+      recordEndpointFailures(for: connectAttemptGeneration)
       if !shouldInvalidateSavedPairing(for: error),
          case .requires(let requirement) = relayAuthorizationState(for: profile) {
         throw requirement
       }
       throw error
     }
+    recordEndpointFailures(for: connectAttemptGeneration)
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
       connectedCandidate.task.cancel(with: .goingAway, reason: nil)
       throw CancellationError()
+    }
+    // A roam that "wins" on the endpoint we are already using is pure churn:
+    // the user sees a 1-2s stall while a healthy stream is torn down and
+    // rebuilt on an identical route. Keep the live socket instead.
+    if let currentAddress = replacement?.currentAddress,
+       socket != nil,
+       canSendLiveRequests(),
+       syncConnectionRouteKey(currentAddress)
+         == syncConnectionRouteKey(connectedCandidate.scheduled.endpoint.address) {
+      connectedCandidate.task.cancel(with: .goingAway, reason: nil)
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE roam kept the live connection host=\(currentAddress, privacy: .public)"
+      )
+      return (host: currentAddress, port: activeHostProfile?.port ?? profile.port)
     }
     if syncIsFullWebSocketRoute(connectedCandidate.scheduled.endpoint.address),
        let requirement = syncRelayReconnectAuthorizationRequirement(
@@ -12307,7 +12618,8 @@ final class SyncService: ObservableObject {
       authKind: profile.authKind,
       pairedDeviceId: profile.pairedDeviceId,
       expectedHostIdentity: profile.hostIdentity,
-      connectAttemptGeneration: connectAttemptGeneration
+      connectAttemptGeneration: connectAttemptGeneration,
+      negotiatedReadyV2: connectedCandidate.negotiatedReadyV2
     )
     logProjectSwitchPhase("entered_connected")
     schedulePostHelloWork(for: connectAttemptGeneration)
@@ -12324,6 +12636,7 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64
   ) async throws -> AuthenticatedConnectionCandidate {
     guard !candidates.isEmpty else { throw noConnectableAddressError() }
+    raceFailedEndpoints = (connectAttemptGeneration, [])
     let connectionAttempt = makeConnectionAttemptMetadata()
     return try await withThrowingTaskGroup(of: AuthenticatedConnectionRaceEvent.self) { group in
       var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
@@ -12375,6 +12688,10 @@ final class SyncService: ObservableObject {
               expectedHostIdentity: profile.hostIdentity
             )
             lastFailure = marked
+            if syncEndpointFailureIsMeaningful(marked),
+               raceFailedEndpoints.generation == connectAttemptGeneration {
+              raceFailedEndpoints.addresses.append(endpoint.address)
+            }
             syncConnectLog.info(
               "ADE_SYNC_TRACE reconnect race failure host=\(endpoint.address, privacy: .public) port=\(endpoint.port) error=\(syncLogErrorSummary(marked), privacy: .public)"
             )
@@ -12495,6 +12812,22 @@ final class SyncService: ObservableObject {
         guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
           throw CancellationError()
         }
+        guard syncRelayLegacyRedialAllowed(
+          acceptedV2Observed: false,
+          endpointNegotiatedReadyV2Before: endpointHasNegotiatedReadyV2(
+            endpoint.address,
+            profile: profile
+          )
+        ) else {
+          syncConnectLog.info(
+            "ADE_SYNC_TRACE relay candidate stayed silent on a known ready-v2 endpoint; failing it instead of redialing"
+          )
+          throw NSError(
+            domain: "ADE",
+            code: 35,
+            userInfo: [NSLocalizedDescriptionKey: "The ADE relay did not answer in time."]
+          )
+        }
         syncConnectLog.info(
           "ADE_SYNC_TRACE relay candidate did not negotiate ready-v2; retrying endpoint on a fresh legacy socket"
         )
@@ -12523,10 +12856,31 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64,
     connectionAttempt: SyncConnectionAttemptMetadata
   ) async throws -> AuthenticatedConnectionCandidate {
+    let dialKey = isRelay ? syncRelayMachineKey(from: url.absoluteString) : nil
+    var dialToken: UUID?
+    if let dialKey {
+      // Two tunnels for one machine on the same Durable Object consume its
+      // 16-connection cap, and the orphan is only swept minutes later.
+      guard let token = relayDialRegistry.acquire(dialKey) else {
+        throw SyncRelayDialInFlight()
+      }
+      dialToken = token
+    }
+    defer {
+      if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
+    }
     let candidateTask = socketSession.webSocketTask(with: url)
     candidateTask.maximumMessageSize = 32 * 1_024 * 1_024
+    let needsRelaySession = isRelay
+      && profile.authKind == "paired"
+      && profile.pairedDeviceId != nil
     return try await withTaskCancellationHandler {
       do {
+        // The Clerk token the relay hello needs depends on nothing the socket
+        // produces, so it is fetched alongside the WebSocket upgrade instead of
+        // after it. Structured concurrency cancels and reaps the child task on
+        // every exit from this scope, including the early throws below.
+        async let pendingRelaySession = relaySessionForCandidate(required: needsRelaySession)
         try await awaitSocketOpen(candidateTask)
         guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
           throw CancellationError()
@@ -12577,7 +12931,9 @@ final class SyncService: ObservableObject {
           ]
           if let proof { auth["dpop"] = proof }
           if isRelay {
-            let relaySession = try await AccountService.shared.freshRelaySession()
+            guard let relaySession = try await pendingRelaySession else {
+              throw SyncRelayAuthorizationRequirement.signInRequired
+            }
             relayAuthorization = relaySession.authorization
             guard profile.relayAccountOwnerId == nil
               || profile.relayAccountOwnerId == relaySession.authorization.ownerId else {
@@ -12620,7 +12976,8 @@ final class SyncService: ObservableObject {
               scheduled: candidate,
               task: candidateTask,
               helloPayload: payload,
-              relayAuthorization: relayAuthorization
+              relayAuthorization: relayAuthorization,
+              negotiatedReadyV2: awaitsRelayReadyV2
             )
           case "hello_error":
             throw candidateHelloError(preprocessed.payload, profile: profile)
@@ -12637,41 +12994,62 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func awaitRelayCandidateReady(mailbox: SyncConnectionRaceTextMailbox) async throws {
+  /// Two deadlines, not one. `accepted` is sent by the Worker the instant
+  /// `/connect` is served, so 350ms of silence really does suggest a relay that
+  /// does not speak v2. `ready` waits on a Durable Object waking from
+  /// hibernation, signaling the host and dialing its local port — 350ms for
+  /// that guaranteed a second dial of every cold endpoint, so `accepted`
+  /// extends the budget instead of the socket being abandoned.
+  @discardableResult
+  private func awaitRelayCandidateReady(
+    mailbox: SyncConnectionRaceTextMailbox
+  ) async throws -> SyncRelayReadyNegotiation {
     var negotiation = SyncRelayReadyNegotiation()
-    let negotiationDeadlineUptime = ProcessInfo.processInfo.systemUptime
-      + TimeInterval(SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds) / 1_000_000_000
+    var deadlineUptime = ProcessInfo.processInfo.systemUptime
+      + TimeInterval(negotiation.phaseBudgetNanoseconds) / 1_000_000_000
 
-    while !negotiation.acceptedV2 {
+    while !negotiation.ready {
       let event = try await nextRelayNegotiationEvent(
         mailbox: mailbox,
-        deadlineUptime: negotiationDeadlineUptime
+        deadlineUptime: deadlineUptime
       )
       switch event {
       case .timeout:
-        // Never downgrade a socket that advertised `ready=2` in place. A
-        // delayed `accepted` would make the Worker interpret the following ADE
-        // hello as a protocol violation and close it with 4510. The caller
-        // abandons this socket and retries the same endpoint without `ready=2`.
-        throw SyncRelayReadyNegotiationError.retryLegacySocket
+        guard negotiation.acceptedV2 else {
+          // Never downgrade a socket that advertised `ready=2` in place. A
+          // delayed `accepted` would make the Worker interpret the following
+          // ADE hello as a protocol violation and close it with 4510. The
+          // caller decides whether this endpoint has earned a legacy redial.
+          throw SyncRelayReadyNegotiationError.retryLegacySocket
+        }
+        // The relay accepted us and then never bridged: that is this endpoint
+        // failing, not a protocol mismatch, so the candidate loses the race.
+        throw NSError(
+          domain: "ADE",
+          code: 35,
+          userInfo: [NSLocalizedDescriptionKey: "Relay accepted the connection but its secure bridge was not ready in time."]
+        )
       case .frame(let text):
         guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
               let control = syncRelayTransportControl(from: object) else {
-          throw NSError(domain: "ADE", code: 36, userInfo: [NSLocalizedDescriptionKey: "Relay negotiation returned an invalid first frame."])
+          guard negotiation.acceptedV2 else {
+            throw NSError(domain: "ADE", code: 36, userInfo: [NSLocalizedDescriptionKey: "Relay negotiation returned an invalid first frame."])
+          }
+          continue
         }
+        let wasAccepted = negotiation.acceptedV2
         // A reordered `ready` is a recognized transport control, but it is not
         // authoritative until this socket's `accepted` arrives. Keep waiting
-        // inside the original legacy cutoff instead of decoding it as ADE or
-        // failing the candidate.
+        // inside the current cutoff instead of decoding it as ADE or failing
+        // the candidate.
         _ = negotiation.receive(control)
+        if negotiation.acceptedV2, !wasAccepted {
+          deadlineUptime = ProcessInfo.processInfo.systemUptime
+            + TimeInterval(negotiation.phaseBudgetNanoseconds) / 1_000_000_000
+        }
       }
     }
-
-    while !negotiation.ready {
-      let text = try await mailbox.next()
-      guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) else { continue }
-      if negotiation.receive(syncRelayTransportControl(from: object)) == .sendHello { return }
-    }
+    return negotiation
   }
 
   private func nextRelayNegotiationEvent(
@@ -12768,6 +13146,8 @@ final class SyncService: ObservableObject {
       reconnectTask = nil
       networkPathReconnectTask?.cancel()
       networkPathReconnectTask = nil
+      roamTask?.cancel()
+      roamTask = nil
       autoReconnectAwaitingLiveDiscovery = false
       return
     }
@@ -12844,6 +13224,8 @@ final class SyncService: ObservableObject {
     reconnectTask = nil
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = nil
+    roamTask?.cancel()
+    roamTask = nil
     clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
     refreshPhoneTailnetInterfaceState()
@@ -12877,6 +13259,8 @@ final class SyncService: ObservableObject {
     reconnectTask = nil
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = nil
+    roamTask?.cancel()
+    roamTask = nil
   }
 
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
@@ -13746,7 +14130,7 @@ final class SyncService: ObservableObject {
   }
 
   func hasScheduledReconnectWorkForTesting() -> Bool {
-    reconnectTask != nil || networkPathReconnectTask != nil
+    reconnectTask != nil || networkPathReconnectTask != nil || roamTask != nil
   }
 
   func configureReconnectProfileForTesting(_ profile: HostConnectionProfile, token: String) {
@@ -14043,14 +14427,16 @@ final class SyncService: ObservableObject {
     return relayTransportNegotiations[socket.taskIdentifier]
   }
 
-  func awaitRelayCandidateReadyForTesting(frames: [[String: Any]]) async throws {
+  func awaitRelayCandidateReadyForTesting(
+    frames: [[String: Any]]
+  ) async throws -> SyncRelayReadyNegotiation {
     let mailbox = SyncConnectionRaceTextMailbox()
     for frame in frames {
       let data = try JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys])
       guard let text = String(data: data, encoding: .utf8) else { continue }
       await mailbox.deliver(text)
     }
-    try await awaitRelayCandidateReady(mailbox: mailbox)
+    return try await awaitRelayCandidateReady(mailbox: mailbox)
   }
 
   func completeCapturedRefreshRequestsForTesting() {
@@ -14260,7 +14646,8 @@ final class SyncService: ObservableObject {
     authKind: String,
     pairedDeviceId: String?,
     expectedHostIdentity: String?,
-    connectAttemptGeneration: UInt64
+    connectAttemptGeneration: UInt64,
+    negotiatedReadyV2: Bool = false
   ) throws {
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
       throw CancellationError()
@@ -14403,6 +14790,9 @@ final class SyncService: ObservableObject {
       generation: connectAttemptGeneration
     )
     currentAddress = connectedHost
+    // Every connect path lands here, including pairing and account adoption —
+    // the roam age floor must not treat those connections as ageless.
+    connectionEstablishedUptime = ProcessInfo.processInfo.systemUptime
     // The explicit post-hello restoration below owns the reconnect replay.
     // Suppressing this incidental restoration prevents duplicate subscribe
     // frames when the newly selected route changes reduced-load mode.
@@ -14451,13 +14841,23 @@ final class SyncService: ObservableObject {
     let resolvedTailscaleAddress = matchingDiscovery?.tailscaleAddress
       ?? (syncIsTailscaleRoute(connectedHost) ? connectedHost : nil)
       ?? activeHostProfile?.tailscaleAddress
+    let connectedAt = Date().timeIntervalSince1970
     let endpointStates = syncEndpointStatesMarkingSucceeded(
       activeHostProfile?.endpointStates ?? loadProfile()?.endpointStates,
       endpoint: connectedHost,
-      at: Date().timeIntervalSince1970,
+      at: connectedAt,
       retaining: savedCandidates
         + (resolvedTailscaleAddress.map { [$0] } ?? [])
-        + mergedRelayCandidates
+        + mergedRelayCandidates,
+      negotiatedReadyV2: negotiatedReadyV2 ? true : nil
+    )
+    // Remember the winner against the network we are on, so returning to a
+    // known Wi-Fi or to cellular dials what actually worked there first.
+    let networkRouteMemory = syncNetworkRouteMemoryRecording(
+      activeHostProfile?.networkRouteMemory ?? loadProfile()?.networkRouteMemory,
+      fingerprint: currentNetworkFingerprint(),
+      endpoint: connectedHost,
+      at: connectedAt
     )
 
     let profile = HostConnectionProfile(
@@ -14475,6 +14875,7 @@ final class SyncService: ObservableObject {
       tailscaleAddress: resolvedTailscaleAddress,
       savedRelayCandidates: mergedRelayCandidates.isEmpty ? nil : mergedRelayCandidates,
       endpointStates: endpointStates,
+      networkRouteMemory: networkRouteMemory.isEmpty ? nil : networkRouteMemory,
       accountOwnerId: activeHostProfile?.accountOwnerId,
       relayAccountOwnerId: activeHostProfile?.relayAccountOwnerId
     )
@@ -15302,7 +15703,7 @@ final class SyncService: ObservableObject {
       pendingRelayTransportReady[taskIdentifier] = continuation
       relayTransportNegotiationTimeoutTasks[taskIdentifier]?.cancel()
       relayTransportNegotiationTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
-        try? await Task.sleep(nanoseconds: SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds)
+        try? await Task.sleep(nanoseconds: SyncConnectionRaceTiming.relayAcceptedNegotiationNanoseconds)
         guard !Task.isCancelled,
               let self,
               self.relayTransportNegotiations[taskIdentifier]?.acceptedV2 != true else { return }
@@ -15425,6 +15826,8 @@ final class SyncService: ObservableObject {
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
     let retiringConnectionGeneration = connectionGeneration
+    // The connection age gates roam upgrades; it must not outlive its socket.
+    connectionEstablishedUptime = nil
     // The roster subscription is bound to the live socket; a reconnect must
     // re-subscribe. Keep `rosterProjects` for offline render, but drop the
     // seq baseline so the next subscribe asks for (and applies) a fresh snapshot.

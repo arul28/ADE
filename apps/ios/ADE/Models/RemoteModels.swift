@@ -13,6 +13,40 @@ struct ConnectionDraft: Codable, Equatable {
 struct HostConnectionEndpointState: Codable, Equatable {
   var endpoint: String
   var lastSucceededAt: TimeInterval?
+  /// Failure history for this route. All optional so profiles written before
+  /// failure memory existed keep decoding. A route that just failed twice in a
+  /// row is still raced — it is scheduled last instead of consuming slot 0 and
+  /// its 5s open timeout.
+  var lastFailedAt: TimeInterval?
+  var consecutiveFailures: Int?
+  /// True once this relay endpoint has completed a `?ready=2` handshake. Until
+  /// then a missing `accepted` may mean a pre-v2 relay and earns one legacy
+  /// redial; afterwards it never does, which removes the routine double-dial.
+  var negotiatedReadyV2: Bool?
+
+  init(
+    endpoint: String,
+    lastSucceededAt: TimeInterval? = nil,
+    lastFailedAt: TimeInterval? = nil,
+    consecutiveFailures: Int? = nil,
+    negotiatedReadyV2: Bool? = nil
+  ) {
+    self.endpoint = endpoint
+    self.lastSucceededAt = lastSucceededAt
+    self.lastFailedAt = lastFailedAt
+    self.consecutiveFailures = consecutiveFailures
+    self.negotiatedReadyV2 = negotiatedReadyV2
+  }
+}
+
+/// Which endpoint last authenticated on a given network. Keyed by a coarse
+/// network fingerprint (`wifi:<own /24>`, `cell`, `wired`) so returning to a
+/// known network dials the route that actually worked there first, instead of
+/// re-deriving it from a global last-good that belongs to a different network.
+struct HostConnectionNetworkRouteMemory: Codable, Equatable {
+  var fingerprint: String
+  var endpoint: String
+  var updatedAt: TimeInterval
 }
 
 struct HostConnectionProfile: Codable, Equatable {
@@ -46,6 +80,9 @@ struct HostConnectionProfile: Codable, Equatable {
   /// Health history for direct and relay routes. Optional so profiles written
   /// before route stickiness was introduced continue to decode cleanly.
   var endpointStates: [HostConnectionEndpointState]?
+  /// Per-network winning route, most-recently-used first and capped. Optional
+  /// for the same decode-compatibility reason as `endpointStates`.
+  var networkRouteMemory: [HostConnectionNetworkRouteMemory]?
   /// Clerk user id that authorized this pairing. `nil` means the machine was
   /// paired directly (QR, link, nearby, address, or SSH) and must survive an
   /// ADE account sign-out. Account-owned profiles and their keychain secrets
@@ -75,6 +112,7 @@ struct HostConnectionProfile: Codable, Equatable {
     tailscaleAddress: String?,
     savedRelayCandidates: [String]? = nil,
     endpointStates: [HostConnectionEndpointState]? = nil,
+    networkRouteMemory: [HostConnectionNetworkRouteMemory]? = nil,
     accountOwnerId: String? = nil,
     relayAccountOwnerId: String? = nil,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
@@ -94,6 +132,7 @@ struct HostConnectionProfile: Codable, Equatable {
     self.tailscaleAddress = tailscaleAddress
     self.savedRelayCandidates = savedRelayCandidates
     self.endpointStates = endpointStates
+    self.networkRouteMemory = networkRouteMemory
     self.accountOwnerId = accountOwnerId
     self.relayAccountOwnerId = relayAccountOwnerId
     self.updatedAt = updatedAt
