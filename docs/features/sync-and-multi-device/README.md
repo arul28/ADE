@@ -612,7 +612,15 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   choice, echoes it in the `account_challenge_ok`, and binds it into the
   signature input, so a packaged Electron without ChaCha20-Poly1305 negotiates
   `aes-256-gcm` instead of failing to connect; a client advertising an AEAD set
-  with no host overlap is rejected rather than silently downgraded. A completed
+  with no host overlap is rejected rather than silently downgraded. Legacy
+  adopters that omit `supportedAeads` still fall back to
+  `chacha20-poly1305` for compatibility; that choice is not present in their
+  signed transcript. The host records
+  `sync_host.legacy_adoption_aead_unbound` with the client version when that
+  path completes. `ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD` names the sunset gate:
+  once the supported-client floor guarantees AEAD advertisement, the
+  `account_challenge` handler can reject an omitted list and make transcript
+  binding unconditional. A completed
   single-use challenge is required, well-formed challenges feed no rate limiter
   while malformed/anomalous ones charge a per-IP + global cooldown, and unsealed
   `account_sealed` adoption is the one account path allowed over a direct
@@ -715,7 +723,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
   across per-project host services. Binds once (preferred-port retry:
   ~8 attempts over ~3.2 s on the saved port before falling back to a
-  port scan, so a brain restart does not drift the port phones saved).
+  port scan, so a brain restart does not drift the port phones saved). WebSocket
+  upgrades are accepted only on the sync root path (`/`). When an Origin header
+  is present, it must name the canonical hosted web client
+  (`https://app.ade-app.dev`) or one of the explicit local Vite origins;
+  foreign origins are rejected and logged at debug. An absent Origin remains
+  valid for non-browser clients such as iOS URLSession, ADE CLI peers, and the
+  relay bridge, whose private bridge-proof header is validated separately.
   On an `EADDRINUSE` for a port in the sync range (`DEFAULT_SYNC_HOST_PORT`
   8787 through `SYNC_HOST_MAX_PORT` 8999) it runs **sync-port zombie
   reaping**: it diagnoses the port's holders (`inspectSyncListenerPort`),
@@ -918,8 +932,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncDpop.ts` — device-bound pairing (DPoP) helpers: the canonical
   signing string builder, `evaluatePairedHelloDpop` (validates a
   `SyncDpopProof` against the stored P-256 public key and TOFU-adopts an
-  offered key for legacy devices), and `createSyncDpopNonceCache` (bounded
-  per-host replay guard). Shared by `syncHostService` and the brain
+  offered key for legacy devices), and `createSyncDpopNonceCache` (a replay
+  guard partitioned to 256 recent nonces per device with a 4,096-entry global
+  ceiling). A device may evict only its own oldest entries; when the global
+  ceiling has no safe slot, verification fails closed with
+  `nonce_cache_saturated` instead of evicting another device's replay history.
+  Shared by `syncHostService` and the brain
   ingress handler.
 - `syncSecurityStore.ts` — machine-level sync security posture stored at
   `~/.ade/secrets/sync-security.json` (chmod `0600`). Owns the
@@ -1824,7 +1842,11 @@ feature is merged or because a deliberately isolated-port host is running.
   chosen AEAD into the signed challenge string** so it cannot be downgraded on
   the wire — this is what lets a packaged Electron whose bundled BoringSSL lacks
   ChaCha20-Poly1305 adopt over `aes-256-gcm` instead of failing. A client whose
-  advertised set does not overlap the host's is rejected. The
+  advertised set does not overlap the host's is rejected. Legacy clients that
+  omit the AEAD list remain compatible by falling back to
+  `chacha20-poly1305`, but their chosen AEAD is not yet signature-bound; the
+  host emits a warn-level `sync_host.legacy_adoption_aead_unbound` record so
+  the supported-client floor can be measured before that path is disabled. The
   challenge is single-use and TTL-bounded (60 s); it is required before a sealed
   hello is accepted. `ade-adopt-v1` protects the exchanged *credentials* (bearer,
   DPoP proof, minted secret), not the confidentiality of the subsequent session:
