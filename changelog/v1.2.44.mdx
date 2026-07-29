@@ -1,0 +1,46 @@
+---
+title: "v1.2.44"
+description: "Release notes for ADE v1.2.44 - July 29, 2026"
+---
+
+v1.2.44 is a mobile connection release. Connecting a phone to your Mac now races every transport at once instead of waiting out a timeout, keeps the connection it already has instead of replacing it, compresses what it sends, and says which route it is actually on.
+
+---
+
+## Connections happen at once, not in sequence
+
+- **Every transport races together.** LAN, Tailscale, and ADE Relay are dialed in one staggered race. Relay used to be tried only after the direct routes exhausted a ten-second budget, so a phone on cellular waited that out before its only working route was attempted.
+- **The app remembers what worked.** A successful route is remembered per network — including relay, which was previously excluded from that memory entirely — so a known network reconnects on the first dial. Endpoints that just failed are tried last instead of first, and dead LAN addresses are no longer raced while on cellular.
+- **A healthy connection is not thrown away.** Roaming now completes the new connection before dropping the old one, and only when the new route is genuinely better. Idle phones were previously replacing their own working relay connection every thirty to seventy seconds, which is what made streaming output stutter.
+- **Upgrades work in both directions.** Returning to Wi-Fi moves the connection back to LAN or Tailscale instead of leaving it on relay indefinitely.
+
+## Pairing survives a bad network
+
+- **A failed re-pair no longer destroys a working pairing.** The Mac used to rotate the pairing secret two round trips before the phone could save it, so a drop in that window left the phone locked out until someone walked back to the Mac. Both secrets now stay valid until the phone confirms.
+- **First connect races too.** Account adoption raced its routes instead of walking them one at a time at eight seconds each.
+- **Reconnect stays on.** A single failed attempt used to latch auto-reconnect off permanently, which is why the app could open to a dead disconnected screen.
+- **PIN entry is forgiving.** Ten attempts and a two-minute cooldown, counted per device — five wrong digits on one phone previously blocked pairing for every device on the account.
+- **Authentication failures explain themselves.** Fourteen distinct causes shared one "Sync authentication failed" message.
+
+## The interface tells the truth
+
+- **The route is named.** Settings and the hub show *via LAN*, *via Tailscale*, or *via ADE Relay*, so a slow session is diagnosable.
+- **Connected means connected.** A fully working connection could show an amber "Connecting" indicator while requests were already flowing.
+- **Reachability is current.** Machine rows no longer read "recently reachable" next to a connected badge.
+- **Macs can be renamed.** Rename from the desktop, iPhone, or `ade` CLI; the name syncs everywhere and survives heartbeats.
+
+## Less waiting, less traffic
+
+- **Sync frames are compressed.** Negotiated deflate cuts lane and pull-request payloads roughly threefold and chat history about twofold on the wire.
+- **Project switching is parallel.** Lanes, sessions, and pull requests hydrate concurrently rather than one after another.
+- **Foreground returns you where you were** instead of back to the hub.
+- **Transcripts open fully.** Chat history was capped at 192 lines with no way to reach the rest.
+- **Background load is lower.** Idle machines make roughly a third of the requests when visible and a fraction of that when hidden.
+- **Offline machines dim instead of vanishing.** A brief network blip used to remove a machine's lanes and chats from the sidebar entirely.
+
+## Reliability and hardening
+
+- **One brain owns the relay.** A second ADE process on the same Mac could fight the first for the relay tunnel indefinitely, silently disabling relay for that machine; only the process holding sync authority now registers, and the loser says so.
+- **Version mismatches are explicit.** A protocol mismatch failed silently and surfaced as a fifteen-second timeout; it now names both versions and which side to update.
+- **The sync socket is scoped.** WebSocket upgrades are restricted by path and origin, and replay-protection nonces are partitioned per device.
+- **Deep links validate their scope.** Malformed machine keys and item identifiers are rejected rather than routed.

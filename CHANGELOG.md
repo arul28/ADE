@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.44] - 2026-07-29
+
+### Mobile connections
+- Race LAN, Tailscale, and ADE Relay in one staggered race instead of trying relay only after the direct routes exhaust a 10s budget.
+- Remember the winning route per network (relay included, previously excluded) and deprioritize endpoints that just failed.
+- Skip LAN candidates when no LAN interface exists rather than burning a socket timeout on cellular.
+- Complete the replacement connection before dropping the current one, and only roam to a strictly better transport; idle phones were replacing their own healthy relay connection every 30-70s.
+- Upgrade back to LAN or Tailscale when Wi-Fi returns instead of staying on relay.
+- Fetch the relay credential concurrently with the socket open, and give a cold Durable Object a realistic readiness window instead of double-dialing it.
+
+### Pairing and adoption
+- Keep both the old and new pairing secret valid until the phone confirms the rotation, so a dropped re-pair can no longer brick a working pairing.
+- Race account-adoption routes instead of walking lan -> tailnet -> relay at 8s each.
+- Latch auto-reconnect off only on an explicit user disconnect, not on any failed attempt.
+- Count PIN failures per device with 10 attempts and a 2-minute cooldown; a global bucket previously blocked every device for 10 minutes.
+- Apply a staged re-pair's privilege reductions immediately while elevations still wait for proof.
+- Replace one opaque "Sync authentication failed" with fourteen actionable messages.
+
+### Connection UX
+- Name the active transport (via LAN / via Tailscale / via ADE Relay) in settings and the hub.
+- Render a syncing-but-usable connection as Connected instead of an amber Connecting.
+- Show live reachability instead of stale "recently reachable" text beside a connected badge.
+- Add machine rename across desktop, iOS, and the `ade` CLI, stored as a custom name that survives heartbeats.
+- Default the hub to collapsed except the active project, persist per device, and widen the machine chip.
+- Show the iOS build number alongside the marketing version.
+
+### Performance
+- Negotiate deflate compression on the sync protocol: ~3x on lane and PR payloads, ~2x on chat history.
+- Hydrate lanes, sessions, and pull requests concurrently on project switch.
+- Restore the previous project and pane on foreground instead of returning to the hub.
+- Remove the 192-line transcript ceiling with continuous top-anchored paging.
+- Cut idle background load ~2x when visible and 6-19x when hidden; gate foreign-machine polling on visibility.
+- Split TUI lane-status polling cadence.
+
+### Reliability and security
+- Register the relay tunnel only from the process holding sync authority; a second brain could otherwise fight the first indefinitely and silently disable relay.
+- Handle relay eviction explicitly with a floored, decorrelated backoff instead of an immediate redial war.
+- Dim offline machines instead of removing their lanes and chats after a brief blip.
+- Report a protocol version mismatch explicitly rather than failing silently into a 15s timeout.
+- Restrict WebSocket upgrades by path and origin, and partition DPoP replay nonces per device.
+- Chunk oversized iOS envelopes, add chunk reassembly timeouts, and support chunked envelopes in the hosted client.
+- Validate deep-link scope components, keep endpoint failure memory on desktop, and report app lifecycle to relay presence.
+- Preserve monotonic chat event sequences across host rehydration.
+
 ## [1.2.43] - 2026-07-29
 
 ### Proof and chat cards
@@ -1179,6 +1223,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.43...HEAD
+[1.2.44]: https://github.com/arul28/ADE/compare/v1.2.43...v1.2.44
 [1.2.43]: https://github.com/arul28/ADE/compare/v1.2.42...v1.2.43
 [1.2.42]: https://github.com/arul28/ADE/compare/v1.2.41...v1.2.42
 [1.2.41]: https://github.com/arul28/ADE/compare/v1.2.40...v1.2.41
