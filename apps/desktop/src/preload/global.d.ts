@@ -1182,6 +1182,8 @@ declare global {
         ) => Promise<import("../shared/types").AttentionSnapshot>;
         acknowledge: (args: {
           itemIds: string[];
+          sourceRevisions?: Record<string, number>;
+          expectedAccountOwnerId?: string | null;
           seenAt?: string;
           dismissedAt?: string | null;
         }) => Promise<void>;
@@ -1206,12 +1208,25 @@ declare global {
         updateSettings: (
           settings: import("../shared/types").AttentionNotchSettings,
         ) => Promise<void>;
+        getHealth: () => Promise<
+          import("../shared/types").AttentionNotchHealth
+        >;
+        retry: () => Promise<
+          import("../shared/types").AttentionNotchHealth
+        >;
         onAcknowledgeRequested: (
           cb: (
             request: import("../shared/types").AttentionNotchAcknowledgeRequest,
           ) => void,
         ) => () => void;
-        onRefreshRequested?: (cb: () => void) => () => void;
+        onRefreshRequested?: (
+          cb: (request?: { force?: boolean }) => void,
+        ) => () => void;
+        onSettingsChanged?: (
+          cb: (
+            settings: import("../shared/types").AttentionNotchSettings,
+          ) => void,
+        ) => () => void;
       };
       usage: {
         getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;

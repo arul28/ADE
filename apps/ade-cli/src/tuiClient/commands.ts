@@ -79,6 +79,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right", category: "Nav" },
+  { name: "/attention", description: "Show account-wide work that needs you", placement: "right", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },

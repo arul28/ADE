@@ -18,7 +18,8 @@
   "vars": {
     "DAILY_REQUEST_BUDGET": "500000",
     "IP_RATE_LIMIT_PER_MIN": "120",
-    "CLAIM_RATE_LIMIT_PER_MIN": "10"
+    "CLAIM_RATE_LIMIT_PER_MIN": "10",
+    "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
   },
   "d1_databases": [
     {

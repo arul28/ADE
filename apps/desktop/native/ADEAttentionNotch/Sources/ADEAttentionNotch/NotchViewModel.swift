@@ -14,6 +14,7 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var interaction = NotchInteractionState()
     @Published private(set) var pointerInside = false
     @Published private(set) var settings = NotchSettings()
+    @Published private(set) var availability: AttentionAvailability?
 
     var emit: (NotchOutput) -> Void = { _ in }
     var requestReanchor: () -> Void = {}
@@ -26,24 +27,50 @@ final class NotchViewModel: ObservableObject {
     private var hostVisibilityRequested = true
     private var hoveredItemId: String?
     private var deferredTransient: DeferredTransient?
+    private var snapshotCursor = AttentionSnapshotCursor()
 
     var selectedItem: AttentionItem? {
         guard items.indices.contains(interaction.selectedIndex) else { return nil }
         return items[interaction.selectedIndex]
     }
 
-    var hasPhysicalItems: Bool { !items.isEmpty }
+    /// How far the user lets the surface grow, and what opens it.
+    var policy: NotchPresentationPolicy { NotchPresentationPolicy(settings: settings) }
 
+    var isDormantHoverSurface: Bool {
+        notchSurfaceIsDormant(
+            presentation: interaction.presentation,
+            revealMode: settings.revealMode
+        )
+    }
+
+    /// Non-nil whenever the surface has something to say instead of an item:
+    /// an empty-but-healthy stream, or an unhealthy one.
+    var statusPresentation: NotchStatusPresentation? {
+        notchStatusPresentation(availability: availability, itemCount: items.count)
+    }
+
+    /// The surface stays up for the whole time the user has it enabled. An
+    /// empty or broken stream is reported, not hidden — disappearing would read
+    /// as "nothing needs you" even when the truth is "ADE lost the stream".
     var shouldPresentSurface: Bool {
-        settings.enabled && interaction.isVisible && !items.isEmpty
+        settings.enabled && interaction.isVisible
+    }
+
+    /// Hover and click open the surface whenever it is showing anything at all,
+    /// including the empty and error states.
+    var hasPresentableContent: Bool {
+        !items.isEmpty || statusPresentation != nil
     }
 
     var visiblePreview: String {
-        selectedItem?.presentation(hideDetails: settings.hideDetails).preview ?? "ADE is ready"
+        selectedItem?.presentation(hideDetails: settings.hideDetails).preview
+            ?? statusPresentation?.message
+            ?? "ADE is ready"
     }
 
     var navigationActions: [AttentionAction] {
-        selectedItem?.actions.filter(\.opensDestination) ?? []
+        notchSecondaryActions(selectedItem?.actions ?? [])
     }
 
     func handle(_ input: NotchInput) {
@@ -53,6 +80,7 @@ final class NotchViewModel: ObservableObject {
         case .settings(let settings):
             self.settings = settings
             setVisible(settings.enabled && hostVisibilityRequested)
+            applyPresentationPolicy()
             requestReanchor()
         case .visibility(let visible):
             hostVisibilityRequested = visible
@@ -65,6 +93,14 @@ final class NotchViewModel: ObservableObject {
     }
 
     func apply(_ snapshot: AttentionSnapshot) {
+        let acceptance = snapshotCursor.accept(snapshot)
+        guard acceptance != .rejectedStale else { return }
+        if case .accepted(resetPresentationState: true) = acceptance {
+            fingerprintsById.removeAll()
+            deferredTransient = nil
+            transientTask?.cancel()
+        }
+        availability = snapshot.availability
         let focusedItemId = pointerInside ? hoveredItemId : selectedItem?.id
         var deduplicated: [String: AttentionItem] = [:]
         for item in snapshot.items where item.contractVersion == 1 {
@@ -92,9 +128,14 @@ final class NotchViewModel: ObservableObject {
             transientTask?.cancel()
             deferredTransient = nil
             hoveredItemId = nil
-            var empty = interaction
-            empty.dismissExplicitInteraction()
-            interaction = empty
+            // Draining to zero is not a reason to yank the surface out from
+            // under the pointer or out of a panel the user opened: those states
+            // now render the empty/error copy instead.
+            if interaction.presentation == .attention || interaction.presentation == .celebration {
+                var settled = interaction
+                settled.finishTransient(pointerInside: pointerInside, policy: policy)
+                interaction = settled
+            }
             return
         }
 
@@ -129,8 +170,11 @@ final class NotchViewModel: ObservableObject {
             pointerInside = true
             hoveredItemId = selectedItem?.id
             var next = interaction
-            let token = next.pointerEntered(hasItems: !items.isEmpty)
+            let token = next.pointerEntered(hasItems: hasPresentableContent, policy: policy)
             interaction = next
+            // Nothing to schedule when the pointer is not allowed to open the
+            // peek: the delayed task would only ever be a no-op.
+            guard policy.allowsHoverReveal else { return }
             peekTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(145))
                 guard !Task.isCancelled, let self else { return }
@@ -157,7 +201,7 @@ final class NotchViewModel: ObservableObject {
         peekTask?.cancel()
         transientTask?.cancel()
         var next = interaction
-        next.explicitToggle(hasItems: !items.isEmpty)
+        next.explicitToggle(hasItems: hasPresentableContent, policy: policy)
         interaction = next
     }
 
@@ -198,6 +242,23 @@ final class NotchViewModel: ObservableObject {
         ))
     }
 
+    func openAttentionCenter() {
+        emit(NotchOutput(type: "open_center"))
+    }
+
+    func requestRefresh() {
+        emit(NotchOutput(type: "refresh"))
+    }
+
+    func applySettingsMenuAction(_ action: NotchSettingsMenuAction) {
+        let next = applyingNotchSettingsMenuAction(action, to: settings)
+        settings = next
+        setVisible(next.enabled && hostVisibilityRequested)
+        applyPresentationPolicy()
+        requestReanchor()
+        emit(NotchOutput(type: "settings", settings: next))
+    }
+
     private func setVisible(_ visible: Bool) {
         peekTask?.cancel()
         closeTask?.cancel()
@@ -212,36 +273,51 @@ final class NotchViewModel: ObservableObject {
 
     private func beginAttention() {
         transientTask?.cancel()
-        var next = interaction
-        next.setAttention()
-        interaction = next
+        // The cue still fires in compact/manual modes: the user asked the
+        // surface to stay small, not to stop telling them something needs them.
         if settings.soundsEnabled {
             NSSound(named: "Glass")?.play()
         }
+        guard policy.allowsAutomaticReveal else { return }
+        var next = interaction
+        next.setAttention(policy: policy)
+        interaction = next
         transientTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled, let self else { return }
             var finished = self.interaction
-            finished.finishTransient(pointerInside: self.pointerInside)
+            finished.finishTransient(pointerInside: self.pointerInside, policy: self.policy)
             self.interaction = finished
         }
     }
 
     private func beginCelebration() {
         transientTask?.cancel()
-        var next = interaction
-        next.setCelebration()
-        interaction = next
         if settings.soundsEnabled {
             NSSound(named: "Hero")?.play()
         }
+        guard policy.allowsAutomaticReveal else { return }
+        var next = interaction
+        next.setCelebration(policy: policy)
+        interaction = next
         transientTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1_650))
             guard !Task.isCancelled, let self else { return }
             var finished = self.interaction
-            finished.finishTransient(pointerInside: self.pointerInside)
+            finished.finishTransient(pointerInside: self.pointerInside, policy: self.policy)
             self.interaction = finished
         }
+    }
+
+    /// Applies the current settings to whatever is already on screen.
+    private func applyPresentationPolicy() {
+        if !policy.allowsAutomaticReveal {
+            transientTask?.cancel()
+            deferredTransient = nil
+        }
+        var next = interaction
+        next.applyPolicy(policy)
+        interaction = next
     }
 
     private func selectItem(id: String) {

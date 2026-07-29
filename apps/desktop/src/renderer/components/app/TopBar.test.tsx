@@ -8,6 +8,12 @@ import { TopBar } from "./TopBar";
 import { applyShellHeaderInset } from "../../lib/zoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
+import {
+  attentionStore,
+  resetAttentionStoreForTests,
+} from "../../state/attentionStore";
+import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
+import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -406,6 +412,62 @@ describe("TopBar", () => {
     } else {
       globalThis.window.__adeWebClient = originalWebClientMode;
     }
+    resetAttentionStoreForTests();
+    publishAccountStatus(SIGNED_OUT_ACCOUNT);
+  });
+
+  it("carries account-wide Attention in the header and routes Open all to the center", () => {
+    const needsYou = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      id: "needs-you",
+      revision: 1,
+      fingerprint: "fingerprint-needs-you",
+      kind: "agent" as const,
+      eventKind: "agent_needs_you" as const,
+      phase: "needs_you" as const,
+      machine: {
+        machineKey: "laptop",
+        name: "Laptop",
+        online: true,
+        lastSeenAt: "2026-07-29T11:59:00.000Z",
+      },
+      project: { projectId: "other", name: "Other Repo", rootPath: "/repo/other" },
+      provider: "claude",
+      model: null,
+      title: "Approve the migration",
+      preview: "Waiting on you",
+      privacyPreview: "Agent needs you",
+      destination: { kind: "session" as const, sessionId: "session-1" },
+      actions: [],
+      occurredAt: "2026-07-29T11:58:00.000Z",
+      updatedAt: "2026-07-29T11:58:00.000Z",
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: null,
+    };
+    attentionStore.setState({ itemsById: { [needsYou.id]: needsYou } });
+    publishAccountStatus({
+      signedIn: true,
+      userId: "account-a",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    });
+    const onNavigate = vi.fn();
+
+    render(<TopBar onNavigate={onNavigate} />);
+
+    const trigger = screen.getByTestId("header-attention-trigger");
+    // The item belongs to another machine and project entirely — the header is
+    // account-wide, not scoped to whatever project this window has open.
+    expect(trigger.getAttribute("aria-label")).toBe("Attention · 1 needs you");
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: /Open all/ }));
+
+    expect(onNavigate).toHaveBeenCalledWith("/attention");
   });
 
   it("shows connections before a project is open without immediate polling", async () => {

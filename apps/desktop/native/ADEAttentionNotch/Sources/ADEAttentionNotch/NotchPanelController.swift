@@ -23,6 +23,7 @@ final class ShapeHostingView<Content: View>: NSHostingView<Content> {
 final class NotchPanelController {
     private let model: NotchViewModel
     private let panel: AttentionNotchPanel
+    private let contextMenuController: NotchContextMenuController
     private var hostingView: ShapeHostingView<NotchSurfaceView>?
     private var cancellables = Set<AnyCancellable>()
     private var eventMonitors: [Any] = []
@@ -33,9 +34,12 @@ final class NotchPanelController {
     private var physicalNotchWidth: Double?
     private var safeAreaTop: Double = 0
     var surfaceChanged: ((UInt32, Bool) -> Void)?
+    var fallbackHotZone: (() -> NSRect?)?
+    var fallbackAnchorFrame: (() -> NSRect?)?
 
     init(model: NotchViewModel) {
         self.model = model
+        contextMenuController = NotchContextMenuController(model: model)
         panel = AttentionNotchPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -141,7 +145,12 @@ final class NotchPanelController {
     }
 
     private func updatePresentation() {
-        let shouldShow = model.shouldPresentSurface
+        positionPanelForCurrentSurface()
+        let shouldShow = notchPanelShouldShow(
+            surfaceEnabled: model.shouldPresentSurface,
+            hasPhysicalNotch: hasPhysicalNotch,
+            presentation: model.interaction.presentation
+        )
         if shouldShow {
             panel.orderFrontRegardless()
         } else {
@@ -156,9 +165,9 @@ final class NotchPanelController {
     private func installEventMonitors() {
         var lastGlobalMoveAt = 0.0
         if let global = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown],
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-            if event.type != .leftMouseDown {
+            if event.type == .mouseMoved || event.type == .leftMouseDragged {
                 let now = ProcessInfo.processInfo.systemUptime
                 guard now - lastGlobalMoveAt >= 1 / 30 else { return }
                 lastGlobalMoveAt = now
@@ -170,7 +179,7 @@ final class NotchPanelController {
             eventMonitors.append(global)
         }
         if let local = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .keyDown],
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown, .keyDown],
             handler: { [weak self] event in
             guard let self else { return event }
             return self.handleLocalEvent(event)
@@ -198,6 +207,11 @@ final class NotchPanelController {
                 break
             }
         }
+        if event.type == .rightMouseDown,
+           isInsideSurfaceShape(screenPoint: NSEvent.mouseLocation) {
+            contextMenuController.present(at: NSEvent.mouseLocation)
+            return nil
+        }
         handleMouseEvent(event, global: false)
         return event
     }
@@ -205,6 +219,13 @@ final class NotchPanelController {
     private func handleMouseEvent(_ event: NSEvent, global: Bool) {
         let location = NSEvent.mouseLocation
         let inside = isInsideInteractiveShape(screenPoint: location)
+        if event.type == .rightMouseDown {
+            if isInsideSurfaceShape(screenPoint: location), global {
+                contextMenuController.present(at: location)
+            }
+            updatePointer(at: location)
+            return
+        }
         if event.type == .leftMouseDown {
             if inside {
                 panel.allowsKeyActivation = true
@@ -236,90 +257,89 @@ final class NotchPanelController {
     }
 
     private func isInsideInteractiveShape(screenPoint: NSPoint) -> Bool {
+        if fallbackHotZone?().map({ $0.insetBy(dx: -4, dy: -4).contains(screenPoint) }) == true {
+            return true
+        }
+        // On non-notch Macs the compact surface is the status item. Do not
+        // leave an invisible center-screen hover target behind when the panel
+        // itself is intentionally ordered out.
+        guard hasPhysicalNotch || model.interaction.presentation != .compact else {
+            return false
+        }
+        return isInsideSurfaceShape(screenPoint: screenPoint)
+    }
+
+    private func isInsideSurfaceShape(screenPoint: NSPoint) -> Bool {
         guard let hostingView else { return false }
         let windowPoint = panel.convertPoint(fromScreen: screenPoint)
         let viewPoint = hostingView.convert(windowPoint, from: nil)
         return interactivePath(in: hostingView.bounds).contains(viewPoint)
     }
 
+    /// Mirrors `NotchSurfaceShape` in `NotchSurfaceView`: same size, same
+    /// corner metrics, same tangent-arc construction, so the clickable region
+    /// and the drawn outline cannot drift apart.
     private func interactivePath(in bounds: NSRect) -> NSBezierPath {
+        let presentation = model.interaction.presentation
+        if model.isDormantHoverSurface {
+            let hotZone = notchHoverHotZoneSize(
+                physicalNotchWidth: hasPhysicalNotch ? physicalNotchWidth : nil,
+                safeAreaTop: safeAreaTop
+            )
+            let isFlipped = hostingView?.isFlipped == true
+            let topEdge = isFlipped ? bounds.minY : bounds.maxY
+            let rect = NSRect(
+                x: bounds.midX - hotZone.width / 2,
+                y: isFlipped ? topEdge : topEdge - hotZone.height,
+                width: hotZone.width,
+                height: hotZone.height
+            )
+            return NSBezierPath(
+                roundedRect: rect,
+                xRadius: min(12, hotZone.height / 2),
+                yRadius: min(12, hotZone.height / 2)
+            )
+        }
         let size = notchSurfaceSize(
-            presentation: model.interaction.presentation,
+            presentation: presentation,
             physicalNotchWidth: hasPhysicalNotch ? physicalNotchWidth : nil,
             safeAreaTop: safeAreaTop
         )
-        let y = hostingView?.isFlipped == true
-            ? bounds.minY
-            : bounds.maxY - size.height
-        let rect = NSRect(
-            x: bounds.midX - size.width / 2,
-            y: y,
-            width: size.width,
-            height: size.height
+        let corners = notchSurfaceCorners(
+            presentation: presentation,
+            hasPhysicalNotch: hasPhysicalNotch,
+            size: size
         )
-        if hasPhysicalNotch, let physicalNotchWidth {
-            return physicalInteractivePath(
-                in: rect,
-                notchWidth: physicalNotchWidth,
-                isFlipped: hostingView?.isFlipped == true
-            )
-        }
-        return NSBezierPath(
-            roundedRect: rect,
-            xRadius: min(22, size.height / 3),
-            yRadius: min(22, size.height / 3)
-        )
-    }
+        let isFlipped = hostingView?.isFlipped == true
+        let topEdge = isFlipped ? bounds.minY : bounds.maxY
+        let bottomEdge = isFlipped ? bounds.minY + size.height : bounds.maxY - size.height
+        let minX = bounds.midX - size.width / 2
+        let maxX = bounds.midX + size.width / 2
+        let limit = min(size.width, size.height) / 2
+        let top = max(0, min(corners.top, limit))
+        let bottom = max(0, min(corners.bottom, limit))
 
-    private func physicalInteractivePath(
-        in rect: NSRect,
-        notchWidth: Double,
-        isFlipped: Bool
-    ) -> NSBezierPath {
         let path = NSBezierPath()
-        let resolvedNotchWidth = min(rect.width - 20, max(120, notchWidth))
-        let notchLeft = rect.midX - resolvedNotchWidth / 2
-        let notchRight = rect.midX + resolvedNotchWidth / 2
-        let shoulder = min(24, max(15, rect.height * 0.18))
-        let bottomRadius = min(25, max(12, rect.height * 0.16))
-        let y: (Double) -> Double = { offset in
-            isFlipped ? rect.minY + offset : rect.maxY - offset
-        }
-        path.move(to: NSPoint(x: notchLeft, y: y(0)))
-        path.line(to: NSPoint(x: notchRight, y: y(0)))
-        path.line(to: NSPoint(x: notchRight, y: y(shoulder * 0.34)))
-        path.curve(
-            to: NSPoint(x: rect.maxX - 7, y: y(shoulder)),
-            controlPoint1: NSPoint(x: notchRight + 2, y: y(shoulder * 0.72)),
-            controlPoint2: NSPoint(x: rect.maxX - 18, y: y(shoulder * 0.84))
+        path.move(to: NSPoint(x: bounds.midX, y: topEdge))
+        path.appendArc(
+            from: NSPoint(x: maxX, y: topEdge),
+            to: NSPoint(x: maxX, y: bottomEdge),
+            radius: top
         )
-        path.curve(
-            to: NSPoint(x: rect.maxX, y: y(shoulder + 7)),
-            controlPoint1: NSPoint(x: rect.maxX - 2, y: y(shoulder)),
-            controlPoint2: NSPoint(x: rect.maxX, y: y(shoulder + 2))
+        path.appendArc(
+            from: NSPoint(x: maxX, y: bottomEdge),
+            to: NSPoint(x: minX, y: bottomEdge),
+            radius: bottom
         )
-        path.line(to: NSPoint(x: rect.maxX, y: y(rect.height - bottomRadius)))
-        path.curve(
-            to: NSPoint(x: rect.maxX - bottomRadius, y: y(rect.height)),
-            controlPoint1: NSPoint(x: rect.maxX, y: y(rect.height)),
-            controlPoint2: NSPoint(x: rect.maxX, y: y(rect.height))
+        path.appendArc(
+            from: NSPoint(x: minX, y: bottomEdge),
+            to: NSPoint(x: minX, y: topEdge),
+            radius: bottom
         )
-        path.line(to: NSPoint(x: rect.minX + bottomRadius, y: y(rect.height)))
-        path.curve(
-            to: NSPoint(x: rect.minX, y: y(rect.height - bottomRadius)),
-            controlPoint1: NSPoint(x: rect.minX, y: y(rect.height)),
-            controlPoint2: NSPoint(x: rect.minX, y: y(rect.height))
-        )
-        path.line(to: NSPoint(x: rect.minX, y: y(shoulder + 7)))
-        path.curve(
-            to: NSPoint(x: rect.minX + 7, y: y(shoulder)),
-            controlPoint1: NSPoint(x: rect.minX, y: y(shoulder + 2)),
-            controlPoint2: NSPoint(x: rect.minX + 2, y: y(shoulder))
-        )
-        path.curve(
-            to: NSPoint(x: notchLeft, y: y(shoulder * 0.34)),
-            controlPoint1: NSPoint(x: rect.minX + 18, y: y(shoulder * 0.84)),
-            controlPoint2: NSPoint(x: notchLeft - 2, y: y(shoulder * 0.72))
+        path.appendArc(
+            from: NSPoint(x: minX, y: topEdge),
+            to: NSPoint(x: maxX, y: topEdge),
+            radius: top
         )
         path.close()
         return path
@@ -337,6 +357,29 @@ final class NotchPanelController {
             selector: #selector(screenParametersChanged),
             name: NSWorkspace.didWakeNotification,
             object: nil
+        )
+    }
+
+    private func positionPanelForCurrentSurface() {
+        guard !hasPhysicalNotch, let anchorFrame = fallbackAnchorFrame?() else { return }
+        let anchorPoint = NSPoint(x: anchorFrame.midX, y: anchorFrame.midY)
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(anchorPoint) })
+            ?? selectedScreen()
+        guard let screen else { return }
+
+        let size = notchSurfaceSize(
+            presentation: model.interaction.presentation,
+            physicalNotchWidth: nil,
+            safeAreaTop: 0
+        )
+        let target = menuBarAnchoredPanelFrame(
+            statusItemFrame: rect(anchorFrame),
+            displayFrame: rect(screen.frame),
+            surfaceSize: size
+        )
+        panel.setFrame(
+            NSRect(x: target.x, y: target.y, width: target.width, height: target.height),
+            display: false
         )
     }
 

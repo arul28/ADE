@@ -150,6 +150,13 @@ public struct AttentionAction: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// Actions worth rendering *beside* the surface's own prominent "Open in ADE".
+/// A plain `open` action renders with the identical label, so keeping it here
+/// would draw the same button twice.
+public func notchSecondaryActions(_ actions: [AttentionAction]) -> [AttentionAction] {
+    actions.filter { $0.opensDestination && $0.kind != "open" }
+}
+
 public enum AttentionJSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
@@ -340,15 +347,20 @@ public struct AttentionItemPresentation: Equatable, Sendable {
     public let accessibilitySummary: String
 }
 
+/// Mirrors the renderer's `AttentionTone` union so a phase reads as the same
+/// colour in the notch as it does in the Attention center and header control.
 public enum NotchStatusTone: String, Equatable, Sendable {
     case blue
     case amber
     case red
     case violet
-    case green
+    case cyan
+    case emerald
     case neutral
 }
 
+/// Mirrors `PHASE_PRESENTATION` in
+/// `apps/desktop/src/renderer/components/attention/attentionPresentation.ts`.
 public func notchStatusTone(for phase: String?) -> NotchStatusTone {
     switch phase {
     case "starting", "running", "open":
@@ -360,28 +372,345 @@ public func notchStatusTone(for phase: String?) -> NotchStatusTone {
     case "review_requested":
         return .violet
     case "completed", "merged", "merge_ready":
-        return .green
+        return .emerald
     default:
         return .neutral
     }
 }
 
+/// `3 items · 2 projects · 1 machine` — never `1 machines`.
+public func attentionPluralized(_ count: Int, _ noun: String) -> String {
+    "\(count) \(noun)\(count == 1 ? "" : "s")"
+}
+
+public func attentionScopeSummary(itemCount: Int, projectCount: Int, machineCount: Int) -> String {
+    [
+        attentionPluralized(itemCount, "item"),
+        attentionPluralized(projectCount, "project"),
+        attentionPluralized(machineCount, "machine"),
+    ].joined(separator: " · ")
+}
+
+/// What the surface says when it has no item to show, or when the stream itself
+/// is unhealthy. The surface stays visible in both cases: silently vanishing
+/// reads as "nothing is happening" when the truth may be "we lost the stream".
+public struct NotchStatusPresentation: Equatable, Sendable {
+    public let title: String
+    public let message: String
+    public let hint: String?
+    /// Fits a compact ear (~90pt at 9.5pt semibold).
+    public let compactLabel: String
+    public let tone: NotchStatusTone
+    public let symbolName: String
+    public let isProblem: Bool
+
+    public init(
+        title: String,
+        message: String,
+        hint: String?,
+        compactLabel: String,
+        tone: NotchStatusTone,
+        symbolName: String,
+        isProblem: Bool
+    ) {
+        self.title = title
+        self.message = message
+        self.hint = hint
+        self.compactLabel = compactLabel
+        self.tone = tone
+        self.symbolName = symbolName
+        self.isProblem = isProblem
+    }
+}
+
+/// Returns `nil` only when there is nothing to say: items are present and the
+/// stream is healthy.
+public func notchStatusPresentation(
+    availability: AttentionAvailability?,
+    itemCount: Int
+) -> NotchStatusPresentation? {
+    if let availability, availability.isProblem {
+        return problemPresentation(availability, itemCount: itemCount)
+    }
+    guard itemCount == 0 else { return nil }
+    return NotchStatusPresentation(
+        title: availability?.title.notchNonEmpty ?? "All clear",
+        message: availability?.message.notchNonEmpty ?? "Nothing needs your attention.",
+        hint: nil,
+        compactLabel: "All clear",
+        tone: .emerald,
+        symbolName: "checkmark.circle",
+        isProblem: false
+    )
+}
+
+private func problemPresentation(
+    _ availability: AttentionAvailability,
+    itemCount: Int
+) -> NotchStatusPresentation {
+    let fallbackTitle: String
+    let compactLabel: String
+    let tone: NotchStatusTone
+    let symbolName: String
+    switch availability.state {
+    case .degraded:
+        fallbackTitle = "Attention is out of sync"
+        compactLabel = "Reconnecting"
+        tone = .amber
+        symbolName = "antenna.radiowaves.left.and.right.slash"
+    case .signedOut:
+        fallbackTitle = "Signed out of ADE"
+        compactLabel = "Sign in"
+        tone = .amber
+        symbolName = "person.crop.circle.badge.exclamationmark"
+    case .unavailable:
+        fallbackTitle = "Attention is unavailable"
+        compactLabel = "Unavailable"
+        tone = .red
+        symbolName = "exclamationmark.triangle.fill"
+    case .incompatible:
+        fallbackTitle = "ADE needs an update"
+        compactLabel = "Update ADE"
+        tone = .red
+        symbolName = "arrow.up.circle"
+    case .unknown, .ready:
+        fallbackTitle = "Attention status unknown"
+        compactLabel = "Degraded"
+        tone = .amber
+        symbolName = "questionmark.circle"
+    }
+
+    let fallbackMessage = itemCount > 0
+        ? "Showing the last state ADE received."
+        : "ADE can't reach your account attention stream."
+
+    return NotchStatusPresentation(
+        title: availability.title.notchNonEmpty ?? fallbackTitle,
+        message: availability.message.notchNonEmpty ?? fallbackMessage,
+        hint: recoveryHint(availability.recovery, hostName: availability.hostName),
+        compactLabel: compactLabel,
+        tone: tone,
+        symbolName: symbolName,
+        isProblem: true
+    )
+}
+
+/// The helper only ever navigates, so recovery is phrased as guidance rather
+/// than an action button the notch cannot actually perform.
+private func recoveryHint(
+    _ recovery: AttentionAvailabilityRecovery?,
+    hostName: String?
+) -> String? {
+    let host = hostName?.notchNonEmpty
+    switch recovery {
+    case .retry:
+        return "Retry from ADE to reconnect."
+    case .signIn:
+        return "Sign in to ADE to restore account attention."
+    case .updateHost:
+        return host.map { "Update ADE on \($0)." } ?? "Update ADE to continue."
+    case .restartHost:
+        return host.map { "Restart ADE on \($0)." } ?? "Restart ADE to reconnect."
+    case .unknown, .none:
+        return nil
+    }
+}
+
+extension String {
+    /// Trimmed value, or `nil` when the host sent blank copy.
+    var notchNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// Operational state of the account attention stream. Unknown codes decode to
+/// `.unknown` so a newer host can never blind the helper.
+public enum AttentionAvailabilityState: String, Codable, Equatable, Sendable {
+    case ready
+    case degraded
+    case signedOut = "signed_out"
+    case unavailable
+    case incompatible
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AttentionAvailabilityState(rawValue: raw) ?? .unknown
+    }
+}
+
+public enum AttentionAvailabilityRecovery: String, Codable, Equatable, Sendable {
+    case retry
+    case signIn = "sign_in"
+    case updateHost = "update_host"
+    case restartHost = "restart_host"
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AttentionAvailabilityRecovery(rawValue: raw) ?? .unknown
+    }
+}
+
+/// Host-authored availability copy. Decoding is total: a partial or drifted
+/// payload degrades to defaults instead of throwing away the whole snapshot.
+public struct AttentionAvailability: Codable, Equatable, Sendable {
+    public let state: AttentionAvailabilityState
+    public let title: String
+    public let message: String
+    public let recovery: AttentionAvailabilityRecovery?
+    public let hostName: String?
+
+    public init(
+        state: AttentionAvailabilityState,
+        title: String = "",
+        message: String = "",
+        recovery: AttentionAvailabilityRecovery? = nil,
+        hostName: String? = nil
+    ) {
+        self.state = state
+        self.title = title
+        self.message = message
+        self.recovery = recovery
+        self.hostName = hostName
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case state, title, message, recovery, hostName
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = (try? container.decode(AttentionAvailabilityState.self, forKey: .state)) ?? .unknown
+        title = ((try? container.decodeIfPresent(String.self, forKey: .title)) ?? nil) ?? ""
+        message = ((try? container.decodeIfPresent(String.self, forKey: .message)) ?? nil) ?? ""
+        recovery = (try? container.decodeIfPresent(AttentionAvailabilityRecovery.self, forKey: .recovery)) ?? nil
+        let host = ((try? container.decodeIfPresent(String.self, forKey: .hostName)) ?? nil) ?? ""
+        hostName = host.isEmpty ? nil : host
+    }
+
+    public var isProblem: Bool { state != .ready }
+}
+
 public struct AttentionSnapshot: Codable, Equatable, Sendable {
     public let contractVersion: Int
+    /// Revisions are monotonic only within one stream. Account switches and
+    /// fallback ownership changes intentionally replace this opaque identity.
+    public let streamId: String?
     public let revision: Int
     public let generatedAt: String
     public let items: [AttentionItem]
+    public let availability: AttentionAvailability?
 
-    public init(contractVersion: Int = 1, revision: Int, generatedAt: String, items: [AttentionItem]) {
+    public init(
+        contractVersion: Int = 1,
+        streamId: String? = nil,
+        revision: Int,
+        generatedAt: String,
+        items: [AttentionItem],
+        availability: AttentionAvailability? = nil
+    ) {
         self.contractVersion = contractVersion
+        self.streamId = streamId
         self.revision = revision
         self.generatedAt = generatedAt
         self.items = items
+        self.availability = availability
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case contractVersion, streamId, revision, generatedAt, items, availability
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        contractVersion = try container.decode(Int.self, forKey: .contractVersion)
+        let decodedStreamId =
+            ((try? container.decodeIfPresent(String.self, forKey: .streamId)) ?? nil)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        streamId = decodedStreamId?.isEmpty == false ? decodedStreamId : nil
+        revision = try container.decode(Int.self, forKey: .revision)
+        generatedAt = try container.decode(String.self, forKey: .generatedAt)
+        items = try container.decode([AttentionItem].self, forKey: .items)
+        // Availability is advisory chrome. Never fail a snapshot over it.
+        availability = (try? container.decodeIfPresent(AttentionAvailability.self, forKey: .availability)) ?? nil
+    }
+}
+
+public enum AttentionSnapshotAcceptance: Equatable, Sendable {
+    /// The helper should replace its item set. `resetPresentationState` marks
+    /// an ownership/stream boundary, where old fingerprints must not trigger
+    /// alerts or celebrations in the newly selected account.
+    case accepted(resetPresentationState: Bool)
+    case rejectedStale
+}
+
+/// Native-side final defense against a delayed snapshot rolling the ambient
+/// surface backward. Relay revisions are only comparable inside `streamId`;
+/// legacy frames without one fall back to their host timestamp.
+public struct AttentionSnapshotCursor: Equatable, Sendable {
+    private var streamId: String?
+    private var revision: Int?
+    private var generatedAt: Date?
+
+    public init() {}
+
+    public mutating func accept(_ snapshot: AttentionSnapshot) -> AttentionSnapshotAcceptance {
+        let incomingGeneratedAt = parseAttentionDate(snapshot.generatedAt)
+        let streamChanged = revision != nil
+            && streamId != snapshot.streamId
+            && (streamId != nil || snapshot.streamId != nil)
+        let sameAuthenticatedStream = streamId != nil && streamId == snapshot.streamId
+
+        if sameAuthenticatedStream,
+           let revision, snapshot.revision < revision {
+            return .rejectedStale
+        }
+        // Across stream/account boundaries revisions are intentionally
+        // incomparable. The host timestamp prevents a delayed frame from the
+        // previous account switching the helper back after the new one won.
+        if !sameAuthenticatedStream,
+           let generatedAt, let incomingGeneratedAt,
+           incomingGeneratedAt < generatedAt {
+            return .rejectedStale
+        }
+
+        let resetPresentationState = streamChanged
+            || (revision != nil && snapshot.revision < (revision ?? snapshot.revision))
+        streamId = snapshot.streamId
+        revision = snapshot.revision
+        generatedAt = incomingGeneratedAt
+        return .accepted(resetPresentationState: resetPresentationState)
+    }
+}
+
+/// What is allowed to grow the surface past its compact bar.
+///
+/// A click opens the surface in every mode, so no mode leaves the notch — or
+/// the menu-bar status item that stands in for it — inert.
+public enum NotchRevealMode: String, Codable, Equatable, Sendable, CaseIterable {
+    /// Alerts and hover stay compact; a click opens only a short peek.
+    case minimal
+    /// The surface is hidden at rest; hover opens a peek and click opens more.
+    case hover
+    /// Hover and alerts stay compact; only an explicit click opens more.
+    case click
+
+    /// A mode this build has never heard of degrades to today's behaviour
+    /// rather than costing the helper the whole settings frame.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = NotchRevealMode(rawValue: raw) ?? .hover
     }
 }
 
 public struct NotchSettings: Codable, Equatable, Sendable {
     public var enabled: Bool
+    public var revealMode: NotchRevealMode
+    /// When false the tall expanded panel is never shown, so the surface can
+    /// never grow far enough to sit over menu-bar content.
+    public var expandedPanelEnabled: Bool
     public var preferredDisplayId: UInt32?
     public var hideDetails: Bool
     public var celebrationsEnabled: Bool
@@ -389,17 +718,72 @@ public struct NotchSettings: Codable, Equatable, Sendable {
 
     public init(
         enabled: Bool = false,
+        revealMode: NotchRevealMode = .hover,
+        expandedPanelEnabled: Bool = true,
         preferredDisplayId: UInt32? = nil,
         hideDetails: Bool = true,
         celebrationsEnabled: Bool = true,
         soundsEnabled: Bool = false
     ) {
         self.enabled = enabled
+        self.revealMode = revealMode
+        self.expandedPanelEnabled = expandedPanelEnabled
         self.preferredDisplayId = preferredDisplayId
         self.hideDetails = hideDetails
         self.celebrationsEnabled = celebrationsEnabled
         self.soundsEnabled = soundsEnabled
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, revealMode, expandedPanelEnabled, preferredDisplayId
+        case hideDetails, celebrationsEnabled, soundsEnabled
+    }
+
+    /// Decoding is total. A host that predates the presentation keys keeps the
+    /// hover-and-expand behaviour it was built against; anything it does not
+    /// send falls back to the same private, silent defaults as a fresh launch.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = NotchSettings()
+        enabled = ((try? container.decodeIfPresent(Bool.self, forKey: .enabled)) ?? nil)
+            ?? defaults.enabled
+        revealMode = ((try? container.decodeIfPresent(NotchRevealMode.self, forKey: .revealMode)) ?? nil)
+            ?? defaults.revealMode
+        expandedPanelEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .expandedPanelEnabled)) ?? nil)
+            ?? defaults.expandedPanelEnabled
+        preferredDisplayId = (try? container.decodeIfPresent(UInt32.self, forKey: .preferredDisplayId)) ?? nil
+        hideDetails = ((try? container.decodeIfPresent(Bool.self, forKey: .hideDetails)) ?? nil)
+            ?? defaults.hideDetails
+        celebrationsEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .celebrationsEnabled)) ?? nil)
+            ?? defaults.celebrationsEnabled
+        soundsEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .soundsEnabled)) ?? nil)
+            ?? defaults.soundsEnabled
+    }
+}
+
+/// Settings changes exposed by the native surface's context menu. Keeping the
+/// mapping in the core target makes every presentation surface apply identical
+/// changes and lets the wire-level behaviour stay covered without AppKit.
+public enum NotchSettingsMenuAction: Equatable, Sendable {
+    case setRevealMode(NotchRevealMode)
+    case toggleExpandedPanel
+    case hide
+}
+
+public func applyingNotchSettingsMenuAction(
+    _ action: NotchSettingsMenuAction,
+    to settings: NotchSettings
+) -> NotchSettings {
+    var next = settings
+    switch action {
+    case .setRevealMode(let revealMode):
+        next.revealMode = revealMode
+    case .toggleExpandedPanel:
+        next.expandedPanelEnabled.toggle()
+    case .hide:
+        next.enabled = false
+    }
+    return next
 }
 
 public enum NotchInput: Equatable, Sendable {
@@ -454,6 +838,7 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
     public let message: String?
     public let displayId: UInt32?
     public let surface: String?
+    public let settings: NotchSettings?
 
     public init(
         type: String,
@@ -463,7 +848,8 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
         deepLink: String? = nil,
         message: String? = nil,
         displayId: UInt32? = nil,
-        surface: String? = nil
+        surface: String? = nil,
+        settings: NotchSettings? = nil
     ) {
         self.type = type
         self.itemId = itemId
@@ -473,5 +859,6 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
         self.message = message
         self.displayId = displayId
         self.surface = surface
+        self.settings = settings
     }
 }

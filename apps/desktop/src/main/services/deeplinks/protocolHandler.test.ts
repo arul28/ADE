@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppNavigationRequest } from "../../../shared/types";
 import { deeplinkToNavigationTarget, handleDeeplinkUrl } from "./protocolHandler";
 import { selectWindowForProjectNavigation } from "./projectNavigationWindowSelection";
+import {
+  dispatchOwnerAwareNavigation,
+  ownerNavigationFailureCopy,
+} from "./ownerAwareNavigation";
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -23,6 +27,28 @@ describe("deeplinkToNavigationTarget", () => {
       envelope: null,
       event: null,
       offset: null,
+    });
+  });
+
+  it("preserves exact session ownership for main-process routing", () => {
+    expect(deeplinkToNavigationTarget({
+      kind: "session",
+      sessionId: "session-1",
+      ownership: {
+        accountMachineKey: "machine-b",
+        projectId: "project-b",
+      },
+    })).toEqual({
+      kind: "work",
+      sessionId: "session-1",
+      laneId: null,
+      envelope: null,
+      event: null,
+      offset: null,
+      ownership: {
+        accountMachineKey: "machine-b",
+        projectId: "project-b",
+      },
     });
   });
 
@@ -104,6 +130,107 @@ describe("deeplinkToNavigationTarget", () => {
   });
 });
 
+function ownedRequest(accountMachineKey = "machine-b"): AppNavigationRequest {
+  return {
+    source: "deeplink:open-url",
+    target: {
+      kind: "work",
+      sessionId: "session-1",
+      ownership: {
+        accountMachineKey,
+        projectId: "project-1",
+      },
+    },
+  };
+}
+
+function ownerNavigationDependencies() {
+  return {
+    getLocalMachineKey: vi.fn(() => "machine-a"),
+    resolveLocalProjectRoot: vi.fn(
+      (_projectId: string): string | null => "/projects/one",
+    ),
+    deliverLocal: vi.fn(async () => undefined),
+    findRemote: vi.fn((): unknown | null => null),
+    openRemote: vi.fn(async () => ({ windowId: 2 })),
+    deliverRemote: vi.fn(async () => undefined),
+  };
+}
+
+describe("owner-aware navigation", () => {
+  it("routes a local owner to its exact project instead of the focused window", async () => {
+    const deps = ownerNavigationDependencies();
+    await expect(dispatchOwnerAwareNavigation(ownedRequest("machine-a"), deps))
+      .resolves.toBe(true);
+    expect(deps.resolveLocalProjectRoot).toHaveBeenCalledWith("project-1");
+    expect(deps.deliverLocal).toHaveBeenCalledWith(
+      "/projects/one",
+      ownedRequest("machine-a"),
+    );
+    expect(deps.openRemote).not.toHaveBeenCalled();
+  });
+
+  it("reuses an exact remote owner or opens that machine and project", async () => {
+    const deps = ownerNavigationDependencies();
+    const existing = { windowId: 7 };
+    deps.findRemote.mockReturnValueOnce(existing);
+    await dispatchOwnerAwareNavigation(ownedRequest(), deps);
+    expect(deps.deliverRemote).toHaveBeenNthCalledWith(1, existing, ownedRequest());
+    expect(deps.openRemote).not.toHaveBeenCalled();
+
+    deps.findRemote.mockReturnValueOnce(null);
+    await dispatchOwnerAwareNavigation(ownedRequest(), deps);
+    expect(deps.openRemote).toHaveBeenCalledWith("machine-b", "project-1");
+    expect(deps.deliverRemote).toHaveBeenNthCalledWith(
+      2,
+      { windowId: 2 },
+      ownedRequest(),
+    );
+  });
+
+  it("does not intercept ordinary machine-unscoped deeplinks", async () => {
+    const deps = ownerNavigationDependencies();
+    await expect(dispatchOwnerAwareNavigation({
+      source: "deeplink:open-url",
+      target: { kind: "pr", repoOwner: "openai", repoName: "ade", prNumber: 42 },
+    }, deps)).resolves.toBe(false);
+    expect(deps.deliverLocal).not.toHaveBeenCalled();
+    expect(deps.deliverRemote).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the exact owning local project is unavailable", async () => {
+    const deps = ownerNavigationDependencies();
+    deps.resolveLocalProjectRoot.mockReturnValue(null);
+    await expect(dispatchOwnerAwareNavigation(ownedRequest("machine-a"), deps))
+      .rejects.toThrow("Project project-1 is no longer available");
+    expect(deps.deliverLocal).not.toHaveBeenCalled();
+    expect(deps.deliverRemote).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      error: "Remote ADE service 1.2.41 does not support machine projects.",
+      title: "Update the owning ADE machine",
+      recovery: "Update and restart ADE on that host",
+    },
+    {
+      error: "Connection timed out.",
+      title: "Owning machine unavailable",
+      recovery: "Reconnect that machine from Connections",
+    },
+    {
+      error: "Project project-1 is no longer available on this ADE machine.",
+      title: "Project no longer available",
+      recovery: "Open or restore the project on that machine",
+    },
+  ])("provides actionable recovery copy for $title", ({ error, title, recovery }) => {
+    const copy = ownerNavigationFailureCopy(new Error(error));
+    expect(copy.title).toBe(title);
+    expect(copy.detail).toContain(error);
+    expect(copy.detail).toContain(recovery);
+  });
+});
+
 describe("handleDeeplinkUrl", () => {
   it("dispatches valid URLs", () => {
     const dispatch = vi.fn();
@@ -116,6 +243,29 @@ describe("handleDeeplinkUrl", () => {
         source: "deeplink:test",
       }),
     );
+  });
+
+  it("dispatches owner-scoped Attention links with exact routing metadata", () => {
+    const dispatch = vi.fn();
+    handleDeeplinkUrl(
+      "ade://pr/openai/ade/42?tab=checks&accountMachineKey=machine-b&projectId=project-b",
+      "test",
+      dispatch,
+    );
+    expect(dispatch).toHaveBeenCalledWith({
+      source: "deeplink:test",
+      target: {
+        kind: "pr",
+        prNumber: 42,
+        repoOwner: "openai",
+        repoName: "ade",
+        detailTab: "checks",
+        ownership: {
+          accountMachineKey: "machine-b",
+          projectId: "project-b",
+        },
+      },
+    });
   });
 
   it("logs and skips dispatching invalid URLs", () => {

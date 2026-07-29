@@ -2,7 +2,7 @@
 // Core / project-wide types
 // ---------------------------------------------------------------------------
 
-import type { DeeplinkEnvelope } from "../deeplinks";
+import type { DeeplinkEnvelope, DeeplinkOwnership } from "../deeplinks";
 import type {
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
@@ -324,6 +324,7 @@ export type AppNavigationTarget =
       envelope?: DeeplinkEnvelope | null;
       event?: number | null;
       offset?: number | null;
+      ownership?: DeeplinkOwnership | null;
     }
   | {
       kind: "file";
@@ -359,6 +360,7 @@ export type AppNavigationTarget =
       // create-lane-from-PR-branch modal.
       repoOwner?: string | null;
       repoName?: string | null;
+      ownership?: DeeplinkOwnership | null;
     }
   | {
       kind: "branch";

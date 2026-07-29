@@ -3726,7 +3726,7 @@ async function runTool(args: {
     if (!service) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
     }
-    const callable = service[action];
+    let callable = service[action];
     if (typeof callable !== "function") {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not callable.`);
     }
@@ -3789,11 +3789,63 @@ async function runTool(args: {
       && domain === "chat"
       && SCOPED_CHAT_ACTIONS.has(action)
     ) {
-      scopedObjectArgs = scopeChatAdeActionArgs(
-        session,
+      const chatArgs = requireObjectArgsForScopedAdeAction(
+        domain,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
       );
+      const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId);
+      const legacyCrossSessionSend = action === "sendMessage"
+        && callerSessionId != null
+        && requestedSessionId != null
+        && requestedSessionId !== callerSessionId;
+      let legacyBlankChildKickoff = false;
+      if (legacyCrossSessionSend) {
+        const targetSession = runtime.sessionService.get(requestedSessionId);
+        const targetParentSessionId = asOptionalTrimmedString(
+          targetSession?.orchestrationParentSessionId,
+        );
+        const agentChatService = runtime.agentChatService;
+        if (targetParentSessionId === callerSessionId && agentChatService) {
+          try {
+            const transcript = await agentChatService.getChatTranscript({
+              sessionId: requestedSessionId,
+              limit: 1,
+              maxChars: 200,
+            });
+            legacyBlankChildKickoff = transcript.totalEntries === 0;
+          } catch {
+            // Compatibility routing is fail-closed. A target that cannot prove
+            // it is the caller's still-blank child keeps the normal scope denial.
+          }
+        }
+      }
+      const legacyMessageSession = service.messageSession;
+      if (
+        legacyBlankChildKickoff
+        && typeof legacyMessageSession === "function"
+        && isAllowedAdeAction(domain, "messageSession")
+      ) {
+        // ADE <=1.2.41 created a fresh chat and then used `sendMessage` for its
+        // kickoff. Newer scoped runtimes reserve that action for the caller's
+        // own session, while `messageSession` is the deliberate peer-routing
+        // contract. Preserve only the parent -> still-blank child kickoff; any
+        // other cross-session use keeps the normal isolation denial.
+        callable = legacyMessageSession;
+        scopedObjectArgs = {
+          ...chatArgs,
+          kind: "auto",
+        };
+      } else {
+        scopedObjectArgs = scopeChatAdeActionArgs(
+          session,
+          action,
+          chatArgs,
+        );
+      }
     } else if (
       !callerIsCto
       && domain === "session"

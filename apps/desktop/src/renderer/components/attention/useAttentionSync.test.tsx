@@ -4,7 +4,7 @@
 
 import React from "react";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ATTENTION_CONTRACT_VERSION,
@@ -18,13 +18,53 @@ import {
   resetAttentionStoreForTests,
 } from "../../state/attentionStore";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
-import { refreshAttentionSnapshot, useAttentionSync } from "./useAttentionSync";
+import {
+  attentionNotchSettingsFromPreferences,
+  attentionNotchSnapshotSignature,
+  materializeAttentionNotchSnapshot,
+  refreshAttentionSnapshot,
+  useAttentionSync,
+} from "./useAttentionSync";
 
 const originalAde = window.ade;
 const originalVisibilityState = Object.getOwnPropertyDescriptor(
   document,
   "visibilityState",
 );
+
+const runningItem: AttentionItem = {
+  contractVersion: 1,
+  id: "agent-running",
+  revision: 2,
+  fingerprint: "running:2",
+  kind: "agent",
+  eventKind: "agent_running",
+  phase: "running",
+  machine: {
+    machineKey: "machine-1",
+    name: "MacBook Pro",
+    online: true,
+    lastSeenAt: null,
+  },
+  project: {
+    projectId: "project-1",
+    name: "ADE",
+    rootPath: "/projects/ADE",
+  },
+  title: "Running",
+  preview: "Implementing Attention",
+  privacyPreview: "Agent is working",
+  destination: {
+    kind: "session",
+    sessionId: "session-1",
+  },
+  actions: [],
+  occurredAt: "2026-07-28T12:00:00.000Z",
+  updatedAt: "2026-07-28T12:00:01.000Z",
+  seenAt: null,
+  dismissedAt: null,
+  expiresAt: null,
+};
 
 function liveItem(): AttentionItem {
   return {
@@ -56,8 +96,8 @@ function liveItem(): AttentionItem {
   };
 }
 
-function Harness() {
-  useAttentionSync(true);
+function Harness({ surfaceVisible = true }: { surfaceVisible?: boolean }) {
+  useAttentionSync(surfaceVisible);
   return null;
 }
 
@@ -141,6 +181,186 @@ describe("useAttentionSync", () => {
 
     await waitFor(() => expect(publishSnapshot).toHaveBeenCalled());
     expect(calls.slice(0, 2)).toEqual(["settings", "snapshot"]);
+  });
+
+  it("starts the notch and hydrates machine-local work on a signed-out cold launch", async () => {
+    const machineSnapshot: AttentionSnapshot = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      scope: "machine",
+      availability: {
+        state: "signed_out",
+        title: "This machine only",
+        message: "Sign in to combine Attention across every ADE machine.",
+        recovery: "sign_in",
+      },
+      streamId: "machine:studio",
+      revision: 3,
+      generatedAt: "2026-07-28T14:01:00.000Z",
+      items: [liveItem()],
+      tombstones: [],
+    };
+    const getSnapshot = vi.fn(async () => machineSnapshot);
+    const updateSettings = vi.fn(async () => undefined);
+    const publishSnapshot = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot,
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot,
+          updateSettings,
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+
+    render(<Harness />);
+
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledWith(0, null));
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "machine",
+        availability: expect.objectContaining({ state: "signed_out" }),
+        items: [expect.objectContaining({ id: "live-account-item" })],
+      }),
+    ));
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      enabled: expect.any(Boolean),
+      hideDetails: true,
+    }));
+  });
+
+  it("persists presentation settings changed from the native context menu", async () => {
+    window.localStorage.clear();
+    let settingsChanged:
+      ((settings: AttentionNotchSettings) => void) | null = null;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async (): Promise<AttentionSnapshot> => ({
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "machine",
+            revision: 0,
+            generatedAt: "2026-07-28T14:01:00.000Z",
+            items: [],
+            tombstones: [],
+          })),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(async () => undefined),
+          updateSettings: vi.fn(async () => undefined),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+          onSettingsChanged: vi.fn((callback) => {
+            settingsChanged = callback;
+            return () => {};
+          }),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(settingsChanged).not.toBeNull());
+    act(() => {
+      settingsChanged?.({
+        enabled: false,
+        revealMode: "click",
+        expandedPanelEnabled: false,
+        preferredDisplayId: null,
+        hideDetails: true,
+        celebrationsEnabled: true,
+        soundsEnabled: false,
+      });
+    });
+
+    expect(window.localStorage.getItem("ade:attention:notch-enabled")).toBe("false");
+    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
+    expect(window.localStorage.getItem("ade:attention:notch-expanded-panel")).toBe("false");
+  });
+
+  it("publishes a degraded last-known snapshot when refresh fails", async () => {
+    publishAccountStatus({
+      signedIn: true,
+      userId: "user-refresh-failure",
+      email: null,
+      name: null,
+      expiresAt: null,
+      provider: null,
+      imageUrl: null,
+    });
+    const publishSnapshot = vi.fn(async () => undefined);
+    let shouldFail = false;
+    const getSnapshot = vi.fn(async (): Promise<AttentionSnapshot> => {
+      if (shouldFail) throw new Error("relay offline");
+      return {
+        contractVersion: ATTENTION_CONTRACT_VERSION,
+        scope: "account",
+        availability: {
+          state: "ready",
+          title: "Account Attention",
+          message: "Live across your ADE account.",
+          recovery: null,
+        },
+        streamId: "account:last-known",
+        revision: 7,
+        generatedAt: "2026-07-28T14:01:00.000Z",
+        items: [liveItem()],
+        tombstones: [],
+      };
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot,
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot,
+          updateSettings: vi.fn(),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+
+    render(<Harness />);
+
+    await waitFor(() => expect(attentionStore.getState().itemsById["live-account-item"]).toBeTruthy());
+    shouldFail = true;
+    await act(async () => {
+      await refreshAttentionSnapshot();
+    });
+    await waitFor(() => expect(attentionStore.getState().availability).toMatchObject({
+      state: "degraded",
+      recovery: "retry",
+    }));
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "account",
+        availability: expect.objectContaining({ state: "degraded" }),
+        items: [expect.objectContaining({ id: "live-account-item" })],
+      }),
+    ));
+    expect(attentionStore.getState().syncStatus).toBe("error");
   });
 
   it("keeps an in-flight account A preference fetch out of account B's notch stream", async () => {
@@ -312,7 +532,7 @@ describe("useAttentionSync", () => {
     expect(attentionStore.getState().revision).toBe(10);
   });
 
-  it("hydrates the account snapshot and reports the visible desktop presence", async () => {
+  it("hydrates the account snapshot and counts a running native notch as visible presence", async () => {
     publishAccountStatus({
       signedIn: true,
       userId: "user-account-snapshot",
@@ -340,8 +560,22 @@ describe("useAttentionSync", () => {
           getSnapshot,
           acknowledge: vi.fn(),
           reportPresence,
-          getPreferences: vi.fn(),
+          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
           putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          ...(originalAde?.attentionNotch ?? {}),
+          getHealth: vi.fn(async () => ({
+            state: "running",
+            title: "ADE Notch is active",
+            message: "Showing account activity in the menu bar.",
+            recovery: null,
+            surface: "menu_bar",
+          })),
+          publishSnapshot: vi.fn(async () => undefined),
+          updateSettings: vi.fn(async () => undefined),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+          onRefreshRequested: vi.fn(() => () => {}),
         },
         account: {
           ...(originalAde?.account ?? {}),
@@ -376,7 +610,7 @@ describe("useAttentionSync", () => {
       },
     });
 
-    render(<Harness />);
+    render(<Harness surfaceVisible={false} />);
 
     await waitFor(() => {
       expect(getSnapshot).toHaveBeenCalledWith(0, null);
@@ -448,16 +682,17 @@ describe("useAttentionSync", () => {
 
     render(<Harness />);
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenCalledTimes(1);
+      expect(getSnapshot).toHaveBeenCalled();
       expect(requestRefresh).not.toBeNull();
     });
+    const hiddenRefreshBaseline = getSnapshot.mock.calls.length;
 
     await act(async () => {
       requestRefresh?.();
       await Promise.resolve();
     });
 
-    expect(getSnapshot).toHaveBeenCalledTimes(2);
+    expect(getSnapshot).toHaveBeenCalledTimes(hiddenRefreshBaseline + 1);
 
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
@@ -468,6 +703,104 @@ describe("useAttentionSync", () => {
       await Promise.resolve();
     });
 
-    expect(getSnapshot).toHaveBeenCalledTimes(2);
+    expect(getSnapshot).toHaveBeenCalledTimes(hiddenRefreshBaseline + 1);
+  });
+});
+
+describe("Attention Notch renderer bridge", () => {
+  beforeEach(() => resetAttentionStoreForTests());
+
+  it("materializes the merged renderer state rather than forwarding a delta", () => {
+    attentionStore.setState({
+      revision: 8,
+      generatedAt: "2026-07-28T12:00:02.000Z",
+      itemsById: { [runningItem.id]: runningItem },
+    });
+    expect(materializeAttentionNotchSnapshot()).toEqual({
+      contractVersion: 1,
+      scope: "machine",
+      availability: {
+        state: "signed_out",
+        title: "This machine only",
+        message: "Sign in to combine Attention across every ADE machine.",
+        recovery: "sign_in",
+      },
+      streamId: null,
+      revision: 8,
+      generatedAt: "2026-07-28T12:00:02.000Z",
+      items: [runningItem],
+      tombstones: [],
+    });
+  });
+
+  it("maps account privacy, celebration, sound, and local presentation settings", () => {
+    expect(attentionNotchSettingsFromPreferences({
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      account: {
+        ...DEFAULT_ATTENTION_PREFERENCES.account,
+        hideDetails: true,
+        celebrationsEnabled: false,
+        soundsEnabled: false,
+      },
+    }, true, {
+      revealMode: "click",
+      expandedPanelEnabled: false,
+    })).toEqual({
+      enabled: true,
+      revealMode: "click",
+      expandedPanelEnabled: false,
+      preferredDisplayId: null,
+      hideDetails: true,
+      celebrationsEnabled: false,
+      soundsEnabled: false,
+    });
+  });
+
+  it("invalidates the native snapshot signature for routing and availability changes", () => {
+    const base: AttentionSnapshot = {
+      contractVersion: 1,
+      scope: "account",
+      availability: {
+        state: "ready",
+        title: "Account Attention",
+        message: "Live across your ADE account.",
+        recovery: null,
+      },
+      streamId: "account-stream",
+      revision: 8,
+      generatedAt: "2026-07-28T12:00:02.000Z",
+      items: [runningItem],
+      tombstones: [],
+    };
+    const routingChanged = {
+      ...base,
+      items: [{
+        ...runningItem,
+        machine: {
+          ...runningItem.machine,
+          accountMachineKey: "canonical-machine-1",
+          deviceId: "device-machine-1",
+          name: "MacBook Pro · Remote",
+          online: false,
+          lastSeenAt: "2026-07-28T12:05:00.000Z",
+        },
+      }],
+    };
+    const availabilityChanged = {
+      ...base,
+      availability: {
+        state: "degraded" as const,
+        title: "Account Attention is reconnecting",
+        message: "Last-known work remains available.",
+        recovery: "retry" as const,
+      },
+    };
+
+    expect(attentionNotchSnapshotSignature(routingChanged))
+      .not.toBe(attentionNotchSnapshotSignature(base));
+    expect(attentionNotchSnapshotSignature(availabilityChanged))
+      .not.toBe(attentionNotchSnapshotSignature(base));
+    expect(routingChanged.items[0]?.machine.accountMachineKey)
+      .toBe("canonical-machine-1");
   });
 });

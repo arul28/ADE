@@ -609,6 +609,9 @@ extension WorkRootScreen {
     var fresh = NavigationPath()
     fresh.append(WorkSessionRoute(sessionId: request.sessionId))
     path = fresh
+    await AccountService.shared.acknowledgeAttentionNavigation(
+      request.attentionItemId
+    )
     syncService.requestedWorkSessionNavigation = nil
   }
 

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run validate:migrations && npm run d1:migrate:remote && wrangler deploy",
+    "deploy": "npm run validate:migrations && npm run verify:auth-preflight && npm run d1:migrate:remote && wrangler deploy && npm run verify:auth-health && npm run verify:auth-account",
     "d1:migrations:local": "wrangler d1 migrations apply ade-push-relay --local",
     "d1:migrations:remote": "wrangler d1 migrations apply ade-push-relay --remote",
     "d1:migrate:local": "npm run d1:migrations:local && npm run d1:triggers:local",
@@ -14,7 +14,11 @@
     "d1:triggers:remote": "wrangler d1 execute ade-push-relay --remote --file=./schema/attention_triggers.sql --yes",
     "test": "npm run validate:migrations && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate:migrations": "node scripts/validate-d1-migrations.mjs"
+    "validate:migrations": "node scripts/validate-d1-migrations.mjs",
+    "verify:auth-bindings": "node scripts/verify-deployment-auth.mjs bindings",
+    "verify:auth-preflight": "node scripts/verify-deployment-auth.mjs preflight",
+    "verify:auth-health": "node scripts/verify-deployment-auth.mjs health",
+    "verify:auth-account": "node scripts/verify-deployment-auth.mjs account"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.0",

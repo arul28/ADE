@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { ATTENTION_CONTRACT_VERSION, type AttentionItem } from "../../../shared/types/attention";
+import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type {
   OpenProjectBinding,
   RemoteRuntimeTarget,
@@ -1512,7 +1513,7 @@ describe("registerIpc sync bridge", () => {
     expect(onLaneArchived).toHaveBeenCalledTimes(1);
   });
 
-  it("routes account Attention through the machine runtime without a project binding", async () => {
+  it("routes account Attention directly to the relay regardless of the selected remote project", async () => {
     const snapshot = {
       contractVersion: ATTENTION_CONTRACT_VERSION,
       streamId: "account-stream",
@@ -1521,17 +1522,21 @@ describe("registerIpc sync bridge", () => {
       items: [],
       tombstones: [],
     };
-    const callAttention = vi.fn(async (action: string) => {
-      if (action === "getSnapshot") return snapshot;
-      if (action === "getPreferences") return { account: { hideDetails: true } };
-      return undefined;
-    });
+    const callAttention = vi.fn();
+    const accountAttentionClient = {
+      getAttentionSnapshot: vi.fn(async () => snapshot),
+      acknowledgeAttention: vi.fn(async () => ({})),
+      reportAttentionPresence: vi.fn(async () => undefined),
+      getAttentionPreferences: vi.fn(async () => ({ account: { hideDetails: true } })),
+      putAttentionPreferences: vi.fn(async () => undefined),
+    };
     const openAttentionItem = vi.fn(async () => undefined);
     registerIpc({
       getCtx: () => ({
         logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
       }) as any,
       localRuntimeConnectionPool: { callAttention } as any,
+      accountAttentionClient: accountAttentionClient as any,
       getCurrentAccountOwnerId: () => "account-a",
       getWindowSession: () => ({
         windowId: 7,
@@ -1558,7 +1563,11 @@ describe("registerIpc sync bridge", () => {
         since: 4,
         streamId: "account-stream",
       }),
-    ).resolves.toEqual(snapshot);
+    ).resolves.toMatchObject({
+      ...snapshot,
+      scope: "account",
+      availability: { state: "ready" },
+    });
     await ipcHandlers.get(IPC.attentionAcknowledge)?.(eventForSender(), {
       itemIds: ["attention-1"],
       seenAt: "2026-07-28T12:01:00.000Z",
@@ -1621,20 +1630,20 @@ describe("registerIpc sync bridge", () => {
     };
     await ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem);
 
-    expect(callAttention.mock.calls.map(([action]) => action)).toEqual([
-      "getSnapshot",
-      "acknowledge",
-      "reportPresence",
-      "getPreferences",
-      "putPreferences",
-    ]);
-    expect(callAttention).toHaveBeenNthCalledWith(4, "getPreferences", {
-      accountOwnerId: "account-a",
+    expect(callAttention).not.toHaveBeenCalled();
+    expect(accountAttentionClient.getAttentionSnapshot).toHaveBeenCalledWith(
+      4,
+      "account-stream",
+    );
+    expect(accountAttentionClient.acknowledgeAttention).toHaveBeenCalledWith({
+      itemIds: ["attention-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
     });
-    expect(callAttention).toHaveBeenNthCalledWith(5, "putPreferences", {
-      accountOwnerId: "account-a",
-      preferences: { account: { hideDetails: false } },
-    });
+    expect(accountAttentionClient.getAttentionPreferences).toHaveBeenCalledWith("account-a");
+    expect(accountAttentionClient.putAttentionPreferences).toHaveBeenCalledWith(
+      "account-a",
+      { account: { hideDetails: false } },
+    );
     expect(openAttentionItem).toHaveBeenCalledWith(attentionItem);
 
     openAttentionItem.mockRejectedValueOnce(
@@ -1643,6 +1652,101 @@ describe("registerIpc sync bridge", () => {
     await expect(
       ipcHandlers.get(IPC.attentionOpenItem)?.(eventForSender(), attentionItem),
     ).rejects.toThrow("No ADE window is available for this project.");
+  });
+
+  it("falls back to an explicitly machine-scoped snapshot when signed out", async () => {
+    const machineSnapshot = {
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      scope: "machine" as const,
+      streamId: "machine:local",
+      revision: 2,
+      generatedAt: "2026-07-28T12:00:00.000Z",
+      items: [],
+      tombstones: [],
+    };
+    const callAttention = vi.fn(async (action: string) => {
+      if (action === "getMachineSnapshot") return machineSnapshot;
+      throw new Error(`unexpected action ${action}`);
+    });
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      getCurrentAccountOwnerId: () => null,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.attentionGetSnapshot)?.(eventForSender(), {
+        since: 99,
+        streamId: "account-old",
+      }),
+    ).resolves.toMatchObject({
+      streamId: "machine:local",
+      scope: "machine",
+      availability: {
+        state: "signed_out",
+        recovery: "sign_in",
+      },
+    });
+    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {});
+  });
+
+  it("sanitizes account auth failures and names the machine fallback", async () => {
+    const accountAttentionClient = {
+      getAttentionSnapshot: vi.fn(async () => {
+        throw new PushRelayRequestError(
+          "getAttentionSnapshot",
+          401,
+          "account token rejected",
+        );
+      }),
+    };
+    const callAttention = vi.fn(async (action: string) => {
+      if (action === "getMachineSnapshot") {
+        return {
+          contractVersion: ATTENTION_CONTRACT_VERSION,
+          scope: "machine",
+          streamId: "machine:macbook",
+          revision: 3,
+          generatedAt: "2026-07-28T12:00:00.000Z",
+          machines: [{ name: "Arul's MacBook Pro" }],
+          items: [],
+          tombstones: [],
+        };
+      }
+      throw new Error(`unexpected action ${action}`);
+    });
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      }) as any,
+      localRuntimeConnectionPool: { callAttention } as any,
+      accountAttentionClient: accountAttentionClient as any,
+      getCurrentAccountOwnerId: () => "account-a",
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const snapshot = await ipcHandlers.get(IPC.attentionGetSnapshot)?.(
+      eventForSender(),
+      { since: 0, streamId: null },
+    ) as Record<string, any>;
+
+    expect(snapshot.availability).toMatchObject({
+      state: "degraded",
+      title: "Account session needs attention",
+      recovery: "sign_in",
+      hostName: "Arul's MacBook Pro",
+    });
+    expect(snapshot.availability.message).toContain("Showing work from Arul's MacBook Pro");
+    expect(snapshot.availability.message).not.toMatch(/push relay|HTTP 401|account token rejected/i);
   });
 
   it("reports an old brain Attention contract once instead of returning an empty notch", async () => {

@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  ArrowsOutSimple,
   BellRinging,
   Check,
   Confetti,
+  CursorClick,
   DeviceMobile,
   GearSix,
   HourglassMedium,
@@ -15,13 +17,18 @@ import {
 
 import {
   DEFAULT_ATTENTION_PREFERENCES,
+  isAttentionNotchRevealMode,
+  type AttentionNotchRevealMode,
   type AttentionPreferences,
 } from "../../../shared/types";
 import {
   attentionNotchSettingsFromPreferences,
   normalizeAttentionPreferences,
+  onAttentionNotchSettingsChanged,
   readAttentionNotchEnabled,
+  readAttentionNotchPresentation,
   writeAttentionNotchEnabled,
+  writeAttentionNotchPresentation,
 } from "./attentionNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 
@@ -31,6 +38,21 @@ const DESKTOP_FIRST_OPTIONS = [
   { value: 120, label: "After 2 minutes" },
   { value: 300, label: "After 5 minutes" },
 ] as const;
+
+const NOTCH_REVEAL_OPTIONS: ReadonlyArray<{
+  value: AttentionNotchRevealMode;
+  label: string;
+}> = [
+  { value: "minimal", label: "Compact + peek" },
+  { value: "hover", label: "Reveal on hover" },
+  { value: "click", label: "Click only" },
+];
+
+const NOTCH_REVEAL_HELP: Record<AttentionNotchRevealMode, string> = {
+  minimal: "Keep a tiny status visible; hover or click for a short peek.",
+  hover: "Hide the surface until the pointer reaches the top-edge hot zone.",
+  click: "Keep the compact status visible and expand only when clicked.",
+};
 
 type ToggleRowProps = {
   icon: React.ElementType;
@@ -89,6 +111,7 @@ export function AttentionSettingsPopover() {
   const [preferences, setPreferences] =
     useState<AttentionPreferences>(DEFAULT_ATTENTION_PREFERENCES);
   const [notchEnabled, setNotchEnabled] = useState(readAttentionNotchEnabled);
+  const [notchPresentation, setNotchPresentation] = useState(readAttentionNotchPresentation);
   const reducedMotion = useReducedMotion() ?? false;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -102,6 +125,14 @@ export function AttentionSettingsPopover() {
     previousAccountOwnerRef.current = accountOwnerId;
     requestGenerationRef.current += 1;
   }
+
+  useEffect(() => onAttentionNotchSettingsChanged((settings) => {
+    setNotchEnabled(settings.enabled);
+    setNotchPresentation({
+      revealMode: settings.revealMode,
+      expandedPanelEnabled: settings.expandedPanelEnabled,
+    });
+  }), []);
 
   const dialogElement = () =>
     rootRef.current?.querySelector<HTMLElement>('[role="dialog"]') ?? null;
@@ -181,6 +212,7 @@ export function AttentionSettingsPopover() {
     setError(null);
     setSaved(false);
     setNotchEnabled(readAttentionNotchEnabled());
+    setNotchPresentation(readAttentionNotchPresentation());
     const ownerId = accountOwnerId;
     const generation = requestGenerationRef.current + 1;
     requestGenerationRef.current = generation;
@@ -244,10 +276,21 @@ export function AttentionSettingsPopover() {
       await api.putPreferences(ownerId, preferences);
       if (!isCurrentRequest()) return;
       writeAttentionNotchEnabled(notchEnabled);
+      writeAttentionNotchPresentation(notchPresentation);
       await window.ade?.attentionNotch?.updateSettings(
-        attentionNotchSettingsFromPreferences(preferences, notchEnabled),
+        attentionNotchSettingsFromPreferences(preferences, notchEnabled, notchPresentation),
       );
       if (!isCurrentRequest()) return;
+      if (notchEnabled) {
+        const health = await window.ade?.attentionNotch?.getHealth?.();
+        if (
+          health
+          && health.state !== "running"
+          && health.state !== "starting"
+        ) {
+          throw new Error(`${health.title}. ${health.message}`);
+        }
+      }
       setSaved(true);
       window.setTimeout(() => {
         if (isCurrentRequest()) setSaved(false);
@@ -303,7 +346,7 @@ export function AttentionSettingsPopover() {
                 </span>
                 <span>
                   <strong>Attention settings</strong>
-                  <small>One policy across every project</small>
+                  <small>Account delivery and this Mac’s notch</small>
                 </span>
               </div>
               <span className="attention-settings-account-badge">Account</span>
@@ -325,6 +368,41 @@ export function AttentionSettingsPopover() {
                     badge="This Mac"
                     checked={notchEnabled}
                     onChange={setNotchEnabled}
+                  />
+                  <label
+                    className="attention-settings-delay"
+                    data-disabled={!notchEnabled || undefined}
+                  >
+                    <span className="attention-settings-row-icon" aria-hidden>
+                      <CursorClick size={16} weight="duotone" />
+                    </span>
+                    <span className="attention-settings-row-copy">
+                      <span><strong>Notch behavior</strong></span>
+                      <em>{NOTCH_REVEAL_HELP[notchPresentation.revealMode]}</em>
+                    </span>
+                    <select
+                      aria-label="Notch behavior"
+                      value={notchPresentation.revealMode}
+                      disabled={!notchEnabled}
+                      onChange={(event) => {
+                        const revealMode = event.target.value;
+                        if (!isAttentionNotchRevealMode(revealMode)) return;
+                        setNotchPresentation((current) => ({ ...current, revealMode }));
+                      }}
+                    >
+                      {NOTCH_REVEAL_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <ToggleRow
+                    icon={ArrowsOutSimple}
+                    label="Expanded panel"
+                    description="Let a click open the tall panel. Off keeps the notch clear of the menu bar."
+                    disabled={!notchEnabled}
+                    checked={notchPresentation.expandedPanelEnabled}
+                    onChange={(expandedPanelEnabled) =>
+                      setNotchPresentation((current) => ({ ...current, expandedPanelEnabled }))}
                   />
                   <ToggleRow
                     icon={BellRinging}
@@ -409,7 +487,9 @@ export function AttentionSettingsPopover() {
 
             <footer>
               <span>
-                {saved ? <><Check size={13} weight="bold" /> Saved</> : "Changes apply across ADE"}
+                {saved
+                  ? <><Check size={13} weight="bold" /> Saved</>
+                  : "Delivery syncs; notch choices stay on this Mac"}
               </span>
               <button type="button" onClick={() => closePopover(true)}>Cancel</button>
               <button

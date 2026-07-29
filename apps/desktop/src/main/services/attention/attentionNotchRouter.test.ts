@@ -104,17 +104,60 @@ describe("Attention Notch routing", () => {
     expect(parseAttentionNotchSnapshot(snapshot())).toEqual(snapshot());
     expect(parseAttentionNotchSettings({
       enabled: true,
+      revealMode: "click",
+      expandedPanelEnabled: false,
       preferredDisplayId: 12,
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
     })).toEqual({
       enabled: true,
+      revealMode: "click",
+      expandedPanelEnabled: false,
       preferredDisplayId: 12,
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
     });
+  });
+
+  // A renderer built before the presentation controls existed still has to
+  // land, and has to land on the behaviour it was built against.
+  it("defaults notch presentation when a payload predates it", () => {
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    })).toEqual({
+      enabled: true,
+      revealMode: "hover",
+      expandedPanelEnabled: true,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    });
+  });
+
+  it("rejects an invented notch reveal mode", () => {
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      revealMode: "telepathy",
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    })).toBeNull();
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      expandedPanelEnabled: "yes",
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+    })).toBeNull();
   });
 
   it("rejects malformed or cross-kind renderer payloads", () => {

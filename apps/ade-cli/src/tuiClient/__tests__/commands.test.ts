@@ -3,6 +3,17 @@ import { commandPlacement, parseCommand, paletteCommands } from "../commands";
 import { buildLinearToolRequest, parseLinearArgs } from "../linearCommands";
 
 describe("commands", () => {
+  it("routes account Attention to the keyboard-accessible right pane", () => {
+    const parsed = parseCommand("/attention");
+    expect(parsed?.name).toBe("/attention");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/att")).toContainEqual(expect.objectContaining({
+      name: "/attention",
+      source: "ade",
+      description: "Show account-wide work that needs you",
+    }));
+  });
+
   it("parses multi-word ADE commands before generic slash commands", () => {
     const parsed = parseCommand("/linear pull ADE-123");
     expect(parsed?.name).toBe("/linear pull");

@@ -3394,6 +3394,7 @@ describe("adeRpcServer", () => {
 
   it("exposes account-wide Attention actions only to CTO callers with discoverable contracts", async () => {
     const fixture = createRuntime();
+    let accountOwnerId = "account-a";
     const getAttentionSnapshot = vi.fn(async (since: number, streamId: string | null) => ({
       contractVersion: 1,
       streamId: streamId ?? "account-stream",
@@ -3403,12 +3404,25 @@ describe("adeRpcServer", () => {
       items: [],
       tombstones: [],
     }));
+    const acknowledgeAttention = vi.fn(async () => undefined);
+    const reportAttentionPresence = vi.fn(async () => undefined);
+    const getAttentionPreferences = vi.fn(async () => ({}));
+    const putAttentionPreferences = vi.fn(async () => undefined);
+    (fixture.runtime as any).accountAuthService = {
+      getStatus: vi.fn(() => ({
+        signedIn: true,
+        userId: accountOwnerId,
+        email: null,
+        name: null,
+        expiresAt: null,
+      })),
+    };
     (fixture.runtime as any).pushPublisherService = {
       getAttentionSnapshot,
-      acknowledgeAttention: vi.fn(async () => undefined),
-      reportAttentionPresence: vi.fn(async () => undefined),
-      getAttentionPreferences: vi.fn(async () => ({})),
-      putAttentionPreferences: vi.fn(async () => undefined),
+      acknowledgeAttention,
+      reportAttentionPresence,
+      getAttentionPreferences,
+      putAttentionPreferences,
     };
 
     const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -3430,6 +3444,8 @@ describe("adeRpcServer", () => {
         "attention.putPreferences",
       ]),
     );
+    expect(inventory.structuredContent.actions.map((entry: { name: string }) => entry.name))
+      .not.toContain("attention.getMachineSnapshot");
     const getSnapshotAction = inventory.structuredContent.actions.find(
       (entry: { name: string }) => entry.name === "attention.getSnapshot",
     );
@@ -3450,6 +3466,69 @@ describe("adeRpcServer", () => {
       revision: 8,
     });
     expect(getAttentionSnapshot).toHaveBeenCalledWith(7, "account-stream");
+
+    await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "acknowledge",
+      args: {
+        itemIds: ["attention-item-1"],
+        seenAt: "2026-07-28T12:01:00.000Z",
+      },
+    });
+    expect(acknowledgeAttention).toHaveBeenCalledWith({
+      itemIds: ["attention-item-1"],
+      seenAt: "2026-07-28T12:01:00.000Z",
+    });
+
+    await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "reportPresence",
+      args: {
+        deviceId: "mac-1",
+        deviceName: "MacBook Pro",
+        platform: "macOS",
+        appForeground: true,
+        ambientSurfaceVisible: true,
+        visibleItemIds: [],
+        observedAt: "2026-07-28T12:01:00.000Z",
+      },
+    });
+    expect(reportAttentionPresence).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: "mac-1",
+      appForeground: true,
+    }));
+
+    await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "getPreferences",
+      args: { accountOwnerId: "account-a" },
+    });
+    await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "putPreferences",
+      args: {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: true } },
+      },
+    });
+    expect(getAttentionPreferences).toHaveBeenCalledWith("account-a");
+    expect(putAttentionPreferences).toHaveBeenCalledWith(
+      "account-a",
+      { account: { hideDetails: true } },
+    );
+
+    accountOwnerId = "account-b";
+    const stalePreferenceWrite = await callTool(ctoHandler, "run_ade_action", {
+      domain: "attention",
+      action: "putPreferences",
+      args: {
+        accountOwnerId: "account-a",
+        preferences: { account: { hideDetails: false } },
+      },
+    });
+    expect(stalePreferenceWrite.isError).toBe(true);
+    expect(stalePreferenceWrite.error?.message).toContain("account changed");
+    expect(putAttentionPreferences).toHaveBeenCalledTimes(1);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {
@@ -3844,10 +3923,42 @@ describe("adeRpcServer", () => {
     (fixture.runtime.agentChatService as any).getChatEventHistory = getChatEventHistory;
     (fixture.runtime.agentChatService as any).getChatEventHistoryPage = getChatEventHistoryPage;
     const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    const blankChildChat = {
+      id: "chat-2",
+      laneId: "lane-1",
+      chatSessionId: "chat-2",
+      orchestrationParentSessionId: "chat-1",
+      spawnKind: "peer",
+    };
+    const unrelatedChat = {
+      id: "chat-3",
+      laneId: "lane-1",
+      chatSessionId: "chat-3",
+    };
+    const nonblankChildChat = {
+      id: "chat-4",
+      laneId: "lane-1",
+      chatSessionId: "chat-4",
+      orchestrationParentSessionId: "chat-1",
+      spawnKind: "peer",
+    };
     const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
     const otherTerminal = { id: "terminal-2", laneId: "lane-2", ptyId: "pty-2", chatSessionId: "chat-2" };
+    fixture.runtime.agentChatService.getChatTranscript.mockImplementation(
+      async ({ sessionId }: { sessionId: string }) => ({
+        sessionId,
+        entries: sessionId === "chat-2"
+          ? []
+          : [{ role: "assistant", text: "hello", timestamp: "2026-03-17T19:00:00.000Z" }],
+        truncated: false,
+        totalEntries: sessionId === "chat-2" ? 0 : 1,
+      }),
+    );
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === "chat-1") return ownChat;
+      if (sessionId === "chat-2") return blankChildChat;
+      if (sessionId === "chat-3") return unrelatedChat;
+      if (sessionId === "chat-4") return nonblankChildChat;
       if (sessionId === "terminal-1") return ownTerminal;
       if (sessionId === "terminal-2") return otherTerminal;
       return null;
@@ -3938,13 +4049,36 @@ describe("adeRpcServer", () => {
     expect(deniedChatHistoryPage.isError).toBe(true);
     expect(getChatEventHistoryPage).not.toHaveBeenCalled();
 
-    const deniedChatSend = await callTool(handler, "run_ade_action", {
+    const legacyChildKickoff = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "sendMessage",
-      args: { sessionId: "chat-2", text: "cross-chat write" },
+      args: { sessionId: "chat-2", text: "fresh child kickoff" },
     });
-    expect(deniedChatSend.isError).toBe(true);
+    expect(legacyChildKickoff?.isError).toBeUndefined();
     expect(fixture.runtime.agentChatService.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.runtime.agentChatService.messageSession).toHaveBeenCalledWith({
+      sessionId: "chat-2",
+      text: "fresh child kickoff",
+      kind: "auto",
+    });
+
+    const deniedArbitraryChatSend = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-3", text: "cross-chat write" },
+    });
+    expect(deniedArbitraryChatSend.isError).toBe(true);
+    expect(deniedArbitraryChatSend.error?.code).toBe(JsonRpcErrorCode.policyDenied);
+    expect(fixture.runtime.agentChatService.messageSession).toHaveBeenCalledTimes(1);
+
+    const deniedNonblankChildSend = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-4", text: "late legacy write" },
+    });
+    expect(deniedNonblankChildSend.isError).toBe(true);
+    expect(deniedNonblankChildSend.error?.code).toBe(JsonRpcErrorCode.policyDenied);
+    expect(fixture.runtime.agentChatService.messageSession).toHaveBeenCalledTimes(1);
 
     const ownChatRead = await callTool(handler, "run_ade_action", {
       domain: "chat",

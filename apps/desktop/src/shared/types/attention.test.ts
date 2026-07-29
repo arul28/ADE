@@ -68,6 +68,24 @@ describe("attention contract helpers", () => {
       number: 42,
       tab: "checks",
     })).toBe("ade://pr/open%20ai/ade/42?tab=checks");
+    expect(attentionDestinationDeepLink(
+      {
+        kind: "session",
+        sessionId: "remote-session",
+      },
+      item({
+        machine: {
+          machineKey: "runtime-target",
+          accountMachineKey: "account-machine-key",
+          name: "Studio Mac",
+          online: true,
+          lastSeenAt: null,
+        },
+        project: { projectId: "remote-project", name: "ADE" },
+      }),
+    )).toBe(
+      "ade://session/remote-session?accountMachineKey=account-machine-key&projectId=remote-project",
+    );
   });
 
   it("sanitizes common secret shapes and bounds lock-screen copy", () => {

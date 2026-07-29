@@ -31,9 +31,9 @@ final class DeepLinkRouter {
   /// `https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...`.
   ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
-  func handle(_ url: URL) {
+  func handle(_ url: URL, attentionItemId: String? = nil) {
     if routePairingURL(url) { return }
-    if routeHttpsOpenURL(url) { return }
+    if routeHttpsOpenURL(url, attentionItemId: attentionItemId) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
     let pathComponents = url.pathComponents
@@ -52,6 +52,7 @@ final class DeepLinkRouter {
         repoName: scope.repoName,
         branch: scope.branch,
         accountMachineKey: scope.accountMachineKey,
+        attentionItemId: attentionItemId,
         itemId: scope.itemId,
         eventId: scope.eventId,
         event: scope.event,
@@ -76,6 +77,7 @@ final class DeepLinkRouter {
           repoName: repo,
           detailTab: prDetailTab(from: url),
           accountMachineKey: accountMachineKey(from: url),
+          attentionItemId: attentionItemId,
           eventId: eventId(from: url)
         )
         return
@@ -86,6 +88,7 @@ final class DeepLinkRouter {
         identifier: raw,
         detailTab: prDetailTab(from: url),
         accountMachineKey: accountMachineKey(from: url),
+        attentionItemId: attentionItemId,
         eventId: eventId(from: url)
       )
     case "lane":
@@ -162,7 +165,10 @@ final class DeepLinkRouter {
     return true
   }
 
-  private func routeHttpsOpenURL(_ url: URL) -> Bool {
+  private func routeHttpsOpenURL(
+    _ url: URL,
+    attentionItemId: String? = nil
+  ) -> Bool {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           components.scheme?.lowercased() == "https",
           ADEDeepLinkURLParsing.isADEWebHost(components.host),
@@ -187,6 +193,7 @@ final class DeepLinkRouter {
         repoName: scope.repoName,
         branch: scope.branch,
         accountMachineKey: scope.accountMachineKey,
+        attentionItemId: attentionItemId,
         itemId: scope.itemId,
         eventId: scope.eventId,
         event: scope.event,
@@ -218,6 +225,7 @@ final class DeepLinkRouter {
           prNumber: number,
           detailTab: detailTab,
           accountMachineKey: accountMachineKey,
+          attentionItemId: attentionItemId,
           eventId: eventId
         )
         return true
@@ -231,6 +239,7 @@ final class DeepLinkRouter {
         repoName: repo.repo,
         detailTab: detailTab,
         accountMachineKey: accountMachineKey,
+        attentionItemId: attentionItemId,
         eventId: eventId
       )
     case "linear-issue":
@@ -249,8 +258,9 @@ final class DeepLinkRouter {
   /// `prNumber` keys. Used when the user taps the notification body or a
   /// default action we do not special-case into a remote command.
   func handleNotificationUserInfo(_ userInfo: [AnyHashable: Any]) {
+    let attentionItemId = stringValue(from: userInfo["attentionItemId"])
     if let raw = userInfo["deepLink"] as? String, let url = URL(string: raw) {
-      handle(url)
+      handle(url, attentionItemId: attentionItemId)
       return
     }
     if let sessionId = userInfo["sessionId"] as? String, !sessionId.isEmpty {
@@ -262,6 +272,7 @@ final class DeepLinkRouter {
         repoName: stringValue(from: userInfo["repoName"]),
         branch: stringValue(from: userInfo["branch"]),
         accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        attentionItemId: attentionItemId,
         itemId: stringValue(from: userInfo["itemId"]),
         eventId: stringValue(from: userInfo["eventId"])
       )
@@ -274,6 +285,7 @@ final class DeepLinkRouter {
         prNumber: prNumberValue(from: userInfo["prNumber"]),
         detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"])),
         accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        attentionItemId: attentionItemId,
         eventId: stringValue(from: userInfo["eventId"])
       )
       return
@@ -289,6 +301,7 @@ final class DeepLinkRouter {
         repoName: stringValue(from: userInfo["repoName"]),
         detailTab: prDetailTab(from: stringValue(from: userInfo["detailTab"])),
         accountMachineKey: stringValue(from: userInfo["accountMachineKey"]),
+        attentionItemId: attentionItemId,
         eventId: stringValue(from: userInfo["eventId"])
       )
     }
@@ -304,6 +317,7 @@ final class DeepLinkRouter {
     detailTab: PrDetailTab? = nil,
     branch: String? = nil,
     accountMachineKey: String? = nil,
+    attentionItemId: String? = nil,
     itemId: String? = nil,
     eventId: String? = nil,
     event: Int? = nil,
@@ -332,6 +346,8 @@ final class DeepLinkRouter {
     let scopedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedAccountMachineKey = accountMachineKey?
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedAttentionItemId = attentionItemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedEventId = eventId?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let scopedLaneId, !scopedLaneId.isEmpty { userInfo["laneId"] = scopedLaneId }
@@ -341,6 +357,9 @@ final class DeepLinkRouter {
     if let scopedBranch, !scopedBranch.isEmpty { userInfo["branch"] = scopedBranch }
     if let scopedAccountMachineKey, !scopedAccountMachineKey.isEmpty {
       userInfo["accountMachineKey"] = scopedAccountMachineKey
+    }
+    if let scopedAttentionItemId, !scopedAttentionItemId.isEmpty {
+      userInfo["attentionItemId"] = scopedAttentionItemId
     }
     if let scopedItemId, !scopedItemId.isEmpty { userInfo["itemId"] = scopedItemId }
     if let scopedEventId, !scopedEventId.isEmpty { userInfo["eventId"] = scopedEventId }
@@ -357,6 +376,7 @@ final class DeepLinkRouter {
         repoName: scopedRepoName,
         branch: scopedBranch,
         accountMachineKey: scopedAccountMachineKey,
+        attentionItemId: scopedAttentionItemId,
         itemId: scopedItemId,
         eventId: scopedEventId,
         event: event,
@@ -376,6 +396,7 @@ final class DeepLinkRouter {
           repoName: scopedRepoName,
           detailTab: detailTab,
           accountMachineKey: scopedAccountMachineKey,
+          attentionItemId: scopedAttentionItemId,
           eventId: scopedEventId
         )
       } else if let prId = resolvePrId(from: trimmed) {
@@ -384,6 +405,7 @@ final class DeepLinkRouter {
           prNumber: prNumber ?? Int(trimmed),
           detailTab: detailTab,
           accountMachineKey: scopedAccountMachineKey,
+          attentionItemId: scopedAttentionItemId,
           eventId: scopedEventId
         )
       } else if let prNumber = Int(trimmed), prNumber > 0 {
@@ -391,6 +413,7 @@ final class DeepLinkRouter {
           prNumber: prNumber,
           detailTab: detailTab,
           accountMachineKey: scopedAccountMachineKey,
+          attentionItemId: scopedAttentionItemId,
           eventId: scopedEventId
         )
       }

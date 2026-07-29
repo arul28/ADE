@@ -84,13 +84,11 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("describes projectless Attention navigation as available", () => {
-    vi.useFakeTimers();
+  it("keeps the full Attention center secondary to the global header control", () => {
     useAppStore.setState({
       project: null,
       projectBinding: null,
       showWelcome: true,
-      smartTooltipsEnabled: true,
     } as any);
 
     render(
@@ -99,12 +97,6 @@ describe("TabNav", () => {
       </MemoryRouter>,
     );
 
-    const attention = screen.getByRole("link", { name: "Attention" });
-    fireEvent.mouseEnter(attention.parentElement as HTMLElement);
-    act(() => vi.advanceTimersByTime(321));
-
-    const tooltip = screen.getByRole("tooltip");
-    expect(tooltip.textContent).toContain("Opens Attention.");
-    expect(tooltip.textContent).not.toContain("Open or create a project first.");
+    expect(screen.queryByRole("link", { name: "Attention" })).toBeNull();
   });
 });

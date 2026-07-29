@@ -399,14 +399,20 @@ export class BrowserAccountClient {
     return this.getSnapshot();
   }
 
-  async getAccessToken(): Promise<string> {
+  async getAccessToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
     const config = this.config;
     const session = this.session;
     if (!config || !session) throw new Error("ADE account sign-in is required.");
-    if (session.expiresAtMs - (this.options.now?.() ?? Date.now()) > REFRESH_SKEW_MS) {
+    if (
+      !options.forceRefresh
+      && session.expiresAtMs - (this.options.now?.() ?? Date.now()) > REFRESH_SKEW_MS
+    ) {
       return session.accessToken;
     }
     if (!session.refreshToken) {
+      if (session.expiresAtMs > (this.options.now?.() ?? Date.now())) {
+        return session.accessToken;
+      }
       await this.expireSession();
       throw new Error("ADE account session expired.");
     }

@@ -9,13 +9,14 @@ import {
 import {
   acknowledgeAttentionItem,
   attentionStore,
-  selectAttentionItems,
   useAttentionStore,
 } from "../../state/attentionStore";
 import { useAccountStatus } from "../../lib/account";
 import {
   attentionNotchSettingsFromPreferences,
+  persistAttentionNotchSettings,
   readAttentionNotchEnabled,
+  readAttentionNotchPresentation,
 } from "./attentionNotchLocalSettings";
 
 export { attentionNotchSettingsFromPreferences } from "./attentionNotchLocalSettings";
@@ -27,7 +28,7 @@ const MAX_VISIBLE_PRESENCE_ITEMS = 64;
 
 type AttentionAccountScope = {
   generation: number;
-  ownerId: string;
+  ownerId: string | null;
 };
 
 let attentionAccountGeneration = 0;
@@ -56,9 +57,48 @@ function isCurrentAccountScope(scope: AttentionAccountScope): boolean {
     && scope.ownerId === attentionAccountOwnerId;
 }
 
+function unavailableAttentionSnapshot(error: unknown): {
+  snapshotScope: AttentionSnapshot["scope"];
+  availability: NonNullable<AttentionSnapshot["availability"]>;
+} {
+  const message = errorMessage(error);
+  const signedIn = Boolean(attentionAccountOwnerId);
+  const incompatible = /(?:unsupported|method not found|update .* then restart|needs upgrading)/i
+    .test(message);
+  if (incompatible) {
+    return {
+      snapshotScope: attentionStore.getState().snapshotScope ?? (signedIn ? "account" : "machine"),
+      availability: {
+        state: "incompatible",
+        title: "Update the connected ADE host",
+        message: "This host cannot refresh Attention yet. Update ADE, restart its brain, then retry. Last-known work remains available.",
+        recovery: "update_host",
+      },
+    };
+  }
+  return {
+    snapshotScope: attentionStore.getState().snapshotScope ?? (signedIn ? "account" : "machine"),
+    availability: {
+      state: "degraded",
+      title: signedIn
+        ? "Account Attention is reconnecting"
+        : "This machine’s Attention is unavailable",
+      message: signedIn
+        ? "ADE couldn’t refresh the account stream. Last-known work remains available while you retry."
+        : "ADE couldn’t refresh this machine. Retry to restore live updates.",
+      recovery: "retry",
+    },
+  };
+}
+
 function failClosedAttentionNotchSettings(): AttentionNotchSettings {
+  const presentation = readAttentionNotchPresentation();
   return {
     enabled: readAttentionNotchEnabled(),
+    // Presentation is a layout choice, not a privacy one: keeping the user's
+    // chosen mode here stops a lost account load from re-covering the menu bar.
+    revealMode: presentation.revealMode,
+    expandedPanelEnabled: presentation.expandedPanelEnabled,
     preferredDisplayId: null,
     hideDetails: true,
     celebrationsEnabled: false,
@@ -118,6 +158,7 @@ export async function refreshAttentionSnapshot(): Promise<void> {
     })
     .catch((error) => {
       if (generation !== attentionAccountGeneration) return;
+      attentionStore.setState(unavailableAttentionSnapshot(error));
       attentionStore.getState().setSyncStatus("error", errorMessage(error));
     })
     .finally(() => {
@@ -131,6 +172,15 @@ export function materializeAttentionNotchSnapshot(): AttentionSnapshot {
   const state = attentionStore.getState();
   return {
     contractVersion: ATTENTION_CONTRACT_VERSION,
+    scope: state.snapshotScope ?? (attentionAccountOwnerId ? "account" : "machine"),
+    availability: state.availability ?? {
+      state: attentionAccountOwnerId ? "ready" : "signed_out",
+      title: attentionAccountOwnerId ? "Account Attention" : "This machine only",
+      message: attentionAccountOwnerId
+        ? "Live across your ADE account."
+        : "Sign in to combine Attention across every ADE machine.",
+      recovery: attentionAccountOwnerId ? null : "sign_in",
+    },
     streamId: state.streamId,
     revision: state.revision,
     generatedAt: state.generatedAt ?? new Date().toISOString(),
@@ -143,6 +193,8 @@ export function attentionNotchSnapshotSignature(
   snapshot = materializeAttentionNotchSnapshot(),
 ): string {
   return JSON.stringify([
+    snapshot.scope ?? null,
+    snapshot.availability ?? null,
     snapshot.streamId ?? null,
     snapshot.revision,
     ...[...snapshot.items]
@@ -173,6 +225,7 @@ async function refreshAttentionNotchSettings(
   force = false,
 ): Promise<void> {
   if (!isCurrentAccountScope(scope)) return;
+  if (!scope.ownerId) return;
   if (
     notchSettingsRefreshPromise
     && sameAccountScope(notchSettingsRefreshPromise.scope, scope)
@@ -230,7 +283,7 @@ async function prepareAttentionNotchForAccount(
     return false;
   }
   if (!isCurrentAccountScope(scope)) return false;
-  await refreshAttentionNotchSettings(scope, true);
+  if (scope.ownerId) await refreshAttentionNotchSettings(scope, true);
   return isCurrentAccountScope(scope);
 }
 
@@ -288,13 +341,21 @@ async function reportPresence(
 ): Promise<void> {
   const api = window.ade?.attention;
   if (!api) return;
+  let nativeSurfaceVisible = false;
+  try {
+    const health = await window.ade?.attentionNotch?.getHealth?.();
+    nativeSurfaceVisible = health?.state === "running" && health.surface != null;
+  } catch {
+    // Presence remains useful when the optional native helper cannot report.
+  }
+  const effectiveSurfaceVisible = ambientSurfaceVisible || nativeSurfaceVisible;
   const identity = await resolveDesktopIdentity();
   await api.reportPresence({
     ...identity,
     platform: desktopPlatform(),
     appForeground: foreground,
-    ambientSurfaceVisible,
-    visibleItemIds: ambientSurfaceVisible
+    ambientSurfaceVisible: effectiveSurfaceVisible,
+    visibleItemIds: effectiveSurfaceVisible
       ? visibleItemIds.slice(0, MAX_VISIBLE_PRESENCE_ITEMS)
       : [],
     observedAt: new Date().toISOString(),
@@ -305,17 +366,17 @@ async function reportPresence(
  * Keeps the account-wide Attention snapshot and desktop presence warm even
  * before the user opens the Attention route, so sidebar badges remain truthful.
  */
-export function useAttentionSync(ambientSurfaceVisible: boolean): void {
+export function useAttentionSync(routeSurfaceVisible: boolean): void {
   const { status: accountStatus, loading: accountLoading } = useAccountStatus();
   const accountUserId = accountStatus.signedIn ? accountStatus.userId : null;
   const itemsById = useAttentionStore((state) => state.itemsById);
-  const scope = useAttentionStore((state) => state.scope);
-  const view = useAttentionStore((state) => state.view);
+  const headerSurfaceVisible = useAttentionStore((state) => state.headerSurfaceVisible);
   const visibleItemIds = useMemo(
-    () => selectAttentionItems({ itemsById, scope, view }).map((item) => item.id),
-    [itemsById, scope, view],
+    () => Object.keys(itemsById),
+    [itemsById],
   );
   const visibleItemIdsKey = visibleItemIds.join("\u001f");
+  const ambientSurfaceVisible = routeSurfaceVisible || headerSurfaceVisible;
   const ambientSurfaceVisibleRef = useRef(ambientSurfaceVisible);
   const visibleItemIdsRef = useRef(visibleItemIds);
   const foregroundRef = useRef(
@@ -335,10 +396,6 @@ export function useAttentionSync(ambientSurfaceVisible: boolean): void {
       notchSettingsRefreshPromise = null;
       notchSettingsRefreshed = null;
       attentionStore.getState().resetStream();
-    }
-    if (!accountUserId) {
-      void publishAttentionNotchSnapshot().catch(() => {});
-      return;
     }
     const accountScope = {
       generation: attentionAccountGeneration,
@@ -364,9 +421,13 @@ export function useAttentionSync(ambientSurfaceVisible: boolean): void {
           .finally(publishNotchIfChanged);
       }) ?? (() => {});
     const removeNotchRefreshListener =
-      window.ade?.attentionNotch?.onRefreshRequested?.(() => {
-        if (document.visibilityState === "visible") return;
+      window.ade?.attentionNotch?.onRefreshRequested?.((request) => {
+        if (request?.force !== true && document.visibilityState === "visible") return;
         void refreshAttentionSnapshot();
+      }) ?? (() => {});
+    const removeNotchSettingsListener =
+      window.ade?.attentionNotch?.onSettingsChanged?.((settings) => {
+        persistAttentionNotchSettings(settings);
       }) ?? (() => {});
     void refreshAttentionSnapshot();
     const interval = window.setInterval(() => {
@@ -388,6 +449,7 @@ export function useAttentionSync(ambientSurfaceVisible: boolean): void {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       removeNotchAcknowledgeListener();
       removeNotchRefreshListener();
+      removeNotchSettingsListener();
       unsubscribe();
     };
   }, [accountLoading, accountUserId]);

@@ -852,6 +852,114 @@ final class PairingAndDpopTests: XCTestCase {
     XCTAssertEqual(liveActivityTokenRoute(accountWide: false), .pairedMachine)
   }
 
+  func testAccountWideLiveActivityWaitsForClerkBeforeChoosingPrivacyBoundary() {
+    XCTAssertEqual(
+      accountWideActivityObservationAction(
+        phase: .loading,
+        accountObserversSuspended: false
+      ),
+      .waitForAccount,
+      "A push-to-start wake must survive cached Clerk session restoration"
+    )
+    XCTAssertEqual(
+      accountWideActivityObservationAction(
+        phase: .signedIn,
+        accountObserversSuspended: false
+      ),
+      .observe
+    )
+    for phase in [AccountService.Phase.signedOut, .unconfigured] {
+      XCTAssertEqual(
+        accountWideActivityObservationAction(
+          phase: phase,
+          accountObserversSuspended: false
+        ),
+        .end
+      )
+    }
+    XCTAssertEqual(
+      accountWideActivityObservationAction(
+        phase: .loading,
+        accountObserversSuspended: true
+      ),
+      .end,
+      "An explicit sign-out or account switch remains an immediate privacy boundary"
+    )
+  }
+
+  func testAccountWideLiveActivityRejectsStaleOwnershipEpochs() {
+    let firstOwner = AccountDeviceOwnershipState(
+      ownershipEpoch: 2,
+      ownerId: "user-a"
+    )
+    XCTAssertTrue(
+      accountWideActivityMatchesCurrentOwnership(
+        attributesEpoch: nil,
+        contentEpoch: nil,
+        currentOwnership: firstOwner
+      ),
+      "The first owner remains compatible with a legacy relay during rollout"
+    )
+
+    let switchedOwner = AccountDeviceOwnershipState(
+      ownershipEpoch: 4,
+      ownerId: "user-b"
+    )
+    XCTAssertTrue(
+      accountWideActivityMatchesCurrentOwnership(
+        attributesEpoch: 4,
+        contentEpoch: 4,
+        currentOwnership: switchedOwner
+      )
+    )
+    for epochs in [
+      (attributes: Int?.none, content: Int?.none),
+      (attributes: 2, content: 2),
+      (attributes: 4, content: Int?.none),
+      (attributes: Int?.none, content: 4),
+      (attributes: 4, content: 5),
+    ] {
+      XCTAssertFalse(
+        accountWideActivityMatchesCurrentOwnership(
+          attributesEpoch: epochs.attributes,
+          contentEpoch: epochs.content,
+          currentOwnership: switchedOwner
+        ),
+        "Accepted stale or partially fenced ownership \(String(describing: epochs))"
+      )
+    }
+    XCTAssertFalse(
+      accountWideActivityMatchesCurrentOwnership(
+        attributesEpoch: 4,
+        contentEpoch: 4,
+        currentOwnership: AccountDeviceOwnershipState(
+          ownershipEpoch: 4,
+          ownerId: nil
+        )
+      ),
+      "An unowned installation cannot display account activity"
+    )
+  }
+
+  func testAccountWideLiveActivityKeepsFreshestDuplicateDeterministically() {
+    XCTAssertEqual(
+      preferredAccountWideActivityId([
+        AccountWideActivityCandidate(id: "old", updatedAt: 100),
+        AccountWideActivityCandidate(id: "fresh", updatedAt: 200),
+      ]),
+      "fresh"
+    )
+    XCTAssertEqual(
+      preferredAccountWideActivityId([
+        AccountWideActivityCandidate(id: "activity-a", updatedAt: 200),
+        AccountWideActivityCandidate(id: "activity-b", updatedAt: 200),
+      ]),
+      "activity-b",
+      "Equal timestamps still need one stable target"
+    )
+    XCTAssertNil(preferredAccountWideActivityId([]))
+  }
+
   func testPushToStartRegistrationDoesNotRequireNotificationApnsToken() {
     XCTAssertTrue(
       pushRegistrationRequiredAfterLiveActivityTokenChange(
@@ -939,11 +1047,21 @@ final class PairingAndDpopTests: XCTestCase {
   }
 
   func testAgentRunsActivityRecognizesAccountWideAndLegacyMarkers() {
-    XCTAssertTrue(
-      ADEAgentRunsAttributes(
-        machineName: "Studio Mac",
-        accountWide: true
-      ).isAccountWide
+    let fenced = ADEAgentRunsAttributes(
+      machineName: "Studio Mac",
+      accountWide: true,
+      ownershipEpoch: 7
+    )
+    XCTAssertTrue(fenced.isAccountWide)
+    XCTAssertEqual(fenced.ownershipEpoch, 7)
+    XCTAssertEqual(
+      ADEAgentRunsAttributes.ContentState(
+        updatedAt: 100,
+        activeCount: 1,
+        runs: [],
+        ownershipEpoch: 7
+      ).ownershipEpoch,
+      7
     )
     XCTAssertTrue(
       ADEAgentRunsAttributes(machineName: "All machines").isAccountWide

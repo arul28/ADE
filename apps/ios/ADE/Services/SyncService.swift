@@ -2043,6 +2043,7 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let repoName: String?
   let branch: String?
   let accountMachineKey: String?
+  let attentionItemId: String?
   let itemId: String?
   let eventId: String?
   /// Optional anchors parsed from ADE session deeplinks. The Work view keeps
@@ -2073,6 +2074,7 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     repoName: String? = nil,
     branch: String? = nil,
     accountMachineKey: String? = nil,
+    attentionItemId: String? = nil,
     itemId: String? = nil,
     eventId: String? = nil,
     event: Int? = nil,
@@ -2085,6 +2087,7 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     self.repoName = repoName
     self.branch = branch
     self.accountMachineKey = accountMachineKey
+    self.attentionItemId = attentionItemId
     self.itemId = itemId
     self.eventId = eventId
     self.event = event
@@ -2187,6 +2190,7 @@ struct PrNavigationRequest: Equatable, Identifiable {
   let target: PrNavigationRequestTarget
   let detailTab: PrDetailTab?
   let accountMachineKey: String?
+  let attentionItemId: String?
   let eventId: String?
 
   init(
@@ -2195,12 +2199,14 @@ struct PrNavigationRequest: Equatable, Identifiable {
     laneId: String? = nil,
     detailTab: PrDetailTab? = nil,
     accountMachineKey: String? = nil,
+    attentionItemId: String? = nil,
     eventId: String? = nil
   ) {
     self.id = UUID().uuidString
     self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
     self.detailTab = detailTab
     self.accountMachineKey = accountMachineKey
+    self.attentionItemId = attentionItemId
     self.eventId = eventId
   }
 
@@ -2210,12 +2216,14 @@ struct PrNavigationRequest: Equatable, Identifiable {
     repoName: String? = nil,
     detailTab: PrDetailTab? = nil,
     accountMachineKey: String? = nil,
+    attentionItemId: String? = nil,
     eventId: String? = nil
   ) {
     self.id = UUID().uuidString
     self.target = .githubNumber(prNumber, repoOwner: repoOwner, repoName: repoName)
     self.detailTab = detailTab
     self.accountMachineKey = accountMachineKey
+    self.attentionItemId = attentionItemId
     self.eventId = eventId
   }
 
@@ -2224,6 +2232,7 @@ struct PrNavigationRequest: Equatable, Identifiable {
     self.target = .create(laneId: createLaneId)
     self.detailTab = nil
     self.accountMachineKey = nil
+    self.attentionItemId = nil
     self.eventId = nil
   }
 

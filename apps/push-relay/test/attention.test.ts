@@ -8,10 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   attentionTestInternals,
+  handleAttentionAccountRequest,
   handleAttentionMachinePublish,
+  inspectAttentionAuthConfiguration,
   pruneAttentionState,
   type AttentionRelayEnv,
 } from "../src/attention";
+import { verifyAttentionBearerToken } from "../src/attentionAuth";
 
 type NativeStatement = {
   all: (...values: unknown[]) => Array<Record<string, unknown>>;
@@ -29,6 +32,128 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
   DatabaseSync: new (path: string) => NativeDatabase;
 };
+
+describe("account authentication configuration", () => {
+  const DB = {} as D1Database;
+
+  it("distinguishes missing, partial, and complete Clerk verification bindings", () => {
+    expect(inspectAttentionAuthConfiguration({})).toEqual({
+      configured: false,
+      primaryConfigured: false,
+      secondaryConfigured: false,
+      errors: ["primary_incomplete"],
+    });
+    expect(inspectAttentionAuthConfiguration({
+      CLERK_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+    })).toMatchObject({
+      configured: false,
+      primaryConfigured: false,
+      errors: ["primary_incomplete"],
+    });
+    expect(inspectAttentionAuthConfiguration({
+      CLERK_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+      CLERK_ISSUER: "https://clerk.example",
+      CLERK_OAUTH_CLIENT_ID: "client-prod",
+      CLERK_SECONDARY_JWKS_URL: "https://clerk-dev.example/.well-known/jwks.json",
+      CLERK_SECONDARY_ISSUER: "https://clerk-dev.example",
+      CLERK_SECONDARY_OAUTH_CLIENT_ID: "client-dev",
+    })).toEqual({
+      configured: true,
+      primaryConfigured: true,
+      secondaryConfigured: true,
+      errors: [],
+    });
+  });
+
+  it("reports a relay configuration outage separately from a rejected account token", async () => {
+    const response = await handleAttentionAccountRequest(
+      new Request("https://push.example/attention/account/snapshot", {
+        headers: { authorization: "Bearer expired-token" },
+      }),
+      { DB },
+      new URL("https://push.example/attention/account/snapshot"),
+    );
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({
+      code: "account_auth_unavailable",
+      recovery: expect.stringContaining("service owner"),
+    });
+  });
+
+  it("accepts the secondary issuer only under its own audience policy", async () => {
+    const accepted = await machinePublishAuthorization({
+      audience: "client-dev",
+      azp: "client-dev",
+    });
+    const rejected = await machinePublishAuthorization({
+      audience: "different-client",
+      azp: "different-client",
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === accepted.jwksUrl) return Response.json(accepted.jwks);
+      if (url === rejected.jwksUrl) return Response.json(rejected.jwks);
+      if (url === "https://clerk.example/.well-known/jwks.json") {
+        return Response.json({ keys: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const baseEnv = {
+      CLERK_JWKS_URL: "https://clerk.example/.well-known/jwks.json",
+      CLERK_ISSUER: "https://clerk.example",
+      CLERK_OAUTH_CLIENT_ID: "client-prod",
+    };
+
+    await expect(verifyAttentionBearerToken(
+      new Request("https://push.example/attention/account/snapshot", {
+        headers: { authorization: `Bearer ${accepted.token}` },
+      }),
+      {
+        ...baseEnv,
+        CLERK_SECONDARY_JWKS_URL: accepted.jwksUrl,
+        CLERK_SECONDARY_ISSUER: accepted.issuer,
+        CLERK_SECONDARY_OAUTH_CLIENT_ID: "client-dev",
+      },
+    )).resolves.toBe(accepted.userId);
+
+    await expect(verifyAttentionBearerToken(
+      new Request("https://push.example/attention/account/snapshot", {
+        headers: { authorization: `Bearer ${rejected.token}` },
+      }),
+      {
+        ...baseEnv,
+        CLERK_SECONDARY_JWKS_URL: rejected.jwksUrl,
+        CLERK_SECONDARY_ISSUER: rejected.issuer,
+        CLERK_SECONDARY_OAUTH_CLIENT_ID: "client-dev",
+      },
+    )).resolves.toBeNull();
+  });
+
+  it("reports a Clerk JWKS outage as service unavailable instead of rejecting the user", async () => {
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({ error: "upstream unavailable" }, { status: 503 })
+    ));
+    const response = await handleAttentionAccountRequest(
+      new Request("https://push.example/attention/account/snapshot", {
+        headers: { authorization: `Bearer ${authorization.token}` },
+      }),
+      {
+        DB,
+        CLERK_JWKS_URL: authorization.jwksUrl,
+        CLERK_ISSUER: authorization.issuer,
+        CLERK_OAUTH_CLIENT_ID: "client-prod",
+      },
+      new URL("https://push.example/attention/account/snapshot"),
+    );
+
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({
+      code: "account_auth_unavailable",
+      recovery: expect.stringContaining("Retry"),
+    });
+  });
+});
 
 class SqliteD1Statement {
   private values: unknown[] = [];
@@ -170,7 +295,10 @@ async function attentionAccountId(issuer: string, subject: string): Promise<stri
     byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function machinePublishAuthorization(): Promise<{
+async function machinePublishAuthorization(args?: {
+  audience?: string;
+  azp?: string;
+}): Promise<{
   issuer: string;
   jwksUrl: string;
   token: string;
@@ -183,13 +311,14 @@ async function machinePublishAuthorization(): Promise<{
   const keyId = crypto.randomUUID();
   const { privateKey, publicKey } = await generateKeyPair("RS256");
   const publicJwk = await exportJWK(publicKey);
-  const token = await new SignJWT({})
+  let tokenBuilder = new SignJWT(args?.azp ? { azp: args.azp } : {})
     .setProtectedHeader({ alg: "RS256", kid: keyId })
     .setIssuer(issuer)
     .setSubject(subject)
     .setIssuedAt()
-    .setExpirationTime("5m")
-    .sign(privateKey);
+    .setExpirationTime("5m");
+  if (args?.audience) tokenBuilder = tokenBuilder.setAudience(args.audience);
+  const token = await tokenBuilder.sign(privateKey);
   return {
     issuer,
     jwksUrl,
@@ -352,7 +481,9 @@ function validAgentItem(): Record<string, unknown> {
     ],
     occurredAt: "2026-07-28T08:00:00.000Z",
     updatedAt: "2026-07-28T08:00:05.000Z",
-    expiresAt: "2026-07-29T08:00:05.000Z",
+    // Keep the shared fixture live independent of the wall clock. Tests that
+    // exercise expiry override this field explicitly.
+    expiresAt: "2099-07-29T08:00:05.000Z",
   };
 }
 
@@ -728,6 +859,90 @@ describe("account Attention contract", () => {
       `);
       expect(state?.started).toBe(1);
       expect(String(state?.fingerprint)).not.toMatch(/^pending:/);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("restarts active account work after the device reports no Live Activity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const sendPush = vi.fn(async () =>
+      new Response(null, {
+        status: 200,
+        headers: { "apns-id": "reconciled-start" },
+      })
+    );
+    vi.stubGlobal("fetch", sendPush);
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-reconcile",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_activity_state(
+          user_id, device_id, activity_id, started, fingerprint, updated_at
+        ) values (
+          'account-a', 'phone-reconcile', 'agent-runs', 1,
+          'apns-accepted-without-device-token', '2026-07-28T07:50:00.000Z'
+        )
+      `).run();
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "RETRYKEY12",
+        APNS_TEAM_ID: "RETRYTEAM1",
+      });
+      const request = new Request(
+        "https://push.example/attention/account/devices/phone-reconcile/activities/agent-runs",
+        { method: "DELETE" },
+      );
+
+      const response =
+        await attentionTestInternals.handleAuthorizedAttentionAccountRequest(
+          request,
+          env,
+          new URL(request.url),
+          "account-a",
+        );
+
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toEqual({ ok: true, removed: true });
+      expect(sendPush).toHaveBeenCalledTimes(1);
+      expect(row(database, `
+        select started, fingerprint
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-reconcile'
+          and activity_id = 'agent-runs'
+      `)).toMatchObject({
+        started: 1,
+      });
     } finally {
       database.close();
     }
@@ -1267,6 +1482,70 @@ describe("account Attention contract", () => {
     }
   });
 
+  it("converges out-of-order acknowledgments on the earliest seen and dismissed times", async () => {
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    try {
+      database.native.prepare(`
+        insert into attention_revisions(user_id, revision, updated_at)
+        values ('account-a', 1, '2026-07-28T07:59:00.000Z')
+      `).run();
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, 7, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      for (const timestamp of [
+        "2026-07-28T08:05:00.000Z",
+        "2026-07-28T08:01:00.000Z",
+        "2026-07-28T08:09:00.000Z",
+      ]) {
+        const response = await accountRoute(
+          database,
+          "account-a",
+          "POST",
+          "/attention/account/ack",
+          {
+            itemIds: [parsed.id],
+            seenAt: timestamp,
+            dismissedAt: timestamp,
+          },
+        );
+        expect(response.status).toBe(200);
+      }
+
+      expect(row(database, `
+        select seen_at, dismissed_at
+        from attention_items
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)).toEqual({
+        seen_at: "2026-07-28T08:01:00.000Z",
+        dismissed_at: "2026-07-28T08:01:00.000Z",
+      });
+    } finally {
+      database.close();
+    }
+  });
+
   it("keeps an empty acknowledgment cursor-stable", async () => {
     const database = new SqliteD1Database();
     try {
@@ -1362,7 +1641,7 @@ describe("account Attention contract", () => {
         MACHINE_KEY,
       );
       expect(updated).not.toBeNull();
-      if (!updated) return;
+      if (!updated) throw new Error("setup precondition: updated Attention item must parse");
 
       let duringPublish: SnapshotBody | null = null;
       database.observeNextBatchAfter(0, async () => {
@@ -1525,7 +1804,7 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("retries a due desktop-first alert without duplicating delivered or acknowledged notifications", async () => {
+  it("delays only items visible in Attention, then retries without duplicating delivery", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
     const database = new SqliteD1Database();
@@ -1571,7 +1850,7 @@ describe("account Attention contract", () => {
         insert into attention_presence(user_id, device_id, payload_json, observed_at)
         values (
           'account-a', 'desktop-1',
-          '{"platform":"macOS","appForeground":true}',
+          '{"platform":"macOS","appForeground":true,"ambientSurfaceVisible":false}',
           '2026-07-28T08:00:10.000Z'
         )
       `).run();
@@ -1580,6 +1859,30 @@ describe("account Attention contract", () => {
         APNS_KEY_ID: "TESTKEY123",
         APNS_TEAM_ID: "TESTTEAM12",
       });
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).toHaveBeenCalledTimes(1);
+
+      database.native.prepare(`
+        delete from attention_delivery_receipts
+        where user_id = 'account-a' and item_id = ?
+      `).run(parsed.id);
+      database.native.prepare(`
+        update attention_presence
+        set payload_json = ?
+        where user_id = 'account-a' and device_id = 'desktop-1'
+      `).run(JSON.stringify({
+        platform: "macOS",
+        appForeground: true,
+        ambientSurfaceVisible: true,
+        visibleItemIds: [parsed.id],
+      }));
+      sendPush.mockClear();
 
       await attentionTestInternals.deliverAttentionNotifications(
         env,
@@ -1628,6 +1931,547 @@ describe("account Attention contract", () => {
         sendPush,
       );
       expect(sendPush).toHaveBeenCalledTimes(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("isolates a notification transport exception to the failing device", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const sendPush = vi.fn()
+      .mockRejectedValueOnce(new Error("transient APNs network failure"))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        apnsId: "second-phone",
+        reason: null,
+        tokenInvalid: false,
+      });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+      });
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-2",
+        apnsToken: "cd".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        makeAttentionEnv(database, {
+          APNS_KEY: "test-key",
+          APNS_KEY_ID: "TESTKEY123",
+          APNS_TEAM_ID: "TESTTEAM12",
+        }),
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+
+      expect(sendPush).toHaveBeenCalledTimes(2);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("attention_delivery_error"),
+      );
+      expect(rows(database, `
+        select device_id
+        from attention_delivery_receipts
+        where user_id = 'account-a' and item_id = ?
+      `, parsed.id)).toEqual([{ device_id: "phone-2" }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("claims notification delivery so concurrent heartbeats cannot duplicate an alert", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    let finishPush: (result: {
+      ok: boolean;
+      status: number;
+      apnsId: string;
+      reason: null;
+      tokenInvalid: boolean;
+    }) => void = () => {};
+    const sendPush = vi.fn(() => new Promise<{
+      ok: boolean;
+      status: number;
+      apnsId: string;
+      reason: null;
+      tokenInvalid: boolean;
+    }>((resolve) => {
+      finishPush = resolve;
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        apnsToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: "test-key",
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      const first = attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      await vi.waitFor(() => expect(sendPush).toHaveBeenCalledTimes(1));
+      const concurrent = attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      await concurrent;
+      expect(sendPush).toHaveBeenCalledTimes(1);
+
+      finishPush({
+        ok: true,
+        status: 200,
+        apnsId: "only-alert",
+        reason: null,
+        tokenInvalid: false,
+      });
+      await first;
+      expect(rows(database, `
+        select state
+        from attention_delivery_receipts
+        where user_id = 'account-a' and item_id = ? and device_id = 'phone-1'
+      `, parsed.id)).toEqual([{ state: `alert:${parsed.fingerprint.slice(0, 48)}` }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("continues Live Activity delivery after one device transport throws", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith("ab".repeat(32))) {
+        throw new Error("transient APNs network failure");
+      }
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "second-live-activity" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+      });
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-2",
+        pushToStartToken: "cd".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+
+      await attentionTestInternals.deliverAccountLiveActivity(
+        makeAttentionEnv(database, {
+          APNS_KEY: await generateTestP8(),
+          APNS_KEY_ID: "TESTKEY123",
+          APNS_TEAM_ID: "TESTTEAM12",
+        }),
+        "account-a",
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-1'
+      `)).toBeUndefined();
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-2'
+      `)).toEqual({ started: 1 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("restarts active work after APNs invalidates an existing Live Activity token", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return apnsBodies.length === 1
+        ? Response.json({ reason: "Unregistered" }, { status: 410 })
+        : new Response(null, {
+            status: 200,
+            headers: { "apns-id": "replacement-live-activity" },
+          });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values (
+          'account-a', 'phone-1', 'agent-runs', ?, '2026-07-28T08:00:00.000Z'
+        )
+      `).run("cd".repeat(32));
+      database.native.prepare(`
+        insert into attention_activity_state(
+          user_id, device_id, activity_id, started, fingerprint, updated_at
+        ) values (
+          'account-a', 'phone-1', 'agent-runs', 1,
+          'stale-fingerprint', '2026-07-28T08:00:00.000Z'
+        )
+      `).run();
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-1'
+      `)).toBeUndefined();
+      expect(row(database, `
+        select token
+        from attention_activity_tokens
+        where user_id = 'account-a' and device_id = 'phone-1'
+      `)).toBeUndefined();
+
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies.map((body) =>
+        (body.aps as Record<string, unknown>).event
+      )).toEqual(["update", "start"]);
+      expect(row(database, `
+        select started
+        from attention_activity_state
+        where user_id = 'account-a' and device_id = 'phone-1'
+      `)).toEqual({ started: 1 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("fences every account-wide ActivityKit event to the active device ownership epoch", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": `ownership-${apnsBodies.length}` },
+      });
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+        ownershipEpoch: 101,
+      });
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values (
+          'account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+        )
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies[0]).toMatchObject({
+        aps: {
+          event: "start",
+          attributes: {
+            accountWide: true,
+            ownershipEpoch: 101,
+          },
+          "content-state": {
+            ownershipEpoch: 101,
+          },
+        },
+      });
+
+      database.native.prepare(`
+        insert into attention_activity_tokens(
+          user_id, device_id, activity_id, token, updated_at
+        ) values (
+          'account-a', 'phone-1', 'agent-runs', ?, '2026-07-28T08:01:01.000Z'
+        )
+      `).run("cd".repeat(32));
+      const updated = {
+        ...parsed,
+        fingerprint: "ownership-update",
+        revision: parsed.revision + 1,
+        updatedAt: "2026-07-28T08:01:02.000Z",
+      };
+      database.native.prepare(`
+        update attention_items
+        set source_revision = ?, fingerprint = ?, payload_json = ?, updated_at = ?
+        where user_id = 'account-a' and item_id = ?
+      `).run(
+        updated.revision,
+        updated.fingerprint,
+        JSON.stringify(updated),
+        updated.updatedAt,
+        updated.id,
+      );
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies[1]).toMatchObject({
+        aps: {
+          event: "update",
+          "content-state": {
+            ownershipEpoch: 101,
+          },
+        },
+      });
+
+      database.native.prepare(`
+        update attention_items
+        set seen_at = '2026-07-28T08:01:03.000Z',
+          dismissed_at = '2026-07-28T08:01:03.000Z'
+        where user_id = 'account-a' and item_id = ?
+      `).run(parsed.id);
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies[2]).toMatchObject({
+        aps: {
+          event: "end",
+          "content-state": {
+            ownershipEpoch: 101,
+          },
+        },
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("refuses a stale prior-account device row after ownership transfers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) {
+      database.close();
+      return;
+    }
+    const apnsBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      apnsBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, {
+        status: 200,
+        headers: { "apns-id": "new-owner" },
+      });
+    }));
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "phone-1",
+        pushToStartToken: "ab".repeat(32),
+        ownershipEpoch: 101,
+      });
+      for (const userId of ["account-a", "account-b"]) {
+        database.native.prepare(`
+          insert into attention_items(
+            user_id, item_id, machine_key, source_revision, account_revision,
+            fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+            expires_at, updated_at
+          ) values (
+            ?, ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?
+          )
+        `).run(
+          userId,
+          parsed.id,
+          MACHINE_KEY,
+          parsed.revision,
+          parsed.fingerprint,
+          parsed.eventKind,
+          parsed.phase,
+          JSON.stringify(parsed),
+          parsed.expiresAt,
+          parsed.updatedAt,
+        );
+      }
+      database.native.prepare(`
+        update attention_device_ownership
+        set user_id = 'account-b', ownership_epoch = 202, active = 1
+        where device_id = 'phone-1'
+      `).run();
+      const env = makeAttentionEnv(database, {
+        APNS_KEY: await generateTestP8(),
+        APNS_KEY_ID: "TESTKEY123",
+        APNS_TEAM_ID: "TESTTEAM12",
+      });
+
+      // A delayed account-A delivery sees the stale device row but cannot join
+      // it to account B's newer ownership epoch.
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-a");
+      expect(apnsBodies).toEqual([]);
+
+      database.native.prepare(`
+        update attention_devices
+        set user_id = 'account-b'
+        where user_id = 'account-a' and device_id = 'phone-1'
+      `).run();
+      await attentionTestInternals.deliverAccountLiveActivity(env, "account-b");
+      expect(apnsBodies[0]).toMatchObject({
+        aps: {
+          event: "start",
+          attributes: {
+            ownershipEpoch: 202,
+          },
+          "content-state": {
+            ownershipEpoch: 202,
+          },
+        },
+      });
     } finally {
       database.close();
     }
@@ -1896,7 +2740,7 @@ describe("account Attention contract", () => {
   it("redacts notification titles as well as bodies when previews are hidden", () => {
     const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
     expect(parsed).not.toBeNull();
-    if (!parsed) return;
+    if (!parsed) throw new Error("setup precondition: agent Attention item must parse");
 
     expect(attentionTestInternals.notificationTitle(parsed, false)).toBe(
       "Approve the migration",
@@ -1918,7 +2762,7 @@ describe("account Attention contract", () => {
     const firstRaw = validAgentItem();
     const first = attentionTestInternals.parseAttentionItem(firstRaw, MACHINE_KEY);
     expect(first).not.toBeNull();
-    if (!first) return;
+    if (!first) throw new Error("setup precondition: first Attention item must parse");
 
     const otherMachineKey = "b".repeat(32);
     const otherAccountMachineKey = "d".repeat(32);
@@ -1940,7 +2784,7 @@ describe("account Attention contract", () => {
       otherMachineKey,
     );
     expect(second).not.toBeNull();
-    if (!second) return;
+    if (!second) throw new Error("setup precondition: second Attention item must parse");
 
     const firstDeepLink = attentionTestInternals.deepLinkForItem(first);
     const secondDeepLink = attentionTestInternals.deepLinkForItem(second);
@@ -1984,7 +2828,9 @@ describe("account Attention contract", () => {
       otherMachineKey,
     );
     expect(pullRequest).not.toBeNull();
-    if (!pullRequest) return;
+    if (!pullRequest) {
+      throw new Error("setup precondition: pull request Attention item must parse");
+    }
     expect(attentionTestInternals.activityPullRequest(pullRequest)).toMatchObject({
       prNumber: 42,
       accountMachineKey: otherAccountMachineKey,

@@ -133,6 +133,24 @@ describe("productAnalyticsService", () => {
     const regenerated = harness.messages[1] as { uuid: string };
     expect(regenerated.uuid).not.toBe("11111111-2222-1333-8444-555555555555");
     expect(regenerated.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "attention",
+        action: "header_opened",
+        outcome: "opened",
+        source: "renderer_route",
+        machine_name: "Private MacBook",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[2]?.properties).toMatchObject({
+      feature: "attention",
+      action: "header_opened",
+      outcome: "opened",
+      source: "renderer_route",
+    });
+    expect(harness.messages[2]?.properties).not.toHaveProperty("machine_name");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 

@@ -8,6 +8,7 @@ import {
 import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
+  inspectAttentionAuthConfiguration,
   pruneAttentionState,
 } from "./attention";
 
@@ -44,6 +45,8 @@ export type PushRelayEnv = {
   CLERK_SECONDARY_JWKS_URL?: string;
   CLERK_SECONDARY_ISSUER?: string;
   CLERK_SECONDARY_OAUTH_CLIENT_ID?: string;
+  /** Exact hosted web-client origin allowed to call account Attention routes. */
+  WEB_CLIENT_ORIGIN?: string;
 };
 
 type MachineRow = {
@@ -1246,13 +1249,95 @@ function routeMachine(pathname: string): { machineKey: string; rest: string[] } 
   return null;
 }
 
+function trustedWebClientOrigin(env: PushRelayEnv): string | null {
+  const raw = env.WEB_CLIENT_ORIGIN?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const loopback = url.hostname === "localhost"
+      || url.hostname === "127.0.0.1"
+      || url.hostname === "[::1]";
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
+    if (url.origin !== raw || url.username || url.password || url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function withAccountCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.set("access-control-expose-headers", "Content-Type");
+  headers.set("vary", "Origin");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export async function handleRequest(request: Request, env: PushRelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
-    return json({ ok: true, apnsConfigured: apnsConfig(env) != null });
+    const accountAuth = inspectAttentionAuthConfiguration(env);
+    return json({
+      ok: true,
+      apnsConfigured: apnsConfig(env) != null,
+      accountAuthConfigured: accountAuth.configured,
+      primaryAccountAuthConfigured: accountAuth.primaryConfigured,
+      secondaryAccountAuthConfigured: accountAuth.secondaryConfigured,
+      accountAuthConfigurationErrors: accountAuth.errors,
+    });
+  }
+  const accountAttentionRoute = url.pathname.startsWith("/attention/account/");
+  const requestOrigin = request.headers.get("origin");
+  const configuredWebOrigin = trustedWebClientOrigin(env);
+  const corsOrigin = requestOrigin && configuredWebOrigin === requestOrigin
+    ? requestOrigin
+    : null;
+  const withAllowedAccountCors = (response: Response): Response =>
+    accountAttentionRoute && corsOrigin
+      ? withAccountCors(response, corsOrigin)
+      : response;
+  if (accountAttentionRoute && request.method === "OPTIONS") {
+    if (!corsOrigin) return text("origin not allowed", 403);
+    const requestedMethod = request.headers
+      .get("access-control-request-method")
+      ?.toUpperCase();
+    if (!requestedMethod || !["GET", "POST", "PUT"].includes(requestedMethod)) {
+      return text("method not allowed", 405);
+    }
+    const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
+      .split(",")
+      .map((header) => header.trim().toLowerCase())
+      .filter(Boolean);
+    if (requestedHeaders.some((header) =>
+      header !== "authorization" && header !== "content-type"
+    )) {
+      return text("headers not allowed", 403);
+    }
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": corsOrigin,
+        "access-control-allow-headers": "authorization, content-type",
+        "access-control-expose-headers": "Content-Type",
+        "access-control-allow-methods": `${requestedMethod}, OPTIONS`,
+        "access-control-max-age": "600",
+        vary: "Origin",
+      },
+    });
+  }
+  // Native clients omit Origin. Browser callers must match the configured ADE
+  // Web origin before authentication or D1 work begins.
+  if (accountAttentionRoute && requestOrigin && !corsOrigin) {
+    return text("origin not allowed", 403);
   }
   if (contentLengthExceeds(request.headers, MAX_BODY_BYTES)) {
-    return json({ ok: false, error: "payload too large" }, { status: 413 });
+    return withAllowedAccountCors(
+      json({ ok: false, error: "payload too large" }, { status: 413 }),
+    );
   }
 
   // Spend + abuse gates, cheapest first: (1) if the daily budget is already
@@ -1260,7 +1345,7 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   // cheap read before it can touch the budget counter; (3) otherwise account
   // one request against the global daily budget.
   if (budgetTrippedNow()) {
-    return budgetExceededResponse();
+    return withAllowedAccountCors(budgetExceededResponse());
   }
   // Count EVERY billable request against the daily budget before any gate can
   // reject it: a rejected request still ran the Worker (and a D1 read), so it
@@ -1268,7 +1353,7 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   // unbounded billable 429s the cap never sees.
   const budget = await recordDailyBudget(env);
   if (!budget.allowed) {
-    return budgetExceededResponse();
+    return withAllowedAccountCors(budgetExceededResponse());
   }
   // Per-IP gates apply on every route. On the real Cloudflare edge
   // cf-connecting-ip is always set; when it is absent (local `wrangler dev`,
@@ -1279,11 +1364,13 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
   if (!ipGate.allowed) {
     logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
-    return rateLimitedResponse();
+    return withAllowedAccountCors(rateLimitedResponse());
   }
 
   const attentionAccountResponse = await handleAttentionAccountRequest(request, env, url);
-  if (attentionAccountResponse) return attentionAccountResponse;
+  if (attentionAccountResponse) {
+    return withAllowedAccountCors(attentionAccountResponse);
+  }
 
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);

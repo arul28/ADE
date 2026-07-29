@@ -6,7 +6,11 @@ import type {
   AttentionSnapshot,
   OpenProjectBinding,
 } from "../../../shared/types";
-import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
+import {
+  ATTENTION_CONTRACT_VERSION,
+  DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
+  isAttentionNotchRevealMode,
+} from "../../../shared/types/attention";
 import type { AttentionNotchOutput } from "./attentionNotchHelper";
 
 const MAX_NOTCH_ITEMS = 256;
@@ -258,11 +262,23 @@ export function parseAttentionNotchSettings(input: unknown): AttentionNotchSetti
       input.preferredDisplayId != null
       && (!Number.isSafeInteger(input.preferredDisplayId) || Number(input.preferredDisplayId) < 0)
     )
+    // Presentation keys are optional so a renderer from before they existed
+    // still lands; an invented value is malformed and is rejected like any
+    // other bad field.
+    || (input.revealMode !== undefined && !isAttentionNotchRevealMode(input.revealMode))
+    || (
+      input.expandedPanelEnabled !== undefined
+      && typeof input.expandedPanelEnabled !== "boolean"
+    )
   ) {
     return null;
   }
   return {
     enabled: input.enabled,
+    revealMode: isAttentionNotchRevealMode(input.revealMode)
+      ? input.revealMode
+      : DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
+    expandedPanelEnabled: input.expandedPanelEnabled !== false,
     preferredDisplayId: input.preferredDisplayId == null
       ? null
       : Number(input.preferredDisplayId),

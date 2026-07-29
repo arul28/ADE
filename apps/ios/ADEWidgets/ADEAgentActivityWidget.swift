@@ -136,27 +136,46 @@ struct AgentRunsPresentation {
     let isStale: Bool
     let machineName: String
     let accountWide: Bool
+    let ownershipAccepted: Bool
     let hideDetails: Bool
 
     init(state: ADEAgentRunsAttributes.ContentState, attributes: ADEAgentRunsAttributes, isStale: Bool) {
+        let accountWide = attributes.isAccountWide
+        let ownership = ADESharedContainer.readAccountDeviceOwnershipState()
+        let ownershipAccepted = !accountWide
+            || adeAccountWideActivityMatchesCurrentOwnership(
+                attributesEpoch: attributes.ownershipEpoch,
+                contentEpoch: state.ownershipEpoch,
+                currentEpoch: ownership?.ownershipEpoch,
+                hasCurrentOwner: ownership?.ownerId != nil
+            )
+        let safeState = ownershipAccepted
+            ? state
+            : ADEAgentRunsAttributes.ContentState(
+                updatedAt: state.updatedAt,
+                activeCount: 0,
+                runs: [],
+                prs: [],
+                ownershipEpoch: state.ownershipEpoch
+            )
         // Match the original T3 Code activity hierarchy: user-blocked work,
         // failures, in-flight work, then outcomes. PR attention participates in
         // the same focus decision instead of being hidden behind a running run.
-        let sorted = state.runs.sorted { lhs, rhs in
+        let sorted = safeState.runs.sorted { lhs, rhs in
             Self.priority(lhs.resolvedPhase) < Self.priority(rhs.resolvedPhase)
         }
         self.runs = sorted
-        let sortedPrs = Array(state.prs.sorted { lhs, rhs in
+        let sortedPrs = Array(safeState.prs.sorted { lhs, rhs in
             let l = Self.priority(lhs.resolvedPhase)
             let r = Self.priority(rhs.resolvedPhase)
             if l != r { return l < r }
             return lhs.updatedAt > rhs.updatedAt
         })
         self.prs = sortedPrs
-        let activeCount = max(state.activeCount, state.runs.count)
+        let activeCount = max(safeState.activeCount, safeState.runs.count)
         self.activeCount = activeCount
-        self.waitingCount = state.runs.filter { $0.resolvedPhase.needsAttention }.count
-            + state.prs.filter { $0.resolvedPhase.needsAttention }.count
+        self.waitingCount = safeState.runs.filter { $0.resolvedPhase.needsAttention }.count
+            + safeState.prs.filter { $0.resolvedPhase.needsAttention }.count
 
         let attentionRun = sorted.first(where: { $0.resolvedPhase.needsAttention })
         let attentionPr = sortedPrs.first(where: { $0.resolvedPhase.needsAttention })
@@ -194,11 +213,13 @@ struct AgentRunsPresentation {
         let represented = (primary == nil && primaryPr == nil ? 0 : 1)
             + secondaryRuns.count
             + secondaryPrs.count
-        self.overflowCount = max(0, activeCount + state.prs.count - represented)
-        self.isStale = isStale || state.runs.contains { $0.resolvedPhase == .stale }
-        self.machineName = attributes.machineName
-        self.accountWide = attributes.isAccountWide
-        self.hideDetails = ADESharedContainer.hideAttentionDetails
+        self.overflowCount = max(0, activeCount + safeState.prs.count - represented)
+        self.isStale = ownershipAccepted
+            && (isStale || safeState.runs.contains { $0.resolvedPhase == .stale })
+        self.machineName = ownershipAccepted ? attributes.machineName : "ADE"
+        self.accountWide = accountWide
+        self.ownershipAccepted = ownershipAccepted
+        self.hideDetails = !ownershipAccepted || ADESharedContainer.hideAttentionDetails
     }
 
     /// Tint of the glance — attention amber wins, otherwise the primary run's
@@ -228,6 +249,7 @@ struct AgentRunsPresentation {
     /// Footer only earns its space when there's more than one run or a machine
     /// name worth showing.
     var machineFooter: String? {
+        if !ownershipAccepted { return "ADE" }
         if hideDetails { return "ADE" }
         let trimmed = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -239,6 +261,7 @@ struct AgentRunsPresentation {
 
     var destinationURL: URL {
         let workspace = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+        guard ownershipAccepted else { return workspace }
         let attentionRun = runs.first(where: { $0.resolvedPhase.needsAttention })
         if let url = attentionRun?.deepLinkURL {
             return url
@@ -300,7 +323,11 @@ private struct AgentRunsLockScreenView: View {
             }
 
             if presentation.primary == nil && presentation.primaryPr == nil {
-                Text("No active runs")
+                Text(
+                    presentation.ownershipAccepted
+                        ? "No active runs"
+                        : "Refreshing account activity"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -353,6 +380,9 @@ private struct AgentRunsLockScreenView: View {
     }
 
     private var headline: String {
+        if !presentation.ownershipAccepted {
+            return "Updating ADE"
+        }
         if presentation.waitingCount > 0 {
             return presentation.waitingCount == 1 ? "1 item needs you" : "\(presentation.waitingCount) items need you"
         }

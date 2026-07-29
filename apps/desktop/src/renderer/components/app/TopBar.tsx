@@ -74,6 +74,7 @@ import {
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
+import { HeaderAttentionControl } from "../attention/HeaderAttentionControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -1553,6 +1554,11 @@ export function TopBar({
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
+  // Attention is account-wide, so it never depends on a project being open.
+  const handleOpenAttentionCenter = useCallback(() => {
+    onNavigate?.("/attention");
+  }, [onNavigate]);
+
   // Clicking a project tab while either the personal-chats or account machine
   // route is foreground must leave it, or ProjectTabHost's route replay never
   // surfaces the project. Navigate to the CURRENT binding's stored route so the
@@ -2677,8 +2683,12 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: status · updates · utility cluster */}
+      {/* Trailing controls: attention · status · updates · utility cluster */}
       <div className="flex shrink-0 items-center gap-2">
+        {/* Account-wide Attention — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderAttentionControl onOpenCenter={handleOpenAttentionCenter} />
+
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 

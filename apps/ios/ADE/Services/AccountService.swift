@@ -505,6 +505,9 @@ final class AccountService: ObservableObject {
   var hasPendingAttentionDeviceRevocation: Bool {
     deviceRevocationStore.pending != nil
   }
+  var attentionDeviceOwnership: AccountDeviceOwnershipState {
+    deviceOwnershipStore.state
+  }
 
   /// Stable identity used for every account Attention device endpoint. It
   /// intentionally matches the machine-registration device identity whenever
@@ -1043,6 +1046,15 @@ final class AccountService: ObservableObject {
       // The local seen state remains useful offline. A later snapshot refresh
       // will reconcile shared acknowledgment.
     }
+  }
+
+  func acknowledgeAttentionNavigation(_ itemId: String?) async {
+    guard let itemId = itemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !itemId.isEmpty else {
+      return
+    }
+    await acknowledgeAttentionItems([itemId], dismiss: false)
   }
 
   func updateAttentionPresence(

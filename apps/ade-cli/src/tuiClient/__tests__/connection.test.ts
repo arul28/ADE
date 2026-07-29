@@ -401,6 +401,9 @@ describe("connectToAde embedded mode", () => {
             if (request.method === "ade/actions/list") {
               return { projectId: request.params?.projectId ?? null };
             }
+            if (request.method === "attention.call") {
+              return request.params ?? {};
+            }
             return null;
           })();
           socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
@@ -416,6 +419,14 @@ describe("connectToAde embedded mode", () => {
     try {
       const listed = await connection.request<{ projectId: string }>("ade/actions/list", {});
       expect(listed.projectId).toBe("project-daemon");
+      const attention = await connection.request<Record<string, unknown>>("attention.call", {
+        action: "getSnapshot",
+        args: { since: 0 },
+      });
+      expect(attention).toEqual({
+        action: "getSnapshot",
+        args: { since: 0 },
+      });
     } finally {
       await connection.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -426,6 +437,7 @@ describe("connectToAde embedded mode", () => {
       "ade/initialized",
       "projects.add",
       "ade/actions/list",
+      "attention.call",
     ]);
     expect(requests.find((request) => request.method === "projects.add")?.params)
       .toEqual({
@@ -433,7 +445,9 @@ describe("connectToAde embedded mode", () => {
         catalogVisibility: "system",
         registrationSource: "runtime-auto",
       });
-    expect(requests.at(-1)?.params).toMatchObject({ projectId: "project-daemon" });
+    expect(requests.find((request) => request.method === "ade/actions/list")?.params)
+      .toMatchObject({ projectId: "project-daemon" });
+    expect(requests.at(-1)?.params).not.toHaveProperty("projectId");
   });
 
   it("promotes the project to a recent catalog row for an interactive launch", async () => {

@@ -4832,6 +4832,8 @@ contextBridge.exposeInMainWorld("ade", {
       }),
     acknowledge: async (args: {
       itemIds: string[];
+      sourceRevisions?: Record<string, number>;
+      expectedAccountOwnerId?: string | null;
       seenAt?: string;
       dismissedAt?: string | null;
     }): Promise<void> =>
@@ -4857,6 +4859,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
     updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
+    getHealth: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
+      ipcRenderer.invoke(IPC.attentionNotchGetHealth),
+    retry: async (): Promise<import("../shared/types").AttentionNotchHealth> =>
+      ipcRenderer.invoke(IPC.attentionNotchRetry),
     onAcknowledgeRequested: (
       cb: (request: AttentionNotchAcknowledgeRequest) => void,
     ) => {
@@ -4868,11 +4874,23 @@ contextBridge.exposeInMainWorld("ade", {
       return () =>
         ipcRenderer.removeListener(IPC.attentionNotchAcknowledgeRequested, listener);
     },
-    onRefreshRequested: (cb: () => void) => {
-      const listener = () => cb();
+    onRefreshRequested: (cb: (request?: { force?: boolean }) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request?: { force?: boolean },
+      ) => cb(request);
       ipcRenderer.on(IPC.attentionNotchRefreshRequested, listener);
       return () =>
         ipcRenderer.removeListener(IPC.attentionNotchRefreshRequested, listener);
+    },
+    onSettingsChanged: (cb: (settings: AttentionNotchSettings) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        settings: AttentionNotchSettings,
+      ) => cb(settings);
+      ipcRenderer.on(IPC.attentionNotchSettingsChanged, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.attentionNotchSettingsChanged, listener);
     },
   },
   usage: {

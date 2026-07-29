@@ -131,6 +131,25 @@ export type AttentionTombstone = {
 
 export type AttentionSnapshot = {
   contractVersion: typeof ATTENTION_CONTRACT_VERSION;
+  /** Where this snapshot was sourced. Account is canonical; machine is fallback. */
+  scope?: "account" | "machine";
+  /**
+   * Account identity that owned a machine snapshot when it was generated.
+   * Null is an explicit signed-out machine scope. Machine acknowledgments must
+   * echo this value so an account switch cannot consume stale UI intent.
+   */
+  accountOwnerId?: string | null;
+  /**
+   * Operational state for ambient surfaces. Fixed codes are safe to persist;
+   * concise copy tells the user what remains available and how to recover.
+   */
+  availability?: {
+    state: "ready" | "degraded" | "signed_out" | "unavailable" | "incompatible";
+    title: string;
+    message: string;
+    recovery: "retry" | "sign_in" | "update_host" | "restart_host" | null;
+    hostName?: string | null;
+  };
   /**
    * Opaque authenticated account stream identity. Revisions are monotonic only
    * inside one stream, so clients must reset atomically when this changes.
@@ -178,12 +197,63 @@ export type AttentionPreferences = {
   mutedSessionIds: string[];
 };
 
+/**
+ * How this Mac exposes its notch surface. Events never override the selected
+ * interaction mode.
+ * - `minimal`: keep a tiny status visible; hover or click opens a short peek.
+ * - `hover`: stay visually dormant until the pointer enters the top-edge hot
+ *   zone; hover opens a peek and click may open more.
+ * - `click`: keep the compact status visible; only an explicit click opens more.
+ *
+ * A click always still works, in every mode, so no surface is ever inert.
+ */
+export type AttentionNotchRevealMode = "minimal" | "hover" | "click";
+
+export const ATTENTION_NOTCH_REVEAL_MODES: readonly AttentionNotchRevealMode[] = [
+  "minimal",
+  "hover",
+  "click",
+];
+
+/** Matches the shipped surface, so an upgrade changes nothing on its own. */
+export const DEFAULT_ATTENTION_NOTCH_REVEAL_MODE: AttentionNotchRevealMode = "hover";
+
+export function isAttentionNotchRevealMode(
+  value: unknown,
+): value is AttentionNotchRevealMode {
+  return (
+    typeof value === "string"
+    && ATTENTION_NOTCH_REVEAL_MODES.includes(value as AttentionNotchRevealMode)
+  );
+}
+
 export type AttentionNotchSettings = {
   enabled: boolean;
+  revealMode: AttentionNotchRevealMode;
+  /**
+   * When false the tall expanded panel is never shown, so the surface can
+   * never grow far enough to sit over menu-bar content.
+   */
+  expandedPanelEnabled: boolean;
   preferredDisplayId?: number | null;
   hideDetails: boolean;
   celebrationsEnabled: boolean;
   soundsEnabled: boolean;
+};
+
+export type AttentionNotchHealth = {
+  state:
+    | "disabled"
+    | "starting"
+    | "running"
+    | "missing"
+    | "crash_loop"
+    | "protocol_error"
+    | "unsupported";
+  title: string;
+  message: string;
+  recovery: "retry" | "reinstall_or_update" | null;
+  surface: "physical_notch" | "menu_bar" | null;
 };
 
 export type AttentionNotchAcknowledgeRequest = {
@@ -291,11 +361,21 @@ export function attentionItemIsLive(item: AttentionItem): boolean {
   );
 }
 
-export function attentionDestinationDeepLink(destination: AttentionDestination): string {
+export function attentionDestinationDeepLink(
+  destination: AttentionDestination,
+  ownership?: Pick<AttentionItem, "machine" | "project">,
+): string {
+  const appendOwnership = (query: URLSearchParams): void => {
+    const accountMachineKey = ownership?.machine.accountMachineKey?.trim();
+    if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
+    const projectId = ownership?.project.projectId?.trim();
+    if (projectId) query.set("projectId", projectId);
+  };
   if (destination.kind === "session") {
     const query = new URLSearchParams();
     if (destination.itemId) query.set("item", destination.itemId);
     if (destination.eventId) query.set("event", destination.eventId);
+    appendOwnership(query);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     return `ade://session/${encodeURIComponent(destination.sessionId)}${suffix}`;
   }
@@ -303,6 +383,7 @@ export function attentionDestinationDeepLink(destination: AttentionDestination):
   const query = new URLSearchParams();
   if (destination.tab !== "overview") query.set("tab", destination.tab);
   if (destination.eventId) query.set("event", destination.eventId);
+  appendOwnership(query);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   if (destination.repoOwner && destination.repoName) {
     return `ade://pr/${encodeURIComponent(destination.repoOwner)}/${encodeURIComponent(

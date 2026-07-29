@@ -959,7 +959,7 @@ export function AttentionCenter({ onAction, onOpenItem }: AttentionCenterProps =
       if (onOpenItem) {
         await onOpenItem(item);
       } else {
-        openAdeDeeplink(attentionDestinationDeepLink(item.destination));
+        openAdeDeeplink(attentionDestinationDeepLink(item.destination, item));
       }
     } catch (error) {
       setNavigationFailure({

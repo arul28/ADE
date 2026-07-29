@@ -46,6 +46,15 @@ export type DeeplinkEnvelope = {
   linearIssue?: string;
 };
 
+/**
+ * Exact account ownership for destinations that are only meaningful on the
+ * machine and project that published them (Attention sessions and PR work).
+ */
+export type DeeplinkOwnership = {
+  accountMachineKey: string;
+  projectId: string;
+};
+
 export type DeeplinkLaneTarget = { kind: "lane"; laneId: string; envelope?: DeeplinkEnvelope };
 export type DeeplinkSessionTarget = {
   kind: "session";
@@ -54,6 +63,7 @@ export type DeeplinkSessionTarget = {
   event?: number;
   offset?: number;
   envelope?: DeeplinkEnvelope;
+  ownership?: DeeplinkOwnership;
 };
 export type DeeplinkFileTarget = {
   kind: "file";
@@ -100,11 +110,12 @@ export function parsePrDetailTabParam(raw: string | null | undefined): DeeplinkP
 
 export type DeeplinkPrTarget = {
   kind: "pr";
-  repoOwner: string;
-  repoName: string;
+  repoOwner?: string;
+  repoName?: string;
   prNumber: number;
   /** Detail sub-tab to open on. Omitted → the PRs page picks its own default. */
   detailTab?: DeeplinkPrDetailTab;
+  ownership?: DeeplinkOwnership;
 };
 /**
  * Linear hand-off form: Linear's "Open in coding tool" passes us the issue
@@ -204,6 +215,52 @@ function appendEnvelopeParams(params: URLSearchParams, envelope: DeeplinkEnvelop
   if (envelope.linearIssue) params.set("linear", envelope.linearIssue);
 }
 
+function appendOwnershipParams(
+  params: URLSearchParams,
+  ownership: DeeplinkOwnership | undefined,
+): void {
+  if (!ownership) return;
+  params.set("accountMachineKey", ownership.accountMachineKey);
+  params.set("projectId", ownership.projectId);
+}
+
+function readOwnershipParams(
+  searchParams: URLSearchParams,
+  rawUrl: string,
+):
+  | { ok: true; ownership?: DeeplinkOwnership }
+  | { ok: false; error: ParseError; rawUrl: string } {
+  const accountMachineKey = searchParams.get("accountMachineKey")?.trim() ?? "";
+  const projectId = searchParams.get("projectId")?.trim() ?? "";
+  if (!accountMachineKey && !projectId) return { ok: true };
+  if (!accountMachineKey || !projectId) {
+    return {
+      ok: false,
+      error: {
+        kind: "malformed",
+        reason: "accountMachineKey and projectId must be provided together",
+      },
+      rawUrl,
+    };
+  }
+  if (
+    accountMachineKey.length > 128
+    || projectId.length > 512
+    || !isValidOpaqueId(accountMachineKey)
+    || !isValidOpaqueId(projectId)
+  ) {
+    return {
+      ok: false,
+      error: { kind: "malformed", reason: "invalid destination ownership" },
+      rawUrl,
+    };
+  }
+  return {
+    ok: true,
+    ownership: { accountMachineKey, projectId },
+  };
+}
+
 function readEnvelopeParams(searchParams: URLSearchParams): DeeplinkEnvelope | undefined {
   const envelope: DeeplinkEnvelope = {};
   const repo = searchParams.get("repo");
@@ -291,6 +348,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
+      appendOwnershipParams(params, target.ownership);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -325,7 +383,10 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "pr": {
       const params = new URLSearchParams();
       if (target.detailTab) params.set("tab", target.detailTab);
-      const base = `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`;
+      appendOwnershipParams(params, target.ownership);
+      const base = target.repoOwner && target.repoName
+        ? `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`
+        : `${ADE_DEEPLINK_SCHEME}://pr/${target.prNumber}`;
       const qs = params.toString();
       return qs ? `${base}?${qs}` : base;
     }
@@ -351,6 +412,7 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
+      appendOwnershipParams(params, target.ownership);
       break;
     case "file":
       params.set("type", "file");
@@ -377,9 +439,12 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       break;
     case "pr":
       params.set("type", "pr");
-      params.set("repo", `${target.repoOwner}/${target.repoName}`);
+      if (target.repoOwner && target.repoName) {
+        params.set("repo", `${target.repoOwner}/${target.repoName}`);
+      }
       params.set("number", String(target.prNumber));
       if (target.detailTab) params.set("tab", target.detailTab);
+      appendOwnershipParams(params, target.ownership);
       break;
     case "linear-issue":
       params.set("type", "linear-issue");
@@ -475,6 +540,15 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
   }
 
   if (host === "pr") {
+    if (pathSegments.length === 1) {
+      return buildPrTarget(
+        "",
+        "",
+        pathSegments[0],
+        url.searchParams.get("tab"),
+        rawUrl,
+      );
+    }
     if (pathSegments.length !== 3) {
       return { ok: false, error: { kind: "malformed", reason: "expected pr/<owner>/<repo>/<number>" }, rawUrl };
     }
@@ -530,11 +604,14 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
   if (type === "branch" || type === "pr") {
     const repoCombined = url.searchParams.get("repo") ?? "";
     const slash = repoCombined.indexOf("/");
-    if (slash <= 0 || slash === repoCombined.length - 1) {
+    if (
+      type === "branch"
+      && (slash <= 0 || slash === repoCombined.length - 1)
+    ) {
       return { ok: false, error: { kind: "malformed", reason: "expected repo=owner/name" }, rawUrl };
     }
-    const owner = repoCombined.slice(0, slash);
-    const repo = repoCombined.slice(slash + 1);
+    const owner = slash > 0 ? repoCombined.slice(0, slash) : "";
+    const repo = slash > 0 ? repoCombined.slice(slash + 1) : "";
     if (type === "branch") {
       return buildBranchTarget(owner, repo, url.searchParams.get("branch") ?? "", url.searchParams.get("pr"), rawUrl);
     }
@@ -590,21 +667,38 @@ function buildPrTarget(
   detailTabRaw: string | null,
   rawUrl: string,
 ): ParseResult {
-  if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-  if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
+  const hasRepoIdentity = Boolean(owner || repo);
+  if (hasRepoIdentity && !isValidGhOwner(owner)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+  }
+  if (hasRepoIdentity && !isValidGhRepo(repo)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
+  }
   const number = Number(numberRaw);
   if (!Number.isInteger(number) || number < 1) {
     return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
   }
   const detailTab = parsePrDetailTabParam(detailTabRaw);
+  const ownershipResult = readOwnershipParams(new URL(rawUrl).searchParams, rawUrl);
+  if (!ownershipResult.ok) return ownershipResult;
+  if (!hasRepoIdentity && !ownershipResult.ownership) {
+    return {
+      ok: false,
+      error: {
+        kind: "malformed",
+        reason: "repo identity or exact destination ownership is required",
+      },
+      rawUrl,
+    };
+  }
   return {
     ok: true,
     target: {
       kind: "pr",
-      repoOwner: owner,
-      repoName: repo,
+      ...(hasRepoIdentity ? { repoOwner: owner, repoName: repo } : {}),
       prNumber: number,
       ...(detailTab ? { detailTab } : {}),
+      ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
     },
     rawUrl,
   };
@@ -620,6 +714,8 @@ function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, ra
   const offset = parseNonNegativeIntParam(searchParams.get("offset"));
   if (offset === null) return { ok: false, error: { kind: "malformed", reason: "invalid offset anchor" }, rawUrl };
   const envelope = readEnvelopeParams(searchParams);
+  const ownershipResult = readOwnershipParams(searchParams, rawUrl);
+  if (!ownershipResult.ok) return ownershipResult;
   return {
     ok: true,
     target: {
@@ -629,6 +725,7 @@ function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, ra
       ...(event != null ? { event } : {}),
       ...(offset != null ? { offset } : {}),
       ...(envelope ? { envelope } : {}),
+      ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
     },
     rawUrl,
   };
@@ -724,7 +821,9 @@ export function describeTarget(target: DeeplinkTarget): string {
     case "branch":
       return `${target.repoOwner}/${target.repoName}@${target.branch}`;
     case "pr":
-      return `${target.repoOwner}/${target.repoName}#${target.prNumber}`;
+      return target.repoOwner && target.repoName
+        ? `${target.repoOwner}/${target.repoName}#${target.prNumber}`
+        : `PR #${target.prNumber}`;
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
   }
@@ -749,6 +848,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         envelope: target.envelope ?? null,
         event: target.event ?? null,
         offset: target.offset ?? null,
+        ...(target.ownership ? { ownership: target.ownership } : {}),
       };
     case "file":
       return {
@@ -774,9 +874,10 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
       return {
         kind: "pr",
         prNumber: target.prNumber,
-        repoOwner: target.repoOwner,
-        repoName: target.repoName,
+        ...(target.repoOwner ? { repoOwner: target.repoOwner } : {}),
+        ...(target.repoName ? { repoName: target.repoName } : {}),
         ...(target.detailTab ? { detailTab: target.detailTab } : {}),
+        ...(target.ownership ? { ownership: target.ownership } : {}),
       };
     case "branch":
       return {

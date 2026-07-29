@@ -19,14 +19,9 @@ import { IPC } from "../../../shared/ipc";
 import type {
   AttentionItem,
   AttentionNotchSettings,
-  AttentionPreferences,
-  AttentionPresence,
   AttentionSnapshot,
 } from "../../../shared/types/attention";
-import {
-  ATTENTION_CONTRACT_VERSION,
-  DEFAULT_ATTENTION_PREFERENCES,
-} from "../../../shared/types/attention";
+import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
@@ -110,6 +105,7 @@ import {
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
 } from "../attention/attentionNotchRouter";
+import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -686,6 +682,7 @@ import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
@@ -1594,8 +1591,11 @@ export function registerIpc({
   productAnalyticsService,
   publishAttentionNotchSnapshot,
   updateAttentionNotchSettings,
+  getAttentionNotchHealth,
+  retryAttentionNotch,
   openAttentionItem,
   getCurrentAccountOwnerId,
+  accountAttentionClient,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
@@ -1618,8 +1618,18 @@ export function registerIpc({
   productAnalyticsService?: ProductAnalyticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
+  getAttentionNotchHealth?: () => import("../../../shared/types").AttentionNotchHealth;
+  retryAttentionNotch?: () => import("../../../shared/types").AttentionNotchHealth;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
   getCurrentAccountOwnerId?: () => string | null;
+  accountAttentionClient?: Pick<
+    PushRelayClient,
+    | "getAttentionSnapshot"
+    | "acknowledgeAttention"
+    | "reportAttentionPresence"
+    | "getAttentionPreferences"
+    | "putAttentionPreferences"
+  > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
   // same app launch do not repeat the account choice, while a full ADE relaunch
@@ -1648,47 +1658,21 @@ export function registerIpc({
         connectionPool: projectRecoveryConnectionPool,
       })
     : null;
-  const requireCurrentAttentionAccountOwner = (value: unknown): string => {
-    const accountOwnerId = typeof value === "string" ? value.trim() : "";
-    const currentOwnerId = (
-      getCurrentAccountOwnerId
-        ? getCurrentAccountOwnerId()
-        : (() => {
-            const status = getSharedAccountAuthService().getStatus();
-            return status.signedIn ? status.userId : null;
-          })()
-    )?.trim() || null;
-    if (!accountOwnerId) {
-      throw new Error("A valid Attention account owner is required.");
-    }
-    if (currentOwnerId !== accountOwnerId) {
-      throw new Error("The ADE account changed before Attention preferences could be used.");
-    }
-    return accountOwnerId;
+  const resolveCurrentAttentionAccountOwnerId = (): string | null => {
+    const ownerId = getCurrentAccountOwnerId
+      ? getCurrentAccountOwnerId()
+      : (() => {
+          const status = getSharedAccountAuthService().getStatus();
+          return status.signedIn ? status.userId : null;
+        })();
+    return ownerId?.trim() || null;
   };
-  let loggedAttentionRuntimeCompatibilityFailure = false;
-  const describeAttentionRuntimeCompatibilityFailure = (
-    error: unknown,
-  ): string | null => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (
-      !/method attention\.call failed.*code -32601|method not found|domain ['"]attention['"] is unavailable|action ['"]attention\./i
-        .test(message)
-    ) {
-      return null;
-    }
-    if (!loggedAttentionRuntimeCompatibilityFailure) {
-      loggedAttentionRuntimeCompatibilityFailure = true;
-      getCtx().logger.warn("attention.runtime_incompatible", {
-        reason: message.slice(0, 2_000),
-        recovery: "update_and_restart_ade_brain",
-      });
-    }
-    return (
-      "Account Attention requires a newer connected ADE brain. "
-      + "Update and restart ADE on the host machine so the notch can receive account-wide work."
-    );
-  };
+  const attentionAccountCoordinator = new AttentionAccountCoordinator({
+    getLogger: () => getCtx().logger,
+    localRuntimeConnectionPool,
+    accountAttentionClient,
+    getCurrentAccountOwnerId: resolveCurrentAttentionAccountOwnerId,
+  });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -3229,95 +3213,48 @@ export function registerIpc({
     updateAttentionNotchSettings?.(settings);
   });
 
-  ipcMain.handle(IPC.attentionGetSnapshot, async (_event, input: unknown) => {
-    const record = isRecord(input) ? input : {};
-    const since = Number.isFinite(Number(record.since))
-      ? Math.max(0, Math.trunc(Number(record.since)))
-      : 0;
-    const streamId =
-      typeof record.streamId === "string" && record.streamId.trim()
-        ? record.streamId.trim()
-        : null;
-    if (!localRuntimeConnectionPool) {
-      throw new Error(
-        "Account Attention cannot reach the connected ADE brain. "
-        + "Restart ADE on the host machine, then try again.",
-      );
-    }
-    try {
-      return await localRuntimeConnectionPool.callAttention<AttentionSnapshot>(
-        "getSnapshot",
-        { since, streamId },
-      );
-    } catch (error) {
-      const compatibilityMessage = describeAttentionRuntimeCompatibilityFailure(error);
-      if (compatibilityMessage) throw new Error(compatibilityMessage);
-      throw error;
-    }
-  });
-
-  ipcMain.handle(IPC.attentionAcknowledge, async (_event, input: unknown) => {
-    if (!localRuntimeConnectionPool) {
-      throw new Error("Account Attention is unavailable until the ADE brain is ready.");
-    }
-    const record = isRecord(input) ? input : {};
-    const itemIds = Array.isArray(record.itemIds)
-      ? record.itemIds
-        .filter((value): value is string =>
-          typeof value === "string" && value.trim().length > 0)
-        .map((value) => value.trim())
-        .slice(0, 64)
-      : [];
-    if (itemIds.length === 0) {
-      throw new Error("At least one Attention item id is required.");
-    }
-    await localRuntimeConnectionPool.callAttention<void>("acknowledge", {
-      itemIds,
-      ...(typeof record.seenAt === "string" ? { seenAt: record.seenAt } : {}),
-      ...(record.dismissedAt === null || typeof record.dismissedAt === "string"
-        ? { dismissedAt: record.dismissedAt }
-        : {}),
+  ipcMain.handle(IPC.attentionNotchGetHealth, async () =>
+    getAttentionNotchHealth?.() ?? {
+      state: "unsupported",
+      title: "ADE Notch is unavailable",
+      message: "This ADE build does not include the native ambient surface.",
+      recovery: "reinstall_or_update",
+      surface: null,
     });
-  });
 
-  ipcMain.handle(IPC.attentionReportPresence, async (_event, input: unknown) => {
-    if (!localRuntimeConnectionPool) return;
-    const presence = isRecord(input) ? input : null;
-    if (!presence || typeof presence.deviceId !== "string" || !presence.deviceId.trim()) {
-      throw new Error("A valid Attention presence payload is required.");
-    }
-    await localRuntimeConnectionPool.callAttention<void>(
-      "reportPresence",
-      presence as AttentionPresence & Record<string, unknown>,
-    );
-  });
+  ipcMain.handle(IPC.attentionNotchRetry, async () =>
+    retryAttentionNotch?.() ?? getAttentionNotchHealth?.() ?? {
+      state: "unsupported",
+      title: "ADE Notch is unavailable",
+      message: "This ADE build does not include the native ambient surface.",
+      recovery: "reinstall_or_update",
+      surface: null,
+    });
 
-  ipcMain.handle(IPC.attentionGetPreferences, async (_event, input: unknown) => {
-    if (!localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
-    const record = isRecord(input) ? input : {};
-    const accountOwnerId = requireCurrentAttentionAccountOwner(record.accountOwnerId);
-    return await localRuntimeConnectionPool.callAttention<AttentionPreferences>(
-      "getPreferences",
-      { accountOwnerId },
-    );
-  });
+  ipcMain.handle(
+    IPC.attentionGetSnapshot,
+    async (_event, input: unknown) => attentionAccountCoordinator.getSnapshot(input),
+  );
 
-  ipcMain.handle(IPC.attentionPutPreferences, async (_event, input: unknown) => {
-    if (!localRuntimeConnectionPool) {
-      throw new Error("Account Attention is unavailable until the ADE brain is ready.");
-    }
-    if (!isRecord(input) || !isRecord(input.preferences)) {
-      throw new Error("A valid Attention preferences payload is required.");
-    }
-    const accountOwnerId = requireCurrentAttentionAccountOwner(input.accountOwnerId);
-    await localRuntimeConnectionPool.callAttention<void>(
-      "putPreferences",
-      {
-        accountOwnerId,
-        preferences: input.preferences,
-      },
-    );
-  });
+  ipcMain.handle(
+    IPC.attentionAcknowledge,
+    async (_event, input: unknown) => attentionAccountCoordinator.acknowledge(input),
+  );
+
+  ipcMain.handle(
+    IPC.attentionReportPresence,
+    async (_event, input: unknown) => attentionAccountCoordinator.reportPresence(input),
+  );
+
+  ipcMain.handle(
+    IPC.attentionGetPreferences,
+    async (_event, input: unknown) => attentionAccountCoordinator.getPreferences(input),
+  );
+
+  ipcMain.handle(
+    IPC.attentionPutPreferences,
+    async (_event, input: unknown) => attentionAccountCoordinator.putPreferences(input),
+  );
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot({
