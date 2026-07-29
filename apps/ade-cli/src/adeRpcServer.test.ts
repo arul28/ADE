@@ -1360,6 +1360,28 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("sorts the scoped proof union before applying its limit", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-1", laneId: "lane-1" } as any);
+    const older = { id: "older", createdAt: "2026-07-29T01:00:00.000Z" };
+    const newer = { id: "newer", createdAt: "2026-07-29T02:00:00.000Z" };
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts.mockImplementation((args: any) => {
+      if (args.ownerKind === "chat_session") return [older];
+      if (args.ownerKind === "lane") return [newer];
+      return [];
+    });
+    await initialize(handler, {
+      callerId: "chat-1",
+      role: "agent",
+      chatSessionId: "chat-1",
+    });
+
+    const listed = await callTool(handler, "list_computer_use_artifacts", { limit: 1 });
+
+    expect(listed.structuredContent.artifacts).toEqual([newer]);
+  });
+
   it("caps a session-bound CTO caller and scopes lifecycle actions to its own session", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
       const { runtime } = createRuntime();
@@ -1950,6 +1972,32 @@ describe("adeRpcServer", () => {
       expect(response.isError).toBe(true);
     }
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+  });
+
+  it("allows absolute proof paths outside managed worktrees to reach the broker allow-list", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    fixture.runtime.sessionService.get.mockReturnValue({ id: "chat-session-1", laneId: "lane-1" } as any);
+    await initialize(handler, {
+      callerId: "chat-session-1",
+      role: "agent",
+      chatSessionId: "chat-session-1",
+    });
+
+    const externalPath = path.join(os.tmpdir(), "ade-proof-external.png");
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "external_cli",
+      backendName: "agent-browser",
+      inputs: [{ kind: "screenshot", title: "External proof", path: externalPath }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputs: [expect.objectContaining({ path: externalPath })],
+      }),
+    );
   });
 
 

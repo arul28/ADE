@@ -2102,6 +2102,15 @@ function canonicalAuthorizationPath(candidate: string): string {
   }
 }
 
+function isPathWithinAuthorizedRoot(root: string, candidate: string): boolean {
+  try {
+    resolvePathWithinRoot(root, candidate, { allowMissing: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -4519,12 +4528,15 @@ async function runTool(args: {
           return uri && !/^https?:\/\//i.test(uri) ? uri : null;
         })();
       if (!localPath || !path.isAbsolute(localPath)) continue;
-      try {
-        resolvePathWithinRoot(authorized.root, localPath, { allowMissing: true });
-      } catch {
+      if (isPathWithinAuthorizedRoot(authorized.root, localPath)) continue;
+      // Absolute proof paths may also come from broker-approved external
+      // roots such as the OS temp directory or ~/.agent-browser. Preserve the
+      // lane boundary here, then let the broker enforce its full jailed
+      // allow-list and extension policy.
+      if (isPathWithinAuthorizedRoot(runtime.paths.worktreesDir, localPath)) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          "Artifact paths must stay inside the server-authorized lane worktree",
+          "Artifact paths from another lane worktree are not authorized for this caller",
         );
       }
     }
@@ -4585,7 +4597,11 @@ async function runTool(args: {
           artifacts.set(artifact.id, artifact);
         }
       }
-      return { artifacts: [...artifacts.values()].slice(0, limit) };
+      return {
+        artifacts: [...artifacts.values()]
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+          .slice(0, limit),
+      };
     }
     return {
       artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
