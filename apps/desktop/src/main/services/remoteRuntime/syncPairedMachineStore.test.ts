@@ -317,6 +317,38 @@ describe("DesktopPairedMachineStore", () => {
     expect(new DesktopPairedMachineStore().get("mac-studio-host"))
       .toEqual(marked);
 
+    const firstFailure = store.markEndpointFailed(
+      "mac-studio-host",
+      "wss://relay.example/connect/machine-123",
+      1_700_000_000_100,
+    );
+    expect(firstFailure.endpointStates).toContainEqual({
+      endpoint: "wss://relay.example/connect/machine-123",
+      lastSucceededAt: 1_700_000_000_000,
+      lastFailedAt: 1_700_000_000_100,
+      consecutiveFailures: 1,
+    });
+    const secondFailure = store.markEndpointFailed(
+      "mac-studio-host",
+      "wss://relay.example/connect/machine-123",
+      1_700_000_000_200,
+    );
+    expect(secondFailure.endpointStates).toContainEqual({
+      endpoint: "wss://relay.example/connect/machine-123",
+      lastSucceededAt: 1_700_000_000_000,
+      lastFailedAt: 1_700_000_000_200,
+      consecutiveFailures: 2,
+    });
+    const recovered = store.markEndpointSucceeded(
+      "mac-studio-host",
+      "wss://relay.example/connect/machine-123",
+      1_700_000_000_300,
+    );
+    expect(recovered.endpointStates).toContainEqual({
+      endpoint: "wss://relay.example/connect/machine-123",
+      lastSucceededAt: 1_700_000_000_300,
+    });
+
     const discovered = store.markEndpointsDiscovered(
       "mac-studio-host",
       ["ws://studio.local:8805"],

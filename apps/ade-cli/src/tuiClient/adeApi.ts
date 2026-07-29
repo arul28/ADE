@@ -86,11 +86,42 @@ export { buildPtyContinuationLaunchFields };
 
 export async function listLanes(
   connection: AdeCodeConnection,
-  options: { includeArchived?: boolean } = {},
+  options: { includeArchived?: boolean; includeStatus?: boolean } = {},
 ): Promise<LaneSummary[]> {
   return await connection.action<LaneSummary[]>("lane", "list", {
     includeArchived: options.includeArchived ?? false,
+    includeStatus: options.includeStatus ?? true,
+  });
+}
+
+export async function getLaneSummary(
+  connection: AdeCodeConnection,
+  laneId: string,
+): Promise<LaneSummary | null> {
+  return await connection.action<LaneSummary | null>("lane", "getSummary", {
+    laneId,
     includeStatus: true,
+  });
+}
+
+export function mergeLaneStatusSnapshots(
+  lanes: LaneSummary[],
+  cachedLanes: LaneSummary[],
+  refreshedLane: LaneSummary | null = null,
+): LaneSummary[] {
+  const cachedById = new Map(cachedLanes.map((lane) => [lane.id, lane]));
+  return lanes.map((lane) => {
+    const statusSource = refreshedLane?.id === lane.id
+      ? refreshedLane
+      : cachedById.get(lane.id);
+    if (!statusSource) return lane;
+    return {
+      ...lane,
+      status: statusSource.status,
+      parentStatus: statusSource.parentStatus,
+      worktreeAvailable: statusSource.worktreeAvailable,
+      branchDrift: statusSource.branchDrift,
+    };
   });
 }
 

@@ -71,6 +71,7 @@ import {
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
+  getLaneSummary,
   getMainTranscript,
   getContextUsage,
   getModelCatalog,
@@ -98,6 +99,7 @@ import {
   listPrsByLane,
   listSessionSummaries,
   messageChatSession,
+  mergeLaneStatusSnapshots,
   navigateDesktop,
   newestSession,
   normalizeChatTerminalSession,
@@ -1086,7 +1088,10 @@ type AdeCodeAppProps = {
 
 type RefreshStateOptions = {
   hydrateHistory?: boolean;
+  includeLaneStatus?: boolean;
 };
+
+export const LANE_STATUS_REFRESH_MS = 30_000;
 
 export function shouldHydrateRefreshHistory(args: {
   hydrateHistory?: boolean;
@@ -3097,6 +3102,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // the reconnect probe below and a one-shot "reconnecting…" notice.
   const [connectionLost, setConnectionLost] = useState(false);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
+  const lanesRef = useRef<LaneSummary[]>([]);
   const [prByLaneId, setPrByLaneId] = useState<Record<string, DrawerPrSummary>>({});
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -7352,12 +7358,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     refreshGenerationRef.current = generation;
     const isCurrentRefresh = () =>
       refreshGenerationRef.current === generation && connectionRef.current === conn;
-    const [nextLanes, listedSessions, listedTerminalSessions, sessionSummaries] = await Promise.all([
-      listLanes(conn),
+    const includeLaneStatus = options.includeLaneStatus !== false;
+    const activeLaneStatusPromise = includeLaneStatus || !activeLaneIdRef.current
+      ? Promise.resolve(null)
+      : getLaneSummary(conn, activeLaneIdRef.current).catch(() => null);
+    const [listedLanes, activeLaneStatus, listedSessions, listedTerminalSessions, sessionSummaries] = await Promise.all([
+      listLanes(conn, { includeStatus: includeLaneStatus }),
+      activeLaneStatusPromise,
       listChatSessions(conn),
       listTerminalSessions(conn).catch(() => []),
       listSessionSummaries(conn).catch(() => []),
     ]);
+    const nextLanes = includeLaneStatus
+      ? listedLanes
+      : mergeLaneStatusSnapshots(listedLanes, lanesRef.current, activeLaneStatus);
     const nextSessions = mergeOptimisticChatSessions(
       enrichChatSessionsWithLifecycle(listedSessions, sessionSummaries),
       optimisticChatSessionsRef.current,
@@ -7505,6 +7519,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const activeModel = nextModels.find((model) => model.modelId === configSession?.modelId || model.id === configSession?.modelId)
       ?? nextModels.find((model) => model.isDefault)
       ?? null;
+    lanesRef.current = nextLanes;
     setLanes(nextLanes);
     sessionsRef.current = nextSessions;
     setSessions(nextSessions);
@@ -8384,12 +8399,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!connection) return;
     const intervalMs = chatRefreshPollActive ? 1_000 : 15_000;
     const timer = setInterval(() => {
-      void refreshState({ hydrateHistory: false }).catch((err) => {
+      void refreshState({ hydrateHistory: false, includeLaneStatus: false }).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
     }, intervalMs);
     return () => clearInterval(timer);
   }, [chatRefreshPollActive, connection, refreshState]);
+
+  useEffect(() => {
+    if (!connection) return;
+    const timer = setInterval(() => {
+      void refreshState({ hydrateHistory: false, includeLaneStatus: true }).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    }, LANE_STATUS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [connection, refreshState]);
 
   useEffect(() => {
     if (!connection) {

@@ -70,6 +70,46 @@ describe("paired runtime endpoint routes", () => {
     ]);
   });
 
+  it("demotes a route after two recent failures, keeps it eligible, and expires the demotion", () => {
+    const endpoints = [
+      "ws://studio.local:8787",
+      "ws://studio.example.ts.net:8787",
+      "wss://relay.example/connect/machine",
+    ];
+    const endpointStates = [{
+      endpoint: "ws://studio.local:8787",
+      lastSucceededAt: 900,
+      lastFailedAt: 1_000,
+      consecutiveFailures: 2,
+    }];
+
+    const demoted = buildPairedEndpointCandidates({
+      endpoints,
+      relayUrl: endpoints[2],
+      endpointStates,
+      nowMs: 1_001,
+    });
+    expect(orderPairedCandidates(demoted).map((candidate) => candidate.endpoint))
+      .toEqual([
+        "ws://studio.example.ts.net:8787/",
+        "wss://relay.example/connect/machine",
+        "ws://studio.local:8787/",
+      ]);
+
+    const expired = buildPairedEndpointCandidates({
+      endpoints,
+      relayUrl: endpoints[2],
+      endpointStates,
+      nowMs: 121_001,
+    });
+    expect(orderPairedCandidates(expired).map((candidate) => candidate.endpoint))
+      .toEqual([
+        "ws://studio.local:8787/",
+        "ws://studio.example.ts.net:8787/",
+        "wss://relay.example/connect/machine",
+      ]);
+  });
+
   it("classifies normalized CGNAT and ts.net hostnames as tailnet", () => {
     expect(classifyPairedRuntimeEndpoint("ws://100.127.255.254:8787")).toBe(
       "tailnet",

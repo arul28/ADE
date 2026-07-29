@@ -322,6 +322,7 @@ describe("bootstrapPairedRuntime", () => {
         pairedStore: {
           getForReference: vi.fn(() => routedCredentials),
           save: vi.fn(),
+          markEndpointFailed: vi.fn(),
           markEndpointSucceeded: vi.fn(),
         } as any,
         appVersion: "1.0.0",

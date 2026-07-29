@@ -16,6 +16,15 @@ function createLaneServiceStub(rootPath: string) {
   } as any;
 }
 
+function removeTestTree(rootPath: string): void {
+  fs.rmSync(rootPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
+}
+
 describe("fileService", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -47,7 +56,7 @@ describe("fileService", () => {
       ).rejects.toThrow(permissionError);
     } finally {
       spy.mockRestore();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -76,7 +85,7 @@ describe("fileService", () => {
       });
       expect(result.dataUrl).toBeUndefined();
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -123,7 +132,7 @@ describe("fileService", () => {
       });
       expect(image.dataUrl).toBeUndefined();
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -163,7 +172,7 @@ describe("fileService", () => {
       expect(Buffer.byteLength(assembled, "utf8")).toBe(totalBytes);
       expect(assembled).toBe(body);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -199,7 +208,7 @@ describe("fileService", () => {
 
       expect(Buffer.concat(chunks)).toEqual(pdfBytes);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -234,7 +243,7 @@ describe("fileService", () => {
         expect(Buffer.concat(chunks)).toEqual(bytes);
       }
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -267,7 +276,7 @@ describe("fileService", () => {
 
       expect(Buffer.concat(chunks)).toEqual(bytes);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -318,8 +327,8 @@ describe("fileService", () => {
       expect(directoryOpen.workspace.id).toBe(fileOpen.workspace.id);
       expect(service.listWorkspaces().some((workspace) => workspace.id === fileOpen.workspace.id)).toBe(true);
     } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-      fs.rmSync(externalRoot, { recursive: true, force: true });
+      removeTestTree(projectRoot);
+      removeTestTree(externalRoot);
     }
   });
 
@@ -345,7 +354,7 @@ describe("fileService", () => {
       expect(blame.lines[0].sha).toMatch(/^[0-9a-f]{40}$/);
       expect(blame.lines[0].authorTime).toBeGreaterThan(0);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -374,7 +383,7 @@ describe("fileService", () => {
       });
       expect(result.dataUrl).toBeUndefined();
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -417,7 +426,7 @@ describe("fileService", () => {
       expect(searchDefault).toEqual([]);
       expect(searchIgnored.map((item) => item.path)).toContain(".ade/notes/project.md");
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -462,7 +471,7 @@ describe("fileService", () => {
       expect(notes.map((item) => item.path)).toEqual([".ade/notes/project.md"]);
       expect(adeChildren.map((node) => node.path)).toEqual([".ade/notes"]);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -493,7 +502,7 @@ describe("fileService", () => {
       expect(quickOpen).toEqual([]);
       expect(search.map((item) => item.path)).toEqual(["src/index.ts"]);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -525,7 +534,7 @@ describe("fileService", () => {
         readdirSync.mockRestore();
       }
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -543,7 +552,7 @@ describe("fileService", () => {
       await expect(service.warmQuickOpenIndex({ workspaceId: "missing" })).resolves.toBeUndefined();
       expect(laneService.resolveWorkspaceById).toHaveBeenCalledWith("missing");
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -599,7 +608,7 @@ describe("fileService", () => {
       );
       expect(nestedNodes[0]).not.toHaveProperty("size");
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -627,7 +636,7 @@ describe("fileService", () => {
       expect(rootNodes.find((node) => node.path === "package-renamed.json")?.changeStatus).toBe("renamed");
       expect(rootNodes.find((node) => node.path === "scratch.ts")?.changeStatus).toBe("untracked");
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -676,7 +685,7 @@ describe("fileService", () => {
       const collected = [...page1.children, ...page2.children, ...page3.children].map((node) => node.path);
       expect(collected).toEqual(names.map((name) => `data/${name}`));
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -712,7 +721,7 @@ describe("fileService", () => {
         }
       }
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -731,7 +740,7 @@ describe("fileService", () => {
       ).toThrow(/\.git/i);
       expect(fs.existsSync(path.join(path.dirname(rootPath), "outside.txt"))).toBe(false);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -756,7 +765,7 @@ describe("fileService", () => {
       ]);
       expect(page.nextOffset).toBeNull();
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -788,7 +797,7 @@ describe("fileService", () => {
       expect(dirPaths).toContain("src/nested");
       expect(event.directories.every((entry) => entry.changeStatus === "modified")).toBe(true);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -813,7 +822,7 @@ describe("fileService", () => {
       expect(event.files).toEqual([]);
       expect(event.directories).toEqual([]);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -864,7 +873,7 @@ describe("fileService", () => {
       ]);
       expect(workspaces.every((workspace) => workspace.mobileReadOnly === true)).toBe(true);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -909,7 +918,7 @@ describe("fileService", () => {
       fs.mkdirSync(laneRoot, { recursive: true });
       expect(service.listWorkspaces().map((workspace) => workspace.id)).toEqual(["primary", "lane-existing"]);
     } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 });
@@ -978,7 +987,7 @@ describe("fileSearchIndexService", () => {
       expect(cached).toHaveLength(10);
     } finally {
       service.dispose();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -1007,7 +1016,7 @@ describe("fileSearchIndexService", () => {
       expect(readFileSync).not.toHaveBeenCalled();
     } finally {
       service.dispose();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -1058,7 +1067,7 @@ describe("fileSearchIndexService", () => {
       expect(readFileSync).not.toHaveBeenCalled();
     } finally {
       service.dispose();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -1133,7 +1142,7 @@ describe("fileSearchIndexService", () => {
       expect(afterDelete.map((item) => item.path)).toEqual(["alpha-two.ts"]);
     } finally {
       service.dispose();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 
@@ -1189,7 +1198,7 @@ describe("fileSearchIndexService", () => {
       })).resolves.toEqual([]);
     } finally {
       service.dispose();
-      fs.rmSync(rootPath, { recursive: true, force: true });
+      removeTestTree(rootPath);
     }
   });
 });

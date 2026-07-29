@@ -89,9 +89,9 @@ describe("ade code remote launcher", () => {
 
   it("filters explicit paths without changing automatic LAN-first ordering", () => {
     const candidates = [
-      { endpoint: "ws://studio.local:8787/", kind: "lan" as const, lastSucceededAt: null },
-      { endpoint: "ws://studio.example.ts.net:8787/", kind: "tailnet" as const, lastSucceededAt: null },
-      { endpoint: "wss://relay.example/connect/machine", kind: "relay" as const, lastSucceededAt: null },
+      { endpoint: "ws://studio.local:8787/", kind: "lan" as const, lastSucceededAt: null, recentlyFailing: false },
+      { endpoint: "ws://studio.example.ts.net:8787/", kind: "tailnet" as const, lastSucceededAt: null, recentlyFailing: false },
+      { endpoint: "wss://relay.example/connect/machine", kind: "relay" as const, lastSucceededAt: null, recentlyFailing: false },
     ];
 
     expect(pairedEndpointCandidatesForPreference(candidates, "auto")).toEqual(candidates);

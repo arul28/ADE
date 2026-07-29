@@ -91,6 +91,32 @@ struct AccountDeviceOwnershipState: Codable, Equatable {
   let ownerId: String?
 }
 
+struct AccountAttentionPresenceState: Equatable {
+  private(set) var appForeground = true
+  private(set) var centerVisible = false
+  private(set) var visibleItemIds: [String] = []
+
+  mutating func updateAppForeground(_ foreground: Bool) {
+    appForeground = foreground
+  }
+
+  mutating func updateSurface(
+    centerVisible: Bool,
+    visibleItemIds: [String]
+  ) {
+    self.centerVisible = centerVisible
+    self.visibleItemIds = Array(visibleItemIds.prefix(64))
+  }
+
+  var reportedCenterVisible: Bool {
+    appForeground && centerVisible
+  }
+
+  var reportedVisibleItemIds: [String] {
+    appForeground ? visibleItemIds : []
+  }
+}
+
 struct AccountDeviceOwnershipStore {
   private let defaults: UserDefaults
   private let key: String
@@ -494,6 +520,7 @@ final class AccountService: ObservableObject {
   private var lastRelayCredential: (ownerId: String, token: String)?
   private var attentionRefreshTask: Task<Void, Never>?
   private var attentionRefreshId: UUID?
+  private var attentionPresenceState = AccountAttentionPresenceState()
   private var isEndingAccountOwnership = false
   private let accountRegistrationQueue =
     LatestAccountRegistrationQueue<AccountAttentionDeviceRegistrationRequest>()
@@ -1067,6 +1094,21 @@ final class AccountService: ObservableObject {
     centerVisible: Bool,
     visibleItemIds: [String]
   ) async {
+    attentionPresenceState.updateSurface(
+      centerVisible: centerVisible,
+      visibleItemIds: visibleItemIds
+    )
+    await postAttentionPresence(attentionPresenceState)
+  }
+
+  func updateAttentionAppForeground(_ foreground: Bool) async {
+    attentionPresenceState.updateAppForeground(foreground)
+    await postAttentionPresence(attentionPresenceState)
+  }
+
+  private func postAttentionPresence(
+    _ presence: AccountAttentionPresenceState
+  ) async {
     guard isSignedIn,
           let requestedOwnerId = identity?.userId,
           let baseURL = AccountConfig.attentionRelayBaseURL,
@@ -1080,9 +1122,9 @@ final class AccountService: ObservableObject {
       token: initialSession.token,
       deviceId: attentionDeviceId,
       deviceName: UIDevice.current.name,
-      foreground: true,
-      attentionVisible: centerVisible,
-      visibleItemIds: visibleItemIds,
+      foreground: presence.appForeground,
+      attentionVisible: presence.reportedCenterVisible,
+      visibleItemIds: presence.reportedVisibleItemIds,
       refreshToken: { [weak self] in
         guard let self,
               self.isPairingCommitAuthorized(initialSession.authorization) else {

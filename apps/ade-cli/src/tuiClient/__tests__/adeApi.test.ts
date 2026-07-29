@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, interruptChat, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, restoreCancelledQueue, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, clearSessionWokeMarker, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, interruptChat, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, mergeLaneStatusSnapshots, messageChatSession, recoverCodexTurn, recoverTurn, requestSessionAttention, resolveUnprocessedMessage, restoreCancelledQueue, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionSettleOverride, setSessionStatusNote, settleSession, signalTerminal, snoozeSession, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession, wakeSession } from "../adeApi";
 import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
+import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -33,6 +34,43 @@ function envelope(
     event,
   };
 }
+
+function laneSummary(id: string, dirty: boolean): LaneSummary {
+  return {
+    id,
+    name: id,
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: id,
+    worktreePath: `/repo/${id}`,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: { dirty, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+describe("lane status polling", () => {
+  it("keeps cached statuses while applying the focused lane refresh", () => {
+    const cheapLanes = [laneSummary("lane-1", false), laneSummary("lane-2", false), laneSummary("lane-3", false)];
+    const cachedLanes = [laneSummary("lane-1", true), laneSummary("lane-2", true)];
+    const focusedLane = {
+      ...laneSummary("lane-1", false),
+      worktreeAvailable: true,
+    };
+
+    const merged = mergeLaneStatusSnapshots(cheapLanes, cachedLanes, focusedLane);
+
+    expect(merged.map((lane) => lane.status.dirty)).toEqual([false, true, false]);
+    expect(merged[0]?.worktreeAvailable).toBe(true);
+  });
+});
 
 describe("listLaneDiffStats", () => {
   it("calls the bulk diff stats ADE action with lane ids", async () => {
