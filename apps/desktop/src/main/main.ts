@@ -45,6 +45,7 @@ import {
   defaultProductAnalyticsStateFile,
   getSharedProductAnalyticsService,
 } from "./services/analytics/productAnalyticsService";
+import { detectInstallSource } from "./services/analytics/installSource";
 import { captureAgentTurnSettledAnalytics } from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
@@ -1421,6 +1422,18 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
     }));
+  productAnalyticsService.captureInternal({
+    event: "ade_app_installed",
+    surface: "desktop",
+    properties: {
+      install_source: detectInstallSource({
+        isPackaged: app.isPackaged,
+        execPath: process.execPath,
+        resourcesPath: process.resourcesPath,
+        configuredSource: process.env.ADE_INSTALL_SOURCE,
+      }),
+    },
+  });
   productAnalyticsService.capture({
     event: "ade_app_opened",
     surface: "desktop",

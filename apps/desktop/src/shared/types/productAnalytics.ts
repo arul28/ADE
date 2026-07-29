@@ -1,7 +1,9 @@
 import type { AdeUsageClientSurface } from "./usage";
 
 export const PRODUCT_ANALYTICS_EVENTS = [
+  "ade_app_installed",
   "ade_app_opened",
+  "ade_activated",
   "ade_screen_viewed",
   "ade_project_opened",
   "ade_feature_used",
@@ -15,6 +17,7 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_update_install_did_not_land",
   "ade_update_auto_applied",
   "ade_update_auto_apply_cancelled",
+  "ade_update_prompted",
   "ade_brain_recovered",
   "ade_publish_failing",
 ] as const;

@@ -190,6 +190,7 @@ jobs:
   test-desktop:
     needs: install
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

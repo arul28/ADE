@@ -1,5 +1,9 @@
 import { LINKS } from "../../lib/links";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import {
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
+  MARKETING_FEATURES,
+} from "../../lib/marketingAnalytics";
 import { ArrowUpRight, BookOpen, Download, Github, Smartphone } from "lucide-react";
 
 /**
@@ -54,6 +58,8 @@ export function Masthead() {
           <a
             href={LINKS.testflight}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-[2px] border border-[color:var(--color-violet-bright)] bg-[color:var(--color-violet-bright)]/10 px-3 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-violet-bright)] transition-all duration-200 hover:-translate-y-px hover:bg-[color:var(--color-violet-bright)]/20"
@@ -63,6 +69,8 @@ export function Masthead() {
           <a
             href={LINKS.releasesLatest}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-[2px] border border-[color:var(--color-violet-bright)] bg-[color:var(--color-violet-bright)]/10 px-3 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-violet-bright)] transition-all duration-200 hover:-translate-y-px hover:bg-[color:var(--color-violet-bright)]/20"
@@ -72,6 +80,8 @@ export function Masthead() {
           <a
             href={LINKS.webClient}
             data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+            data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
+            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-[2px] bg-[color:var(--color-violet-bright)] px-3.5 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-px hover:bg-[color:var(--color-violet-bright)]/85"

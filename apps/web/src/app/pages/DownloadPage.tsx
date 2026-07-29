@@ -11,7 +11,12 @@ import { SectionHeading } from "../../components/SectionHeading";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import {
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
+  MARKETING_FEATURES,
+  type MarketingFeature,
+} from "../../lib/marketingAnalytics";
 
 type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
 
@@ -25,6 +30,12 @@ function detectPlatform(): PlatformHint {
   if (ua.includes("windows")) return "windows";
   if (ua.includes("linux")) return "linux";
   return "unknown";
+}
+
+function downloadCtaForFeature(feature: MarketingFeature) {
+  if (feature === MARKETING_FEATURES.DOWNLOAD_MAC) return MARKETING_CTA_LABELS.DOWNLOAD_MAC;
+  if (feature === MARKETING_FEATURES.DOWNLOAD_IOS) return MARKETING_CTA_LABELS.DOWNLOAD_IOS;
+  return undefined;
 }
 
 export function DownloadPage() {
@@ -115,10 +126,10 @@ export function DownloadPage() {
 
         <Reveal delay={0.12}>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} size="lg" variant="primary" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE} size="lg" variant="primary" target="_blank" rel="noreferrer">
               Download for Mac <ArrowUpRight className="h-4 w-4" />
             </LinkButton>
-            <LinkButton to={LINKS.testflight} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_IOS} size="lg" variant="secondary" target="_blank" rel="noreferrer">
+            <LinkButton to={LINKS.testflight} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_IOS} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE} size="lg" variant="secondary" target="_blank" rel="noreferrer">
               Download for iOS <Smartphone className="h-4 w-4" />
             </LinkButton>
             <LinkButton to={LINKS.github} analyticsFeature={MARKETING_FEATURES.VIEW_GITHUB} size="lg" variant="secondary" target="_blank" rel="noreferrer">
@@ -156,6 +167,8 @@ export function DownloadPage() {
                       )}
                       href={c.actionHref}
                       data-ade-analytics-feature={c.analyticsFeature}
+                      data-ade-analytics-cta={downloadCtaForFeature(c.analyticsFeature)}
+                      data-ade-analytics-position={downloadCtaForFeature(c.analyticsFeature) ? MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE : undefined}
                       target="_blank"
                       rel="noreferrer"
                     >

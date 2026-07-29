@@ -124,7 +124,11 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
-import { shouldRejectDevelopmentEnvCredential } from "./services/account/accountAuthService";
+import {
+  shouldRejectDevelopmentEnvCredential,
+  syncAccountAnalyticsIdentity,
+} from "./services/account/accountAuthService";
+import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
@@ -15651,6 +15655,15 @@ async function runServe(
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   const projectRegistry = new ProjectRegistry(layout);
+  const brainAccountAuthService = getSharedAccountAuthService({
+    secretsDir: layout.secretsDir,
+    projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+    logger: headlessProjectLogger,
+  });
+  syncAccountAnalyticsIdentity(
+    brainAccountAuthService.getStatus(),
+    brainProductAnalytics,
+  );
   const personalChatScope = createPersonalChatScope();
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
@@ -16049,6 +16062,8 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      productAnalyticsService: brainProductAnalytics,
+      accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();

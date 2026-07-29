@@ -1,8 +1,8 @@
 # Logging and product analytics
 
-This is ADE's ground truth for operational logging and anonymous product analytics. Read it before adding telemetry, changing an analytics event, or reviewing a feature with `/test`.
+This is ADE's ground truth for operational logging and privacy-bounded product analytics. Read it before adding telemetry, changing an analytics event, or reviewing a feature with `/test`.
 
-ADE is local-first. Operational logs stay local and help diagnose software behavior. Product analytics is a separate, deliberately narrow PostHog data path that answers how anonymous installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state.
+ADE is local-first. Operational logs stay local and help diagnose software behavior. Product analytics is a separate, deliberately narrow PostHog data path that answers how installations use ADE. PostHog is not a remote log sink, crash dump service, session recorder, or copy of ADE's local state.
 
 ## Non-negotiable boundaries
 
@@ -11,10 +11,10 @@ Never send any of the following to PostHog:
 - prompts, responses, transcripts, code, diffs, file contents, terminal output, clipboard contents, screenshots, recordings, or proof artifacts;
 - project, repository, lane, branch, file, or directory names and paths;
 - command text or arguments, URLs, referrers, issue titles, PR titles, user-entered labels, raw errors, stack traces, or local log messages;
-- credentials, tokens, email addresses, account identifiers, device names, or other user-provided strings;
+- credentials, tokens, email addresses, raw account identifiers, device names, or other user-provided strings;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent. Every event disables person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`.
+No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent. Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
 
@@ -73,7 +73,9 @@ Machine analytics state lives under the active channel home at `secrets/product-
 
 The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The allowed events are:
 
+- `ade_app_installed`
 - `ade_app_opened`
+- `ade_activated`
 - `ade_screen_viewed`
 - `ade_project_opened`
 - `ade_feature_used`
@@ -87,6 +89,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_update_install_did_not_land`
 - `ade_update_auto_applied`
 - `ade_update_auto_apply_cancelled`
+- `ade_update_prompted`
 - `ade_brain_recovered`
 - `ade_publish_failing`
 
@@ -94,7 +97,9 @@ The update and reliability events are low-frequency by construction: the five `a
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
-Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
+Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
+
+The fresh-install milestone is stored in machine analytics state before enqueue. Activation is stored the same way and derives `time_since_install_seconds` locally. Legacy analytics state is marked as already installed and activated during migration so upgrades never create false funnel entrants. Account identification is pseudonymous and limited to three accepted identity changes per UTC day and two per minute. It still consumes PostHog ingestion quota. Explicit sign-out rotates the anonymous ID so later anonymous activity is not attached to the signed-out account.
 
 Daily usage summaries report coarse totals and only the top coarse provider and model family. They never report provider account IDs, exact model strings, prompt content, or per-session content.
 
@@ -130,7 +135,7 @@ high-frequency mechanics or can expose work-specific interaction patterns.
 
 ### Native iOS
 
-Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate anonymous installation identity and separate `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention.
+Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in and Settings opt-out have been removed. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
@@ -140,7 +145,7 @@ Host-recorded mobile mutations may still appear in the canonical `ade_*` namespa
 
 The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It requires an affirmative browser-local choice and uses a separate `ade_marketing_*` namespace.
 
-Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 20 feature clicks, 3 coarse browser error categories, and 1 budget summary. Per-screen/per-feature caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
+Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
@@ -149,6 +154,7 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 - Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
 - Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site still require an affirmative first-run choice before capture.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
+- Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
 - Tests disable analytics automatically.
 - Missing or invalid configuration disables capture without affecting ADE startup.
 
@@ -170,7 +176,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has five managed dashboards and thirty-one managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has five managed dashboards and thirty-four managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption
@@ -178,7 +184,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 - ADE · Marketing acquisition
 - ADE · Reliability and analytics budget
 
-The 30-day volume insight sums the whole ingested catalog through a formula that addresses each series by its PostHog letter (`A`…`Z`), so the catalog cannot exceed 26 events; the spec throws at load time rather than emitting a formula PostHog would reject. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
+The 30-day volume cards split the closed ingested catalog into groups of at most 26 series because PostHog formulas address series by letters `A`…`Z`. Their sum is the total tracked volume; the overflow card includes `$identify` so identity enrichment is not treated as free. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
 
 ## How to instrument new code
 

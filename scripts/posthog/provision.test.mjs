@@ -25,7 +25,7 @@ function findInsight(key) {
 }
 
 test("dashboard spec is valid and excludes replay queries", () => {
-  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 31 });
+  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 34 });
   assert.doesNotMatch(JSON.stringify(dashboardSpec), /\$snapshot|session replay|recording_property/i);
 });
 
@@ -53,15 +53,16 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.match(budget.description, /accepted means admitted.+not confirmed delivered/i);
 
   const firstValue = findInsight("first-value-funnel");
-  assert.equal(firstValue.name, "Desktop/web first-value funnel");
-  assert.deepEqual(firstValue.query.source.series[0].properties, [
-    { key: "surface", value: ["desktop", "web"], operator: "exact", type: "event" },
-  ]);
+  assert.equal(firstValue.name, "Install to activation funnel");
+  assert.deepEqual(
+    firstValue.query.source.series.map((series) => series.event),
+    ["ade_app_installed", "ade_project_opened", "ade_activated"],
+  );
 
   const marketingFunnel = findInsight("homepage-get-started-funnel");
   assert.deepEqual(
     marketingFunnel.query.source.series.map((series) => series.event),
-    ["ade_marketing_app_opened", "ade_marketing_screen_viewed", "ade_marketing_feature_used"],
+    ["ade_marketing_app_opened", "ade_marketing_screen_viewed", "ade_marketing_cta_clicked"],
   );
   assert.deepEqual(marketingFunnel.query.source.series[1].properties, [
     { key: "screen", value: "home", operator: "exact", type: "event" },
@@ -75,9 +76,11 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.equal(productDashboardEvents.some((event) => event.startsWith("ade_mobile_")), false);
 
   const ingestedVolume = findInsight("monthly-analytics-volume");
-  assert.equal(ingestedVolume.name, "30-day ingested analytics volume");
+  assert.equal(ingestedVolume.name, "30-day ingested analytics volume · events 1–26");
   assert.equal(ingestedVolume.query.source.series.length, 26);
   assert.equal(ingestedVolume.query.source.trendsFilter.formula, "A+B+C+D+E+F+G+H+I+J+K+L+M+N+O+P+Q+R+S+T+U+V+W+X+Y+Z");
+  const remainingVolume = findInsight("monthly-analytics-volume-overflow");
+  assert.equal(remainingVolume.query.source.series.at(-1).event, "$identify");
 });
 
 test("config requires HTTPS and a numeric project ID", () => {
@@ -169,12 +172,12 @@ test("dry run plans every object without issuing writes", async () => {
     output: { write(chunk) { output += chunk; } },
   });
 
-  assert.deepEqual(summary, { created: 36, updated: 0, unchanged: 0 });
+  assert.deepEqual(summary, { created: 39, updated: 0, unchanged: 0 });
   assert.equal(writes.length, 0);
   assert.match(output, /would create dashboard: ADE · Growth and retention/);
   assert.match(output, /would create dashboard: ADE · Marketing acquisition/);
   assert.match(output, /would create dashboard: ADE · Native mobile engagement/);
-  assert.match(output, /would create insight: 30-day ingested analytics volume/);
+  assert.match(output, /would create insight: 30-day ingested analytics volume · events 1–26/);
 });
 
 test("managed objects that already match are not rewritten", async () => {
@@ -223,11 +226,11 @@ test("managed objects that already match are not rewritten", async () => {
   };
 
   const first = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(first, { created: 36, updated: 0, unchanged: 0 });
-  assert.equal(writes.length, 36);
+  assert.deepEqual(first, { created: 39, updated: 0, unchanged: 0 });
+  assert.equal(writes.length, 39);
 
   writes.length = 0;
   const second = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 36 });
+  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 39 });
   assert.equal(writes.length, 0);
 });

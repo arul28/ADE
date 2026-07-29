@@ -9239,7 +9239,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
-    return accountBridge.status();
+    const status = accountBridge.status();
+    if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
+    return status;
   });
 
   ipcMain.handle(
@@ -9256,7 +9258,9 @@ export function registerIpc({
   ipcMain.handle(
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
-      return accountBridge.pollLogin(arg?.sessionId ?? "");
+      const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
+      if (result.authStatus.signedIn) productAnalyticsService?.identifyAccount(result.authStatus.userId);
+      return result;
     },
   );
 
@@ -9269,7 +9273,9 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
-    return accountBridge.signOut();
+    const status = accountBridge.signOut();
+    productAnalyticsService?.resetAccountIdentity();
+    return status;
   });
 
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {

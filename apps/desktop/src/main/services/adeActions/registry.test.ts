@@ -2345,9 +2345,9 @@ describe("runtime account actions", () => {
         expiresAt: "2026-07-14T12:05:00.000Z",
       })),
       pollLogin: vi.fn(async (sessionId: string) => ({
-        status: "pending" as const,
+        status: "signed_in" as const,
         message: null,
-        authStatus: { signedIn: false, userId: null, email: null, name: null, expiresAt: null },
+        authStatus: { signedIn: true, userId: "account-user", email: null, name: null, expiresAt: null },
         sessionId,
       })),
       startDeviceLogin: vi.fn(async () => ({
@@ -2366,8 +2366,8 @@ describe("runtime account actions", () => {
         sessionId,
       })),
       getStatus: vi.fn(() => ({
-        signedIn: false,
-        userId: null,
+        signedIn: true,
+        userId: "account-user",
         email: null,
         name: null,
         expiresAt: null,
@@ -2388,8 +2388,13 @@ describe("runtime account actions", () => {
       })),
       dispose: vi.fn(),
     };
+    const productAnalyticsService = {
+      identifyAccount: vi.fn(),
+      resetAccountIdentity: vi.fn(),
+    };
     const service = getAdeActionDomainServices({
       accountAuthService,
+      productAnalyticsService,
     } as never).account as {
       startLogin(): Promise<unknown>;
       pollLogin(args: { sessionId: string }): Promise<unknown>;
@@ -2436,6 +2441,9 @@ describe("runtime account actions", () => {
     expect(accountAuthService.signOut).toHaveBeenCalledTimes(1);
     expect(accountAuthService.getAccessToken).toHaveBeenCalledTimes(1);
     expect(accountAuthService.createToken).toHaveBeenCalledTimes(1);
+    expect(productAnalyticsService.identifyAccount).toHaveBeenCalledTimes(2);
+    expect(productAnalyticsService.identifyAccount).toHaveBeenCalledWith("account-user");
+    expect(productAnalyticsService.resetAccountIdentity).toHaveBeenCalledTimes(2);
     expect(isCtoOnlyAdeAction("account", "startLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "pollLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "startDeviceLogin")).toBe(true);

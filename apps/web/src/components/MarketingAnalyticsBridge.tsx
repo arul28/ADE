@@ -1,13 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 
-import {
-  ANALYTICS_FEATURE_ATTRIBUTE,
-  isMarketingFeature,
-  normalizeMarketingScreen,
-} from "../lib/marketingAnalytics";
+import { normalizeMarketingScreen, routeMarketingAnalyticsClick } from "../lib/marketingAnalytics";
 import {
   captureMarketingAppOpened,
+  captureMarketingCta,
   captureMarketingFeature,
   captureMarketingScreen,
   captureUnhandledRejection,
@@ -29,13 +26,11 @@ export function MarketingAnalyticsBridge() {
     captureMarketingAppOpened();
 
     const onClick = (event: MouseEvent) => {
-      const target = event.target instanceof Element
-        ? event.target.closest<HTMLElement>(`[${ANALYTICS_FEATURE_ATTRIBUTE}]`)
-        : null;
-      const feature = target?.getAttribute(ANALYTICS_FEATURE_ATTRIBUTE);
-      if (!isMarketingFeature(feature)) return;
-      const screen = normalizeMarketingScreen(window.location.pathname) ?? undefined;
-      captureMarketingFeature(feature, screen);
+      if (!(event.target instanceof Element)) return;
+      routeMarketingAnalyticsClick(event.target, window.location.pathname, {
+        captureCta: captureMarketingCta,
+        captureFeature: captureMarketingFeature,
+      });
     };
     const onError = () => captureWindowError();
     const onUnhandledRejection = () => captureUnhandledRejection();
@@ -70,8 +65,9 @@ export function MarketingAnalyticsBridge() {
       <div className="min-w-0 flex-1">
         <p className="text-sm font-semibold text-fg">Help improve ADE?</p>
         <p className="mt-1 text-xs leading-relaxed text-muted-fg">
-          Allow anonymous, daily-capped page and feature analytics. No URLs, referrers, prompts, code, raw errors,
-          or recordings are sent. Read the <a className="underline underline-offset-2" href="/privacy">privacy policy</a>.
+          Allow anonymous, daily-capped page, feature, and CTA analytics. CTA events include only an allowlisted
+          button label, page category, and placement. No URLs, referrers, prompts, code, raw errors, or recordings
+          are sent. Read the <a className="underline underline-offset-2" href="/privacy">privacy policy</a>.
         </p>
       </div>
       <div className="mt-3 flex shrink-0 gap-2 sm:mt-0">

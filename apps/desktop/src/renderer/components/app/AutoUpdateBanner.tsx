@@ -3,6 +3,7 @@ import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { dismissToast, showToast } from "./toast/toastStore";
+import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 
@@ -58,6 +59,8 @@ export function AutoUpdateBanner() {
 
   const banner = describeStalenessBanner(snapshot);
   const signature = banner?.signature ?? null;
+  const currentVersion = snapshot.currentVersion;
+  const updateVersion = snapshot.version;
 
   // Re-enable the Restart action whenever the banner state changes (or clears);
   // a stale "restarting" flag must never stick across a new staged version.
@@ -66,6 +69,7 @@ export function AutoUpdateBanner() {
   }, [signature]);
 
   const handleRestart = useCallback(() => {
+    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
     setRestarting(true);
     void window.ade.updateQuitAndInstall()
       .then((started) => {
@@ -74,9 +78,10 @@ export function AutoUpdateBanner() {
       .catch(() => {
         setRestarting(false);
       });
-  }, []);
+  }, [currentVersion, updateVersion]);
 
   const handleCancelAutoApply = useCallback(() => {
+    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "deferred");
     cancelRequestedRef.current = true;
     dismissToast(AUTO_APPLY_TOAST_ID);
     void window.ade.updateCancelAutoApply?.().then(
@@ -89,7 +94,7 @@ export function AutoUpdateBanner() {
         cancelRequestedRef.current = false;
       },
     );
-  }, []);
+  }, [currentVersion, updateVersion]);
 
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.
@@ -143,7 +148,10 @@ export function AutoUpdateBanner() {
       </button>
       <button
         type="button"
-        onClick={() => setDismissedSignature(signature)}
+        onClick={() => {
+          captureUpdatePromptDecision(snapshot, "dismissed");
+          setDismissedSignature(signature);
+        }}
         className="shrink-0 text-amber-900/70 hover:text-amber-900"
         title="Dismiss until the next update"
         aria-label="Dismiss update banner"

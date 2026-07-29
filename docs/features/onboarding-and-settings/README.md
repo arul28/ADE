@@ -57,7 +57,10 @@ Main process:
   network work and verifies it again before saving; logout/account switch
   removes only that owner's remote targets and paired credentials. Direct
   PIN/link/Nearby/address/SSH trust is explicitly local and is never adopted
-  merely because the user later signs in.
+  merely because the user later signs in. When product analytics is enabled,
+  the account boundary identifies a known user only through a one-way account
+  hash with closed enrichment fields; explicit logout rotates the anonymous
+  analytics identity.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -200,7 +203,7 @@ Renderer — settings:
   not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — consolidated general preferences: GitHub and Linear connections,
-  anonymous product analytics, voice input, launch-prompt clipboard, agent completion sound, PR
+  privacy-bounded product analytics, voice input, launch-prompt clipboard, agent completion sound, PR
   chat transcript gists, project `.ade` health, and environment
   (About + compact `AdeCliSection`). Each block uses
   `SettingsSectionShell` for a branded header. Deep links:
@@ -210,8 +213,9 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/ProductAnalyticsSection.tsx`
   — machine-wide desktop/runtime product-analytics status and durable opt-out.
   It shows the configured/effective state and installation daily ceiling but
-  never exposes or accepts credentials. Native iOS and hosted web keep their
-  own affirmative client choices; see [logging and product analytics](../../logging.md).
+  never exposes or accepts credentials. Native iOS is independently default-on
+  without an in-app preference; hosted web keeps its own affirmative browser
+  choice. See [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
   permission guidance, structured validation failures, and the latest GitHub

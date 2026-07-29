@@ -150,6 +150,19 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     ])
   }
 
+  func testColdStartReconcilesPersistedSignedOutIdentityBeforeAppOpened() throws {
+    let (analytics, sink, defaults) = makeAnalytics()
+    defaults.set(
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+      forKey: ProductAnalytics.identifiedAccountHashDefaultsKey
+    )
+
+    analytics.captureColdStart(afterReconcilingAccount: nil)
+
+    XCTAssertEqual(sink.actions, [.reset, .capture("ade_mobile_app_opened")])
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
   func testFeaturePropertiesAreClosedAndContainNoSensitiveContentKeys() throws {
     let (analytics, sink, _) = makeAnalytics()
 
@@ -223,6 +236,163 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
         "$geoip_disable",
       ])))
     }
+  }
+
+  func testIdentifyUsesCrossSurfaceHashDeduplicatesAndCapsAccountChanges() {
+    let (analytics, sink, defaults) = makeAnalytics()
+
+    analytics.identifyAccount(" user_123 ")
+    analytics.identifyAccount("user_123")
+
+    XCTAssertEqual(sink.identities, [
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+    ])
+    XCTAssertEqual(sink.resetIdentityCount, 0)
+    XCTAssertEqual(
+      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+
+    analytics.identifyAccount("user_456")
+    analytics.identifyAccount("user_789")
+
+    XCTAssertEqual(sink.identities.count, 2)
+    XCTAssertEqual(sink.resetIdentityCount, 2)
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testQuotaSuppressedAccountSwitchClearsPriorIdentity() {
+    let (analytics, sink, defaults) = makeAnalytics()
+
+    analytics.identifyAccount("account_one")
+    analytics.identifyAccount("account_two")
+    analytics.identifyAccount("account_three")
+    analytics.captureScreen(.work)
+
+    XCTAssertEqual(sink.identities.count, 2)
+    XCTAssertEqual(sink.resetIdentityCount, 2)
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+    XCTAssertEqual(sink.events.last?.name, "ade_mobile_screen_viewed")
+  }
+
+  func testAccountSwitchEmitsPriorDayBudgetSummaryBeforeIdentityChanges() throws {
+    var currentDate = Date(timeIntervalSince1970: 1_800_000_000)
+    let (analytics, sink, _) = makeAnalytics(now: { currentDate })
+
+    analytics.identifyAccount("account_one")
+    analytics.captureAppOpened(.foreground)
+    currentDate.addTimeInterval(24 * 60 * 60)
+    analytics.identifyAccount("account_two")
+
+    let summary = try XCTUnwrap(
+      sink.events.first { $0.name == "ade_mobile_analytics_budget" }
+    )
+    XCTAssertEqual(summary.properties["sent_count"] as? Int, 2)
+    XCTAssertEqual(sink.actions, [
+      .identify("ade_user_9f857b832e16586887a9b0f2ef8621c9"),
+      .capture("ade_mobile_app_opened"),
+      .capture("ade_mobile_analytics_budget"),
+      .reset,
+      .identify("ade_user_560d5ba76598fc9465a46be9d55cf047"),
+    ])
+  }
+
+  func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
+    let defaults = makeDefaults()
+    let factory = ProductAnalyticsTestTransportFactory()
+    let sink = DirectPostHogProductAnalyticsSink(
+      defaults: defaults,
+      transportFactory: { factory.make() }
+    )
+    sink.configure(projectToken: "phc_public_123", host: nil, enabled: true)
+    let analytics = ProductAnalytics(defaults: defaults, sink: sink)
+
+    analytics.captureScreen(.work)
+    let anonymousID = try distinctID(
+      from: XCTUnwrap(factory.transports.first?.requests.first)
+    )
+    analytics.identifyAccount("user_123")
+    analytics.captureScreen(.lanes)
+
+    let requests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(requests.count, 3)
+    let identifyPayload = try payload(from: requests[1])
+    XCTAssertEqual(identifyPayload["event"] as? String, "$identify")
+    XCTAssertEqual(
+      identifyPayload["distinct_id"] as? String,
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+    let identifyProperties = try XCTUnwrap(identifyPayload["properties"] as? [String: Any])
+    XCTAssertEqual(identifyProperties["$anon_distinct_id"] as? String, anonymousID)
+    XCTAssertEqual(identifyProperties["$geoip_disable"] as? Bool, true)
+    XCTAssertNil(identifyProperties["email"])
+    XCTAssertFalse(String(data: try XCTUnwrap(requests[1].httpBody), encoding: .utf8)?.contains("user_123") == true)
+    let setProperties = try XCTUnwrap(identifyProperties["$set"] as? [String: Any])
+    XCTAssertEqual(setProperties["plan"] as? String, "free")
+    XCTAssertEqual(setProperties["platform"] as? String, "ios")
+    XCTAssertNotNil(setProperties["app_version"] as? String)
+    XCTAssertEqual(
+      try distinctID(from: requests[2]),
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c"
+    )
+
+    analytics.resetAccountIdentity()
+    analytics.captureScreen(.settings)
+
+    let resetRequests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(resetRequests.count, 4)
+    let resetAnonymousID = try distinctID(from: resetRequests[3])
+    XCTAssertNotEqual(resetAnonymousID, anonymousID)
+    XCTAssertNotEqual(resetAnonymousID, "ade_user_5d0609d39586fed6fd2b684efd3d059c")
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testDirectIdentityResetClearsAnonymousAndIdentifiedKeysTogether() {
+    let defaults = makeDefaults()
+    defaults.set("anonymous", forKey: DirectPostHogProductAnalyticsSink.installationIDDefaultsKey)
+    defaults.set(
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+      forKey: ProductAnalytics.identifiedAccountHashDefaultsKey
+    )
+    let sink = DirectPostHogProductAnalyticsSink(defaults: defaults)
+
+    sink.resetIdentity()
+
+    XCTAssertNil(defaults.string(forKey: DirectPostHogProductAnalyticsSink.installationIDDefaultsKey))
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
+  func testDirectAccountSwitchRotatesAnonymousIdentityAndKeepsNewAccountHash() throws {
+    let defaults = makeDefaults()
+    let factory = ProductAnalyticsTestTransportFactory()
+    let sink = DirectPostHogProductAnalyticsSink(
+      defaults: defaults,
+      transportFactory: { factory.make() }
+    )
+    sink.configure(projectToken: "phc_public_123", host: nil, enabled: true)
+    let analytics = ProductAnalytics(defaults: defaults, sink: sink)
+
+    analytics.captureScreen(.work)
+    let firstAnonymousID = try distinctID(
+      from: XCTUnwrap(factory.transports.first?.requests.first)
+    )
+    analytics.identifyAccount("user_123")
+    analytics.identifyAccount("user_456")
+    analytics.captureScreen(.settings)
+
+    let requests = try XCTUnwrap(factory.transports.first?.requests)
+    XCTAssertEqual(requests.count, 4)
+    let secondIdentify = try payload(from: requests[2])
+    let secondProperties = try XCTUnwrap(secondIdentify["properties"] as? [String: Any])
+    XCTAssertNotEqual(secondProperties["$anon_distinct_id"] as? String, firstAnonymousID)
+    XCTAssertEqual(
+      try distinctID(from: requests[3]),
+      "ade_user_6c9c79d93890a390c5bfa238afe37331"
+    )
+    XCTAssertEqual(
+      defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey),
+      "ade_user_6c9c79d93890a390c5bfa238afe37331"
+    )
   }
 
   func testOutcomeSanitizerRejectsArbitraryValuesAndDropsExtraFields() throws {
@@ -460,15 +630,25 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
   }
 
   private func distinctID(from request: URLRequest) throws -> String {
+    let payload = try payload(from: request)
+    return try XCTUnwrap(payload["distinct_id"] as? String)
+  }
+
+  private func payload(from request: URLRequest) throws -> [String: Any] {
     let body = try XCTUnwrap(request.httpBody)
-    let payload = try XCTUnwrap(
+    return try XCTUnwrap(
       JSONSerialization.jsonObject(with: body) as? [String: Any]
     )
-    return try XCTUnwrap(payload["distinct_id"] as? String)
   }
 }
 
 private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
+  enum Action: Equatable {
+    case capture(String)
+    case identify(String)
+    case reset
+  }
+
   struct Event {
     let name: String
     let properties: [String: Any]
@@ -476,12 +656,26 @@ private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
 
   private(set) var events: [Event] = []
   private(set) var enabledStates: [Bool] = []
+  private(set) var identities: [String] = []
+  private(set) var resetIdentityCount = 0
+  private(set) var actions: [Action] = []
 
   var isConfigured: Bool { true }
   var canCapture: Bool { true }
 
   func capture(event: String, properties: [String: Any]) {
     events.append(Event(name: event, properties: properties))
+    actions.append(.capture(event))
+  }
+
+  func identify(userHash: String) {
+    identities.append(userHash)
+    actions.append(.identify(userHash))
+  }
+
+  func resetIdentity() {
+    resetIdentityCount += 1
+    actions.append(.reset)
   }
 
   func setEnabled(_ enabled: Bool) {

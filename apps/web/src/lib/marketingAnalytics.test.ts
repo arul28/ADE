@@ -5,8 +5,11 @@ import {
   MarketingAnalytics,
   MARKETING_ANALYTICS_EVENTS,
   MARKETING_FEATURES,
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
   MARKETING_SCREENS,
   normalizeMarketingScreen,
+  routeMarketingAnalyticsClick,
   type PostHogCapturePayload,
   type StorageLike,
 } from "./marketingAnalytics.ts";
@@ -77,6 +80,28 @@ test("normalizes only allowlisted pathnames and ignores the OG renderer", () => 
   assert.equal(normalizeMarketingScreen("/anything/private"), MARKETING_SCREENS.NOT_FOUND);
 });
 
+test("routes an annotated browser CTA once without duplicating its feature event", () => {
+  const captured: string[] = [];
+  const attributes = new Map([
+    ["data-ade-analytics-cta", MARKETING_CTA_LABELS.DOWNLOAD_MAC],
+    ["data-ade-analytics-position", MARKETING_CTA_POSITIONS.HERO],
+    ["data-ade-analytics-feature", MARKETING_FEATURES.DOWNLOAD_MAC],
+  ]);
+  const annotatedTarget = {
+    closest(selector: string) {
+      return selector === "[data-ade-analytics-cta]" || selector === "[data-ade-analytics-feature]"
+        ? { getAttribute: (name: string) => attributes.get(name) ?? null }
+        : null;
+    },
+  };
+
+  assert.equal(routeMarketingAnalyticsClick(annotatedTarget, "/", {
+    captureCta: (label, screen, position) => captured.push(`cta:${label}:${screen}:${position}`),
+    captureFeature: (feature, screen) => captured.push(`feature:${feature}:${screen}`),
+  }), "cta");
+  assert.deepEqual(captured, ["cta:download_for_mac:home:hero"]);
+});
+
 test("manual payload contains only anonymous allowlisted properties", () => {
   const { analytics, payloads } = createHarness();
   assert.equal(analytics.captureFeature(MARKETING_FEATURES.DOWNLOAD_MAC, MARKETING_SCREENS.HOME), "sent");
@@ -97,6 +122,30 @@ test("manual payload contains only anonymous allowlisted properties", () => {
   });
   const serialized = JSON.stringify(payloads[0]);
   assert.doesNotMatch(serialized, /url|query|hash|referrer|prompt|path|branch|message|stack/i);
+});
+
+test("captures a dedicated CTA event without duplicating feature semantics", () => {
+  const { analytics, payloads } = createHarness();
+  assert.equal(analytics.captureCta(
+    MARKETING_CTA_LABELS.DOWNLOAD_MAC,
+    MARKETING_SCREENS.HOME,
+    MARKETING_CTA_POSITIONS.HERO,
+  ), "sent");
+  assert.deepEqual(payloads[0], {
+    api_key: "phc_public_project_token",
+    distinct_id: "stable_analytics_identifier_123",
+    event: MARKETING_ANALYTICS_EVENTS.CTA_CLICKED,
+    properties: {
+      surface: "web",
+      route_kind: "marketing",
+      $process_person_profile: false,
+      $geoip_disable: true,
+      action: "clicked",
+      cta_label: "download_for_mac",
+      screen: "home",
+      position: "hero",
+    },
+  });
 });
 
 test("deduplicates bursts and enforces a per-feature daily cap", () => {

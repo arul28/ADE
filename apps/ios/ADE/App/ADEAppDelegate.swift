@@ -11,7 +11,6 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         ProductAnalytics.shared.configure()
-        ProductAnalytics.shared.captureAppOpened(.coldStart)
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
         // A push-to-start notification wakes the process before SwiftUI scene

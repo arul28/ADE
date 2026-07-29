@@ -83,6 +83,11 @@ export type AccountSessionRecord = {
   oauthConfig?: AccountOAuthConfig;
 };
 
+export type AccountAnalyticsIdentity = {
+  identifyAccount(userId: string | null | undefined): unknown;
+  resetAccountIdentity(): unknown;
+};
+
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
 
 export type AccountIdentityProvider = "github" | "google" | "apple" | "email";
@@ -648,19 +653,44 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
   };
 }
 
+export function syncAccountAnalyticsIdentity(
+  status: AccountAuthStatus,
+  analytics?: AccountAnalyticsIdentity,
+): AccountAuthStatus {
+  if (status.signedIn) {
+    analytics?.identifyAccount(status.userId);
+  } else {
+    analytics?.resetAccountIdentity();
+  }
+  return status;
+}
+
 export function createAccountActionDomainService(
   service: AccountAuthService,
+  analytics?: AccountAnalyticsIdentity,
 ): AccountActionDomainService {
   return {
     startLogin: () => service.startLogin(),
-    pollLogin: (args) => service.pollLogin(readNonEmptyString(args?.sessionId) ?? ""),
+    pollLogin: async (args) => {
+      const result = await service.pollLogin(readNonEmptyString(args?.sessionId) ?? "");
+      syncAccountAnalyticsIdentity(result.authStatus, analytics);
+      return result;
+    },
     startDeviceLogin: (args) => service.startDeviceLogin({
       ignoreEnvCredential: args?.ignoreEnvCredential === true,
     }),
-    pollDeviceLogin: (args) => service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? ""),
-    status: () => service.getStatus(),
+    pollDeviceLogin: async (args) => {
+      const result = await service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? "");
+      syncAccountAnalyticsIdentity(result.authStatus, analytics);
+      return result;
+    },
+    status: () => syncAccountAnalyticsIdentity(service.getStatus(), analytics),
     cancelLogin: (args) => service.cancelLogin(readNonEmptyString(args?.sessionId) ?? ""),
-    signOut: () => service.signOut(),
+    signOut: () => {
+      const status = service.signOut();
+      analytics?.resetAccountIdentity();
+      return status;
+    },
     getToken: () => service.getAccessToken(),
     createToken: () => service.createToken(),
   };
@@ -668,6 +698,7 @@ export function createAccountActionDomainService(
 
 export async function callAccountAction(args: {
   service: AccountAuthService;
+  analytics?: AccountAnalyticsIdentity;
   action: string;
   actionArgs?: Record<string, unknown>;
 }): Promise<{
@@ -677,7 +708,7 @@ export async function callAccountAction(args: {
   statusHints: Record<string, never>;
 }> {
   const action = args.action as AccountActionName;
-  const domain = createAccountActionDomainService(args.service);
+  const domain = createAccountActionDomainService(args.service, args.analytics);
   if (!ACCOUNT_ACTION_NAMES.includes(action)) {
     throw new Error(`Action 'account.${args.action}' is not callable.`);
   }

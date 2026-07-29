@@ -10,6 +10,7 @@ import {
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
+  createAccountActionDomainService,
   createAccountAuthService,
   derivePkceChallenge,
   getSignedInAccountAccessToken,
@@ -101,6 +102,40 @@ const activeServices: AccountAuthService[] = [];
 afterEach(() => {
   vi.useRealTimers();
   for (const service of activeServices.splice(0)) service.dispose();
+});
+
+describe("account action analytics identity", () => {
+  it("identifies persisted signed-in status and resets identity for signed-out status", () => {
+    const analytics = {
+      identifyAccount: vi.fn(),
+      resetAccountIdentity: vi.fn(),
+    };
+    const service = {
+      getStatus: vi.fn()
+        .mockReturnValueOnce({
+          signedIn: true,
+          userId: "user_persisted",
+          email: null,
+          name: null,
+          expiresAt: null,
+        })
+        .mockReturnValueOnce({
+          signedIn: false,
+          userId: null,
+          email: null,
+          name: null,
+          expiresAt: null,
+        }),
+    } as unknown as AccountAuthService;
+    const domain = createAccountActionDomainService(service, analytics);
+
+    expect(domain.status()).toMatchObject({ signedIn: true, userId: "user_persisted" });
+    expect(analytics.identifyAccount).toHaveBeenCalledWith("user_persisted");
+    expect(analytics.resetAccountIdentity).not.toHaveBeenCalled();
+
+    expect(domain.status()).toMatchObject({ signedIn: false, userId: null });
+    expect(analytics.resetAccountIdentity).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AccountAuthService persisted session notifications", () => {

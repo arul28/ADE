@@ -7,7 +7,11 @@ import { Reveal } from "../../components/Reveal";
 import { Section } from "../../components/Section";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import {
+  MARKETING_CTA_LABELS,
+  MARKETING_CTA_POSITIONS,
+  MARKETING_FEATURES,
+} from "../../lib/marketingAnalytics";
 
 /**
  * Landing page for the desktop's phone-pairing QR code.
@@ -51,6 +55,8 @@ export function PairPage() {
               <LinkButton
                 to={LINKS.testflight}
                 analyticsFeature={MARKETING_FEATURES.DOWNLOAD_IOS}
+                analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_IOS}
+                analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE}
                 size="lg"
                 variant="primary"
                 target="_blank"
@@ -61,6 +67,8 @@ export function PairPage() {
               <a
                 href={LINKS.webClient}
                 data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+                data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
+                data-ade-analytics-position={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE}
                 target="_blank"
                 rel="noreferrer"
                 className="focus-ring inline-flex items-center gap-1 self-start rounded-md text-sm font-medium text-muted-fg underline-offset-4 transition-colors hover:text-fg hover:underline sm:self-auto"

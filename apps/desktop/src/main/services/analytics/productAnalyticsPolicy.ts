@@ -14,6 +14,7 @@ export const PROCESS_INGRESS_LIMIT_PER_MINUTE = 120;
 export const MAX_LOCAL_IDENTIFIER_LENGTH = 512;
 
 export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
+  "ade_app_installed", "ade_activated",
   "ade_work_session_started", "ade_work_session_completed", "ade_daily_usage_summary", "ade_analytics_budget",
   "ade_update_install_aborted", "ade_update_quit_escalated", "ade_update_install_did_not_land",
   "ade_update_auto_applied",
@@ -22,7 +23,9 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
+  ade_app_installed: 1,
   ade_app_opened: 12,
+  ade_activated: 1,
   ade_screen_viewed: 80,
   ade_project_opened: 20,
   ade_feature_used: 140,
@@ -36,12 +39,15 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_install_did_not_land: 10,
   ade_update_auto_applied: 10,
   ade_update_auto_apply_cancelled: 10,
+  ade_update_prompted: 10,
   ade_brain_recovered: 10,
   ade_publish_failing: 10,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
+  ade_app_installed: 1,
   ade_app_opened: 3,
+  ade_activated: 1,
   ade_screen_viewed: 12,
   ade_project_opened: 6,
   ade_feature_used: 30,
@@ -55,6 +61,7 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_update_install_did_not_land: 3,
   ade_update_auto_applied: 3,
   ade_update_auto_apply_cancelled: 3,
+  ade_update_prompted: 3,
   ade_brain_recovered: 3,
   ade_publish_failing: 3,
 };
@@ -63,7 +70,7 @@ const STRING_PROPERTIES = new Set([
   "screen", "feature", "action", "outcome", "app_version", "runtime_mode", "provider", "model_family",
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
-  "escalation_reason",
+  "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -72,6 +79,7 @@ const NUMBER_PROPERTIES = new Set([
   "active_days", "current_streak_days", "token_count", "input_token_count", "output_token_count", "call_count",
   "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed", "blocked_ms",
   "failing_minutes", "attempt",
+  "time_since_install_seconds",
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "paired", "cached_data", "is_packaged", "native_staging_completed",
@@ -86,9 +94,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
+  ade_app_installed: new Set(["install_source"]),
   ade_app_opened: new Set([
     "entry_point", "source", "release_channel", "mode", "connection_state", "paired", "cached_data", "is_packaged",
   ]),
+  ade_activated: new Set(["trigger", "time_since_install_seconds"]),
   ade_screen_viewed: new Set(["screen", "route_kind", "source", "mode"]),
   ade_project_opened: new Set(["route_kind", "source", "mode", "connection_state"]),
   ade_feature_used: new Set([
@@ -113,6 +123,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_update_install_did_not_land: new Set(["attempt"]),
   ade_update_auto_applied: new Set(),
   ade_update_auto_apply_cancelled: new Set(),
+  ade_update_prompted: new Set(["from_version", "to_version", "user_action"]),
   ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
 };
@@ -157,6 +168,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   summary_kind: new Set(["overall", "client", "provider", "model"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
+  install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
+  trigger: new Set(["work_session_completed"]),
+  user_action: new Set(["accepted", "deferred", "dismissed"]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {

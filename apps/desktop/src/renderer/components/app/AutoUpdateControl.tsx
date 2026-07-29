@@ -6,6 +6,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
+import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
@@ -152,7 +153,11 @@ export function AutoUpdateControl() {
       "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
     );
     const confirmed = window.confirm(lines.join("\n"));
-    if (!confirmed) return;
+    if (!confirmed) {
+      captureUpdatePromptDecision(snapshot, "deferred");
+      return;
+    }
+    captureUpdatePromptDecision(snapshot, "accepted");
     setInstallRequested(true);
     void window.ade.updateQuitAndInstall()
       .then((started) => {
@@ -162,7 +167,7 @@ export function AutoUpdateControl() {
         setInstallRequested(false);
         // The main process logs updater failures.
       });
-  }, [snapshot.version]);
+  }, [snapshot.currentVersion, snapshot.version]);
 
   const handleSkewUpdateCheck = useCallback(() => {
     setSnapshot((current) => current.status === "idle"

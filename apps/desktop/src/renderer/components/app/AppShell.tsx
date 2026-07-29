@@ -118,6 +118,7 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
 ] as const;
 
 export function productAnalyticsScreenForPathname(pathname: string): string {
+  if (pathname === "/project" || pathname.startsWith("/project/")) return "project";
   const root = PRODUCT_ANALYTICS_ROUTE_ROOTS.find(
     (candidate) => pathname === candidate || pathname.startsWith(`${candidate}/`),
   );

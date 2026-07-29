@@ -527,11 +527,12 @@ final class AccountService: ObservableObject {
   /// auth events. Idempotent — safe to call from `.task` on every appearance.
   func bootstrap() async {
     guard !didConfigure else { return }
+    didConfigure = true
     guard let key = AccountConfig.clerkPublishableKey else {
       phase = .unconfigured
+      ProductAnalytics.shared.captureColdStart(afterReconcilingAccount: nil)
       return
     }
-    didConfigure = true
 
     // `configure` hydrates any cached client/session synchronously and kicks a
     // background refresh; we still explicitly refresh so the first-run flow has
@@ -547,6 +548,9 @@ final class AccountService: ObservableObject {
       // Offline / transient — cached state (if any) still stands.
     }
     syncFromClerk()
+    ProductAnalytics.shared.captureColdStart(
+      afterReconcilingAccount: phase == .signedIn ? identity?.userId : nil
+    )
   }
 
   private func observeAuthEvents() {
@@ -604,6 +608,7 @@ final class AccountService: ObservableObject {
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
+      ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       if phase != .signedIn {
         phase = .signedIn
       }
@@ -658,6 +663,7 @@ final class AccountService: ObservableObject {
     invalidatePairingAuthorization()
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
+    ProductAnalytics.shared.resetAccountIdentity()
     machines = []
     machinesState = .idle
     phase = .signedOut
