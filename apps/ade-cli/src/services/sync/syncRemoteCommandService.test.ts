@@ -2689,24 +2689,70 @@ describe("lanes.unarchive", () => {
 });
 
 describe("lanes.refreshSnapshots conditional responses", () => {
-  function createLaneListService() {
+  function createLaneListService(options?: {
+    sessions?: Record<string, unknown>[];
+    chats?: Record<string, unknown>[];
+  }) {
     const lanes = [{ id: "lane-1", name: "Lane one", status: { dirty: false, ahead: 0, behind: 0 } }];
     const laneService = {
       refreshSnapshots: vi.fn().mockResolvedValue({ refreshedCount: 1, lanes }),
       listStateSnapshots: vi.fn().mockReturnValue([]),
     };
-    const sessionService = { list: vi.fn().mockReturnValue([]) };
+    const sessionService = { list: vi.fn().mockReturnValue(options?.sessions ?? []) };
     const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
     const service = createSyncRemoteCommandService({
       laneService,
       prService: {},
       ptyService: {},
       sessionService,
+      ...(options?.chats
+        ? { agentChatService: { listSessions: vi.fn().mockResolvedValue(options.chats) } }
+        : {}),
       fileService: {},
       logger,
     } as any);
     return { service, laneService };
   }
+
+  it("prioritizes provider-blocked chat attention over another running session", async () => {
+    const { service } = createLaneListService({
+      sessions: [
+        {
+          id: "cli-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "codex",
+          lastOutputPreview: "Working",
+        },
+        {
+          id: "chat-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "idle",
+          toolType: "codex-chat",
+          lastOutputPreview: "Question restored",
+        },
+      ],
+      chats: [{
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        status: "active",
+        awaitingInput: true,
+        pendingInputItemId: null,
+      }],
+    });
+
+    const result = await service.execute(makePayload("lanes.refreshSnapshots")) as {
+      snapshots: Array<{ runtime: { bucket: string; runningCount: number; awaitingInputCount: number } }>;
+    };
+
+    expect(result.snapshots[0]?.runtime).toMatchObject({
+      bucket: "awaiting-input",
+      runningCount: 1,
+      awaitingInputCount: 1,
+    });
+  });
 
   it("returns the full payload with a signature, then notModified for a matching ifNoneMatch", async () => {
     const { service } = createLaneListService();

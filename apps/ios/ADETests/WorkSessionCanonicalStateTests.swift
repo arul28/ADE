@@ -264,6 +264,15 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
+  func testRowWrapperMapsHydratedProviderSourceToNeedsYou() {
+    var session = makeSession(status: "running", runtimeState: "waiting-input", toolType: "codex-chat")
+    session.attentionSource = "provider_structured"
+    XCTAssertEqual(
+      workCanonicalSessionState(session: session, summary: nil, now: now).phase,
+      .needsYou
+    )
+  }
+
   func testCapsuleBadgeSurfacesFailedExit() {
     let session = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130)
     let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)

@@ -323,7 +323,7 @@ describe("lifecycle markers", () => {
     // Runtime/prompt inference is non-interrupting; only explicit or
     // provider-structured requests raise the hand.
     expect(sessionLifecycleMarker({ ...snooze, runtimeState: "waiting-input" }, { nowMs: NOW })?.kind).toBe("snoozed");
-    expect(sessionLifecycleMarker({ ...snooze, awaitingInput: true }, { nowMs: NOW })?.kind).toBe("snoozed");
+    expect(sessionLifecycleMarker({ ...snooze, awaitingInput: true }, { nowMs: NOW })).toBeNull();
     expect(sessionLifecycleMarker({ ...snooze, pendingInputItemId: "item-1" }, { nowMs: NOW })).toBeNull();
     expect(sessionLifecycleMarker(
       { ...snooze, attentionRequestedAt: "2026-07-26T11:59:00.000Z" },

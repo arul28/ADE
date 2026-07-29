@@ -1913,6 +1913,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       run.itemId = null;
       markRunUpdated(run);
       recentRuns.set(sessionId, { ...run });
+      runs.delete(sessionId);
       pendingAlerts = pendingAlerts.filter(
         (alert) =>
           alert.dedupeKey !== `alert:${sessionId}:approval`

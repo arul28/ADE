@@ -247,7 +247,7 @@ func workCanonicalSessionState(
     runtimeState: session.runtimeState,
     toolType: session.toolType,
     pendingInputItemId: summary?.pendingInputItemId ?? session.pendingInputItemId,
-    providerStructuredInput: summary?.awaitingInput == true,
+    providerStructuredInput: summary?.awaitingInput == true || session.attentionSource == "provider_structured",
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: workSessionStaleActivityTimestamp(session: session, summary: summary),
     exitCode: session.exitCode,

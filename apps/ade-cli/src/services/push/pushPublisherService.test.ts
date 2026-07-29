@@ -1951,7 +1951,7 @@ describe("createPushPublisherService flush", () => {
     publisher.handleSessionSettled("scope-1", "cli-settle-1");
 
     expect(publisher._debug.getPendingAlerts()).toEqual([]);
-    expect(publisher._debug.runs.get("cli-settle-1")?.phase).toBe("completed");
+    expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
 
     publisher.dispose();
   });

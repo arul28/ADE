@@ -209,6 +209,7 @@ export type SessionLifecycleSnapshot = Partial<TuiSessionLifecycleFields> & {
  */
 function snapshotRaisesHand(session: SessionLifecycleSnapshot): boolean {
   if (typeof session.pendingInputItemId === "string" && session.pendingInputItemId.trim().length > 0) return true;
+  if (session.awaitingInput === true) return true;
   return typeof session.attentionRequestedAt === "string" && session.attentionRequestedAt.trim().length > 0;
 }
 
