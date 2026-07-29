@@ -38,6 +38,8 @@ import type {
   ProjectInfo,
   OpenProjectBinding,
   RemoteRuntimeConnectionSnapshot,
+  SyncRoleSnapshot,
+  SyncRouteHealth,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import {
@@ -454,6 +456,59 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       dispose();
+    };
+  }, []);
+
+  // Relay leg of THIS machine's sync route health, for the relay-offline banner.
+  // Push-only: one seed read plus the existing `sync-status` broadcast, which the
+  // sync host already emits whenever route health changes. No polling — the
+  // banner host arms a single timer for the outage grace window instead.
+  const [syncRelayHealth, setSyncRelayHealth] = useState<SyncRouteHealth["relay"] | null>(null);
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi) return;
+    let cancelled = false;
+    const apply = (snapshot: SyncRoleSnapshot | null | undefined) => {
+      if (cancelled) return;
+      const next = snapshot?.routeHealth?.relay ?? null;
+      // getStatus rebuilds routeHealth.relay as a fresh object every call, so
+      // committing it unconditionally would re-render the whole shell on every
+      // peer/status push. Only the fields the banner reads matter here.
+      setSyncRelayHealth((prev) => (
+        prev?.enabled === next?.enabled
+        && prev?.relayControlConnected === next?.relayControlConnected
+        && prev?.relayControlSuppressed === next?.relayControlSuppressed
+        && prev?.relayControlFailingSinceMs === next?.relayControlFailingSinceMs
+        && prev?.relayControlSuppressedReason === next?.relayControlSuppressedReason
+        && prev?.skipReason === next?.skipReason
+        && prev?.lastControlError === next?.lastControlError
+          ? prev
+          : next
+      ));
+    };
+    // Always read the LOCAL snapshot: relay control belongs to the physical
+    // machine this window runs on, not to whichever runtime a remote-bound
+    // project routes to.
+    const readLocal =
+      typeof syncApi.getLocalStatus === "function"
+        ? syncApi.getLocalStatus
+        : syncApi.getStatus;
+    const refresh = () => {
+      if (typeof readLocal !== "function") return;
+      void readLocal.call(syncApi).then(apply).catch(() => {});
+    };
+    refresh();
+    // The event is an INVALIDATION, not the payload. On a remote-bound project
+    // the preload subscription fans out the remote runtime's snapshot too, and
+    // applying that directly would let a remote outage raise a warning about
+    // this machine — or let remote health mask this machine's own outage.
+    // Same pattern useSyncConnections already uses.
+    const dispose = syncApi.onEvent?.((event) => {
+      if (event.type === "sync-status") refresh();
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
     };
   }, []);
 
@@ -1304,6 +1359,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           providerMode={providerMode}
           aiMockProvider={Boolean(aiMockProvider)}
+          relayHealth={syncRelayHealth}
           navigate={navigate}
         />
       ) : null}

@@ -573,9 +573,20 @@ export function createSyncService(args: SyncServiceArgs) {
     const status = accountAuthService.getStatus();
     return status.signedIn && Boolean(status.userId?.trim());
   };
+  // Governs whether this runtime ADVERTISES a relay URL to phones (pairing
+  // connect info, brain_status, hello_ok). A suppressed tunnel has deliberately
+  // stopped dialing because another ADE process owns this machine's relay slot,
+  // so continuing to hand out the URL points phones at a route that can only
+  // fail — and a phone that already saved it never purges the candidate,
+  // because the purge is driven by an explicitly null cloudRelayWssUrl.
+  //
+  // Route health deliberately does NOT use this: `ade doctor` and the desktop
+  // banner must still report relay as enabled-but-suppressed rather than
+  // silently "disabled", which is how this whole failure stayed invisible.
   const isCloudRelayUsable = (): boolean =>
     isRelayAccountSignedIn()
-    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true);
+    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true)
+    && args.syncTunnelClientService?.getStatus().controlSuppressed !== true;
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -1362,7 +1373,11 @@ export function createSyncService(args: SyncServiceArgs) {
           : !tunnelStatus
             ? "Relay tunnel status is unavailable in this ADE process."
             : !relayControlConnected
-              ? tunnelStatus.lastControlError
+              // A 4505 eviction is a machine-local ownership conflict, not a
+              // network fault, and its reason is the only one that tells the
+              // user what to actually do — so it outranks the raw close text.
+              ? tunnelStatus.controlSuppressedReason
+                ?? tunnelStatus.lastControlError
                 ?? tunnelStatus.lastError
                 ?? "Relay control is not connected."
               : !relayBridgeValidated
@@ -1393,6 +1408,9 @@ export function createSyncService(args: SyncServiceArgs) {
         relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
         relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
         relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
+        relayControlSuppressed: tunnelStatus?.controlSuppressed === true,
+        relayControlSuppressedReason: tunnelStatus?.controlSuppressedReason ?? null,
+        relayControlFailingSinceMs: tunnelStatus?.controlFailingSinceMs ?? null,
       };
       const routeHealth: SyncRouteHealth = {
         listener: {
@@ -1738,6 +1756,18 @@ export function createSyncService(args: SyncServiceArgs) {
 
     notifyPrsUpdated(): void {
       hostService?.broadcastPrsUpdated();
+    },
+
+    /**
+     * Push a fresh status snapshot to subscribers now.
+     *
+     * The relay tunnel is machine-level and changes state (notably 4505
+     * suppression) without any project-scoped activity, so on an idle machine
+     * nothing would otherwise emit a snapshot and the desktop banner would stay
+     * hidden until some unrelated sync event happened along.
+     */
+    notifyRouteStateChanged(): void {
+      void emitStatus();
     },
 
     getHostService(): SyncHostService | null {

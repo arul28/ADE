@@ -13,6 +13,14 @@ export type SyncHostStartupLoopDeps = {
   // same-channel sibling; everything else waits, so two recovering brains can
   // never kill each other in a loop.
   getServiceMainPid?: () => number | null;
+  /**
+   * Checked before every retry. This loop retries forever by design so mobile
+   * sync recovers when a rival brain exits — but a brain that will never win
+   * the lease AND has lost its RPC socket to someone else has no reason to
+   * exist, and staying in the loop is how it becomes an immortal zombie
+   * (we found 18 stacked on one dev socket). Returning true aborts the loop.
+   */
+  abortIf?: () => boolean | Promise<boolean>;
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
@@ -65,6 +73,14 @@ async function terminatePidAsync(
   }
 }
 
+/** Thrown when `abortIf` asks the loop to stop; the caller decides how to exit. */
+export class SyncHostStartupAbortedError extends Error {
+  constructor() {
+    super("ADE brain sync host startup was aborted.");
+    this.name = "SyncHostStartupAbortedError";
+  }
+}
+
 // Keeps retrying mobile sync host startup until it succeeds or the brain
 // shuts down. Same-channel conflicts are transient by nature (update races,
 // restart overlap, a stale sibling about to be evicted), so they retry:
@@ -112,6 +128,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             throw error;
           }
           if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
+          if (await deps.abortIf?.()) throw new SyncHostStartupAbortedError();
           await sleep(slowRetryDelayMs);
           continue;
         }
@@ -129,6 +146,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         }
       }
       if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
+      if (await deps.abortIf?.()) throw new SyncHostStartupAbortedError();
       await sleep(attempt <= fastRetryCount ? fastRetryDelayMs : slowRetryDelayMs);
     }
   }

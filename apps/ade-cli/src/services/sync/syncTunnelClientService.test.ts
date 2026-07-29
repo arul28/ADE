@@ -17,9 +17,14 @@ import {
   MAX_PENDING_TUNNEL_BYTES,
   MAX_RELAY_WEBSOCKET_FRAME_BYTES,
   parseControlMessage,
+  CONTROL_REPLACED_REARM_MS,
+  CONTROL_REPLACED_RETRY_BASE_MS,
+  MAX_CONTROL_REPLACED_REATTEMPTS,
   RELAY_CLOSE_BRIDGE_REJECTED,
+  RELAY_CLOSE_CONTROL_REPLACED,
   RELAY_CLOSE_FORWARD_FAILED,
   RELAY_CLOSE_HOST_UNAVAILABLE,
+  RELAY_CONTROL_REPLACED_MESSAGE,
   RELAY_READY_VERSION,
   RELAY_SELF_PROBE_DEBOUNCE_MS,
 } from "./syncTunnelClientService";
@@ -127,17 +132,32 @@ class StubWebSocket extends EventEmitter {
 describe("computeBackoffMs", () => {
   it("grows exponentially and caps at 60s", () => {
     const max = (attempt: number) => computeBackoffMs(attempt, () => 0.999999);
-    expect(max(0)).toBeLessThanOrEqual(1_000);
-    expect(max(1)).toBeLessThanOrEqual(2_000);
+    expect(max(0)).toBeLessThanOrEqual(3_000);
     expect(max(2)).toBeLessThanOrEqual(4_000);
     expect(max(3)).toBeLessThanOrEqual(8_000);
     expect(max(20)).toBeLessThanOrEqual(60_000);
     expect(max(20)).toBeGreaterThan(50_000);
   });
 
-  it("applies full jitter within the ceiling", () => {
-    expect(computeBackoffMs(5, () => 0)).toBe(0);
-    expect(computeBackoffMs(5, () => 0.5)).toBe(16_000);
+  // Full jitter from zero is what let two brains fighting over one relay slot
+  // resample near-zero delays forever: neither ever stayed connected long
+  // enough to reset `attempt`, so the war never decayed.
+  it("never returns a delay below the 1s floor", () => {
+    for (let attempt = 0; attempt <= 20; attempt += 1) {
+      expect(computeBackoffMs(attempt, () => 0)).toBeGreaterThanOrEqual(1_000);
+      expect(computeBackoffMs(attempt, () => 0.0001)).toBeGreaterThanOrEqual(1_000);
+    }
+  });
+
+  it("decorrelates from the previous delay instead of resampling one narrow band", () => {
+    // With no history the window is the base band...
+    expect(computeBackoffMs(0, () => 0.999999, 0)).toBeGreaterThan(2_000);
+    // ...and a long previous delay widens it (prev * 3), so two clients that
+    // collided once are unlikely to collide again at the same instant.
+    expect(computeBackoffMs(0, () => 0.999999, 10_000)).toBeGreaterThan(25_000);
+    expect(computeBackoffMs(0, () => 0.5, 10_000)).toBe(15_500);
+    // Still capped.
+    expect(computeBackoffMs(0, () => 0.999999, 50_000)).toBeLessThanOrEqual(60_000);
   });
 });
 
@@ -1150,6 +1170,9 @@ describe("createSyncTunnelClientService", () => {
       getRelayBridgeProof: () => null,
       controlPingIntervalMs: 10,
       controlPongDeadlineMs: 10,
+      // This test is about the pong deadline, not the reconnect schedule; the
+      // real schedule now floors at 1s and would outlast the waitFor window.
+      reconnectBackoffMs: () => 0,
       configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
     });
 
@@ -1301,7 +1324,9 @@ describe("createSyncTunnelClientService", () => {
     try {
       await service.start();
       expect(fetchMock).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(900);
+      // First attempt with no history: floor 1s, ceiling 3s, random 0.999 →
+      // ~2998ms. The 5ms lease poll must not shortcut it.
+      await vi.advanceTimersByTimeAsync(2_900);
       expect(fetchMock).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(100);
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -1592,6 +1617,8 @@ describe("createSyncTunnelClientService", () => {
       getExpectedLoopbackNonce: () => "f".repeat(32),
       getRelayBridgeProof: () => "e".repeat(43),
       configStore,
+      // Identity rotation, not backoff, is under test here.
+      reconnectBackoffMs: () => 0,
       loopbackProbe: async (port, expectedNonce) => ({
         ok: true,
         port,
@@ -2656,6 +2683,238 @@ describe("createSyncTunnelClientService", () => {
         ok: true,
         detail: expect.stringMatching(/^Relay end-to-end verified in \d+ms\.$/),
       });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("relay control eviction (close 4505)", () => {
+  const REARM_MS = 5 * CONTROL_REPLACED_RETRY_BASE_MS;
+  const createEvictedService = (sockets: StubWebSocket[]) =>
+    createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlReplacedRearmMs: REARM_MS,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+  it("does not redial immediately after being replaced by another process", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const service = createEvictedService(sockets);
+
+    try {
+      await service.start();
+      sockets[0]!.open();
+      sockets[0]!.remoteClose(RELAY_CLOSE_CONTROL_REPLACED, "replaced by newer host");
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The old schedule redialed within milliseconds, which evicted the rival
+      // right back — the ~4s war that left relay dead for both processes.
+      expect(sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(sockets).toHaveLength(1);
+
+      expect(service.getStatus()).toMatchObject({
+        connected: false,
+        controlSuppressed: true,
+        controlSuppressedReason: RELAY_CONTROL_REPLACED_MESSAGE,
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries on the 60s floor and stops entirely after the re-attempt budget", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    // Zero jitter so the retry lands exactly on the floor.
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const sockets: StubWebSocket[] = [];
+    const service = createEvictedService(sockets);
+
+    try {
+      await service.start();
+      for (let round = 0; round <= MAX_CONTROL_REPLACED_REATTEMPTS; round += 1) {
+        const before = sockets.length;
+        const socket = sockets[before - 1]!;
+        socket.open();
+        socket.remoteClose(RELAY_CLOSE_CONTROL_REPLACED, "replaced by newer host");
+        await vi.advanceTimersByTimeAsync(CONTROL_REPLACED_RETRY_BASE_MS - 1_000);
+        // Nothing before the floor, on every single round.
+        expect(sockets).toHaveLength(before);
+        await vi.advanceTimersByTimeAsync(1_001);
+        if (round < MAX_CONTROL_REPLACED_REATTEMPTS) {
+          expect(sockets).toHaveLength(before + 1);
+        }
+      }
+
+      // 1 initial dial + MAX_CONTROL_REPLACED_REATTEMPTS retries, then silence
+      // until the re-arm interval. The final round already consumed
+      // CONTROL_REPLACED_RETRY_BASE_MS of it.
+      expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 1);
+      await vi.advanceTimersByTimeAsync(REARM_MS - CONTROL_REPLACED_RETRY_BASE_MS - 1_000);
+      expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 1);
+      expect(service.getStatus().controlSuppressedReason).toBe(RELAY_CONTROL_REPLACED_MESSAGE);
+
+      // Then it tries again: the rival usually exits, and giving up forever
+      // would leave relay dead while the UI claims quitting it brings it back.
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(sockets).toHaveLength(MAX_CONTROL_REPLACED_REATTEMPTS + 2);
+      expect(service.getStatus().controlSuppressed).toBe(false);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports one coarse analytics event per suppression episode and no relay identifiers", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const sockets: StubWebSocket[] = [];
+    const captureAnalytics = vi.fn();
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlReplacedRearmMs: REARM_MS,
+      captureAnalytics,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      for (let round = 0; round <= MAX_CONTROL_REPLACED_REATTEMPTS; round += 1) {
+        sockets[sockets.length - 1]!.open();
+        sockets[sockets.length - 1]!.remoteClose(RELAY_CLOSE_CONTROL_REPLACED, "replaced by newer host");
+        await vi.advanceTimersByTimeAsync(CONTROL_REPLACED_RETRY_BASE_MS + 1);
+      }
+
+      // Four evictions, ONE event: the product fact is the episode, not the
+      // retry. Raw close reasons, the relay URL and the machineKey stay local.
+      expect(captureAnalytics).toHaveBeenCalledTimes(1);
+      const captured = captureAnalytics.mock.calls[0]![0] as Record<string, unknown>;
+      expect(captured).toMatchObject({
+        event: "ade_relay_suppressed",
+        surface: "api",
+        properties: { attempt: MAX_CONTROL_REPLACED_REATTEMPTS + 1, code: "control_replaced" },
+      });
+      expect(Object.keys(captured.properties as object).sort()).toEqual(["attempt", "code"]);
+      expect(JSON.stringify(captured)).not.toContain("replaced by newer host");
+      expect(JSON.stringify(captured)).not.toContain(service.getStatus().machineKey);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-arms and dials promptly once this process wins the sync host lease", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const service = createEvictedService(sockets);
+
+    try {
+      await service.start();
+      sockets[0]!.open();
+      sockets[0]!.remoteClose(RELAY_CLOSE_CONTROL_REPLACED, "replaced by newer host");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(service.getStatus().controlSuppressed).toBe(true);
+      expect(sockets).toHaveLength(1);
+
+      service.clearControlSuppression();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sockets).toHaveLength(2);
+      expect(service.getStatus()).toMatchObject({
+        controlSuppressed: false,
+        controlSuppressedReason: null,
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats an ordinary close as a network drop, not an eviction", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      sockets[0]!.open();
+      sockets[0]!.remoteClose(1006, "connection reset");
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(sockets).toHaveLength(2);
+      expect(service.getStatus().controlSuppressed).toBe(false);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a control outage start that survives repeated retries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 503 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      reconnectBackoffMs: () => 1_000,
+    });
+
+    try {
+      await service.start();
+      const failingSince = service.getStatus().controlFailingSinceMs;
+      expect(failingSince).toBe(Date.parse("2026-07-29T00:00:00.000Z"));
+
+      // lastFailureAt restamps on every retry; the outage start must not, or
+      // the desktop banner can never tell a flap from a dead relay.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(service.getStatus().controlFailingSinceMs).toBe(failingSince);
+      expect(service.getStatus().lastFailureAt).not.toBe(null);
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;

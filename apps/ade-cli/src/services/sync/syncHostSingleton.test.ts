@@ -7,7 +7,9 @@ import {
   buildQuitCommand,
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
+  holdsSyncHostSingleton,
   isSameChannelSyncHostOwner,
+  onSyncHostSingletonAuthorityChanged,
   type SyncHostSingletonOwner,
 } from "./syncHostSingleton";
 
@@ -165,6 +167,53 @@ describe("sync host singleton", () => {
 
     lease.dispose();
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe("sync host authority", () => {
+  const acquire = (lockPath: string) =>
+    acquireSyncHostSingleton(
+      { projectRoot: "/Users/admin/Projects/ADE" },
+      { lockPath, pidAlive: () => false, scanListeners: () => [] },
+    );
+
+  it("reports authority only while a lease is held", () => {
+    expect(holdsSyncHostSingleton()).toBe(false);
+    const lease = acquire(tempLockPath());
+    expect(holdsSyncHostSingleton()).toBe(true);
+    lease.dispose();
+    expect(holdsSyncHostSingleton()).toBe(false);
+  });
+
+  it("notifies subscribers on authority transitions only", () => {
+    const seen: boolean[] = [];
+    const unsubscribe = onSyncHostSingletonAuthorityChanged((held) => seen.push(held));
+
+    const first = acquire(tempLockPath());
+    const second = acquire(tempLockPath());
+    // Two leases, one transition: subsystems care about "is it me", not "how
+    // many scopes".
+    expect(seen).toEqual([true]);
+
+    first.dispose();
+    expect(seen).toEqual([true]);
+    second.dispose();
+    expect(seen).toEqual([true, false]);
+
+    unsubscribe();
+    acquire(tempLockPath()).dispose();
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("survives a throwing subscriber", () => {
+    const unsubscribe = onSyncHostSingletonAuthorityChanged(() => {
+      throw new Error("subscriber exploded");
+    });
+    const lease = acquire(tempLockPath());
+    expect(holdsSyncHostSingleton()).toBe(true);
+    lease.dispose();
+    expect(holdsSyncHostSingleton()).toBe(false);
+    unsubscribe();
   });
 });
 

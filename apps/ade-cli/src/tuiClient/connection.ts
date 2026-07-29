@@ -6,6 +6,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  clearRuntimeSpawnRecord,
+  hasRecentRuntimeSpawn,
+  recordRuntimeSpawn,
+} from "../services/runtime/runtimeSpawnRecord";
+import { withSocketSpawnLock } from "../services/runtime/socketSpawnLock";
 import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext, RuntimeEventGapMetadata } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
@@ -534,6 +540,14 @@ function attachedRuntimeMismatchReason(
 }
 
 function spawnDaemon(socketPath: string): boolean {
+  // `ade code` has its own spawn path, so the machine CLI's spawn record is the
+  // only thing that stops the two from racing each other into duplicate brains.
+  // The spawn lock below only serializes the *first* attempt: when a cold brain
+  // takes longer to bind than tryDaemon's ~4.7s retry budget (routine on a large
+  // repo), the lock is released, the recovery path spawns a second brain, and a
+  // concurrent `ade code` spawns a third. Report success so the caller still
+  // runs its connect-with-retry against the brain that is already coming up.
+  if (hasRecentRuntimeSpawn(socketPath)) return true;
   const cliEntrypoint = resolveCliEntrypoint();
   const buildHash = computeCliEntrypointBuildHash();
   const nodeArgs =
@@ -559,81 +573,9 @@ function spawnDaemon(socketPath: string): boolean {
       env,
     },
   );
+  if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
   child.unref();
   return true;
-}
-
-type SocketSpawnLockOwner = {
-  id: string | null;
-  pid: number | null;
-};
-
-function createSocketSpawnLockOwner(): SocketSpawnLockOwner {
-  return {
-    id: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    pid: process.pid,
-  };
-}
-
-function serializeSocketSpawnLockOwner(owner: SocketSpawnLockOwner): string {
-  return JSON.stringify({
-    id: owner.id,
-    pid: owner.pid,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-function readSocketSpawnLockOwner(lockPath: string): SocketSpawnLockOwner {
-  const raw = fs.readFileSync(lockPath, "utf8");
-  try {
-    const parsed = JSON.parse(raw) as { id?: unknown; pid?: unknown };
-    return {
-      id: typeof parsed.id === "string" ? parsed.id : null,
-      pid: typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0
-        ? parsed.pid
-        : null,
-    };
-  } catch {
-    const [pidLine] = raw.split(/\r?\n/u);
-    const pid = Number.parseInt(pidLine ?? "", 10);
-    return {
-      id: null,
-      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
-    };
-  }
-}
-
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
-  try {
-    const stat = fs.statSync(lockPath);
-    const owner = readSocketSpawnLockOwner(lockPath);
-    if (owner.pid != null && processExists(owner.pid)) return false;
-    if (owner.pid == null && Date.now() - stat.mtimeMs <= 30_000) return false;
-    fs.unlinkSync(lockPath);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
-  }
-}
-
-function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null): void {
-  if (!ownerId) return;
-  try {
-    const owner = readSocketSpawnLockOwner(lockPath);
-    if (owner.id !== ownerId) return;
-    fs.unlinkSync(lockPath);
-  } catch {
-    // ignore cleanup races
-  }
 }
 
 async function probeLocalSocketLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
@@ -675,40 +617,6 @@ async function unlinkStaleLocalSocket(socketPath: string): Promise<boolean> {
   }
 }
 
-async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
-  if (socketPath.startsWith("tcp://")) return await task();
-  const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 10_000;
-  const owner = createSocketSpawnLockOwner();
-  let fd: number | null = null;
-  while (fd == null) {
-    try {
-      fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw error;
-      if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
-  try {
-    return await task();
-  } finally {
-    if (fd != null) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-    }
-    unlinkSocketSpawnLockIfOwner(lockPath, owner.id);
-  }
-}
 
 async function connectAttachedSocket(args: {
   socketPath: string;
@@ -1025,6 +933,11 @@ export async function connectToAde(args: {
       return await tryDaemon(1);
     } catch (firstError) {
       if (firstError instanceof StaleAdeSocketError) {
+        // tryDaemon ran with shutdownOnStale, so that brain was just asked to
+        // exit. Its pid can outlive the request by a moment, and if it was one
+        // we spawned the record would suppress the replacement this path exists
+        // to start.
+        clearRuntimeSpawnRecord(machineSocketPath);
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       const repaired = await repairService();

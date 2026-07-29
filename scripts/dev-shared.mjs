@@ -473,8 +473,46 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   });
   child.once("error", () => {});
   child.unref();
-  await waitForSocket(socketPath);
+  try {
+    await waitForSocket(socketPath);
+  } catch (error) {
+    // The child is detached and unref'd, so a launcher that gives up here used
+    // to walk away and leave an immortal brain behind — one per failed dev
+    // start, each still signed in and still dialing the relay. Reap what we
+    // spawned before surfacing the failure.
+    await terminateSpawnedRuntime(child);
+    throw error;
+  }
   return true;
+}
+
+async function terminateSpawnedRuntime(child) {
+  const pid = child?.pid;
+  if (!pid) return;
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === "EPERM";
+    }
+  };
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (!alive()) return;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
 }
 
 export function devRuntimeEnv(socketPath, projectRoot) {

@@ -1624,7 +1624,19 @@ export async function createAdeRuntime(args: {
           ? { userId, expiresAt: refreshed.expiresAt }
           : null;
       },
-      onPublicationStateChanged: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
+      onPublicationStateChanged: () => {
+        // Relay state changes are machine-level; without this nudge an idle
+        // machine emits no sync-status snapshot and the desktop relay banner
+        // never appears (or never clears).
+        syncService?.notifyRouteStateChanged();
+        resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
+      },
+      // The analytics service is machine-scoped and shared, so capturing it in
+      // this one-per-machine factory closure is safe (unlike the listener
+      // accessors above, which is why those moved to attachHostListener).
+      captureAnalytics: (input) => {
+        productAnalyticsService.captureInternal(input);
+      },
     });
     return service;
   });
@@ -1639,19 +1651,21 @@ export async function createAdeRuntime(args: {
   if (resolvedArgs.syncRuntime?.sharedSyncListener) {
     syncTunnelClientService.attachHostListener(resolvedArgs.syncRuntime.sharedSyncListener);
   }
-  // Only the runtime that actually hosts phone sync (owns the brain-level
-  // shared listener) may register the relay tunnel. The relay DO keeps ONE
-  // host socket per machineKey (last wins), so a headless one-shot CLI
-  // runtime or embedded fallback starting the tunnel would steal the relay
-  // from `ade serve` and then fail every phone /connect (no sync port).
-  const canHostRelayTunnel = resolvedArgs.syncRuntime?.sharedSyncListener != null;
-  if (canHostRelayTunnel) {
-    void syncTunnelClientService.start().catch((error) => {
-      logger.warn("sync.tunnel_start_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
+  // Only the runtime that holds the machine-wide sync host lease may register
+  // the relay tunnel. See relayTunnelAuthorityGate for why the old
+  // "has a listener" gate let secondary brains evict the real host.
+  const [{ createRelayTunnelAuthorityGate }, { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }] =
+    await Promise.all([
+      import("./services/sync/relayTunnelAuthorityGate"),
+      import("./services/sync/syncHostSingleton"),
+    ]);
+  const relayTunnelGate = createRelayTunnelAuthorityGate({
+    hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
+    tunnel: syncTunnelClientService,
+    holdsLease: holdsSyncHostSingleton,
+    subscribe: onSyncHostSingletonAuthorityChanged,
+    logger,
+  });
 
   let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
@@ -1882,7 +1896,10 @@ export async function createAdeRuntime(args: {
       swallow(() => detachPushSources());
       // The tunnel client is machine-level and shared across scopes — closing
       // one project must not sever the relay for the others. The daemon's
-      // shutdown path (disposeServeResources) stops it.
+      // shutdown path (disposeServeResources) stops it. Drop only THIS scope's
+      // lease subscription, or a disposed scope could later stop the shared
+      // tunnel on a lease transition it no longer has any business observing.
+      swallow(() => relayTunnelGate.dispose());
       swallow(() => automationIngressService?.dispose());
       swallow(() => linearIngressService?.stop());
       swallow(() => automationService?.dispose());

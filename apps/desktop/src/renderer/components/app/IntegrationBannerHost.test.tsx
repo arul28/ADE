@@ -6,6 +6,7 @@ import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubStatus,
+  SyncRouteHealth,
 } from "../../../shared/types";
 import { IntegrationBannerHost, type IntegrationBannerHostProps } from "./IntegrationBannerHost";
 
@@ -85,7 +86,27 @@ function baseProps(overrides: Partial<IntegrationBannerHostProps> = {}): Integra
     aiStatusLoaded: true,
     providerMode: "guest",
     aiMockProvider: false,
+    relayHealth: null,
     navigate: vi.fn() as unknown as IntegrationBannerHostProps["navigate"],
+    ...overrides,
+  };
+}
+
+function makeRelayHealth(
+  overrides: Partial<SyncRouteHealth["relay"]> = {},
+): SyncRouteHealth["relay"] {
+  return {
+    enabled: true,
+    relayControlConnected: false,
+    relayBridgeValidated: false,
+    lastFailureAt: null,
+    skipReason: null,
+    lastControlError: null,
+    lastControlOpenAt: null,
+    lastBridgeValidationAt: null,
+    relayControlSuppressed: false,
+    relayControlSuppressedReason: null,
+    relayControlFailingSinceMs: null,
     ...overrides,
   };
 }
@@ -161,5 +182,129 @@ describe("IntegrationBannerHost", () => {
     expect(screen.queryByText("No AI provider configured")).toBeNull();
     const stored = window.localStorage.getItem("ade.bannerDismiss.v1");
     expect(stored).toContain("ai-provider:/project/a");
+  });
+});
+
+describe("IntegrationBannerHost relay-offline banner", () => {
+  const NOW = new Date("2026-07-20T12:00:00.000Z").getTime();
+
+  beforeEach(() => {
+    cleanup();
+    window.localStorage.clear();
+    // No GitHub App API → the relay banner is the only candidate in these cases.
+    setAdeMock(undefined);
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  async function renderWithRelay(relay: SyncRouteHealth["relay"] | null): Promise<void> {
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps({ relayHealth: relay })} />);
+    });
+  }
+
+  it("surfaces the process-conflict case immediately, with no grace period", async () => {
+    await renderWithRelay(
+      makeRelayHealth({
+        relayControlSuppressed: true,
+        relayControlSuppressedReason: "Another ADE process owns the relay connection for this machine.",
+        relayControlFailingSinceMs: NOW - 1_000,
+      }),
+    );
+
+    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
+    expect(
+      screen.getByText(/Quit the other ADE app or brain on this machine/),
+    ).toBeTruthy();
+  });
+
+  it("stays quiet while relay has only been down for 30 seconds", async () => {
+    await renderWithRelay(makeRelayHealth({ relayControlFailingSinceMs: NOW - 30_000 }));
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("shows the outage banner once relay has been down for five minutes", async () => {
+    await renderWithRelay(
+      makeRelayHealth({
+        relayControlFailingSinceMs: NOW - 5 * 60_000,
+        lastControlError: "relay handshake timed out",
+      }),
+    );
+
+    expect(screen.getByText("ADE Relay is not connected")).toBeTruthy();
+    expect(screen.getByText("relay handshake timed out")).toBeTruthy();
+  });
+
+  it("says nothing while the relay control is connected", async () => {
+    await renderWithRelay(
+      makeRelayHealth({
+        relayControlConnected: true,
+        relayBridgeValidated: true,
+        relayControlFailingSinceMs: null,
+      }),
+    );
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says nothing when the relay is disabled, however long it has been down", async () => {
+    await renderWithRelay(
+      makeRelayHealth({ enabled: false, relayControlFailingSinceMs: NOW - 60 * 60_000 }),
+    );
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says nothing before the first sync snapshot lands", async () => {
+    await renderWithRelay(null);
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("raises the banner on its own once the grace window elapses", async () => {
+    await renderWithRelay(makeRelayHealth({ relayControlFailingSinceMs: NOW - 30_000 }));
+    expect(screen.queryByRole("status")).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(95_000);
+    });
+
+    expect(screen.getByText("ADE Relay is not connected")).toBeTruthy();
+  });
+
+  it("keeps a dismissed outage from hiding a later process conflict", async () => {
+    const { rerender } = render(
+      <IntegrationBannerHost
+        {...baseProps({ relayHealth: makeRelayHealth({ relayControlFailingSinceMs: NOW - 5 * 60_000 }) })}
+      />,
+    );
+    await act(async () => {});
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Dismiss: ADE Relay is not connected" }).click();
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+
+    await act(async () => {
+      rerender(
+        <IntegrationBannerHost
+          {...baseProps({
+            relayHealth: makeRelayHealth({
+              relayControlSuppressed: true,
+              relayControlSuppressedReason: "Another ADE process owns the relay connection for this machine.",
+              relayControlFailingSinceMs: NOW - 5 * 60_000,
+            }),
+          })}
+        />,
+      );
+    });
+
+    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
   });
 });

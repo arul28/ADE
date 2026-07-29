@@ -124,6 +124,7 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
+import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
@@ -13350,6 +13351,23 @@ function createSocketConnection(socketPath: string): net.Socket {
   return net.createConnection(socketPath);
 }
 
+/**
+ * Refuse to run a brain whose RPC socket is already owned. Shared by the
+ * pre-startup claim and the bind path so the error contract (message, cause,
+ * `socket_owned_by_other` code that project recovery keys on) lives once.
+ */
+async function assertBrainSocketUnowned(socketPath: string): Promise<void> {
+  const liveness = await probeLocalSocketForLiveness(socketPath);
+  if (liveness !== "live" && liveness !== "unknown") return;
+  throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
+    socketPath,
+    cause: liveness === "live"
+      ? "Another ADE brain is accepting connections on this socket."
+      : "ADE could not prove the existing socket is stale.",
+    nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+  }), { code: "socket_owned_by_other" as const });
+}
+
 async function probeLocalSocketForLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
   if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
     return "unknown";
@@ -14986,6 +15004,22 @@ async function spawnMachineRuntimeDaemon(
 ): Promise<boolean> {
   if (socketPath.startsWith("tcp://")) return false;
 
+  // Every failing `ade` command lands here, and the child is detached and
+  // unref'd — so without this check a burst of failures leaves a burst of
+  // immortal brains, all of them fighting over the same relay slot. If we
+  // already spawned one for this socket and it is still alive and recent, let
+  // it finish coming up instead of adding a rival.
+  //
+  // Report success: a spawn for this socket IS in flight, so the caller should
+  // go on to its connect-with-retry rather than fail immediately. Returning
+  // false here would turn a slow brain start into a hard error for the second
+  // of two concurrent commands — and on the build-mismatch path, where the old
+  // brain has already been shut down, would leave the machine with none.
+  const [{ hasRecentRuntimeSpawn, recordRuntimeSpawn }, { withSocketSpawnLock }] = await Promise.all([
+    import("./services/runtime/runtimeSpawnRecord"),
+    import("./services/runtime/socketSpawnLock"),
+  ]);
+
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
   const { args, buildHash: runtimeBuildHash } =
@@ -15014,14 +15048,23 @@ async function spawnMachineRuntimeDaemon(
     delete env.ADE_RUNTIME_BUILD_HASH;
   }
 
-  const child = spawn(serviceCommand.command, args, {
-    detached: true,
-    stdio: "ignore",
-    env,
+  // The record check and the spawn must be ONE atomic claim. Two CLI processes
+  // reaching an absent record concurrently would otherwise both pass the check
+  // and both launch a detached brain — the exact burst the record exists to
+  // prevent, and on named-pipe platforms the loser cannot even use the socket
+  // liveness abort to exit.
+  return await withSocketSpawnLock(socketPath, async () => {
+    if (hasRecentRuntimeSpawn(socketPath)) return true;
+    const child = spawn(serviceCommand.command, args, {
+      detached: true,
+      stdio: "ignore",
+      env,
+    });
+    child.once("error", () => {});
+    if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
+    child.unref();
+    return true;
   });
-  child.once("error", () => {});
-  child.unref();
-  return true;
 }
 
 async function connectMachineRuntimeDaemon(
@@ -15087,6 +15130,11 @@ async function connectMachineRuntimeDaemon(
         throw manualMachineRuntimeSpawnBlockedError(socketPath);
       }
       await shutdownMachineRuntimeDaemon(client);
+      // We just shut a brain down on purpose. If it was one we spawned, its
+      // record would otherwise suppress the very replacement this path exists
+      // to start, because the pid can outlive the shutdown by a moment.
+      const { clearRuntimeSpawnRecord } = await import("./services/runtime/runtimeSpawnRecord");
+      clearRuntimeSpawnRecord(socketPath);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
@@ -15986,6 +16034,11 @@ async function runServe(
     filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Held only while this brain hosts phone sync WITHOUT a project scope (a
+  // scope's sync service owns its own lease). Machine-exclusive subsystems
+  // gate on holding one or the other.
+  let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
       "sync_disabled",
@@ -16091,7 +16144,22 @@ async function runServe(
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
     if (!activeScope && sharedSyncListener) {
-      await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      // Binding the shared listener IS hosting phone sync, even with no project
+      // scope to attach to it. Take the machine-wide lease first so this path
+      // has the same exclusivity as the scoped one — otherwise a projectless
+      // brain would bind the port, publish itself, and dial the relay while
+      // another brain legitimately held the lease. Throwing here is correct:
+      // the startup loop treats a conflict as retryable and waits the other
+      // brain out.
+      const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
+      brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
+      const listenerPort = await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      brainSyncHostLease.updatePort(listenerPort);
+    } else if (activeScope && brainSyncHostLease) {
+      // A scope took over hosting and holds its own lease; drop the
+      // projectless one so the lock file describes the real owner.
+      brainSyncHostLease.dispose();
+      brainSyncHostLease = null;
     }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
@@ -16100,8 +16168,12 @@ async function runServe(
     return activeScope ?? null;
   };
   const disposeServeResources = async () => {
+    releaseAccountPublisherAuthoritySubscription?.();
+    releaseAccountPublisherAuthoritySubscription = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
+    brainSyncHostLease?.dispose();
+    brainSyncHostLease = null;
     // Before scopes detach (which clears the run map): best-effort Live
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
@@ -16164,6 +16236,21 @@ async function runServe(
     });
   };
 
+  // Claim the RPC socket before entering the sync-host startup loop, not after.
+  // That loop retries forever by design (so sync recovers when a rival brain
+  // exits), which meant a brain whose socket was already owned never reached
+  // the bind check below and simply lived on as a zombie — we found 18 of them
+  // stacked up on one dev socket, all of them still dialing the relay. A brain
+  // that cannot own its socket has no reason to exist, so fail fast.
+  if (!isAdeRuntimeNamedPipePath(socketPath) && fs.existsSync(socketPath)) {
+    try {
+      await assertBrainSocketUnowned(socketPath);
+    } catch (error) {
+      await disposeServeResources();
+      throw error;
+    }
+  }
+
   if (syncEnabled) {
     try {
       const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
@@ -16175,12 +16262,33 @@ async function runServe(
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
         getServiceMainPid: getRuntimeServiceMainPid,
+        // The pre-loop claim above only sees a socket that ALREADY existed. Two
+        // brains started together on a fresh path both pass it, then one wins
+        // the lease and binds while the loser waits here forever — never
+        // reaching its own bind check. Re-check while we wait, and only for a
+        // provably live owner so a probe hiccup can't make a brain quit on
+        // itself.
+        abortIf: async () => {
+          if (isAdeRuntimeNamedPipePath(socketPath) || !fs.existsSync(socketPath)) return false;
+          return await probeLocalSocketForLiveness(socketPath) === "live";
+        },
       });
     } catch (error: unknown) {
       // Cross-channel conflict (another build's live brain owns mobile sync):
       // real builds never run sync-less, so fail before publishing ade.sock.
-      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+      const [{ SyncHostSingletonConflictError }, { SyncHostStartupAbortedError }] = await Promise.all([
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/syncHostStartupLoop"),
+      ]);
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof SyncHostStartupAbortedError) {
+        await disposeServeResources();
+        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
+          socketPath,
+          cause: "Another ADE brain took this socket while this one waited for mobile sync.",
+          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+        }), { code: "socket_owned_by_other" as const });
+      }
       if (error instanceof SyncHostSingletonConflictError) {
         await disposeServeResources();
         throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
@@ -16200,16 +16308,7 @@ async function runServe(
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     if (fs.existsSync(socketPath)) {
-      const liveness = await probeLocalSocketForLiveness(socketPath);
-      if (liveness === "live" || liveness === "unknown") {
-        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-          socketPath,
-          cause: liveness === "live"
-            ? "Another ADE brain is accepting connections on this socket."
-            : "ADE could not prove the existing socket is stale.",
-          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        }), { code: "socket_owned_by_other" as const });
-      }
+      await assertBrainSocketUnowned(socketPath);
       try {
         fs.unlinkSync(socketPath);
       } catch {}
@@ -16245,24 +16344,78 @@ async function runServe(
       const activeProject = projectRegistry.get(activeProjectId);
       return activeProject ? [activeProject.rootPath] : [];
     };
-    accountMachinePublisher = createBrainAccountMachinePublisherService({
-      secretsDir: layout.secretsDir,
-      projectRoots: accountProjectRoots,
-      isSyncEnabled: () => syncEnabled,
-      logger: headlessProjectLogger,
-      getSnapshot: async () => {
-        const activeScope = await scopeRegistry.resolveActiveSyncHost();
-        return await activeScope?.runtime.syncService?.getStatus({
-          includeTransferReadiness: false,
-        }) ?? null;
-      },
-      getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
-      directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
-      captureAnalytics: (input) => {
-        brainProductAnalytics.captureInternal(input);
-      },
+    // Publishing this machine to the account directory advertises "reach me
+    // here", so like the relay tunnel it belongs to whichever brain actually
+    // holds the machine-wide sync host lease. A second brain publishing its own
+    // endpoints points phones at a runtime that does not host sync.
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+      await Promise.all([
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/relayTunnelAuthorityGate"),
+      ]);
+    const startAccountMachinePublisher = (): void => {
+      if (accountMachinePublisher) return;
+      accountMachinePublisher = createBrainAccountMachinePublisherService({
+        secretsDir: layout.secretsDir,
+        projectRoots: accountProjectRoots,
+        isSyncEnabled: () => syncEnabled,
+        logger: headlessProjectLogger,
+        getSnapshot: async () => {
+          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          return await activeScope?.runtime.syncService?.getStatus({
+            includeTransferReadiness: false,
+          }) ?? null;
+        },
+        getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+        captureAnalytics: (input) => {
+          brainProductAnalytics.captureInternal(input);
+        },
+      });
+      accountMachinePublisher.start();
+    };
+    // A project switch deactivates the previous sync host before activating the
+    // target, so authority momentarily reads false inside one brain. Without the
+    // grace the publisher would be destroyed and rebuilt on every switch, and
+    // `ade doctor` would report "Account-directory publishing has not started"
+    // in the gap. Only a loss that outlives the handoff is a real one.
+    let accountPublisherReleaseTimer: NodeJS.Timeout | null = null;
+    const cancelAccountPublisherRelease = (): void => {
+      if (!accountPublisherReleaseTimer) return;
+      clearTimeout(accountPublisherReleaseTimer);
+      accountPublisherReleaseTimer = null;
+    };
+    const unsubscribeAccountPublisherAuthority = onSyncHostSingletonAuthorityChanged((held) => {
+      if (held) {
+        cancelAccountPublisherRelease();
+        startAccountMachinePublisher();
+        return;
+      }
+      if (!accountMachinePublisher || accountPublisherReleaseTimer) return;
+      accountPublisherReleaseTimer = setTimeout(() => {
+        accountPublisherReleaseTimer = null;
+        if (holdsSyncHostSingleton()) return;
+        headlessProjectLogger.info("account_publisher.stopped_without_sync_host_lease", {
+          reason: "This brain no longer holds the machine-wide sync host lease.",
+        });
+        // The publisher cannot be restarted after dispose, so a later lease
+        // acquisition rebuilds it above.
+        accountMachinePublisher?.dispose();
+        accountMachinePublisher = null;
+      }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
+      accountPublisherReleaseTimer.unref?.();
     });
-    accountMachinePublisher.start();
+    releaseAccountPublisherAuthoritySubscription = () => {
+      cancelAccountPublisherRelease();
+      unsubscribeAccountPublisherAuthority();
+    };
+    if (holdsSyncHostSingleton()) {
+      startAccountMachinePublisher();
+    } else {
+      headlessProjectLogger.info("account_publisher.start_skipped", {
+        reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
+      });
+    }
   }
 
   process.stderr.write(
@@ -16911,6 +17064,18 @@ function formatSyncStatus(value: unknown): string {
           relayEndToEndRoundTripMs == null ? "" : ` (${relayEndToEndRoundTripMs}ms)`
         }`
       : "not yet verified";
+  // Start of the CURRENT uninterrupted control outage. The `relay control
+  // error` row can't answer "how long has this been broken", because the brain
+  // restamps its failure on every retry — and that duration is exactly what
+  // separates an ordinary sleep/wake redial from a route that is really down.
+  // Null while relay control is connected.
+  const relayFailingSinceMs = typeof relay.relayControlFailingSinceMs === "number"
+    && Number.isFinite(relay.relayControlFailingSinceMs)
+    ? relay.relayControlFailingSinceMs
+    : null;
+  const relayFailingSince = relayFailingSinceMs == null
+    ? null
+    : relativeTime(new Date(relayFailingSinceMs).toISOString());
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;
@@ -16940,6 +17105,7 @@ function formatSyncStatus(value: unknown): string {
     ["tailscale", tailscaleState],
     ["relay", relayState],
     ["relay control error", relay.lastControlError],
+    ["relay failing since", relayFailingSince],
     ["relay control opened", relay.lastControlOpenAt],
     ["relay bridge validated", relay.lastBridgeValidationAt],
     ["relay end-to-end", relayEndToEndState],

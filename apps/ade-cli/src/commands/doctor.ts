@@ -636,7 +636,13 @@ function relayRow(relay: DoctorInput["relayHealth"]): DoctorRow {
       detail: relay.skipReason ?? "disabled",
     };
   }
-  const failure = relay.relayEndToEndFailure
+  // Suppression outranks every other failure: while another ADE process owns
+  // this machine's relay slot, nothing downstream can succeed and no other
+  // reason tells the user what to do about it.
+  const failure = (relay.relayControlSuppressed === true
+    ? relay.relayControlSuppressedReason ?? "Relay control is suppressed."
+    : null)
+    ?? relay.relayEndToEndFailure
     ?? relay.skipReason
     ?? relay.lastControlError
     ?? null;

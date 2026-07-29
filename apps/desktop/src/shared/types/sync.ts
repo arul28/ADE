@@ -414,6 +414,21 @@ export type SyncRouteHealth = {
     lastControlError: string | null;
     lastControlOpenAt: string | null;
     lastBridgeValidationAt: string | null;
+    /**
+     * The relay control is deliberately NOT redialing. Set when the relay
+     * evicted this host with close code 4505 ("replaced by newer host"),
+     * which means another ADE process on this machine claimed the same
+     * machineKey. Redialing there is self-harm: the two processes evict each
+     * other in a tight loop and relay stays down for both.
+     */
+    relayControlSuppressed?: boolean;
+    relayControlSuppressedReason?: string | null;
+    /**
+     * Epoch ms when the current uninterrupted control outage began; null while
+     * connected. Distinct from `lastFailureAt`, which restamps on every failed
+     * attempt and so can never measure how long relay has been down.
+     */
+    relayControlFailingSinceMs?: number | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
 };
