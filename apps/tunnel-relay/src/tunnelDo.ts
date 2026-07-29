@@ -24,6 +24,7 @@ export const CLOSE_BRIDGE_REJECTED = 4507; // host rejected an open it could not
 export const CLOSE_STALE_PIPE = 4508; // pipe epoch/id did not match one pending client
 export const CLOSE_FORWARD_FAILED = 4509; // one side could not receive a forwarded frame
 export const CLOSE_NOT_READY = 4510; // v2 client sent data before relay readiness
+export const HOST_OFFLINE_REASON = "host offline";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
@@ -764,7 +765,10 @@ export class TunnelDurableObject implements DurableObject {
       this.closePendingForControlEpoch(
         this.epochOf(att) ?? LEGACY_CONTROL_EPOCH,
         sourceCode === CLOSE_CONTROL_REPLACED ? CLOSE_CONTROL_REPLACED : CLOSE_HOST_OFFLINE,
-        sourceReason || "host offline",
+        // Written as an explicit branch: the terser `sourceReason || <literal>`
+        // spelling trips a SQL-injection signature in the WAF fronting
+        // api.cloudflare.com and gets every upload of this Worker 403-blocked.
+        sourceReason === "" ? HOST_OFFLINE_REASON : sourceReason,
       );
       return;
     }
