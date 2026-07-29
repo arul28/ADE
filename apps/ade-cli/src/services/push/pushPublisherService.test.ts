@@ -1887,6 +1887,14 @@ describe("createPushPublisherService flush", () => {
       phase: "waiting_for_input",
     });
 
+    publisher.handleSessionAttentionResolved("scope-1", "cli-ask-1");
+    await vi.advanceTimersByTimeAsync(200);
+    const resolvedPayload = publish.mock.calls.at(-1)?.[0];
+    expect(resolvedPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "running",
+    });
+
     publisher.dispose();
   });
 

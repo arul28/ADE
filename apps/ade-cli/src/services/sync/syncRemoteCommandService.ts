@@ -3598,8 +3598,10 @@ async function buildLaneListSnapshots(
   lanes: Awaited<ReturnType<ReturnType<typeof createLaneService>["list"]>>,
   options: ListLanesArgs = {},
 ): Promise<LaneListSnapshot[]> {
-  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+  const [rawSessions, chatSessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
     Promise.resolve(args.sessionService.list({ limit: 500 })),
+    args.agentChatService?.listSessions(undefined, { includeAutomation: true }).catch(() => [])
+      ?? Promise.resolve([]),
     options.includeRebaseSuggestions === false
       ? Promise.resolve([])
       : Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? []),
@@ -3611,6 +3613,11 @@ async function buildLaneListSnapshots(
       ? Promise.resolve(null)
       : args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
   ]);
+  const chatBySessionId = new Map(chatSessions.map((chat) => [chat.sessionId, chat] as const));
+  const sessions = rawSessions.map((session) => {
+    const chat = chatBySessionId.get(session.id);
+    return chat ? projectChatOntoSession(session, chat) : session;
+  });
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
   const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
@@ -3684,7 +3691,13 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
 
   return {
     lane,
-    runtime: summarizeLaneRuntime(laneId, sessions),
+    runtime: summarizeLaneRuntime(
+      laneId,
+      sessions.map((session) => {
+        const chat = chatSessions.find((candidate) => candidate.sessionId === session.id);
+        return chat ? projectChatOntoSession(session, chat) : session;
+      }),
+    ),
     stackChain,
     children,
     stateSnapshot: stateSnapshot as LaneStateSnapshotSummary | null,

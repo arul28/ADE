@@ -1887,6 +1887,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
+    handleSessionAttentionResolved(scopeKey: string, sessionId: string): void {
+      if (disposed || !sessionId) return;
+      const run = runs.get(sessionId);
+      if (!run || run.scopeKey !== scopeKey) return;
+      if (run.phase !== "waiting_for_input" && run.phase !== "waiting_for_approval") return;
+      run.phase = "running";
+      run.itemId = null;
+      markRunUpdated(run);
+      clearAlertDedupe(`alert:${sessionId}:approval`);
+      clearAlertDedupe(`alert:${sessionId}:question`);
+      scheduleFlush(true);
+    },
+
     /** Force a flush soon (e.g. right after a device registers). */
     poke(): void {
       scheduleFlush(true);

@@ -931,6 +931,9 @@ export async function createAdeRuntime(args: {
         runtimeState: signal.runtimeState,
       });
     },
+    onSessionUserInput: ({ sessionId }) => {
+      pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
+    },
     diskPressureMonitor,
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
