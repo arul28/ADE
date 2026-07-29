@@ -2219,6 +2219,23 @@ function artifactMatchesAuthorizedOwners(
   );
 }
 
+function listAuthorizedProofArtifactIds(
+  runtime: AdeRuntime,
+  owners: ComputerUseArtifactOwner[],
+): Set<string> {
+  const artifactIds = new Set<string>();
+  for (const owner of owners) {
+    for (const artifact of runtime.computerUseArtifactBrokerService.listArtifacts({
+      ownerKind: owner.kind,
+      ownerId: owner.id,
+      limit: 2000,
+    })) {
+      artifactIds.add(artifact.id);
+    }
+  }
+  return artifactIds;
+}
+
 function branchNameForPrTitle(ref: string | null | undefined): string {
   let value = (ref ?? "").trim();
   value = value.replace(/^refs\/heads\//, "");
@@ -4648,11 +4665,11 @@ async function runTool(args: {
       if (!authorizedOwners.length) {
         throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof listing requires an authenticated owner scope.");
       }
+      const authorizedArtifactIds = listAuthorizedProofArtifactIds(runtime, authorizedOwners);
       return {
-        broken: broken.filter((entry) => {
-          const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId: entry.artifactId })[0] ?? null;
-          return artifactMatchesAuthorizedOwners(artifact, authorizedOwners);
-        }).slice(0, requestedLimit),
+        broken: broken
+          .filter((entry) => authorizedArtifactIds.has(entry.artifactId))
+          .slice(0, requestedLimit),
       };
     }
     return {
@@ -4668,11 +4685,9 @@ async function runTool(args: {
     if (!authorizedOwners.length) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof pruning requires an authenticated owner scope.");
     }
+    const authorizedArtifactIds = listAuthorizedProofArtifactIds(runtime, authorizedOwners);
     const artifactIds = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({ limit: 2000 })
-      .filter((entry) => {
-        const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId: entry.artifactId })[0] ?? null;
-        return artifactMatchesAuthorizedOwners(artifact, authorizedOwners);
-      })
+      .filter((entry) => authorizedArtifactIds.has(entry.artifactId))
       .map((entry) => entry.artifactId);
     return artifactIds.length
       ? runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds })

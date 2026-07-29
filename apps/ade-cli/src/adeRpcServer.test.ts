@@ -1313,9 +1313,11 @@ describe("adeRpcServer", () => {
       failed: [],
       freedBytes: 0,
     }));
-    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts = vi.fn(() => []);
+    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts = vi.fn(() => [
+      { artifactId: owned.id },
+      { artifactId: foreign.id },
+    ]);
     fixture.runtime.computerUseArtifactBrokerService.recoverArtifact = vi.fn();
-    fixture.runtime.computerUseArtifactBrokerService.pruneBrokenArtifacts = vi.fn();
     await initialize(handler, {
       callerId: "chat-1",
       role: "agent",
@@ -1357,6 +1359,30 @@ describe("adeRpcServer", () => {
     await callTool(handler, "delete_computer_use_artifacts", { artifactId: owned.id });
     expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
       artifactIds: [owned.id],
+    });
+
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts.mockClear();
+    const broken = await callTool(handler, "list_broken_computer_use_artifacts", { limit: 10 });
+    expect(broken.structuredContent.broken).toEqual([{ artifactId: owned.id }]);
+    expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts).toHaveBeenCalledTimes(2);
+
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts.mockClear();
+    fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts.mockClear();
+    await callTool(handler, "prune_broken_computer_use_artifacts", {});
+    expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts).toHaveBeenCalledTimes(2);
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: [owned.id],
+    });
+
+    const foreignRecover = await callTool(handler, "recover_computer_use_artifact", {
+      artifactId: foreign.id,
+    });
+    expect(foreignRecover.isError).toBe(true);
+    expect(fixture.runtime.computerUseArtifactBrokerService.recoverArtifact).not.toHaveBeenCalled();
+
+    await callTool(handler, "recover_computer_use_artifact", { artifactId: owned.id });
+    expect(fixture.runtime.computerUseArtifactBrokerService.recoverArtifact).toHaveBeenCalledWith({
+      artifactId: owned.id,
     });
   });
 

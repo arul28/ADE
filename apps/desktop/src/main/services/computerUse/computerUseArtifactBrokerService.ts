@@ -1075,7 +1075,10 @@ export function createComputerUseArtifactBrokerService(args: {
     },
 
     listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
-      const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
+      // Public callers cap ordinary list responses at 200. Internal proof
+      // maintenance may request up to the broken-record audit ceiling so it
+      // can authorize a bounded batch without one lookup per artifact.
+      const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
       let artifacts: ComputerUseArtifactRecord[] = [];
       const artifactId = toOptionalString(args.artifactId);
       if (artifactId) {

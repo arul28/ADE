@@ -370,15 +370,16 @@ describe("StorageSection", () => {
     expect(screen.getByText(/This is your project's live data/)).toBeTruthy();
   });
 
-  it("preserves ADE casing in proof cleanup and directs blocked cleanup to the proof drawer", async () => {
+  it("preserves ADE casing in proof cleanup", async () => {
     installAdeMock();
     render(<StorageSection />);
 
-    const proofRow = (await screen.findByText("Proof and recordings")).parentElement!.parentElement!.parentElement!;
-    fireEvent.click(within(proofRow).getByRole("button", { name: "Remove…" }));
+    const proofCard = (await screen.findByRole("heading", { name: "Proof & attachments" })).closest("section")!;
+    fireEvent.click(within(proofCard).getByRole("button", { name: "Remove…" }));
     expect(await screen.findByRole("dialog", { name: "Remove Proof and recordings" })).toBeTruthy();
-    cleanup();
+  });
 
+  it("directs blocked proof cleanup to the proof drawer", async () => {
     installAdeMock();
     const blockedSnapshot = makeSnapshot();
     const proof = blockedSnapshot.categories.find((category) => category.id === "proof_attachments")!;
