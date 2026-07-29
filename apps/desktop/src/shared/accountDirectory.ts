@@ -209,10 +209,13 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     && value.lastSeenAt <= 8_640_000_000_000_000
     ? value.lastSeenAt
     : null;
+  const customName = optionalBoundedString(value.customName, MAX_LABEL_CHARS);
+  const reportedName = optionalBoundedString(value.name, MAX_LABEL_CHARS);
   return {
     machineKey,
     deviceId: optionalBoundedString(value.deviceId, MAX_ID_CHARS),
-    name: optionalBoundedString(value.name, MAX_LABEL_CHARS),
+    name: customName ?? reportedName,
+    customName,
     platform: optionalBoundedString(value.platform, MAX_LABEL_CHARS),
     deviceType: optionalBoundedString(value.deviceType, MAX_LABEL_CHARS),
     // A present host signing key must never collapse to "absent" — that would
@@ -280,7 +283,7 @@ export function trustedAccountRelayBaseUrls(
   }))];
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+export async function readBoundedAccountDirectoryJson(response: Response): Promise<unknown> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES) {
     throw new Error("Machine directory response exceeded the size limit.");
@@ -456,7 +459,7 @@ export async function fetchAccountMachines(args: {
         message: `Machine directory returned ${response.status}.`,
       };
     }
-    const payload = await readBoundedJson(response);
+    const payload = await readBoundedAccountDirectoryJson(response);
     return { state: "ok", machines: parseAccountMachinesPayload(payload), message: null };
   } catch {
     if (args.signal?.aborted) {

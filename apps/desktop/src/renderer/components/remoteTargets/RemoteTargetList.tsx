@@ -66,6 +66,7 @@ type RemoteTargetListProps = {
   accountMachinesState?: AdeAccountMachinesResult["state"];
   accountSignedIn?: boolean;
   onAccountRequested?: () => void;
+  onAccountMachinesChanged?: () => void;
 };
 
 type ConnectTargetOptions = {
@@ -142,6 +143,7 @@ export function RemoteTargetList({
   accountMachinesState,
   accountSignedIn = false,
   onAccountRequested,
+  onAccountMachinesChanged,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -985,6 +987,7 @@ export function RemoteTargetList({
                 detailOpen={testingId === row.id}
                 onToggleDetail={toggleTest}
                 onConnect={(machine) => void connectAccountMachine(machine)}
+                onRenamed={onAccountMachinesChanged}
               />
             );
           }

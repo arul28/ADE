@@ -6,7 +6,9 @@ import {
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
   createAccountDirectoryCorrelationId,
   fetchAccountMachines,
+  parseAccountMachine,
   parseTrustedAccountDirectoryBaseUrl,
+  readBoundedAccountDirectoryJson,
   resolveTrustedAccountDirectoryBaseUrl,
   trustedAccountRelayBaseUrls,
 } from "../../../shared/accountDirectory";
@@ -708,6 +710,61 @@ export class BrowserAccountClient {
         machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
       };
       return { ok: true, machineKey };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async renameMachine(
+    machineKeyValue: string,
+    customNameValue: string | null,
+  ): Promise<AdeAccountMachine> {
+    const config = this.config;
+    const machineKey = machineKeyValue.trim();
+    const customName = customNameValue?.trim() || null;
+    if (!config || !machineKey) throw new Error("A machine is required.");
+    if (customName && customName.length > 80) {
+      throw new Error("Machine name must be 80 characters or fewer.");
+    }
+    const accessToken = await this.getAccessToken();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+    const correlationId = createAccountDirectoryCorrelationId();
+    try {
+      const response = await (this.options.fetchImpl ?? fetch)(
+        `${config.directoryBaseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
+        {
+          method: "PATCH",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${accessToken}`,
+            "content-type": "application/json",
+            "x-ade-correlation-id": correlationId,
+          },
+          body: JSON.stringify({ customName }),
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        },
+      );
+      if (response.status === 401 || response.status === 403) {
+        await this.expireSession();
+        throw new Error("ADE account session expired.");
+      }
+      if (!response.ok) throw new Error(`Couldn't rename that machine (${response.status}).`);
+      const machine = parseAccountMachine(
+        await readBoundedAccountDirectoryJson(response),
+      );
+      if (!machine) throw new Error("The machine directory returned unreadable data.");
+      this.snapshot = {
+        ...this.snapshot,
+        machines: this.snapshot.machines.map((entry) =>
+          entry.machineKey === machine.machineKey ? machine : entry
+        ),
+      };
+      return machine;
     } finally {
       clearTimeout(timer);
     }

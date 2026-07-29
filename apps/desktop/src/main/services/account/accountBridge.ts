@@ -25,6 +25,7 @@ import type {
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import type { AccountMachineReconciliationResult } from "../remoteRuntime/remoteConnectionService";
 import type {
+  AdeAccountMachine,
   AdeAccountMachinePairResult,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
@@ -133,6 +134,7 @@ export type AccountBridge = {
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
+  renameMachine(machineKey: string, customName: string | null): Promise<AdeAccountMachine>;
   pairMachine(
     machineKey: string,
     options?: AccountBridgePairMachineOptions,
@@ -336,6 +338,13 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     onPairMachineProgress: (listener) => {
       pairMachineProgressListeners.add(listener);
       return () => pairMachineProgressListeners.delete(listener);
+    },
+
+    renameMachine: async (
+      machineKey: string,
+      customName: string | null,
+    ): Promise<AdeAccountMachine> => {
+      return await directoryService().renameMachine(machineKey, customName);
     },
 
     removeMachine: async (machineKey: string): Promise<AdeAccountMachineRemovalResult> => {

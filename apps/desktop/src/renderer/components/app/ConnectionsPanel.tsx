@@ -359,6 +359,7 @@ export function ConnectionsPanel({
             accountMachinesState={accountMachines?.state}
             accountSignedIn={accountStatus.signedIn}
             onAccountRequested={goToAccount}
+            onAccountMachinesChanged={() => void loadAccountMachines()}
           />
         ) : null}
         {tab === "mobile" ? (

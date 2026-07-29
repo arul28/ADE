@@ -247,6 +247,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountLocalMachineIdentity,
+  AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -1855,6 +1856,7 @@ export function registerIpc({
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
+    [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
     [IPC.accountRemoveMachine]: new Set(["machineKey"]),
     [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
   };
@@ -1993,13 +1995,14 @@ export function registerIpc({
           : record.machines,
       };
     }
-    if (channel === IPC.accountPairMachine) {
+    if (channel === IPC.accountPairMachine || channel === IPC.accountRenameMachine) {
       return {
         ...record,
         targetId: "[redacted]",
         machineKey: "[redacted]",
         deviceId: "[redacted]",
         name: "[redacted]",
+        customName: "[redacted]",
       };
     }
     if (channel === IPC.accountGetLocalMachineIdentity) {
@@ -9281,6 +9284,19 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  ipcMain.handle(
+    IPC.accountRenameMachine,
+    async (
+      _event,
+      arg: { machineKey?: string; customName?: string | null },
+    ): Promise<AdeAccountMachine> => {
+      return await accountBridge.renameMachine(
+        arg?.machineKey ?? "",
+        arg?.customName ?? null,
+      );
+    },
+  );
 
   ipcMain.handle(
     IPC.accountPairMachine,

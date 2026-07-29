@@ -332,6 +332,7 @@ import type {
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
   AdeAccountLocalMachineIdentity,
+  AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
@@ -2313,6 +2314,10 @@ declare global {
         cancelLogin: (args: { sessionId: string }) => Promise<AdeAccountStatus>;
         signOut: () => Promise<AdeAccountStatus>;
         listMachines: () => Promise<AdeAccountMachinesResult>;
+        renameMachine: (
+          machineKey: string,
+          customName: string | null,
+        ) => Promise<AdeAccountMachine>;
         getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
         pairMachine: (machineKey: string) => Promise<AdeAccountMachinePairResult>;
         onPairMachineProgress: (

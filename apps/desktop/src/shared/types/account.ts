@@ -53,6 +53,8 @@ export type AdeAccountMachine = {
   machineKey: string;
   deviceId: string | null;
   name: string | null;
+  /** User-authored account-wide display name. Wins over the reported hostname. */
+  customName?: string | null;
   platform: string | null;
   deviceType: string | null;
   /** Long-lived machine identity key used to verify sealed account adoption. */
@@ -85,6 +87,9 @@ export type AdeAccountMachineRemovalResult = {
   ok: true;
   machineKey: string;
 };
+
+/** Updated directory record after changing or clearing its account-wide name. */
+export type AdeAccountMachineRenameResult = AdeAccountMachine;
 
 /** Token-free result of adopting an account-directory machine for paired use. */
 export type AdeAccountMachinePairResult = {

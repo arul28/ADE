@@ -16,6 +16,8 @@ import {
   accountMachineSecureSyncEndpoints,
   createAccountDirectoryCorrelationId,
   fetchAccountMachines,
+  parseAccountMachine,
+  readBoundedAccountDirectoryJson,
   resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
@@ -115,6 +117,7 @@ export type AccountMachineListOptions = {
 };
 
 export type AccountMachineDeleteOptions = AccountMachineListOptions;
+export type AccountMachineRenameOptions = AccountMachineListOptions;
 
 function packagedSafeAccountDirectoryOverride(
   rawUrl: string | null | undefined,
@@ -252,6 +255,109 @@ export class AccountMachineDirectoryService {
       }
       if (options.signal?.aborted) {
         throw new Error("Machine removal was cancelled.");
+      }
+      throw new Error(timedOut ? "Machine directory timed out." : "Couldn't reach the machine directory.");
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async renameMachine(
+    machineKeyValue: string,
+    customNameValue: string | null,
+    options: AccountMachineRenameOptions = {},
+  ): Promise<AdeAccountMachine> {
+    const machineKey = machineKeyValue.trim();
+    if (!machineKey) throw new Error("Machine key is required.");
+    const customName = customNameValue?.trim() || null;
+    if (customName && customName.length > 80) {
+      throw new Error("Machine name must be 80 characters or fewer.");
+    }
+
+    const status = this.account.getStatus();
+    if (!status.signedIn && status.source !== "env-token") {
+      throw new Error("Not signed in — sign in to rename a machine.");
+    }
+    let token: string;
+    try {
+      token = (await this.account.getAccessToken()).trim();
+    } catch {
+      throw new Error("Your ADE account session expired. Sign in again.");
+    }
+    if (!token) throw new Error("Your ADE account session expired. Sign in again.");
+
+    const baseUrl = resolveTrustedAccountDirectoryBaseUrl(
+      packagedSafeAccountDirectoryOverride(
+        this.options.directoryBaseUrl?.() ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+      ),
+    );
+    if (!baseUrl) {
+      throw new Error(
+        "Machine directory isn't configured — set a trusted https directory URL on this machine.",
+      );
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
+    const timeoutMs = Math.max(250, Math.floor(options.timeoutMs ?? 8_000));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    timer.unref?.();
+    const correlationId = createAccountDirectoryCorrelationId();
+    try {
+      const sendRename = (accessToken: string): Promise<Response> =>
+        (this.options.fetchImpl ?? fetch)(
+          `${baseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
+          {
+            method: "PATCH",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${accessToken}`,
+              "content-type": "application/json",
+              "x-ade-correlation-id": correlationId,
+            },
+            body: JSON.stringify({ customName }),
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+            redirect: "error",
+            signal: controller.signal,
+          },
+        );
+      let response = await sendRename(token);
+      if (response.status === 401) {
+        await response.body?.cancel().catch(() => {});
+        let refreshedToken: string | null = null;
+        try {
+          refreshedToken = (await this.account.getAccessToken({ forceRefresh: true })).trim() || null;
+        } catch {
+          // Preserve the original auth-expired classification below.
+        }
+        if (refreshedToken) response = await sendRename(refreshedToken);
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Your ADE account session expired. Sign in again.");
+      }
+      if (!response.ok) {
+        throw new Error(`Machine directory returned ${response.status}.`);
+      }
+      const machine = parseAccountMachine(
+        await readBoundedAccountDirectoryJson(response),
+      );
+      if (!machine) throw new Error("Machine directory returned unreadable data.");
+      return machine;
+    } catch (error) {
+      if (error instanceof Error && /account session expired|directory returned/i.test(error.message)) {
+        throw error;
+      }
+      if (options.signal?.aborted) {
+        throw new Error("Machine rename was cancelled.");
       }
       throw new Error(timedOut ? "Machine directory timed out." : "Couldn't reach the machine directory.");
     } finally {
