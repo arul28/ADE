@@ -6928,6 +6928,7 @@ describe("per-chat runtime routing", () => {
 
   it("streams a pinned This Mac chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T18:02:00.500Z"));
     try {
       const { bridge, invoke, on } = await mountBridge(machineB);
       let streamAttempt = 0;
@@ -7027,6 +7028,62 @@ describe("per-chat runtime routing", () => {
         },
       });
       expect(callback).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("force-pins a retained chat even when its binding is currently active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T18:02:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      const envelope = {
+        sessionId: "retained-chat-on-a",
+        timestamp: "2026-07-27T18:02:00.500Z",
+        event: { type: "text", text: "still from captured project" },
+      };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return {
+            windowId: 1,
+            project: { rootPath: machineA.rootPath, displayName: machineA.displayName },
+            binding: machineA,
+          };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [{
+              id: 1,
+              timestamp: envelope.timestamp,
+              category: "runtime",
+              payload: envelope,
+            }],
+            nextCursor: 1,
+            hasMore: false,
+            eventEpoch: "local-epoch-a",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.app.getWindowSession();
+      const callback = vi.fn();
+      const unsubscribe = bridge.agentChat.onEvent(
+        callback,
+        machineA,
+        { forcePinned: true },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {
+        rootPath: "/repo-a",
+        request: { cursor: 0, limit: 200 },
+      });
+      expect(callback).toHaveBeenCalledWith(envelope);
+      expect(on.mock.calls.some(([channel]) => channel === IPC.agentChatEvent)).toBe(false);
+
+      unsubscribe();
     } finally {
       vi.useRealTimers();
     }
@@ -7254,7 +7311,7 @@ describe("per-chat runtime routing", () => {
         {
           id: "target-b",
           projectId: "project-b",
-          request: { cursor: 0, limit: 200 },
+          request: { cursor: 0, limit: 200, replay: false },
         },
         {
           id: "target-b",
@@ -7264,7 +7321,7 @@ describe("per-chat runtime routing", () => {
         {
           id: "target-b",
           projectId: "project-b",
-          request: { cursor: 0, limit: 200 },
+          request: { cursor: 0, limit: 200, replay: false },
         },
       ]);
       expect(callback).toHaveBeenCalledWith(oldEnvelope);

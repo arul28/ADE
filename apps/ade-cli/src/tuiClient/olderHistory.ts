@@ -1,4 +1,9 @@
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
+import {
+  captureAgentChatHistoryArrivalWatermark,
+  mergeAgentChatHistorySnapshot,
+  orderAgentChatEventsChronologically,
+} from "../../../desktop/src/shared/chatHistoryMerge";
 import { dedupeTuiEvents, tuiEventDedupKey } from "./eventDedup";
 
 /**
@@ -139,10 +144,48 @@ export function mergeDetachedTuiHistoryTail(
   snapshotTail: readonly AgentChatEventEnvelope[],
   bufferedLiveEvents: readonly AgentChatEventEnvelope[],
 ): AgentChatEventEnvelope[] {
-  const combined = [...snapshotTail, ...bufferedLiveEvents];
+  const combined = mergeAgentChatHistorySnapshot(
+    [...snapshotTail],
+    [...snapshotTail, ...bufferedLiveEvents],
+    { identityKey: tuiEventDedupKey },
+  );
   return dedupeTuiEvents(
-    combined,
+    orderAgentChatEventsChronologically(combined),
     Math.min(TUI_LOADED_EVENT_CAP, Math.max(1, combined.length)),
+  );
+}
+
+/**
+ * Freeze the TUI-semantic identities already resident when an asynchronous
+ * history request starts. Include both rendered and pending envelopes at the
+ * call site so a pending pre-request replay cannot masquerade as in-flight
+ * output if it flushes before the snapshot returns.
+ */
+export function captureTuiHistoryArrivalWatermark(
+  events: readonly AgentChatEventEnvelope[],
+): ReadonlySet<string> {
+  return captureAgentChatHistoryArrivalWatermark(events, tuiEventDedupKey);
+}
+
+/**
+ * Reconcile a refreshed authoritative tail with cached scrollback and events
+ * received while hydration was in flight. Older cached rows stay before the
+ * tail; replayed historical rows are never appended after it.
+ */
+export function mergeHydratedTuiHistory(
+  snapshotTail: readonly AgentChatEventEnvelope[],
+  existing: readonly AgentChatEventEnvelope[],
+  pending: readonly AgentChatEventEnvelope[],
+  arrivalWatermark: ReadonlySet<string>,
+): AgentChatEventEnvelope[] {
+  const merged = mergeAgentChatHistorySnapshot(
+    [...snapshotTail],
+    [...existing, ...pending],
+    { arrivalWatermark, identityKey: tuiEventDedupKey },
+  );
+  return dedupeTuiEvents(
+    orderAgentChatEventsChronologically(merged),
+    Math.min(TUI_LOADED_EVENT_CAP, Math.max(1, merged.length)),
   );
 }
 

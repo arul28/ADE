@@ -258,6 +258,33 @@ describe("chatSessionRetention", () => {
     expect(harness.liveListenerCount()).toBe(1);
   });
 
+  it("uses the pane's pinned runtime subscription during handoff", () => {
+    const harness = createHarness();
+    harness.cache.set("s1", { events: [], turnActive: false });
+    const pinnedListeners = new Set<(entry: AgentChatEventEnvelope) => void>();
+    const pinnedUnsubscribe = vi.fn();
+
+    expect(retainChatSession("s1", {
+      subscribe: (listener) => {
+        pinnedListeners.add(listener);
+        return () => {
+          pinnedListeners.delete(listener);
+          pinnedUnsubscribe();
+        };
+      },
+    })).toBe(true);
+    expect(harness.subscribeCount()).toBe(0);
+
+    for (const listener of pinnedListeners) {
+      listener(envelope("s1", assistantEvent("from pinned runtime"), "t1"));
+    }
+    harness.flush();
+    expect(harness.cache.get("s1")?.events).toHaveLength(1);
+
+    expect(adoptRetainedSession("s1")).toBe(true);
+    expect(pinnedUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("drops the subscription on TTL expiry but keeps the warm cache", () => {
     vi.useFakeTimers();
     const harness = createHarness();

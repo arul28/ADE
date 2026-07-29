@@ -5746,6 +5746,46 @@ type PendingChatEventAnchor = {
   lastEventsLength: number;
 };
 
+type TranscriptCollapseCache = {
+  events: AgentChatEventEnvelope[];
+  rows: TranscriptRenderEnvelope[];
+  context: CollapseTranscriptResult["context"] | null;
+};
+
+const MAX_TRANSCRIPT_COLLAPSE_CACHE_ENTRIES = 8;
+const transcriptCollapseCacheBySessionId = new Map<string, TranscriptCollapseCache>();
+
+export function resetTranscriptCollapseCacheForTests(): void {
+  transcriptCollapseCacheBySessionId.clear();
+}
+
+export function getTranscriptCollapseCacheKeysForTests(): string[] {
+  return [...transcriptCollapseCacheBySessionId.keys()];
+}
+
+function readTranscriptCollapseCache(sessionId: string | null | undefined): TranscriptCollapseCache {
+  if (!sessionId) return { events: [], rows: [], context: null };
+  const cached = transcriptCollapseCacheBySessionId.get(sessionId);
+  if (!cached) return { events: [], rows: [], context: null };
+  transcriptCollapseCacheBySessionId.delete(sessionId);
+  transcriptCollapseCacheBySessionId.set(sessionId, cached);
+  return cached;
+}
+
+function writeTranscriptCollapseCache(
+  sessionId: string | null | undefined,
+  cached: TranscriptCollapseCache,
+): void {
+  if (!sessionId) return;
+  transcriptCollapseCacheBySessionId.delete(sessionId);
+  transcriptCollapseCacheBySessionId.set(sessionId, cached);
+  while (transcriptCollapseCacheBySessionId.size > MAX_TRANSCRIPT_COLLAPSE_CACHE_ENTRIES) {
+    const oldest = transcriptCollapseCacheBySessionId.keys().next().value;
+    if (typeof oldest !== "string") break;
+    transcriptCollapseCacheBySessionId.delete(oldest);
+  }
+}
+
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
@@ -5767,6 +5807,7 @@ function AgentChatMessageListMain({
   pendingApprovalIds,
   laneId,
   sessionId,
+  transcriptCollapseCacheKey,
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
@@ -5813,6 +5854,8 @@ function AgentChatMessageListMain({
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
   sessionId?: string | null;
+  /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
+  transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
   /** True when older transcript pages exist above the loaded events. */
   hasOlderHistory?: boolean;
@@ -5849,15 +5892,19 @@ function AgentChatMessageListMain({
   // Carries the CollapseTranscriptContext alongside events/rows so appended
   // subagent progress/result events can index back into the previous rows and
   // mutate the anchor by its stored rowIndex (see collapseChatTranscriptRows).
-  const collapseCacheRef = useRef<{
-    events: AgentChatEventEnvelope[];
-    rows: TranscriptRenderEnvelope[];
-    context: CollapseTranscriptResult["context"] | null;
-  }>({
-    events: [],
-    rows: [],
-    context: null,
-  });
+  const resolvedTranscriptCollapseCacheKey = transcriptCollapseCacheKey ?? sessionId;
+  const collapseCacheStateRef = useRef<{
+    key: string | null | undefined;
+    cache: TranscriptCollapseCache;
+  } | null>(null);
+  let collapseCacheState = collapseCacheStateRef.current;
+  if (!collapseCacheState || collapseCacheState.key !== resolvedTranscriptCollapseCacheKey) {
+    collapseCacheState = {
+      key: resolvedTranscriptCollapseCacheKey,
+      cache: readTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey),
+    };
+    collapseCacheStateRef.current = collapseCacheState;
+  }
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
   const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
@@ -6000,16 +6047,18 @@ function AgentChatMessageListMain({
   }, []);
 
   const rows = useMemo(() => {
-    const cached = collapseCacheRef.current;
+    const cached = collapseCacheState.cache;
     const { rows: nextRows, context } = collapseChatTranscriptEventsIncrementalWithContext(
       events,
       cached.events,
       cached.rows,
       cached.context,
     );
-    collapseCacheRef.current = { events, rows: nextRows, context };
+    const nextCache = { events, rows: nextRows, context };
+    collapseCacheState.cache = nextCache;
+    writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
-  }, [events]);
+  }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
   const assistantTurnCopyByRowKey = useMemo(() => {
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
     for (const info of deriveAssistantTurnCopyMap(rows).values()) {

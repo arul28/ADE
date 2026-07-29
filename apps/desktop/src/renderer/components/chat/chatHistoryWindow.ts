@@ -2,9 +2,9 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
 } from "../../../shared/types";
+import { agentChatEventIdentityKey } from "../../../shared/chatHistoryMerge";
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
-const chatEventDedupKeyCache = new WeakMap<AgentChatEventEnvelope, string>();
 
 export const INITIAL_SELECTED_CHAT_HISTORY_EVENTS = 1_000;
 export const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
@@ -69,11 +69,7 @@ function trimChatEventHistoryFromStart(
 }
 
 export function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
-  const cached = chatEventDedupKeyCache.get(entry);
-  if (cached !== undefined) return cached;
-  const key = `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
-  chatEventDedupKeyCache.set(entry, key);
-  return key;
+  return agentChatEventIdentityKey(entry);
 }
 
 export function prependOlderChatHistoryPage(

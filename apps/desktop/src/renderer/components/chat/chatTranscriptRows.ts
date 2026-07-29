@@ -2074,6 +2074,9 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
   previousRows: ChatTranscriptRenderEnvelope[],
   previousContext: CollapseTranscriptContext | null,
 ): CollapseTranscriptResult {
+  if (events === previousEvents && previousContext) {
+    return { rows: previousRows, context: previousContext };
+  }
   if (!previousEvents.length || events.length < previousEvents.length || !previousContext) {
     return collapseChatTranscriptEventsWithContext(events);
   }

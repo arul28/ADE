@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import {
   advanceOlderHistoryCursor,
+  captureTuiHistoryArrivalWatermark,
   mergeDetachedTuiHistoryTail,
+  mergeHydratedTuiHistory,
   prependOlderTuiHistory,
   resolveSnapshotHistoryCursor,
   shouldRequestOlderTuiHistory,
@@ -210,6 +212,132 @@ describe("mergeDetachedTuiHistoryTail", () => {
     expect(merged).toHaveLength(4);
     expect(merged.filter((entry) => entry.sequence === 100)).toHaveLength(1);
     expect(merged.at(-1)?.sequence).toBe(101);
+  });
+
+  it("places delayed live output before a later terminal event", () => {
+    const merged = mergeDetachedTuiHistoryTail(
+      [envelope(10, { timestamp: "2026-01-01T12:10:00.000Z" })],
+      [
+        envelope(12, {
+          timestamp: "2026-01-01T12:12:00.000Z",
+          event: { type: "done", turnId: "turn-1", status: "completed" },
+        }),
+        envelope(11, { timestamp: "2026-01-01T12:11:00.000Z" }),
+      ],
+    );
+
+    expect(merged.map((entry) => entry.sequence)).toEqual([10, 11, 12]);
+  });
+});
+
+describe("mergeHydratedTuiHistory", () => {
+  it("keeps scrollback ordered and drops a replayed old turn after the latest tail", () => {
+    const older = envelope(10, { timestamp: "2026-01-01T12:00:00.000Z" });
+    const latest = envelope(20, { timestamp: "2026-01-01T12:20:00.000Z" });
+    const replayedOldTurn = envelope(11, { timestamp: "2026-01-01T12:05:00.000Z" });
+    const genuinelyLive = envelope(21, { timestamp: "2026-01-01T12:21:00.000Z" });
+
+    const merged = mergeHydratedTuiHistory(
+      [{ ...latest }],
+      [older, latest, replayedOldTurn],
+      [genuinelyLive],
+      captureTuiHistoryArrivalWatermark([older, latest, replayedOldTurn]),
+    );
+
+    expect(merged.map((entry) => entry.sequence)).toEqual([10, 20, 21]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(latest);
+    expect(merged[2]).toBe(genuinelyLive);
+  });
+
+  it("uses the TUI semantic identity when a replay changes transport metadata", () => {
+    const older = envelope(9, {
+      timestamp: "2026-01-01T12:09:00.000Z",
+      event: { type: "text", text: "older scrollback" },
+    });
+    const originalPrompt = envelope(10, {
+      timestamp: "2026-01-01T12:10:00.000Z",
+      event: { type: "user_message", text: "ship it", turnId: "turn-1", messageId: "message-1" },
+    });
+    const replayedPrompt = envelope(99, {
+      timestamp: "2026-01-01T12:10:05.000Z",
+      event: { type: "user_message", text: "ship it", turnId: "turn-1", messageId: "message-1" },
+    });
+
+    const merged = mergeHydratedTuiHistory(
+      [replayedPrompt],
+      [older, originalPrompt],
+      [],
+      captureTuiHistoryArrivalWatermark([older, originalPrompt]),
+    );
+
+    expect(merged).toEqual([older, originalPrompt]);
+  });
+
+  it("preserves delayed live output flushed while hydration is in flight", () => {
+    const prompt = envelope(10, {
+      timestamp: "2026-01-01T12:10:00.000Z",
+      event: { type: "user_message", text: "ship it", turnId: "turn-1", messageId: "message-1" },
+    });
+    const done = envelope(12, {
+      timestamp: "2026-01-01T12:12:00.000Z",
+      event: { type: "done", turnId: "turn-1", status: "completed" },
+    });
+    const staleReplay = envelope(9, {
+      timestamp: "2026-01-01T12:09:00.000Z",
+      event: { type: "text", text: "stale replay" },
+    });
+    const delayedPending = envelope(11, {
+      timestamp: "2026-01-01T12:11:00.000Z",
+      event: { type: "text", text: "delayed pending output" },
+    });
+
+    const existingAtRequestStart = [prompt, done, staleReplay];
+    const arrivalWatermark = captureTuiHistoryArrivalWatermark(existingAtRequestStart);
+    const pending = [delayedPending];
+    const existingAtMerge = [...existingAtRequestStart, ...pending.splice(0)];
+
+    expect(pending).toEqual([]);
+    const merged = mergeHydratedTuiHistory(
+      [{ ...prompt }, { ...done }],
+      existingAtMerge,
+      pending,
+      arrivalWatermark,
+    );
+
+    expect(merged).toEqual([prompt, delayedPending, done]);
+    expect(merged[1]).toBe(delayedPending);
+  });
+
+  it("caps a large hydrated merge while preserving the chronological newest tail", () => {
+    const existingCount = TUI_LOADED_EVENT_CAP + 25;
+    const existing = Array.from({ length: existingCount }, (_, index) => {
+      const sequence = index + 1;
+      return envelope(sequence, {
+        timestamp: new Date(Date.UTC(2026, 0, 1) + sequence).toISOString(),
+      });
+    });
+    const snapshotTail = existing.slice(-TUI_SNAPSHOT_DISPLAY_CAP);
+    const pending = Array.from({ length: 10 }, (_, index) => {
+      const sequence = existingCount + index + 1;
+      return envelope(sequence, {
+        timestamp: new Date(Date.UTC(2026, 0, 1) + sequence).toISOString(),
+      });
+    });
+
+    const merged = mergeHydratedTuiHistory(
+      snapshotTail,
+      existing,
+      pending,
+      captureTuiHistoryArrivalWatermark(existing),
+    );
+
+    expect(merged).toHaveLength(TUI_LOADED_EVENT_CAP);
+    expect(merged[0]?.sequence).toBe(existingCount + pending.length - TUI_LOADED_EVENT_CAP + 1);
+    expect(merged.at(-1)?.sequence).toBe(existingCount + pending.length);
+    expect(merged.every((entry, index) => (
+      index === 0 || entry.sequence === (merged[index - 1]?.sequence ?? 0) + 1
+    ))).toBe(true);
   });
 });
 

@@ -516,6 +516,33 @@ exhausted without allowing an unbounded paging loop. An overlapping snapshot
 may preserve an exhausted cursor only when its oldest retained event survived
 the merge; a replacement snapshot or cap eviction re-arms paging.
 
+History hydration and live delivery have separate authority. The history API
+owns the ordered range it returns; the live stream owns only events outside
+that range. `shared/chatHistoryMerge.ts` applies that contract across desktop
+and ADE Code: exact/semantic duplicates are removed, delayed live rows are
+inserted by timestamp before later terminal rows, and a replayed old turn can
+never be appended after the authoritative tail. Event identity is cached by
+envelope object so a 60,000-event resident window does not re-serialize every
+payload on each streaming flush. Desktop installs the live listener before its
+passive history read, while the local runtime pump replays the narrow handoff
+window and filters older buffered events by subscription start time. The hosted
+web adapter consumes `chat_subscribe` snapshots only as stream watermarks and
+hydrates visible history through `chat.getChatEventHistory`; it does not
+re-emit snapshot rows as new live messages. ADE Code uses its semantic
+provider-run identity for overlap, then normalizes delayed events
+chronologically. iOS continues to sort and dedupe its materialized event set by
+the same lifecycle contract.
+
+The renderer keeps a bounded per-session view cache so switching back can paint
+immediately. A hidden chat's retention subscription captures the concrete
+outgoing project binding, even when that binding was the active unpinned path,
+so a later project switch cannot silently retarget the retained stream.
+Returning adopts that subscription synchronously, renders the cached tail, and
+reconciles against authoritative history without blanking the list. Composer
+controls are withheld for the one-frame interval where the incoming transcript
+id and internal selected-session id differ; an outgoing Stop button or pending
+input can therefore never appear over a settled incoming transcript.
+
 ### `unavailable` — "could not reach the runtime", not "no such session"
 
 `sessionFound: false` is an authoritative answer: this project runtime has no

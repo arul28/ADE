@@ -932,13 +932,7 @@ describe("createAdeWebAdapter", () => {
         modelId: "openai/gpt-5.6",
       },
     } as SyncChatEventPayload;
-    fake.emitChatSnapshot("chat-visible-oldest", {
-      sessionId: "chat-visible-oldest",
-      capturedAt: "2026-07-20T00:02:01.000Z",
-      truncated: false,
-      resumed: true,
-      events: [done],
-    });
+    fake.emitChat(done);
 
     expect(received).toEqual([done]);
     adapter.dispose();
@@ -1079,7 +1073,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("accepts a restarted project chat seq without duplicating a non-resumed snapshot replay", async () => {
+  it("replays reconnect snapshots without duplicating already-delivered chat events", async () => {
     fake.descriptors = descriptors(["chat.getSummary"]);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
     const adapter = createAdeWebAdapter(fake.asClient());
