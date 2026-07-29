@@ -1463,21 +1463,26 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     /** Explicit settle override, cleared with `settled_at` on real activity. */
-    setSettleOverride(sessionId: string, override: SessionSettleOverride | null): boolean {
+    setSettleOverride(
+      sessionId: string,
+      override: SessionSettleOverride | null,
+      source: SessionSettleSource = "user",
+    ): boolean {
       const normalized = override == null ? null : normalizeSettleOverride(override);
+      const normalizedSource = normalizeSettleSource(source) ?? "user";
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
           `
             update terminal_sessions
             set settle_override = ?,
-                settle_source = case
-                  when ? = 'settled' then 'user'
+              settle_source = case
+                  when ? = 'settled' then ?
                   when settled_at is null then null
                   else settle_source
                 end
             where id = ?
           `,
-          [normalized, normalized, id],
+          [normalized, normalized, normalizedSource, id],
         );
       });
     },

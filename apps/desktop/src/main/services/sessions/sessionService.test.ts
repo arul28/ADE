@@ -1816,6 +1816,17 @@ describe("sessionService settle override", () => {
     }));
   });
 
+  it("records the caller provenance for a settled override", async () => {
+    const { service } = await makeService("ade-session-service-override-provenance-");
+
+    service.setSettleOverride("session-override", "settled", "operator");
+
+    expect(service.get("session-override")).toEqual(expect.objectContaining({
+      settleOverride: "settled",
+      settleSource: "operator",
+    }));
+  });
+
   it("supports the bulk override variant", async () => {
     const { service } = await makeService("ade-session-service-override-bulk-");
     service.create({

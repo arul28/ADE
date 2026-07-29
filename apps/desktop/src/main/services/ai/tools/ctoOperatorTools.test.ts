@@ -418,9 +418,9 @@ describe("createCtoOperatorTools", () => {
       expect(sessionService.unsettleSession).toHaveBeenCalledWith("chat-1");
 
       await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "active" });
-      expect(sessionService.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+      expect(sessionService.setSettleOverride).toHaveBeenCalledWith("chat-1", "active", "operator");
       await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "clear" });
-      expect(sessionService.setSettleOverride).toHaveBeenLastCalledWith("chat-1", null);
+      expect(sessionService.setSettleOverride).toHaveBeenLastCalledWith("chat-1", null, "operator");
     });
 
     it("snoozes by duration or explicit deadline and rejects neither", async () => {

@@ -597,7 +597,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ sessionId, override }) => {
       try {
         const normalized = override === "clear" ? null : override;
-        const ok = deps.sessionService.setSettleOverride(sessionId, normalized);
+        const ok = deps.sessionService.setSettleOverride(sessionId, normalized, "operator");
         if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {
