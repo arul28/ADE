@@ -1905,6 +1905,24 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       scheduleFlush(true);
     },
 
+    handleSessionSettled(scopeKey: string | null, sessionId: string): void {
+      if (disposed || !sessionId) return;
+      const run = runs.get(sessionId);
+      if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
+      run.phase = "completed";
+      run.itemId = null;
+      markRunUpdated(run);
+      recentRuns.set(sessionId, { ...run });
+      pendingAlerts = pendingAlerts.filter(
+        (alert) =>
+          alert.dedupeKey !== `alert:${sessionId}:approval`
+          && alert.dedupeKey !== `alert:${sessionId}:question`,
+      );
+      clearAlertDedupe(`alert:${sessionId}:approval`);
+      clearAlertDedupe(`alert:${sessionId}:question`);
+      scheduleFlush(true);
+    },
+
     /** Force a flush soon (e.g. right after a device registers). */
     poke(): void {
       scheduleFlush(true);

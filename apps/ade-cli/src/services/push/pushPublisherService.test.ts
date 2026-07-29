@@ -1937,6 +1937,25 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("terminates a waiting CLI run when dismiss-and-settle resolves attention", async () => {
+    const { publisher } = makeHarness();
+    await publisher.start();
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "cli-settle-1",
+      kind: "cli",
+      title: "Fix auth race",
+      message: "Choose an account",
+      laneId: "auth-lane",
+    });
+    publisher.handleSessionSettled("scope-1", "cli-settle-1");
+
+    expect(publisher._debug.getPendingAlerts()).toEqual([]);
+    expect(publisher._debug.runs.get("cli-settle-1")?.phase).toBe("completed");
+
+    publisher.dispose();
+  });
+
   it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
     const { publisher, publish, emit, cliSessions } = makeHarness();
     cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });

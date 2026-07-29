@@ -2274,9 +2274,9 @@ describe("session lifecycle remote commands", () => {
   });
 
   it("resolves push attention when dismissing an explicit CLI ask", async () => {
-    const handleSessionAttentionResolved = vi.fn();
+    const handleSessionSettled = vi.fn();
     const { service, sessionService } = createLifecycleService({
-      pushPublisherService: { handleSessionAttentionResolved },
+      pushPublisherService: { handleSessionSettled },
       session: {
         id: "session-1",
         toolType: "codex",
@@ -2289,7 +2289,7 @@ describe("session lifecycle remote commands", () => {
       dismissPendingInput: true,
     }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
 
-    expect(handleSessionAttentionResolved).toHaveBeenCalledWith(null, "session-1");
+    expect(handleSessionSettled).toHaveBeenCalledWith(null, "session-1");
     expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
   });
 

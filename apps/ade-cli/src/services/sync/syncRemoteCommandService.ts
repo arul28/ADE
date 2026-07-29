@@ -3981,7 +3981,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       agentChatService: args.agentChatService ?? null,
       ptyService: args.ptyService,
       onAttentionResolved: (resolvedSessionId) => {
-        args.pushPublisherService?.handleSessionAttentionResolved(null, resolvedSessionId);
+        args.pushPublisherService?.handleSessionSettled(null, resolvedSessionId);
       },
     });
     if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
