@@ -612,6 +612,15 @@ final class ProductAnalytics {
     )
   }
 
+  func captureColdStart(afterReconcilingAccount userId: String?) {
+    if let userId {
+      identifyAccount(userId)
+    } else {
+      resetAccountIdentity()
+    }
+    captureAppOpened(.coldStart)
+  }
+
   func captureScreen(_ screen: ADEAnalyticsScreen) {
     capture(
       .screenViewed,
@@ -699,13 +708,9 @@ final class ProductAnalytics {
 
       var transition = IdentityTransition()
       var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
-      // Detach the prior account before reserving the new identify. A quota
-      // rejection must leave subsequent events anonymous rather than assigned
-      // to the account that just signed out.
+      // A quota rejection must still detach the prior account so subsequent
+      // events cannot remain assigned to the account that just signed out.
       transition.shouldReset = previousHash != nil
-      if previousHash != nil {
-        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
-      }
       guard reserve(
         name: Self.identifyEventName,
         limit: Self.identifyDailyLimit,
@@ -716,21 +721,15 @@ final class ProductAnalytics {
         persist(currentBudget)
         return transition
       }
-      defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
       budget = currentBudget
       persist(currentBudget)
       transition.userHash = userHash
       return transition
     }
 
-    if transition.shouldReset {
-      lock.withLock {
-        sink.resetIdentity()
-        if let userHash = transition.userHash {
-          defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
-        }
-      }
-    }
+    // Rollover summarizes the previous UTC day, so emit it before changing the
+    // distinct id. Otherwise an account switch on the first event of a new day
+    // attributes the prior account's usage summary to the incoming account.
     for pendingEvent in transition.pendingEvents {
       var eventProperties = pendingEvent.properties
       eventProperties["surface"] = "mobile"
@@ -739,7 +738,16 @@ final class ProductAnalytics {
       eventProperties["$geoip_disable"] = true
       sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
     }
+    if transition.shouldReset {
+      lock.withLock {
+        defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
+        sink.resetIdentity()
+      }
+    }
     if let userHash = transition.userHash {
+      lock.withLock {
+        defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
+      }
       sink.identify(userHash: userHash)
     }
   }

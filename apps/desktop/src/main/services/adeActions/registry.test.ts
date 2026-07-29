@@ -2443,7 +2443,7 @@ describe("runtime account actions", () => {
     expect(accountAuthService.createToken).toHaveBeenCalledTimes(1);
     expect(productAnalyticsService.identifyAccount).toHaveBeenCalledTimes(2);
     expect(productAnalyticsService.identifyAccount).toHaveBeenCalledWith("account-user");
-    expect(productAnalyticsService.resetAccountIdentity).toHaveBeenCalledTimes(1);
+    expect(productAnalyticsService.resetAccountIdentity).toHaveBeenCalledTimes(2);
     expect(isCtoOnlyAdeAction("account", "startLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "pollLogin")).toBe(true);
     expect(isCtoOnlyAdeAction("account", "startDeviceLogin")).toBe(true);

@@ -150,6 +150,19 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     ])
   }
 
+  func testColdStartReconcilesPersistedSignedOutIdentityBeforeAppOpened() throws {
+    let (analytics, sink, defaults) = makeAnalytics()
+    defaults.set(
+      "ade_user_5d0609d39586fed6fd2b684efd3d059c",
+      forKey: ProductAnalytics.identifiedAccountHashDefaultsKey
+    )
+
+    analytics.captureColdStart(afterReconcilingAccount: nil)
+
+    XCTAssertEqual(sink.actions, [.reset, .capture("ade_mobile_app_opened")])
+    XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
+  }
+
   func testFeaturePropertiesAreClosedAndContainNoSensitiveContentKeys() throws {
     let (analytics, sink, _) = makeAnalytics()
 
@@ -260,6 +273,28 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(sink.resetIdentityCount, 2)
     XCTAssertNil(defaults.string(forKey: ProductAnalytics.identifiedAccountHashDefaultsKey))
     XCTAssertEqual(sink.events.last?.name, "ade_mobile_screen_viewed")
+  }
+
+  func testAccountSwitchEmitsPriorDayBudgetSummaryBeforeIdentityChanges() throws {
+    var currentDate = Date(timeIntervalSince1970: 1_800_000_000)
+    let (analytics, sink, _) = makeAnalytics(now: { currentDate })
+
+    analytics.identifyAccount("account_one")
+    analytics.captureAppOpened(.foreground)
+    currentDate.addTimeInterval(24 * 60 * 60)
+    analytics.identifyAccount("account_two")
+
+    let summary = try XCTUnwrap(
+      sink.events.first { $0.name == "ade_mobile_analytics_budget" }
+    )
+    XCTAssertEqual(summary.properties["sent_count"] as? Int, 2)
+    XCTAssertEqual(sink.actions, [
+      .identify("ade_user_9f857b832e16586887a9b0f2ef8621c9"),
+      .capture("ade_mobile_app_opened"),
+      .capture("ade_mobile_analytics_budget"),
+      .reset,
+      .identify("ade_user_560d5ba76598fc9465a46be9d55cf047"),
+    ])
   }
 
   func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
@@ -608,6 +643,12 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
 }
 
 private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
+  enum Action: Equatable {
+    case capture(String)
+    case identify(String)
+    case reset
+  }
+
   struct Event {
     let name: String
     let properties: [String: Any]
@@ -617,20 +658,24 @@ private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
   private(set) var enabledStates: [Bool] = []
   private(set) var identities: [String] = []
   private(set) var resetIdentityCount = 0
+  private(set) var actions: [Action] = []
 
   var isConfigured: Bool { true }
   var canCapture: Bool { true }
 
   func capture(event: String, properties: [String: Any]) {
     events.append(Event(name: event, properties: properties))
+    actions.append(.capture(event))
   }
 
   func identify(userHash: String) {
     identities.append(userHash)
+    actions.append(.identify(userHash))
   }
 
   func resetIdentity() {
     resetIdentityCount += 1
+    actions.append(.reset)
   }
 
   func setEnabled(_ enabled: Bool) {
