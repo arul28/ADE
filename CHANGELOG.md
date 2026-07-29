@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.43] - 2026-07-29
+
+### Proof and chat cards
+
+- Rendered captured proof beneath the turn that created it and added end-to-end recovery, deletion, pruning, ownership transfer, and storage cleanup across clients.
+- Hardened artifact ingestion with lane authorization, real-path confinement, secret and file-type checks, atomic rollback, and retry-safe cleanup.
+- Unified chat-card layout, timing, actions, CI degradation, and subagent identity while preserving rich cached state through partial failures.
+
+### Chat history
+
+- Fixed transcript hydration, retained runtime pinning, reconnect recovery, and event ordering across desktop, hosted web, iOS, and `ade code`.
+- Preserved TUI events during hydration by capturing the history watermark before replay.
+
+### Multi-machine Work
+
+- Hid unreachable machines, lanes, and chats after a reconnect grace period while retaining the state required for safe divergence checks.
+- Stabilized machine eligibility, runtime ownership, late-read handling, lane controls, filters, ordering, and PR context across refreshes and project changes.
+
+### Attention and analytics
+
+- Completed account-scoped Attention routing across desktop, hosted web, iOS, the native notch helper, and push delivery.
+- Hardened push-relay authentication, migrations, expiry handling, and deterministic CI fixtures.
+- Improved quota-safe PostHog activation analytics, identity lifecycle, and event ordering.
+
 ## [1.2.42] - 2026-07-28
 
 ### Attention
@@ -1154,7 +1178,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.42...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.43...HEAD
+[1.2.43]: https://github.com/arul28/ADE/compare/v1.2.42...v1.2.43
 [1.2.42]: https://github.com/arul28/ADE/compare/v1.2.41...v1.2.42
 [1.2.41]: https://github.com/arul28/ADE/compare/v1.2.40...v1.2.41
 [1.2.40]: https://github.com/arul28/ADE/compare/v1.2.39...v1.2.40

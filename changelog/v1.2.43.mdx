@@ -1,0 +1,32 @@
+---
+title: "v1.2.43"
+description: "Release notes for ADE v1.2.43 - July 29, 2026"
+---
+
+v1.2.43 makes proof chronological and recoverable, keeps cross-machine Work focused on reachable machines, strengthens chat replay across every client, and improves account-wide Attention and activation analytics.
+
+---
+
+## Proof stays with the turn that created it
+
+- **Captured proof appears in context.** Screenshots, recordings, and other artifacts render beneath the turn where they were captured, with compact controls into the proof drawer.
+- **Recovery and deletion are complete.** ADE can repair, remove, prune, and transfer proof safely across the desktop, CLI, hosted client, iOS, and `ade code`.
+- **Artifact boundaries are stricter.** Lane ownership, real-path checks, file-type validation, rollback, and secret protections prevent invalid or sensitive files from entering synced proof.
+
+## Chat cards are easier to scan
+
+- **Cards share one responsive layout.** Titles, durations, counts, actions, CI status, and subagent identity align consistently without constraining the transcript to a narrow column.
+- **Failures remain truthful.** Degraded GitHub data no longer looks successful or erases richer cached card state.
+- **History replays in order.** Desktop, hosted web, iOS, and `ade code` preserve hydration watermarks, retained runtime ownership, and reconnect recovery without dropping or duplicating events.
+
+## Multi-machine Work shows what is reachable
+
+- **Offline machines leave the sidebar.** Unreachable lanes and chats disappear after a short reconnect grace period instead of filling Work with disabled rows.
+- **Runtime ownership is stable.** Reads, actions, navigation, and retained chat state stay bound to the machine that owns them through refreshes and project changes.
+- **Lane controls are clearer.** Reordering, filtering, PR context, and management actions use the same machine-aware state.
+
+## Attention and analytics hardening
+
+- **Account-wide Attention is consistent.** Desktop, hosted web, mobile, the native notch helper, and push delivery share the same account-scoped state and routing.
+- **Push relay reliability improved.** Attention delivery, authentication, migrations, expiry handling, and CI fixtures are safer and deterministic.
+- **Activation measurement is quota-aware.** Identity changes, event ordering, and capped PostHog flows preserve useful product signals without runaway event volume.
