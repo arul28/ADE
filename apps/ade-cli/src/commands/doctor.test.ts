@@ -234,6 +234,26 @@ describe("doctor row evaluation", () => {
     expect(rows.filter((row) => row.status === "fail").map((row) => row.key)).toEqual(["brain"]);
   });
 
+  it("names the rival ADE process when relay control is suppressed", () => {
+    const input = healthyInput();
+    input.relayHealth = {
+      ...input.relayHealth!,
+      relayControlConnected: false,
+      relayControlSuppressed: true,
+      relayControlSuppressedReason: "Another ADE process owns the relay connection for this machine.",
+      // A stale bridge/control error must not outrank the actionable reason:
+      // total relay failure was previously invisible everywhere but here.
+      lastControlError: "Relay control closed (4505): replaced by newer host",
+    };
+
+    const relay = evaluateDoctorRows(input).find((row) => row.key === "relay");
+
+    expect(relay?.status).toBe("fail");
+    expect(relay?.detail).toBe(
+      "Another ADE process owns the relay connection for this machine.",
+    );
+  });
+
   it("compares release versions without depending on tag formatting", () => {
     expect(compareDoctorVersions("v1.2.36", "1.2.35")).toBe(1);
     expect(compareDoctorVersions("1.2.35", "v1.2.35")).toBe(0);

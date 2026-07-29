@@ -45,6 +45,11 @@ export type SyncTunnelClientStatus = {
   relayEndToEndRoundTripMs: number | null;
   relayUrl: string;
   machineKey: string;
+  /** True while the client is deliberately not redialing after a 4505 eviction. */
+  controlSuppressed?: boolean;
+  controlSuppressedReason?: string | null;
+  /** Epoch ms the current uninterrupted control outage began; null when connected. */
+  controlFailingSinceMs?: number | null;
 };
 
 export type SyncTunnelClientService = {
@@ -65,6 +70,12 @@ export type SyncTunnelClientService = {
   validateCurrentBridge(): Promise<boolean>;
   /** Dial Relay exactly like a ready-v2 controller and verify bridge readiness. */
   runSelfProbe(): Promise<{ ok: boolean; detail: string }>;
+  /**
+   * Re-arm after a 4505 eviction suppressed redialing. The caller must have
+   * established that this process is the legitimate relay owner for the
+   * machine — in practice, that it just acquired the sync host lease.
+   */
+  clearControlSuppression(): void;
   getStatus(): SyncTunnelClientStatus;
   dispose(): Promise<void>;
 };
@@ -120,6 +131,13 @@ type SyncTunnelClientArgs = {
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
+/**
+ * Never redial faster than this. The old schedule was full jitter from ZERO,
+ * so two brains fighting over one relay slot both resampled near-zero delays
+ * and evicted each other forever without either ever reaching the stability
+ * window that resets `attempt`.
+ */
+const BACKOFF_MIN_MS = 1_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
 export const CONTROL_PING_INTERVAL_MS = 30_000;
 export const CONTROL_PONG_DEADLINE_MS = 10_000;
@@ -128,8 +146,20 @@ export const CONTROL_JSON_PONG_DEADLINE_MS = 30_000;
 export const CONTROL_JSON_INITIAL_PING_DELAY_MS = 1_000;
 export const RELAY_CLOSE_PARTNER_CLOSED = 4000;
 export const RELAY_CLOSE_HOST_UNAVAILABLE = 4501;
+/**
+ * The relay Durable Object keeps ONE host control socket per machineKey and
+ * evicts the previous holder with this code. It therefore never means "the
+ * network dropped" — it means another process registered the same machine.
+ */
+export const RELAY_CLOSE_CONTROL_REPLACED = 4505;
 export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
 export const RELAY_CLOSE_FORWARD_FAILED = 4509;
+export const RELAY_CONTROL_REPLACED_MESSAGE =
+  "Another ADE process owns the relay connection for this machine.";
+/** Fixed floor for post-eviction redials; jittered up, never down. */
+export const CONTROL_REPLACED_RETRY_BASE_MS = 60_000;
+/** After this many evictions the client stops dialing until re-armed. */
+export const MAX_CONTROL_REPLACED_REATTEMPTS = 3;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
 export const BRIDGE_VALIDATION_LEASE_MS = 2_000;
 export const CONTROL_READY_STABLE_MS = 5_000;
@@ -181,12 +211,27 @@ type RelaySelfProbeState = {
 };
 
 /**
- * Exponential backoff with full jitter, capped at 60s. Exposed for tests so the
- * reconnect schedule is verifiable without waiting on real timers.
+ * Exponential backoff with DECORRELATED jitter and a 1s floor, capped at 60s.
+ * Exposed for tests so the reconnect schedule is verifiable without waiting on
+ * real timers.
+ *
+ * `previousDelayMs` is the delay actually used for the last reconnect; passing
+ * it widens the sampling window (`prev * 3`) instead of resampling the same
+ * narrow exponential band, so two clients that collide once do not keep
+ * colliding at the same moment.
  */
-export function computeBackoffMs(attempt: number, random: () => number = Math.random): number {
-  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt));
-  return Math.floor(random() * ceiling);
+export function computeBackoffMs(
+  attempt: number,
+  random: () => number = Math.random,
+  previousDelayMs = 0,
+): number {
+  const exponential = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt));
+  const previous = Number.isFinite(previousDelayMs) && previousDelayMs > 0
+    ? previousDelayMs
+    : BACKOFF_MIN_MS;
+  const ceiling = Math.min(BACKOFF_CAP_MS, Math.max(exponential, previous * 3));
+  const floor = Math.min(BACKOFF_MIN_MS, ceiling);
+  return Math.floor(floor + random() * (ceiling - floor));
 }
 
 type ControlOpenMessage = {
@@ -292,6 +337,14 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let accountLeaseUserId: string | null = args.getAccountLease ? null : "legacy";
   let accountEligible: boolean | null = null;
   let attempt = 0;
+  let lastBackoffDelayMs = 0;
+  // Relay eviction bookkeeping (close code 4505). Kept separate from `attempt`
+  // because an eviction is a machine-local ownership conflict, not a network
+  // failure, and must not be retried on the network schedule.
+  let controlReplacedAttempts = 0;
+  let controlReplacedStopped = false;
+  let controlSuppressedReason: string | null = null;
+  let controlFailingSinceMs: number | null = null;
   let started = false;
   let stopped = false;
   let connected = false;
@@ -358,6 +411,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const recordFailure = (reason: string): void => {
     lastError = reason;
     lastFailureAt = new Date().toISOString();
+    // First failure of an uninterrupted outage. `lastFailureAt` restamps on
+    // every retry, so it can never answer "how long has relay been down" —
+    // which is exactly what the desktop banner needs to stay quiet through
+    // ordinary reconnects.
+    if (!connected) controlFailingSinceMs ??= Date.now();
   };
 
   const requestPublicationStatePublish = (
@@ -526,22 +584,83 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
-  const scheduleReconnect = (): void => {
+  const scheduleReconnect = (options: { delayMs?: number } = {}): void => {
     if (
       stopped
+      || controlReplacedStopped
       || reconnectTimer
       || control
       || connectingControl
       || !accountSignedIn()
     ) return;
-    const computedDelay = args.reconnectBackoffMs?.(attempt) ?? computeBackoffMs(attempt);
-    const delay = Number.isFinite(computedDelay) ? Math.max(0, Math.floor(computedDelay)) : BACKOFF_CAP_MS;
+    // `reconnectBackoffMs` is the test seam for every reconnect delay,
+    // including the post-eviction one, so it stays outermost.
+    const computedDelay = args.reconnectBackoffMs?.(attempt)
+      ?? options.delayMs
+      ?? computeBackoffMs(attempt, Math.random, lastBackoffDelayMs);
+    const delay = Number.isFinite(computedDelay)
+      ? Math.max(0, Math.floor(computedDelay))
+      : BACKOFF_CAP_MS;
     attempt += 1;
+    lastBackoffDelayMs = delay;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       void connectControl();
     }, delay);
     reconnectTimer.unref?.();
+  };
+
+  /**
+   * Handle a relay eviction. Another ADE process on this machine registered the
+   * same machineKey, so redialing immediately just evicts it right back — the
+   * exact loop that made relay permanently unusable while two brains ran. Back
+   * off hard, give up after a few tries, and say why in the status.
+   */
+  const noteControlReplaced = (): void => {
+    controlReplacedAttempts += 1;
+    controlSuppressedReason = RELAY_CONTROL_REPLACED_MESSAGE;
+    // Keep the raw `Relay control closed (4505): …` in lastControlError as the
+    // protocol-level diagnostic; lastError carries the actionable sentence.
+    recordFailure(RELAY_CONTROL_REPLACED_MESSAGE);
+    if (controlReplacedAttempts > MAX_CONTROL_REPLACED_REATTEMPTS) {
+      controlReplacedStopped = true;
+      clearReconnect();
+      log.warn?.("sync_tunnel.control_replaced_stopped", {
+        attempts: controlReplacedAttempts,
+        reason: RELAY_CONTROL_REPLACED_MESSAGE,
+      });
+      return;
+    }
+    // Fixed 60s floor, jittered upward only, so two evicting processes cannot
+    // land on the same retry instant.
+    const delayMs = CONTROL_REPLACED_RETRY_BASE_MS
+      + Math.floor(Math.random() * CONTROL_REPLACED_RETRY_BASE_MS);
+    log.warn?.("sync_tunnel.control_replaced", {
+      attempt: controlReplacedAttempts,
+      retryInMs: delayMs,
+    });
+    scheduleReconnect({ delayMs });
+  };
+
+  /**
+   * Re-arm after suppression. Called when this process (re)acquires the sync
+   * host lease — at that point it is the legitimate owner and the rival, if
+   * any, has been gated out.
+   */
+  const clearControlSuppression = (): void => {
+    if (controlReplacedAttempts === 0 && !controlSuppressedReason && !controlReplacedStopped) return;
+    const wasStopped = controlReplacedStopped;
+    controlReplacedAttempts = 0;
+    controlReplacedStopped = false;
+    controlSuppressedReason = null;
+    if (lastError === RELAY_CONTROL_REPLACED_MESSAGE) lastError = null;
+    attempt = 0;
+    lastBackoffDelayMs = 0;
+    log.info?.("sync_tunnel.control_suppression_cleared", { wasStopped });
+    if (!stopped && started && !control && !connectingControl) {
+      clearReconnect();
+      void connectControl();
+    }
   };
 
   const claimOnce = async (id: MachineIdentity): Promise<void> => {
@@ -608,6 +727,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
   const connectControl = async (): Promise<void> => {
     if (stopped || control || connectingControl || reconnectTimer) return;
+    // Suppression has to hold at the dial itself, not just in the reconnect
+    // scheduler: the account-lease poll runs every second and calls this
+    // directly, which would redial straight back into the eviction war.
+    if (controlReplacedStopped) return;
     if (!accountSignedIn()) {
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
       return;
@@ -710,6 +833,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         clearReconnect();
         connected = true;
         lastError = null;
+        controlFailingSinceMs = null;
         controlOpenedAtMs = Date.now();
         lastControlOpenAt = new Date().toISOString();
         socketLivenessStop = armControlLiveness(
@@ -942,6 +1066,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           if (!socketState.failureReason) {
             socketState.failureReason = closeReason;
             recordControlFailure(closeReason);
+          }
+          if (code === RELAY_CLOSE_CONTROL_REPLACED) {
+            noteControlReplaced();
+            return;
           }
           scheduleReconnect();
         }
@@ -1706,6 +1834,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     async stop(): Promise<void> {
       stopped = true;
       started = false;
+      // A stop/start cycle is how the lease gate hands relay ownership between
+      // runtimes, so it must not inherit the previous owner's eviction state.
+      controlReplacedAttempts = 0;
+      controlReplacedStopped = false;
+      controlSuppressedReason = null;
+      lastBackoffDelayMs = 0;
       detachHostListener?.();
       detachHostListener = null;
       hostListener = null;
@@ -1719,6 +1853,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     },
 
     validateCurrentBridge,
+
+    clearControlSuppression,
 
     async runSelfProbe(): Promise<{ ok: boolean; detail: string }> {
       if (
@@ -1789,6 +1925,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         relayEndToEndRoundTripMs: eligible ? currentSelfProbeRoundTripMs : null,
         relayUrl: relayHttpUrl(),
         machineKey,
+        controlSuppressed: controlSuppressedReason != null,
+        controlSuppressedReason,
+        controlFailingSinceMs: connected ? null : controlFailingSinceMs,
       };
     },
 

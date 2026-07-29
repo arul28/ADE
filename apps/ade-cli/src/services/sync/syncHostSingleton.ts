@@ -44,6 +44,43 @@ export type SyncHostSingletonDeps = {
   scanListeners?: () => SyncHostSingletonOwner[];
 };
 
+// Which leases THIS process currently holds. The lock file answers "who owns
+// mobile sync on this machine"; this answers "is it me", which is the question
+// every other machine-exclusive subsystem (relay tunnel, account-directory
+// publisher) actually needs. Without it those subsystems gated on merely
+// HAVING a listener, so a secondary brain with an ephemeral fallback listener
+// happily dialed the relay and evicted the real host in a ~4s loop.
+const heldLeaseIds = new Set<string>();
+const authorityHandlers = new Set<(held: boolean) => void>();
+
+function notifyAuthorityChanged(held: boolean): void {
+  for (const handler of [...authorityHandlers]) {
+    try {
+      handler(held);
+    } catch {
+      // A subscriber must never break lease bookkeeping.
+    }
+  }
+}
+
+/** True when this process holds the machine-wide sync host lease. */
+export function holdsSyncHostSingleton(): boolean {
+  return heldLeaseIds.size > 0;
+}
+
+/**
+ * Subscribe to authority transitions (not every acquire/release — only
+ * none-held → held and held → none-held). Returns an unsubscribe function.
+ */
+export function onSyncHostSingletonAuthorityChanged(
+  handler: (held: boolean) => void,
+): () => void {
+  authorityHandlers.add(handler);
+  return () => {
+    authorityHandlers.delete(handler);
+  };
+}
+
 export class SyncHostSingletonConflictError extends Error {
   readonly conflict: SyncHostSingletonConflict;
 
@@ -434,6 +471,9 @@ export function acquireSyncHostSingleton(
       if (attempt === 1) writeLock(lockPath, owner, "wx");
     }
   }
+  const hadAuthority = holdsSyncHostSingleton();
+  heldLeaseIds.add(owner.id);
+  if (!hadAuthority) notifyAuthorityChanged(true);
   return {
     owner,
     updatePort(port: number) {
@@ -452,6 +492,9 @@ export function acquireSyncHostSingleton(
       const lock = safeReadLock(lockPath);
       if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
         unlinkLock(lockPath);
+      }
+      if (heldLeaseIds.delete(owner.id) && !holdsSyncHostSingleton()) {
+        notifyAuthorityChanged(false);
       }
     },
   };

@@ -7,7 +7,9 @@ import type {
   GitHubStatus,
   PrEventPayload,
   ProviderMode,
+  SyncRouteHealth,
 } from "../../../shared/types";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
   deriveGithubAccountAuthState,
   deriveGithubRealtimeBlock,
@@ -34,6 +36,8 @@ import { Banner, type BannerAction, type BannerModel, type BannerSeverity } from
  * mock-provider banners are migrated from AppShell.
  */
 
+export type RelayRouteHealth = SyncRouteHealth["relay"];
+
 export type IntegrationBannerHostProps = {
   currentProjectRoot: string | null;
   githubStatus: GitHubStatus | null;
@@ -41,6 +45,12 @@ export type IntegrationBannerHostProps = {
   aiStatusLoaded: boolean;
   providerMode: ProviderMode;
   aiMockProvider: boolean;
+  /**
+   * Relay leg of this machine's sync route health, pushed down from AppShell's
+   * `sync-status` subscription. `null` until the first snapshot lands — the
+   * relay banner stays silent in that window rather than guessing.
+   */
+  relayHealth: RelayRouteHealth | null;
   navigate: NavigateFunction;
 };
 
@@ -49,6 +59,41 @@ const AI_SETTINGS_ROUTE = "/settings?tab=ai";
 const MAX_VISIBLE_BANNERS = 2;
 const SEVERITY_RANK: Record<BannerSeverity, number> = { error: 0, warning: 1, info: 2 };
 
+/**
+ * How long the relay control has to stay down before we say anything. Relay
+ * drops and redials constantly (sleep/wake, Wi-Fi hops, worker deploys); a
+ * banner on every blip would be noise. Two minutes of UNINTERRUPTED outage is
+ * past every normal reconnect.
+ */
+const RELAY_OUTAGE_GRACE_MS = 120_000;
+
+export type RelayOutageState = "suppressed" | "down";
+
+/**
+ * Decide whether the relay leg is in a state worth telling the user about.
+ *
+ * `relayControlSuppressed` is immediate: it means this process deliberately
+ * stopped redialing because another ADE process on this machine claimed the
+ * same machineKey. Nothing recovers that on its own, so a grace period would
+ * only delay the fix.
+ *
+ * Everything else is measured from `relayControlFailingSinceMs` — the start of
+ * the CURRENT uninterrupted outage. `lastFailureAt` deliberately isn't used: it
+ * restamps on every retry, so it can never measure how long relay has been down.
+ */
+export function deriveRelayOutageState(
+  relay: RelayRouteHealth | null | undefined,
+  nowMs: number,
+): RelayOutageState | null {
+  if (!relay) return null;
+  if (relay.enabled !== true) return null;
+  if (relay.relayControlConnected === true) return null;
+  if (relay.relayControlSuppressed === true) return "suppressed";
+  const failingSince = relay.relayControlFailingSinceMs;
+  if (failingSince == null) return null;
+  return nowMs - failingSince > RELAY_OUTAGE_GRACE_MS ? "down" : null;
+}
+
 export function IntegrationBannerHost({
   currentProjectRoot,
   githubStatus,
@@ -56,6 +101,7 @@ export function IntegrationBannerHost({
   aiStatusLoaded,
   providerMode,
   aiMockProvider,
+  relayHealth,
   navigate,
 }: IntegrationBannerHostProps): JSX.Element | null {
   const dismissals = useBannerDismissals();
@@ -154,6 +200,31 @@ export function IntegrationBannerHost({
     };
   }, [loadAppStatus]);
 
+  // Relay outage crosses its grace threshold on wall-clock time, not on an
+  // incoming event, so nothing would re-render us at the two-minute mark. Arm a
+  // SINGLE timer for exactly the remaining grace and let it fire once. No
+  // polling: while relay is healthy, suppressed, or already past the threshold,
+  // no timer exists at all.
+  const [relayGraceTick, setRelayGraceTick] = useState(0);
+  useEffect(() => {
+    if (!relayHealth || relayHealth.enabled !== true) return;
+    if (relayHealth.relayControlConnected === true) return;
+    if (relayHealth.relayControlSuppressed === true) return;
+    const failingSince = relayHealth.relayControlFailingSinceMs;
+    if (failingSince == null) return;
+    const remaining = RELAY_OUTAGE_GRACE_MS - (Date.now() - failingSince);
+    if (remaining <= 0) return;
+    const timer = setTimeout(() => setRelayGraceTick((tick) => tick + 1), remaining + 250);
+    return () => clearTimeout(timer);
+  }, [relayHealth, relayGraceTick]);
+
+  // `relayGraceTick` is not an input to the decision — it is the signal that the
+  // grace timer fired and the clock is worth re-reading.
+  const relayOutage = useMemo(
+    () => deriveRelayOutageState(relayHealth, Date.now()),
+    [relayHealth, relayGraceTick],
+  );
+
   // Clear-on-recovery: when a banner's underlying condition is HEALTHY, drop any
   // dismissal recorded for it so a later regression to the SAME state resurfaces a
   // fresh banner instead of staying suppressed under the stale fingerprint for the
@@ -175,8 +246,10 @@ export function IntegrationBannerHost({
     if (!(providerMode === "subscription" && aiMockProvider)) {
       clearDismissal(`mock-provider:${currentProjectRoot}`);
     }
+    if (relayOutage == null) clearDismissal("relay-offline");
   }, [
     currentProjectRoot,
+    relayOutage,
     appStatusLoaded,
     appAuth,
     appInstall,
@@ -314,8 +387,44 @@ export function IntegrationBannerHost({
       });
     }
 
+    // 5) ADE Relay control is down (NEW). Total relay failure used to be visible
+    // only to `ade doctor`: phones and remote clients silently lost their
+    // off-LAN path while the UI looked fine. Relay identity is machine-wide, so
+    // the dismiss key is global (like github-app-account) rather than
+    // project-scoped, and the fingerprint separates the two states so dismissing
+    // a plain outage can't hide a later process-conflict.
+    if (relayOutage) {
+      const reason =
+        relayHealth?.relayControlSuppressedReason
+        ?? relayHealth?.skipReason
+        ?? relayHealth?.lastControlError
+        ?? null;
+      const suppressed = relayOutage === "suppressed";
+      list.push({
+        id: "relay-offline",
+        severity: "warning",
+        title: suppressed
+          ? "Another ADE process owns this machine's relay connection"
+          : "ADE Relay is not connected",
+        detail: suppressed
+          ? "ADE stopped reconnecting so the two processes don't evict each other. Quit the other ADE app or brain on this machine to get the relay back."
+          : (reason
+            ?? "Phones and remote machines can't reach this computer over the relay. Local network connections still work."),
+        actions: [
+          {
+            label: "Open connections",
+            variant: "primary",
+            onClick: () => openConnectionsPanel("machines"),
+          },
+        ],
+        dismiss: { key: "relay-offline", fingerprint: relayOutage },
+      });
+    }
+
     return list;
   }, [
+    relayOutage,
+    relayHealth,
     appStatusLoaded,
     appAuth,
     appInstall,

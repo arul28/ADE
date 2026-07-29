@@ -124,6 +124,7 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
+import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
@@ -14986,6 +14987,16 @@ async function spawnMachineRuntimeDaemon(
 ): Promise<boolean> {
   if (socketPath.startsWith("tcp://")) return false;
 
+  // Every failing `ade` command lands here, and the child is detached and
+  // unref'd — so without this check a burst of failures leaves a burst of
+  // immortal brains, all of them fighting over the same relay slot. If we
+  // already spawned one for this socket and it is still alive and recent, let
+  // it finish coming up instead of adding a rival.
+  const { hasRecentRuntimeSpawn, recordRuntimeSpawn } = await import(
+    "./services/runtime/runtimeSpawnRecord"
+  );
+  if (hasRecentRuntimeSpawn(socketPath)) return false;
+
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
   const { args, buildHash: runtimeBuildHash } =
@@ -15020,6 +15031,7 @@ async function spawnMachineRuntimeDaemon(
     env,
   });
   child.once("error", () => {});
+  if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
   child.unref();
   return true;
 }
@@ -15986,6 +15998,11 @@ async function runServe(
     filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Held only while this brain hosts phone sync WITHOUT a project scope (a
+  // scope's sync service owns its own lease). Machine-exclusive subsystems
+  // gate on holding one or the other.
+  let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
       "sync_disabled",
@@ -16091,7 +16108,22 @@ async function runServe(
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
     if (!activeScope && sharedSyncListener) {
-      await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      // Binding the shared listener IS hosting phone sync, even with no project
+      // scope to attach to it. Take the machine-wide lease first so this path
+      // has the same exclusivity as the scoped one — otherwise a projectless
+      // brain would bind the port, publish itself, and dial the relay while
+      // another brain legitimately held the lease. Throwing here is correct:
+      // the startup loop treats a conflict as retryable and waits the other
+      // brain out.
+      const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
+      brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
+      const listenerPort = await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      brainSyncHostLease.updatePort(listenerPort);
+    } else if (activeScope && brainSyncHostLease) {
+      // A scope took over hosting and holds its own lease; drop the
+      // projectless one so the lock file describes the real owner.
+      brainSyncHostLease.dispose();
+      brainSyncHostLease = null;
     }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
@@ -16100,8 +16132,12 @@ async function runServe(
     return activeScope ?? null;
   };
   const disposeServeResources = async () => {
+    releaseAccountPublisherAuthoritySubscription?.();
+    releaseAccountPublisherAuthoritySubscription = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
+    brainSyncHostLease?.dispose();
+    brainSyncHostLease = null;
     // Before scopes detach (which clears the run map): best-effort Live
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
@@ -16163,6 +16199,26 @@ async function runServe(
       }
     });
   };
+
+  // Claim the RPC socket before entering the sync-host startup loop, not after.
+  // That loop retries forever by design (so sync recovers when a rival brain
+  // exits), which meant a brain whose socket was already owned never reached
+  // the bind check below and simply lived on as a zombie — we found 18 of them
+  // stacked up on one dev socket, all of them still dialing the relay. A brain
+  // that cannot own its socket has no reason to exist, so fail fast.
+  if (!isAdeRuntimeNamedPipePath(socketPath) && fs.existsSync(socketPath)) {
+    const liveness = await probeLocalSocketForLiveness(socketPath);
+    if (liveness === "live" || liveness === "unknown") {
+      await disposeServeResources();
+      throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
+        socketPath,
+        cause: liveness === "live"
+          ? "Another ADE brain is accepting connections on this socket."
+          : "ADE could not prove the existing socket is stale.",
+        nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+      }), { code: "socket_owned_by_other" as const });
+    }
+  }
 
   if (syncEnabled) {
     try {
@@ -16245,24 +16301,54 @@ async function runServe(
       const activeProject = projectRegistry.get(activeProjectId);
       return activeProject ? [activeProject.rootPath] : [];
     };
-    accountMachinePublisher = createBrainAccountMachinePublisherService({
-      secretsDir: layout.secretsDir,
-      projectRoots: accountProjectRoots,
-      isSyncEnabled: () => syncEnabled,
-      logger: headlessProjectLogger,
-      getSnapshot: async () => {
-        const activeScope = await scopeRegistry.resolveActiveSyncHost();
-        return await activeScope?.runtime.syncService?.getStatus({
-          includeTransferReadiness: false,
-        }) ?? null;
-      },
-      getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
-      directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
-      captureAnalytics: (input) => {
-        brainProductAnalytics.captureInternal(input);
-      },
+    // Publishing this machine to the account directory advertises "reach me
+    // here", so like the relay tunnel it belongs to whichever brain actually
+    // holds the machine-wide sync host lease. A second brain publishing its own
+    // endpoints points phones at a runtime that does not host sync.
+    const { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged } = await import(
+      "./services/sync/syncHostSingleton"
+    );
+    const startAccountMachinePublisher = (): void => {
+      if (accountMachinePublisher) return;
+      accountMachinePublisher = createBrainAccountMachinePublisherService({
+        secretsDir: layout.secretsDir,
+        projectRoots: accountProjectRoots,
+        isSyncEnabled: () => syncEnabled,
+        logger: headlessProjectLogger,
+        getSnapshot: async () => {
+          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          return await activeScope?.runtime.syncService?.getStatus({
+            includeTransferReadiness: false,
+          }) ?? null;
+        },
+        getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+        captureAnalytics: (input) => {
+          brainProductAnalytics.captureInternal(input);
+        },
+      });
+      accountMachinePublisher.start();
+    };
+    releaseAccountPublisherAuthoritySubscription = onSyncHostSingletonAuthorityChanged((held) => {
+      if (held) {
+        startAccountMachinePublisher();
+        return;
+      }
+      headlessProjectLogger.info("account_publisher.stopped_without_sync_host_lease", {
+        reason: "This brain no longer holds the machine-wide sync host lease.",
+      });
+      // The publisher cannot be restarted after dispose, so a later lease
+      // acquisition rebuilds it above.
+      accountMachinePublisher?.dispose();
+      accountMachinePublisher = null;
     });
-    accountMachinePublisher.start();
+    if (holdsSyncHostSingleton()) {
+      startAccountMachinePublisher();
+    } else {
+      headlessProjectLogger.info("account_publisher.start_skipped", {
+        reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
+      });
+    }
   }
 
   process.stderr.write(

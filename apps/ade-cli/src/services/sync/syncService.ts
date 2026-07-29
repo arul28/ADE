@@ -1362,7 +1362,11 @@ export function createSyncService(args: SyncServiceArgs) {
           : !tunnelStatus
             ? "Relay tunnel status is unavailable in this ADE process."
             : !relayControlConnected
-              ? tunnelStatus.lastControlError
+              // A 4505 eviction is a machine-local ownership conflict, not a
+              // network fault, and its reason is the only one that tells the
+              // user what to actually do — so it outranks the raw close text.
+              ? tunnelStatus.controlSuppressedReason
+                ?? tunnelStatus.lastControlError
                 ?? tunnelStatus.lastError
                 ?? "Relay control is not connected."
               : !relayBridgeValidated
@@ -1393,6 +1397,9 @@ export function createSyncService(args: SyncServiceArgs) {
         relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
         relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
         relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
+        relayControlSuppressed: tunnelStatus?.controlSuppressed === true,
+        relayControlSuppressedReason: tunnelStatus?.controlSuppressedReason ?? null,
+        relayControlFailingSinceMs: tunnelStatus?.controlFailingSinceMs ?? null,
       };
       const routeHealth: SyncRouteHealth = {
         listener: {
