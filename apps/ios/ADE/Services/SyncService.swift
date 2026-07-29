@@ -1567,6 +1567,8 @@ struct SyncPreprocessedEnvelope {
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
 private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
+private let syncApplicationCompressionCodecs = ["deflate"]
+private let syncApplicationCompressionThresholdBytes = 512
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -1578,13 +1580,64 @@ func syncPreprocessIncoming(
   let requestId = envelope["requestId"] as? String
   let payload: Any
   let compression = envelope["compression"] as? String ?? "none"
-  if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
+  if (compression == "gzip" || compression == "deflate"),
+     let base64 = envelope["payload"] as? String,
+     let compressed = Data(base64Encoded: base64) {
     let inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
     payload = try JSONSerialization.jsonObject(with: inflated, options: [])
   } else {
     payload = envelope["payload"] ?? NSNull()
   }
   return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
+}
+
+func syncEncodeEnvelopeText(
+  type: String,
+  requestId: String?,
+  projectId: String?,
+  payload: Any,
+  compressionCodec: String?,
+  compressionThresholdBytes: Int
+) throws -> String {
+  let payloadData = try adeJSONData(withJSONObject: payload)
+  var envelope: [String: Any]
+  if payloadData.count >= compressionThresholdBytes {
+    envelope = [
+      "version": 1,
+      "type": type,
+      "compression": compressionCodec ?? "gzip",
+      "payloadEncoding": "base64",
+      "payload": (
+        compressionCodec == "deflate"
+          ? deflateZlib(payloadData)
+          : gzip(payloadData)
+      ).base64EncodedString(),
+      "uncompressedBytes": payloadData.count,
+    ]
+  } else {
+    envelope = [
+      "version": 1,
+      "type": type,
+      "compression": "none",
+      "payloadEncoding": "json",
+      "payload": payload,
+    ]
+  }
+  if let requestId, !requestId.isEmpty {
+    envelope["requestId"] = requestId
+  }
+  if let projectId, !projectId.isEmpty {
+    envelope["projectId"] = projectId
+  }
+  let data = try adeJSONData(withJSONObject: envelope)
+  guard let text = String(data: data, encoding: .utf8) else {
+    throw NSError(
+      domain: "ADE",
+      code: 4,
+      userInfo: [NSLocalizedDescriptionKey: "Could not encode the sync envelope."]
+    )
+  }
+  return text
 }
 
 func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayload {
@@ -3364,6 +3417,8 @@ final class SyncService: ObservableObject {
   private var pendingChatUnsubscribesBySession: [String: PendingChatUnsubscribe] = [:]
   private var chatSubscriptionsNeedingRemoteActivation: Set<String> = []
   private var supportsChangesetAck = false
+  private var negotiatedCompressionCodec: String?
+  private var negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
   private var relayAuthorizationLease: SyncRelayAuthorizationLease?
   private var relayReauthorizationTask: Task<Void, Never>?
   private var relayReauthorizationTaskId: UUID?
@@ -13726,6 +13781,7 @@ final class SyncService: ObservableObject {
           requestId: requestId,
           payload: [
             "peer": currentPeerMetadata(connectionAttempt: connectionAttempt),
+            "compression": syncApplicationCompressionCodecs,
             "auth": auth,
           ]
         )
@@ -14523,6 +14579,7 @@ final class SyncService: ObservableObject {
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "hello", requestId: requestId, payload: [
         "peer": self.currentPeerMetadata(),
+        "compression": syncApplicationCompressionCodecs,
         "auth": auth,
       ])
     }
@@ -15491,6 +15548,16 @@ final class SyncService: ObservableObject {
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    if let compression = payload["compression"] as? [String: Any],
+       compression["codec"] as? String == "deflate",
+       let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
+       threshold > 0 {
+      negotiatedCompressionCodec = "deflate"
+      negotiatedCompressionThresholdBytes = threshold
+    } else {
+      negotiatedCompressionCodec = nil
+      negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
+    }
     if supportsTerminalInputAcknowledgements,
        let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
       terminalInputAcknowledgementRetryWindowMilliseconds = max(
@@ -16404,38 +16471,20 @@ final class SyncService: ObservableObject {
     #endif
     guard let socket else { return false }
     let sendSocket = socket
-    guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return false }
-
-    var envelope: [String: Any]
-    if payloadData.count >= compressionThresholdBytes {
-      envelope = [
-        "version": 1,
-        "type": type,
-        "compression": "gzip",
-        "payloadEncoding": "base64",
-        "payload": gzip(payloadData).base64EncodedString(),
-        "uncompressedBytes": payloadData.count,
-      ]
-    } else {
-      envelope = [
-        "version": 1,
-        "type": type,
-        "compression": "none",
-        "payloadEncoding": "json",
-        "payload": payload,
-      ]
-    }
-    if let requestId, !requestId.isEmpty {
-      envelope["requestId"] = requestId
-    }
-    if let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
-      ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId) {
-      envelope["projectId"] = projectId
-    }
-
-    guard let data = try? adeJSONData(withJSONObject: envelope),
-          let text = String(data: data, encoding: .utf8)
-    else { return false }
+    let compressionCodec = negotiatedCompressionCodec
+    let activeCompressionThreshold = compressionCodec == nil
+      ? compressionThresholdBytes
+      : negotiatedCompressionThresholdBytes
+    let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
+      ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId)
+    guard let text = try? syncEncodeEnvelopeText(
+      type: type,
+      requestId: requestId,
+      projectId: projectId,
+      payload: payload,
+      compressionCodec: compressionCodec,
+      compressionThresholdBytes: activeCompressionThreshold
+    ) else { return false }
 
     sendSocket.send(.string(text)) { error in
       if let error {
@@ -16657,6 +16706,8 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
+    negotiatedCompressionCodec = nil
+    negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
     connectionGeneration &+= 1
     // Requests are owned by the socket generation that sent them. Retire only
     // that generation: a stale project-switch request must not remain armed
@@ -16819,7 +16870,9 @@ final class SyncService: ObservableObject {
 
   private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
     let compression = envelope["compression"] as? String ?? "none"
-    if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
+    if (compression == "gzip" || compression == "deflate"),
+       let base64 = envelope["payload"] as? String,
+       let compressed = Data(base64Encoded: base64) {
       let data = try gunzip(compressed, maxOutputBytes: maxUncompressedSyncEnvelopeBytes)
       return try JSONSerialization.jsonObject(with: data, options: [])
     }
@@ -19085,6 +19138,14 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 }
 
 private func gzip(_ data: Data) -> Data {
+  deflateWire(data, windowBits: MAX_WBITS + 16)
+}
+
+private func deflateZlib(_ data: Data) -> Data {
+  deflateWire(data, windowBits: MAX_WBITS)
+}
+
+private func deflateWire(_ data: Data, windowBits: Int32) -> Data {
   guard !data.isEmpty else { return data }
 
   var stream = z_stream()
@@ -19096,7 +19157,7 @@ private func gzip(_ data: Data) -> Data {
     &stream,
     Z_DEFAULT_COMPRESSION,
     Z_DEFLATED,
-    MAX_WBITS + 16,
+    windowBits,
     8,
     Z_DEFAULT_STRATEGY,
     ZLIB_VERSION,

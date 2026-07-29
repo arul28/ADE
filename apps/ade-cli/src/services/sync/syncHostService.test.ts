@@ -54,6 +54,7 @@ import {
   initialSyncHostCursorForPeer,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
+  negotiateSyncApplicationCompression,
   planChatEventResume,
   recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
@@ -255,6 +256,13 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("selects deflate only when the peer explicitly offers it", () => {
+    expect(negotiateSyncApplicationCompression(undefined)).toBeNull();
+    expect(negotiateSyncApplicationCompression([])).toBeNull();
+    expect(negotiateSyncApplicationCompression(["zstd-dict-v1", "gzip"])).toBeNull();
+    expect(negotiateSyncApplicationCompression(["zstd-dict-v1", "deflate"])).toBe("deflate");
+  });
+
   it("reports the host-observed connection transport", () => {
     expect(syncConnectionTransportForOrigin("direct")).toBe("direct");
     expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");

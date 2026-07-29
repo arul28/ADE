@@ -44,6 +44,7 @@ import {
   assembleProjectCatalogChunks,
   decodeEnvelopeText,
   encodeEnvelopeText,
+  encodeEnvelopeTextWithCompression,
   MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
 } from "../wireProtocol";
 import {
@@ -534,6 +535,41 @@ describe("browser sync envelope codec", () => {
       action: "chat.send",
       args: { text: "hello" },
     });
+  });
+
+  it("round-trips negotiated browser deflate through the real host parser", async () => {
+    const text = await encodeEnvelopeTextWithCompression({
+      type: "command",
+      requestId: "compressed-command",
+      payload: {
+        commandId: "compressed-command",
+        action: "chat.send",
+        args: { text: "browser outbound ".repeat(300) },
+      },
+    }, {
+      codec: "deflate",
+      thresholdBytes: 512,
+    });
+
+    const parsed = parseSyncEnvelope(text);
+    expect(parsed.compression).toBe("deflate");
+    expect(parsed.payload).toMatchObject({
+      commandId: "compressed-command",
+      action: "chat.send",
+    });
+  });
+
+  it("inflates negotiated host deflate envelopes in the browser codec", async () => {
+    const text = encodeSyncEnvelope({
+      type: "chat_event",
+      payload: { text: "host outbound ".repeat(300) },
+      compressionThresholdBytes: 512,
+      compressionCodec: "deflate",
+    });
+
+    const decoded = await decodeEnvelopeText(text);
+    expect(decoded.compression).toBe("none");
+    expect(decoded.payload).toEqual({ text: "host outbound ".repeat(300) });
   });
 
   it("inflates host gzip envelopes and rejects oversize declarations", async () => {

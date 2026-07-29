@@ -352,6 +352,54 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSyncPreprocessDecodesNodeDeflateFixture() throws {
+    // Produced by Node 22's zlib.deflateSync from the JSON payload below.
+    let encodedPayload = "eJyrVipJrShRslJKLsovLlbIzC3ISc1NzStJLMnMz1MYFRxUgkq1APjvqcA="
+    let envelope = """
+    {"version":1,"type":"chat_event","requestId":"node-deflate","compression":"deflate","payloadEncoding":"base64","payload":"\(encodedPayload)","uncompressedBytes":431}
+    """
+
+    let decoded = try XCTUnwrap(syncPreprocessIncoming(envelope))
+    let payload = try XCTUnwrap(decoded.payload as? [String: Any])
+    XCTAssertEqual(
+      payload["text"] as? String,
+      String(repeating: "cross implementation ", count: 20)
+    )
+  }
+
+  func testSyncEncoderUsesNegotiatedDeflateAndKeepsLegacyGzip() throws {
+    let payload = ["text": String(repeating: "ios outbound ", count: 1_000)]
+    let negotiated = try syncEncodeEnvelopeText(
+      type: "chat_event",
+      requestId: "ios-deflate",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: "deflate",
+      compressionThresholdBytes: 512
+    )
+    let negotiatedEnvelope = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(negotiated.utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(negotiatedEnvelope["compression"] as? String, "deflate")
+    let decodedNegotiated = try XCTUnwrap(
+      syncPreprocessIncoming(negotiated)?.payload as? [String: Any]
+    )
+    XCTAssertEqual(decodedNegotiated["text"] as? String, payload["text"])
+
+    let legacy = try syncEncodeEnvelopeText(
+      type: "chat_event",
+      requestId: "ios-gzip",
+      projectId: "project-1",
+      payload: payload,
+      compressionCodec: nil,
+      compressionThresholdBytes: 4 * 1024
+    )
+    let legacyEnvelope = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(legacy.utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(legacyEnvelope["compression"] as? String, "gzip")
+  }
+
   func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 

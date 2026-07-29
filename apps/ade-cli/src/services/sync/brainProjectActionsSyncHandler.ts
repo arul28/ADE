@@ -65,6 +65,7 @@ import {
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   isRuntimeHostPairingRecord,
+  negotiateSyncApplicationCompression,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -266,9 +267,12 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   const record = payload as Record<string, unknown>;
   const peer = normalizePeerMetadata(record.peer);
   if (!peer) return null;
+  const compression = Array.isArray(record.compression)
+    ? record.compression.filter((codec): codec is "deflate" => codec === "deflate")
+    : undefined;
   const auth = record.auth as SyncHelloPayload["auth"] | undefined;
   if (auth?.kind === "bootstrap" && optionalString(auth.token)) {
-    return { peer, auth: { kind: "bootstrap", token: auth.token } };
+    return { peer, auth: { kind: "bootstrap", token: auth.token }, compression };
   }
   if (
     auth?.kind === "paired"
@@ -290,10 +294,11 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
           ? { relayAccountToken: optionalString(auth.relayAccountToken)! }
           : {}),
       },
+      compression,
     };
   }
   const token = optionalString(record.token);
-  if (token) return { peer, auth: { kind: "bootstrap", token } };
+  if (token) return { peer, auth: { kind: "bootstrap", token }, compression };
   return null;
 }
 
@@ -1344,6 +1349,7 @@ export function createBrainProjectActionsSyncHandler(
             serverDbVersion: 0,
             heartbeatIntervalMs,
             pollIntervalMs,
+            compression: negotiateSyncApplicationCompression(hello.compression),
             projectCatalog: catalog,
             projectCatalogEnabled: true,
             crossProjectChatEnabled: false,

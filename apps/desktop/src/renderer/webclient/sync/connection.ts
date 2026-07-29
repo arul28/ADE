@@ -18,6 +18,7 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
 import {
+  SYNC_APPLICATION_COMPRESSION_CODECS,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -38,6 +39,7 @@ import {
   createProjectCatalogChunkAssembler,
   decodeEnvelopeText,
   encodeEnvelopeText,
+  encodeEnvelopeTextWithCompression,
   type EncodeEnvelopeInput,
 } from "./wireProtocol";
 
@@ -294,6 +296,7 @@ export class SyncConnection {
   private relayRefreshDueAtMs: number | null = null;
   private relayLastRefreshStartedAtMs: number | null = null;
   private relayAuthorizationTerminalError: string | null = null;
+  private outboundSendQueue: Promise<void> = Promise.resolve();
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
     envelope: new Set(),
@@ -410,7 +413,31 @@ export class SyncConnection {
     if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Sync socket is not connected.");
     }
-    this.ws.send(encodeEnvelopeText(input));
+    const socket = this.ws;
+    const generation = this.connectionGeneration;
+    const negotiated = this.latestHello?.compression?.codec === "deflate"
+      ? {
+          codec: "deflate" as const,
+          thresholdBytes: Math.max(
+            1,
+            Math.floor(this.latestHello.compression.thresholdBytes),
+          ),
+        }
+      : null;
+    if (!negotiated) {
+      socket.send(encodeEnvelopeText(input));
+      return;
+    }
+    this.outboundSendQueue = this.outboundSendQueue
+      .then(async () => {
+        const text = await encodeEnvelopeTextWithCompression(input, negotiated);
+        if (!this.isCurrentSocket(socket, generation) || socket.readyState !== SOCKET_OPEN) return;
+        socket.send(text);
+      })
+      .catch((error) => {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   disconnect(options: { reconnect?: boolean; code?: number; reason?: string } = {}): void {
@@ -735,6 +762,7 @@ export class SyncConnection {
               SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
             ],
           },
+          compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
           auth: {
             kind: "account",
             deviceId: args.peer.deviceId,
@@ -899,6 +927,7 @@ export class SyncConnection {
           SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
         ],
       },
+      compression: [...SYNC_APPLICATION_COMPRESSION_CODECS],
       auth: {
         kind: "paired",
         deviceId: environment.pairedDeviceId,

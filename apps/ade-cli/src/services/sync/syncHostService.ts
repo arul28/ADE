@@ -48,6 +48,7 @@ import type {
   PtyExitEvent,
   PersonalChatScopeContract,
   SyncBrainStatusPayload,
+  SyncApplicationCompressionCodec,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
   CloneProjectInput,
@@ -99,6 +100,8 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_APPLICATION_COMPRESSION_CODECS,
+  SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
@@ -580,6 +583,7 @@ type PeerState = {
   ws: WebSocket;
   lifecycleGeneration: number;
   metadata: SyncPeerMetadata | null;
+  negotiatedCompression: SyncApplicationCompressionCodec | null;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
   authKind: SyncHostAuthKind;
@@ -1257,6 +1261,7 @@ export function buildSyncHostHelloOkPayload(args: {
   serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  compression?: SyncApplicationCompressionCodec | null;
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
@@ -1298,6 +1303,14 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.serverDbSiteId ? { serverDbSiteId: args.serverDbSiteId } : {}),
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
+    ...(args.compression
+      ? {
+          compression: {
+            codec: args.compression,
+            thresholdBytes: SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
+          },
+        }
+      : {}),
     projects: args.projectCatalog.projects,
     // Explicit null (relay unavailable) must reach the wire: clients treat an
     // ABSENT key as "older host — keep saved relay routes", and the brain
@@ -1472,7 +1485,20 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
     },
     auth: normalizedAuth,
+    compression: Array.isArray(value?.compression)
+      ? value.compression
+        .filter((codec): codec is SyncApplicationCompressionCodec =>
+          typeof codec === "string"
+          && (SYNC_APPLICATION_COMPRESSION_CODECS as readonly string[]).includes(codec))
+      : undefined,
   };
+}
+
+export function negotiateSyncApplicationCompression(
+  offered: readonly string[] | null | undefined,
+): SyncApplicationCompressionCodec | null {
+  if (!Array.isArray(offered)) return null;
+  return offered.includes("deflate") ? "deflate" : null;
 }
 
 type ParsedAccountChallenge = {
@@ -3187,6 +3213,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ws,
       lifecycleGeneration: 0,
       metadata: null,
+      negotiatedCompression: null,
       authenticated: false,
       authTimeout: null,
       authKind: null,
@@ -3409,6 +3436,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.authenticated = true;
         clearPeerAuthTimeout(peer);
         peer.metadata = snapshot.metadata;
+        peer.negotiatedCompression = snapshot.negotiatedCompression ?? null;
         peer.authKind = snapshot.authKind;
         peer.pairedDeviceId = snapshot.pairedDeviceId;
         peer.pairingRecord = pairingRecord;
@@ -4125,11 +4153,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     requestId?: string | null,
   ): string[] {
     const peer = target instanceof WebSocket ? peerForSocket(target) : target;
+    const negotiatedCompression = peer?.negotiatedCompression ?? null;
     return encodeSyncEnvelopeFrames({
       type,
       payload,
       requestId,
-      compressionThresholdBytes,
+      compressionThresholdBytes: negotiatedCompression
+        ? SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES
+        : compressionThresholdBytes,
+      compressionCodec: negotiatedCompression ?? "gzip",
       maxFrameBytes: maxFrameBytesForPeer(peer),
     });
   }
@@ -6823,6 +6855,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return;
       }
+      const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
       let sealedAdoption: {
         sessionKey: Buffer;
         hostDeviceId: string;
@@ -7392,6 +7425,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         serverDbSiteId: ownSiteId,
         heartbeatIntervalMs,
         pollIntervalMs,
+        compression: negotiatedCompression,
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
@@ -7437,6 +7471,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } else {
         send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
       }
+      // hello_ok itself uses the legacy encoder so the selected codec is never
+      // required before the client has observed the negotiation result.
+      peer.negotiatedCompression = negotiatedCompression;
       args.onStateChanged?.();
       // Catch-up is background work. The periodic poll starts it after the
       // serialized hello queue has had a chance to admit subscriptions.
@@ -8601,6 +8638,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             remotePort: peer.remotePort,
             transportOrigin: peer.transportOrigin,
             metadata: peer.metadata,
+            negotiatedCompression: peer.negotiatedCompression,
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,

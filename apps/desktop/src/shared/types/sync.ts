@@ -114,7 +114,16 @@ export type SyncRelayClientReady = {
   v: typeof SYNC_RELAY_READY_VERSION;
 };
 
-export type SyncCompressionCodec = "none" | "gzip";
+/**
+ * Wire-level payload compression. `gzip` is the legacy, implicitly enabled
+ * codec retained for peers that predate negotiation; `deflate` is used only
+ * after both sides explicitly negotiate it in hello/hello_ok.
+ */
+export type SyncCompressionCodec = "none" | "gzip" | "deflate";
+export const SYNC_APPLICATION_COMPRESSION_CODECS = ["deflate"] as const;
+export type SyncApplicationCompressionCodec =
+  (typeof SYNC_APPLICATION_COMPRESSION_CODECS)[number];
+export const SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES = 512;
 
 export type SyncPayloadEncoding = "json" | "base64";
 
@@ -554,6 +563,8 @@ export type SyncHelloPayload = {
   peer: SyncPeerMetadata;
   token?: string;
   auth?: SyncHelloAuth;
+  /** Ordered application-layer codecs this client can encode and decode. */
+  compression?: SyncApplicationCompressionCodec[];
 };
 
 export type SyncMobileProjectSummary = {
@@ -884,6 +895,14 @@ export type SyncHelloOkPayload = {
   serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
+  /**
+   * Present only when hello offered a mutually supported application codec.
+   * Its absence preserves the exact legacy compression behavior.
+   */
+  compression?: {
+    codec: SyncApplicationCompressionCodec;
+    thresholdBytes: number;
+  };
   projects?: SyncMobileProjectSummary[];
   features: SyncFeatureFlags;
   /**
@@ -1812,7 +1831,7 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
       payload: TPayload;
     })
   | (SyncEnvelopeBase<TType> & {
-      compression: "gzip";
+      compression: "gzip" | "deflate";
       payloadEncoding: "base64";
       payload: string;
       uncompressedBytes: number;

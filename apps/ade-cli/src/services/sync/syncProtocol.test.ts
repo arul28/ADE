@@ -1,4 +1,4 @@
-import { gzipSync } from "node:zlib";
+import { deflateSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   BACKPRESSURE_POLL_MS,
@@ -181,6 +181,39 @@ describe("parseSyncEnvelopeChunkPayload", () => {
 });
 
 describe("parseSyncEnvelope", () => {
+  it("preserves the legacy gzip wire frame unless a codec is explicitly selected", () => {
+    const args = {
+      type: "chat_event" as const,
+      requestId: "legacy",
+      payload: { text: "compress me ".repeat(600) },
+      compressionThresholdBytes: 512,
+    };
+    expect(encodeSyncEnvelope(args)).toBe(encodeSyncEnvelope({
+      ...args,
+      compressionCodec: "gzip",
+    }));
+    expect(parseSyncEnvelope(encodeSyncEnvelope({
+      ...args,
+      compressionCodec: "deflate",
+    })).compression).toBe("deflate");
+  });
+
+  it("decodes zlib-wrapped deflate with the same output cap as legacy gzip", () => {
+    const payload = { text: "cross implementation ".repeat(300) };
+    const payloadJson = JSON.stringify(payload);
+    const encoded = JSON.stringify({
+      version: 1,
+      type: "chat_event",
+      requestId: "deflate-fixture",
+      compression: "deflate",
+      payloadEncoding: "base64",
+      payload: deflateSync(Buffer.from(payloadJson, "utf8")).toString("base64"),
+      uncompressedBytes: Buffer.byteLength(payloadJson, "utf8"),
+    });
+
+    expect(parseSyncEnvelope(encoded).payload).toEqual(payload);
+  });
+
   it("round-trips every paired runtime channel envelope", () => {
     const cases = [
       ["rpc_open", { channelId: "rpc-1" }],

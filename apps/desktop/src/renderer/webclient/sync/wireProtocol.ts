@@ -1,4 +1,5 @@
 import type {
+  SyncApplicationCompressionCodec,
   SyncEnvelope,
   SyncEnvelopeChunkPayload,
   SyncMobileProjectSummary,
@@ -44,14 +45,30 @@ function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
   return result;
 }
 
-async function gunzipWithCap(compressed: Uint8Array): Promise<Uint8Array> {
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof btoa === "function") {
+    let binary = "";
+    const chunkBytes = 32 * 1024;
+    for (let offset = 0; offset < bytes.length; offset += chunkBytes) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkBytes));
+    }
+    return btoa(binary);
+  }
+  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
+  throw new Error("No base64 encoder is available.");
+}
+
+async function decompressWithCap(
+  compressed: Uint8Array,
+  codec: SyncApplicationCompressionCodec | "gzip",
+): Promise<Uint8Array> {
   if (compressed.byteLength > MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES) {
     throw new Error(`Compressed sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
   }
   if (typeof DecompressionStream !== "function") {
-    throw new Error("This browser does not support gzip sync envelopes.");
+    throw new Error(`This browser does not support ${codec} sync envelopes.`);
   }
-  const transform = new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
+  const transform = new DecompressionStream(codec) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(compressed);
@@ -79,6 +96,20 @@ async function gunzipWithCap(compressed: Uint8Array): Promise<Uint8Array> {
   return concatBytes(chunks, total);
 }
 
+async function compress(
+  uncompressed: Uint8Array,
+  codec: SyncApplicationCompressionCodec,
+): Promise<Uint8Array> {
+  if (typeof CompressionStream !== "function") {
+    throw new Error(`This browser does not support ${codec} sync envelopes.`);
+  }
+  const transform = new CompressionStream(codec) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>;
+  const compressed = await new Response(
+    new Blob([uncompressed]).stream().pipeThrough(transform),
+  ).arrayBuffer();
+  return new Uint8Array(compressed);
+}
+
 export function encodeEnvelopeText(envelope: EncodeEnvelopeInput): string {
   const requestId = normalizeOptionalString(envelope.requestId);
   const projectId = normalizeOptionalString(envelope.projectId);
@@ -90,6 +121,34 @@ export function encodeEnvelopeText(envelope: EncodeEnvelopeInput): string {
     compression: "none",
     payloadEncoding: "json",
     payload: envelope.payload ?? null,
+  } as SyncEnvelope);
+}
+
+export async function encodeEnvelopeTextWithCompression(
+  envelope: EncodeEnvelopeInput,
+  negotiation: {
+    codec: SyncApplicationCompressionCodec;
+    thresholdBytes: number;
+  } | null,
+): Promise<string> {
+  if (!negotiation) return encodeEnvelopeText(envelope);
+  const payloadJson = JSON.stringify(envelope.payload ?? null);
+  const payloadBytes = new TextEncoder().encode(payloadJson);
+  if (payloadBytes.byteLength < negotiation.thresholdBytes) {
+    return encodeEnvelopeText(envelope);
+  }
+  const requestId = normalizeOptionalString(envelope.requestId);
+  const projectId = normalizeOptionalString(envelope.projectId);
+  const compressed = await compress(payloadBytes, negotiation.codec);
+  return JSON.stringify({
+    version: SYNC_PROTOCOL_VERSION,
+    type: envelope.type,
+    ...(projectId ? { projectId } : {}),
+    requestId,
+    compression: negotiation.codec,
+    payloadEncoding: "base64",
+    payload: bytesToBase64(compressed),
+    uncompressedBytes: payloadBytes.byteLength,
   } as SyncEnvelope);
 }
 
@@ -107,7 +166,7 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
   if (envelope.version !== SYNC_PROTOCOL_VERSION) {
     throw new Error(`Unsupported sync protocol version: ${String((decoded as { version?: unknown }).version ?? "unknown")}`);
   }
-  if (envelope.compression === "gzip") {
+  if (envelope.compression === "gzip" || envelope.compression === "deflate") {
     if (envelope.payloadEncoding !== "base64" || typeof envelope.payload !== "string") {
       throw new Error("Compressed sync envelopes must use base64 payload encoding.");
     }
@@ -117,7 +176,10 @@ export async function decodeEnvelopeText(text: string): Promise<SyncEnvelope> {
     ) {
       throw new Error(`Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
     }
-    const uncompressed = await gunzipWithCap(base64ToBytes(envelope.payload));
+    const uncompressed = await decompressWithCap(
+      base64ToBytes(envelope.payload),
+      envelope.compression,
+    );
     if (
       typeof envelope.uncompressedBytes === "number"
       && envelope.uncompressedBytes !== uncompressed.byteLength

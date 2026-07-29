@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { deflateSync, gunzipSync, gzipSync, inflateSync } from "node:zlib";
 import type { SyncCompressionCodec, SyncEnvelope, SyncEnvelopeChunkPayload, SyncPeerPlatform, SyncProtocolVersion } from "../../../../desktop/src/shared/types";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 
@@ -76,6 +76,11 @@ type EncodeEnvelopeArgs = {
   requestId?: string | null;
   payload: unknown;
   compressionThresholdBytes?: number;
+  /**
+   * Defaults to legacy gzip so existing callers and non-negotiating peers
+   * retain byte-for-byte wire behavior.
+   */
+  compressionCodec?: Exclude<SyncCompressionCodec, "none"> | "none";
 };
 
 function asSyncEnvelope(value: unknown): SyncEnvelope {
@@ -92,15 +97,18 @@ export function encodeSyncEnvelope(args: EncodeEnvelopeArgs): string {
     ? args.projectId.trim()
     : null;
   const threshold = Math.max(0, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
+  const compressionCodec = args.compressionCodec ?? "gzip";
 
-  if (payloadBytes >= threshold) {
-    const compressed = gzipSync(Buffer.from(payloadJson, "utf8"));
+  if (compressionCodec !== "none" && payloadBytes >= threshold) {
+    const compressed = compressionCodec === "deflate"
+      ? deflateSync(Buffer.from(payloadJson, "utf8"))
+      : gzipSync(Buffer.from(payloadJson, "utf8"));
     return JSON.stringify(asSyncEnvelope({
       version: SYNC_PROTOCOL_VERSION,
       type: args.type,
       ...(projectId ? { projectId } : {}),
       requestId,
-      compression: "gzip",
+      compression: compressionCodec,
       payloadEncoding: "base64",
       payload: compressed.toString("base64"),
       uncompressedBytes: payloadBytes,
@@ -153,6 +161,7 @@ export function encodeSyncEnvelopeFrames(
       payload,
       // base64 of (usually gzipped) data does not compress again.
       compressionThresholdBytes: Number.POSITIVE_INFINITY,
+      compressionCodec: "none",
     }));
   }
   return frames;
@@ -229,7 +238,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
     ? decoded.projectId.trim()
     : null;
 
-  if (decoded.compression === "gzip") {
+  if (decoded.compression === "gzip" || decoded.compression === "deflate") {
     if (decoded.payloadEncoding !== "base64" || typeof decoded.payload !== "string") {
       throw new Error("Compressed sync envelopes must use base64 payload encoding.");
     }
@@ -241,11 +250,12 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
     }
     let uncompressedBuffer: Buffer;
     try {
-      uncompressedBuffer = gunzipSync(Buffer.from(decoded.payload, "base64"), {
-        maxOutputLength: MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
-      });
+      const compressed = Buffer.from(decoded.payload, "base64");
+      uncompressedBuffer = decoded.compression === "deflate"
+        ? inflateSync(compressed, { maxOutputLength: MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES })
+        : gunzipSync(compressed, { maxOutputLength: MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES });
     } catch (error) {
-      throw new Error(`Failed to decode gzip sync envelope${requestId ? ` ${requestId}` : ""}${projectId ? ` for project ${projectId}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to decode ${decoded.compression} sync envelope${requestId ? ` ${requestId}` : ""}${projectId ? ` for project ${projectId}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (uncompressedBuffer.byteLength > MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES) {
       throw new Error(`Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
@@ -262,7 +272,7 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
       type: decoded.type,
       projectId,
       requestId,
-      compression: "gzip",
+      compression: decoded.compression,
       payload: safeJsonParse(uncompressed, null),
       raw: decoded,
     };
