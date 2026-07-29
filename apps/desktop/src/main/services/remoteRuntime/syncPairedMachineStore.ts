@@ -274,6 +274,8 @@ function coerceEndpointStates(
 ): DesktopPairedMachineEndpointState[] {
   const stateByEndpoint = new Map<string, {
     lastSucceededAt: number | null;
+    lastFailedAt: number | null;
+    consecutiveFailures: number;
     lastDiscoveredAt: number | null;
   }>();
   if (Array.isArray(value)) {
@@ -295,12 +297,37 @@ function coerceEndpointStates(
         && Number.isFinite(entry.lastDiscoveredAt)
         ? entry.lastDiscoveredAt
         : null;
+      const lastFailedAt = typeof entry.lastFailedAt === "number"
+        && Number.isFinite(entry.lastFailedAt)
+        ? entry.lastFailedAt
+        : null;
+      const consecutiveFailures = typeof entry.consecutiveFailures === "number"
+        && Number.isInteger(entry.consecutiveFailures)
+        && entry.consecutiveFailures > 0
+        ? entry.consecutiveFailures
+        : 0;
       const current = stateByEndpoint.get(endpoint);
+      const mergedLastSucceededAt = Math.max(
+        current?.lastSucceededAt ?? 0,
+        lastSucceededAt ?? 0,
+      ) || null;
+      const useIncomingFailure = (lastFailedAt ?? 0) >= (current?.lastFailedAt ?? 0);
+      const mergedLastFailedAt = useIncomingFailure
+        ? lastFailedAt
+        : current?.lastFailedAt ?? null;
+      const mergedConsecutiveFailures = useIncomingFailure
+        ? consecutiveFailures
+        : current?.consecutiveFailures ?? 0;
       stateByEndpoint.set(endpoint, {
-        lastSucceededAt: Math.max(
-          current?.lastSucceededAt ?? 0,
-          lastSucceededAt ?? 0,
-        ) || null,
+        lastSucceededAt: mergedLastSucceededAt,
+        lastFailedAt: mergedLastSucceededAt != null
+          && mergedLastSucceededAt >= (mergedLastFailedAt ?? 0)
+          ? null
+          : mergedLastFailedAt,
+        consecutiveFailures: mergedLastSucceededAt != null
+          && mergedLastSucceededAt >= (mergedLastFailedAt ?? 0)
+          ? 0
+          : mergedConsecutiveFailures,
         lastDiscoveredAt: Math.max(
           current?.lastDiscoveredAt ?? 0,
           lastDiscoveredAt ?? 0,
@@ -312,6 +339,8 @@ function coerceEndpointStates(
     if (!stateByEndpoint.has(endpoint)) {
       stateByEndpoint.set(endpoint, {
         lastSucceededAt: null,
+        lastFailedAt: null,
+        consecutiveFailures: 0,
         lastDiscoveredAt: null,
       });
     }
@@ -319,6 +348,12 @@ function coerceEndpointStates(
   return [...stateByEndpoint].map(([endpoint, state]) => ({
     endpoint,
     lastSucceededAt: state.lastSucceededAt,
+    ...(state.lastFailedAt != null
+      ? {
+          lastFailedAt: state.lastFailedAt,
+          consecutiveFailures: state.consecutiveFailures,
+        }
+      : {}),
     ...(state.lastDiscoveredAt != null
       ? { lastDiscoveredAt: state.lastDiscoveredAt }
       : {}),
@@ -544,6 +579,34 @@ export class DesktopPairedMachineStore {
         endpoints,
         machine.endpointStates,
         [{ endpoint, lastSucceededAt: nowMs }],
+      ),
+    });
+  }
+
+  markEndpointFailed(
+    hostDeviceIdOrMachineKey: string,
+    endpointValue: string,
+    nowMs = Date.now(),
+  ): DesktopPairedMachineCredentials {
+    const machine = this.get(hostDeviceIdOrMachineKey);
+    if (!machine) throw new Error("Paired machine was not found.");
+    const endpoint = normalizeSyncEndpoint(endpointValue);
+    const endpoints = uniqueEndpoints(endpoint, ...machine.endpoints);
+    const previous = machine.endpointStates?.find(
+      (state) => state.endpoint === endpoint,
+    );
+    return this.save({
+      ...machine,
+      endpoints,
+      endpointStates: mergeEndpointStates(
+        endpoints,
+        machine.endpointStates,
+        [{
+          endpoint,
+          lastSucceededAt: previous?.lastSucceededAt ?? null,
+          lastFailedAt: nowMs,
+          consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        }],
       ),
     });
   }

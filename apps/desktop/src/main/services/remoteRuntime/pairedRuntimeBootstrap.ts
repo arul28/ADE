@@ -4,6 +4,7 @@ import type {
 } from "../../../shared/types/pairedRuntime";
 import type {
   RemoteRuntimeConnectResult,
+  RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import {
@@ -28,6 +29,7 @@ import {
   MAX_ROUTE_ATTEMPTS,
   orderPairedCandidates,
   pairedRuntimeRouteHost,
+  type PairedRuntimeEndpointCandidate,
 } from "./pairedRuntimeRoutes";
 import {
   PairedRuntimeCompatibilityError,
@@ -131,6 +133,16 @@ export async function bootstrapPairedRuntime(args: {
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
+  const markEndpointFailed = (
+    candidate: PairedRuntimeEndpointCandidate,
+    failure: RemoteRuntimeConnectionAttemptFailure,
+  ): void => {
+    if (failure === "authentication") return;
+    args.pairedStore.markEndpointFailed(
+      credentials.hostIdentity.deviceId,
+      candidate.endpoint,
+    );
+  };
   for (const candidate of orderedCandidates) {
     const attemptStartedAt = Date.now();
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
@@ -213,6 +225,7 @@ export async function bootstrapPairedRuntime(args: {
         continue;
       }
       const failure = classifyPairedRuntimeFailure(error);
+      markEndpointFailed(candidate, failure);
       recordAttempt({
         kind: candidate.kind,
         host: safeHost,
@@ -251,6 +264,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
+        markEndpointFailed(candidate, failure);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,
@@ -284,6 +298,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
+        markEndpointFailed(candidate, failure);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,

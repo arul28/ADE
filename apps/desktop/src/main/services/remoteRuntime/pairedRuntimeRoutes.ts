@@ -11,10 +11,13 @@ export type PairedRuntimeEndpointCandidate = {
   endpoint: string;
   kind: Exclude<RemoteRuntimeRouteKind, "ssh">;
   lastSucceededAt: number | null;
+  recentlyFailing: boolean;
   lastDiscoveredAt?: number | null;
 };
 
 export const MAX_ROUTE_ATTEMPTS = 8;
+export const PAIRED_ENDPOINT_FAILURE_THRESHOLD = 2;
+export const PAIRED_ENDPOINT_RECENT_FAILURE_WINDOW_MS = 120_000;
 
 export type PairedRouteAttemptRecorder = {
   attempts: RemoteRuntimeConnectionAttempt[];
@@ -54,9 +57,24 @@ export function orderPairedCandidates(
   candidates: readonly PairedRuntimeEndpointCandidate[],
 ): PairedRuntimeEndpointCandidate[] {
   return [
-    ...candidates.filter((candidate) => candidate.kind !== "relay"),
-    ...candidates.filter((candidate) => candidate.kind === "relay"),
+    ...candidates.filter(
+      (candidate) => !candidate.recentlyFailing && candidate.kind !== "relay",
+    ),
+    ...candidates.filter(
+      (candidate) => !candidate.recentlyFailing && candidate.kind === "relay",
+    ),
+    ...candidates.filter((candidate) => candidate.recentlyFailing),
   ];
+}
+
+export function pairedEndpointIsRecentlyFailing(
+  state: DesktopPairedMachineEndpointState | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  return state?.lastFailedAt != null
+    && Number.isFinite(state.lastFailedAt)
+    && (state.consecutiveFailures ?? 0) >= PAIRED_ENDPOINT_FAILURE_THRESHOLD
+    && nowMs - state.lastFailedAt <= PAIRED_ENDPOINT_RECENT_FAILURE_WINDOW_MS;
 }
 
 function normalizedEndpointOrNull(
@@ -104,13 +122,22 @@ export function buildPairedEndpointCandidates(args: {
   relayUrl?: string | null;
   endpointStates?: DesktopPairedMachineEndpointState[] | null;
   additionalEndpoints?: string[];
+  nowMs?: number;
 }): PairedRuntimeEndpointCandidate[] {
   const relayUrl = normalizedEndpointOrNull(args.relayUrl);
   const successByEndpoint = new Map<string, number>();
   const discoveryByEndpoint = new Map<string, number>();
+  const stateByEndpoint = new Map<string, DesktopPairedMachineEndpointState>();
   for (const state of args.endpointStates ?? []) {
     const endpoint = normalizedEndpointOrNull(state.endpoint);
     if (!endpoint) continue;
+    const previous = stateByEndpoint.get(endpoint);
+    if (
+      !previous
+      || (state.lastFailedAt ?? 0) >= (previous.lastFailedAt ?? 0)
+    ) {
+      stateByEndpoint.set(endpoint, state);
+    }
     if (
       state.lastSucceededAt != null
       && Number.isFinite(state.lastSucceededAt)
@@ -147,6 +174,10 @@ export function buildPairedEndpointCandidates(args: {
       endpoint,
       kind: classifyPairedRuntimeEndpoint(endpoint, relayUrl),
       lastSucceededAt: successByEndpoint.get(endpoint) ?? null,
+      recentlyFailing: pairedEndpointIsRecentlyFailing(
+        stateByEndpoint.get(endpoint),
+        args.nowMs,
+      ),
       ...(discoveryByEndpoint.has(endpoint)
         ? { lastDiscoveredAt: discoveryByEndpoint.get(endpoint)! }
         : {}),
@@ -162,6 +193,7 @@ export function buildPairedEndpointCandidates(args: {
   return candidates
     .sort(
       (left, right) =>
+        Number(left.recentlyFailing) - Number(right.recentlyFailing) ||
         rank[left.kind] - rank[right.kind] ||
         (right.lastDiscoveredAt ?? 0) - (left.lastDiscoveredAt ?? 0) ||
         (right.lastSucceededAt ?? 0) - (left.lastSucceededAt ?? 0) ||
