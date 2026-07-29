@@ -170,7 +170,7 @@ describe("SessionListPane", () => {
       },
     });
 
-    const view = renderPane({
+    renderPane({
       runningFiltered: [session],
       allSessionsUnfiltered: [session],
       sessionsGroupedByLane: new Map([[session.laneId, [session]]]),
@@ -1197,27 +1197,28 @@ describe("SessionListPane", () => {
       );
     });
 
-    it("shows a hover label for one online foreign machine and the name when it drops", async () => {
+    it("shows a hover label for one online foreign machine", async () => {
       seedForeignMachine();
-      const view = renderPane();
+      renderPane();
       const marker = document.querySelector("[data-machine-marker-mode]")!;
       expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
       expect(screen.queryByText("Mac Studio (12)")).toBeNull();
       fireEvent.mouseEnter(marker.parentElement!);
       expect((await screen.findByRole("tooltip")).textContent).toContain("Mac Studio (12)");
-      view.unmount();
+    });
 
+    it("removes an offline machine's lane, chats, and marker from the list", () => {
       seedForeignMachine({ online: false });
       renderPane();
-      // Offline: lanes REMAIN, dimmed, and the machine is named outright.
-      expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
-      expect(document.querySelector("[data-machine-marker-mode]")?.getAttribute("data-machine-marker-mode"))
-        .toBe("name");
-      expect(screen.getByText("Mac Studio (12)")).toBeTruthy();
-      expect((screen.getByRole("button", { name: /Chat on the other machine/ }) as HTMLButtonElement).disabled)
-        .toBe(true);
-      expect(screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header")?.parentElement?.className)
-        .toContain("opacity");
+
+      // Nothing about an unreachable machine survives in Work: not the lane
+      // group, not its chats, not a dimmed placeholder naming the machine.
+      expect(screen.queryByText("Elsewhere Lane")).toBeNull();
+      expect(screen.queryByText("Chat on the other machine")).toBeNull();
+      expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeNull();
+      expect(document.querySelector("[data-machine-marker-mode]")).toBeNull();
+      expect(screen.queryByText("Mac Studio (12)")).toBeNull();
+      expect(screen.queryByText(/is offline/i)).toBeNull();
     });
   });
 

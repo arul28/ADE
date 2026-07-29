@@ -178,8 +178,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   by the connection-snapshot subscription and existing lane-lifecycle /
   session-changed events (coalesced, no polling); foreign reads are bounded,
   timed out, capped at four machines in parallel, and never gate the local list.
-  A machine that drops is **dimmed, never dropped** — its lanes and sessions are
-  retained so a wifi blip cannot reflow half the sidebar away. The union is
+  A machine that drops **leaves the Work sidebar entirely**:
+  `selectReachableCrossMachineRows` narrows the union inside
+  `useCrossMachineLaneUnion`, so its lanes, chats, and machine markers stop
+  rendering and its branches stop counting toward "same branch elsewhere". Its
+  store slice is retained rather than deleted, because the push-divergence guard
+  needs a dropped machine's last-known branch state. Reachability is derived from
+  connection state alone and only after a `RECONNECT_GRACE_MS` (6 s) window, so
+  the `connecting` / `error` states a redial or a sleep/wake publishes cannot
+  reflow half the sidebar away and animate it back a second later; coming back is
+  applied instantly. The union is
   scoped per repository, so switching project tabs invalidates it wholesale.
   `selectOtherMachineBranchStates` is the derived-state seam the push guard
   reads at click time.
@@ -362,11 +370,11 @@ Run all follow it. Two things are deliberately wider than that:
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
   machine for this repository, regardless of which machine the tab is bound to.
   Lanes not on This Mac carry a small monochrome machine marker that promotes to
-  the machine's name when a glyph alone would be ambiguous (the machine is
-  offline, two or more foreign machines are on screen, or the same branch exists
-  elsewhere). Foreign lanes appear only when they have chats — the union is about
-  work in flight, not an inventory. A machine that goes offline keeps its rows,
-  dimmed and inert.
+  the machine's name when a glyph alone would be ambiguous (two or more foreign
+  machines are on screen, or the same branch exists elsewhere). Foreign lanes
+  appear only when they have chats — the union is about work in flight, not an
+  inventory. A machine that goes offline leaves the sidebar entirely: its lanes,
+  chats, and markers are hidden until it reconnects.
 - **A chat runs on its own lane's machine.** Opening a chat from the union
   streams it from the machine that owns its lane, with its calls pinned to that
   machine's runtime; the tab stays bound where it was. Clicking a foreign

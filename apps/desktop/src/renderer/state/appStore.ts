@@ -1011,9 +1011,11 @@ export type ProjectTransitionError = {
  * one machine) and chats inherit their machine through `laneId`, so the union is
  * keyed by machine and holds lanes — never a per-chat machine field.
  *
- * `online: false` is a *dimming* flag, never a removal signal: a machine that
- * drops keeps every lane it last reported. A sidebar that reflowed away half its
- * rows on a wifi blip would be worse than the single-machine list it replaces.
+ * `online: false` retains the slice in the store but hides it from Work: the
+ * union hook (`useCrossMachineLaneUnion`) drops offline machines' lanes and
+ * chats from the sidebar entirely. The retained data still backs the
+ * push-divergence guard, which needs a dropped machine's last-known branch
+ * state, so nothing here is deleted on disconnect.
  */
 export type CrossMachineMachineLanes = {
   /**
@@ -1775,7 +1777,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           nextRecord[machineId] = entry;
           continue;
         }
-        // Dim, never drop. The lanes and sessions carry over verbatim.
+        // Flag, never drop. The lanes and sessions carry over verbatim; the
+        // union hook decides what that flag hides.
         nextRecord[machineId] = { ...entry, online: isOnline };
         changed = true;
       }

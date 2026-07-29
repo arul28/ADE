@@ -164,7 +164,7 @@ describe("useWorkLaneContextMenu", () => {
     });
 
     act(() => {
-      result.current.triggerForeign(lane, binding, "Studio", true, {
+      result.current.triggerForeign(lane, binding, "Studio", {
         preventDefault: vi.fn(),
         clientX: 12,
         clientY: 34,
@@ -213,7 +213,7 @@ describe("useWorkLaneContextMenu", () => {
     });
 
     act(() => {
-      result.current.triggerForeign(lane, binding, "Studio", true, {
+      result.current.triggerForeign(lane, binding, "Studio", {
         preventDefault: vi.fn(),
         clientX: 12,
         clientY: 34,
@@ -232,43 +232,6 @@ describe("useWorkLaneContextMenu", () => {
     expect(switchRemoteProject).not.toHaveBeenCalled();
     expect(switchProjectToPath).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
-  });
-
-  it("disables foreign lane management while its machine is offline", () => {
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: { app: { writeClipboardText: vi.fn().mockResolvedValue(undefined) } },
-    });
-    const lane = {
-      id: "lane-studio",
-      name: "Studio Lane",
-      laneType: "worktree",
-      branchRef: "refs/heads/studio-lane",
-    } as LaneSummary;
-    const binding = {
-      kind: "remote" as const,
-      key: "remote:studio:ade",
-      targetId: "studio",
-      projectId: "ade",
-      rootPath: "/Users/studio/ADE",
-      displayName: "ADE",
-      runtimeName: "Studio",
-      hostname: "studio.local",
-    };
-    const { result } = renderHook(() => useWorkLaneContextMenu(), {
-      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
-    });
-
-    act(() => {
-      result.current.triggerForeign(lane, binding, "Studio", false, {
-        preventDefault: vi.fn(),
-        clientX: 12,
-        clientY: 34,
-      });
-    });
-    render(<>{result.current.menu}</>);
-
-    expect((screen.getByRole("menuitem", { name: "Manage lane" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("opens lane management in Work without navigating to the Lanes tab", () => {

@@ -439,7 +439,7 @@ export const SessionCard = React.memo(function SessionCard({
   parentSessionTitle?: string | null;
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
-  /** Busy rows spin; offline rows show a stable machine glyph. */
+  /** Busy rows spin; rows blocked on an unresolved binding show a machine glyph. */
   disabledBusy?: boolean;
   /** Runtime that owns this session when it differs from the active project. */
   runtimePin?: OpenProjectBinding | null;

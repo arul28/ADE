@@ -29,6 +29,7 @@ type NativeDatabase = {
 };
 
 const require = createRequire(import.meta.url);
+
 const { DatabaseSync } = require("node:sqlite") as {
   DatabaseSync: new (path: string) => NativeDatabase;
 };
@@ -404,7 +405,7 @@ function insertAttentionDevice(
     JSON.stringify(args.preferences ?? {}),
     now,
     now,
-    args.leaseExpiresAt ?? "2026-09-01T08:00:00.000Z",
+    args.leaseExpiresAt ?? "2099-09-01T08:00:00.000Z",
     crypto.randomUUID(),
   );
   database.native.prepare(`
@@ -3914,7 +3915,7 @@ describe("account Attention contract", () => {
       insertAttentionDevice(database, {
         userId: "account-a",
         deviceId: "active-phone",
-        leaseExpiresAt: "2026-09-01T00:00:00.000Z",
+        leaseExpiresAt: "2099-09-01T00:00:00.000Z",
       });
       database.native.prepare(`
         insert into attention_items(
@@ -3930,7 +3931,7 @@ describe("account Attention contract", () => {
           (
             'account-a', 'active-item', ?, 1, 2, 'active-fingerprint',
             'agent_needs_you', 'needs_you', '{}', null, null,
-            '2026-07-29T12:00:00.000Z', '2026-07-28T11:00:00.000Z'
+            '2099-07-29T12:00:00.000Z', '2026-07-28T11:00:00.000Z'
           )
       `).run(MACHINE_KEY, MACHINE_KEY);
       database.native.prepare(`
@@ -3960,7 +3961,7 @@ describe("account Attention contract", () => {
         select lease_expires_at
         from attention_devices
         where user_id = 'account-a' and device_id = 'active-phone'
-      `)?.lease_expires_at).toBe("2026-09-01T00:00:00.000Z");
+      `)?.lease_expires_at).toBe("2099-09-01T00:00:00.000Z");
     } finally {
       database.close();
     }

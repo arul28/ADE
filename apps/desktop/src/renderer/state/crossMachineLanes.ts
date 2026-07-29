@@ -13,9 +13,9 @@
  * - Machines are named absolutely (`THIS_MACHINE_NAME`, "MacBook Pro (97)").
  *   The word "remote" is never a machine name: once the tab's machine can
  *   change, "remote" has no fixed referent.
- * - A machine that drops keeps its lanes, dimmed and read-only. Removal on
- *   disconnect would make a wifi blip reflow half the sidebar away, which is
- *   strictly worse than the single-machine list this replaces.
+ * - A machine that drops leaves the sidebar entirely: its lanes, chats, and
+ *   markers are hidden until it reconnects. Retained-but-dead rows read as a
+ *   live list you can act on, and every action on them fails.
  *
  * Performance shape: active-binding refreshes are event-driven. Other machines
  * do not have a renderer change feed, so one shared, ref-counted five-second
@@ -45,7 +45,10 @@ import {
   toMachineBranchState,
   type MachineBranchState,
 } from "../../shared/laneDivergence";
-import { deriveLaneMachineOptions } from "../components/lanes/laneMachines";
+import {
+  deriveLaneMachineOptions,
+  type LaneMachineOption,
+} from "../components/lanes/laneMachines";
 import {
   rootAppStoreApi,
   selectActiveProjectStateKey,
@@ -64,6 +67,12 @@ const MAX_PARALLEL_MACHINE_READS = 4;
 /** Fallback change feed for machines other than the active binding. */
 const FOREIGN_MACHINE_REFRESH_MS = 5_000;
 const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
+/**
+ * How long a machine may be non-connected before Work hides it. Reconnects
+ * publish `connecting`/`error` states constantly, and hiding on the first one
+ * would make the sidebar reflow on every blip.
+ */
+const RECONNECT_GRACE_MS = 6_000;
 /** Foreign session reads are a sidebar preview, not an archive. */
 const FOREIGN_SESSION_LIMIT = 60;
 /** Match the local optimistic-session window while a foreign list catches up. */
@@ -117,8 +126,13 @@ export type CrossMachineLaneRow = {
   binding: OpenProjectBinding | null;
 };
 
+/**
+ * Everything the Work sidebar is allowed to see. Every field here is already
+ * narrowed to reachable machines — there is deliberately no unfiltered `rows`
+ * escape hatch, because a future consumer reaching for it would silently put
+ * offline machines back on screen.
+ */
 export type CrossMachineUnion = {
-  rows: CrossMachineLaneRow[];
   /** Rows on machines other than this one, most recent activity first. */
   foreignRows: CrossMachineLaneRow[];
   /**
@@ -133,9 +147,12 @@ export type CrossMachineUnion = {
  *
  * Default is a bare monochrome glyph, and only for work that is not here — the
  * indicator appears exactly when it carries information. The name is promoted
- * into the row when a glyph alone would be ambiguous or alarming: the machine is
- * offline, two or more distinct foreign machines are on screen at once, or this
- * lane's branch also exists on another machine.
+ * into the row when a glyph alone would be ambiguous: two or more distinct
+ * foreign machines are on screen at once, or this lane's branch also exists on
+ * another machine.
+ *
+ * Markers only ever describe reachable machines — an offline machine's rows are
+ * gone from the sidebar, so there is no "offline" form of this marker.
  *
  * The lane accent already owns the color channel, so the marker is monochrome —
  * a tinted marker would read as a second, competing lane color.
@@ -143,7 +160,6 @@ export type CrossMachineUnion = {
 export type CrossMachineLaneMarker = {
   machineId: string;
   machineName: string;
-  online: boolean;
   mode: "glyph" | "name";
   /** Always the machine name — the glyph form still exposes it on hover. */
   title: string;
@@ -154,7 +170,6 @@ export type CrossMachineLaneMarker = {
 const EMPTY_ROWS: CrossMachineLaneRow[] = [];
 const EMPTY_MARKERS = new Map<string, CrossMachineLaneMarker>();
 export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
-  rows: EMPTY_ROWS,
   foreignRows: EMPTY_ROWS,
   markersByLaneId: EMPTY_MARKERS,
 };
@@ -268,7 +283,10 @@ function laneActivityRank(row: CrossMachineLaneRow): number {
 
 /**
  * Builds the union rows: this machine's lanes plus every machine slice held in
- * the store. Offline machines are included — dimming is the consumer's job.
+ * the store, offline ones included. The builder stays policy-free on purpose —
+ * reachability is decided in exactly one place (`useCrossMachineLaneUnion`), and
+ * keeping the raw shape here lets tests assert store retention separately from
+ * what renders.
  */
 export function buildCrossMachineLaneRows(input: {
   localLanes: readonly LaneSummary[];
@@ -330,9 +348,27 @@ export function buildCrossMachineLaneRows(input: {
 }
 
 /**
+ * Narrows union rows to the machines Work is allowed to show.
+ *
+ * A machine that has dropped leaves the sidebar completely — its lanes, its
+ * chats, and the same-branch-elsewhere signal it would otherwise contribute to a
+ * lane that IS reachable. Rows for offline machines stay in the store because
+ * the push-divergence guard needs their last-known branch state; they just never
+ * render.
+ */
+export function selectReachableCrossMachineRows(
+  rows: readonly CrossMachineLaneRow[],
+): CrossMachineLaneRow[] {
+  return rows.filter((row) => row.online);
+}
+
+/**
  * Resolves the adaptive marker for every foreign lane row. Local rows get no
  * entry at all — "work isn't here" is the only thing the marker communicates,
  * so on a single-machine setup this map is empty and the header is untouched.
+ *
+ * Callers pass reachable rows only: an unreachable machine has no rows on screen
+ * to mark, and must not tip an online lane into "same branch elsewhere".
  */
 export function resolveCrossMachineLaneMarkers(
   rows: readonly CrossMachineLaneRow[],
@@ -360,7 +396,7 @@ export function resolveCrossMachineLaneMarkers(
     const branch = normalizeBranchRef(row.lane.branchRef);
     const sameBranchElsewhere = (machinesByBranch.get(branch)?.size ?? 0) >= 2;
     const mode: CrossMachineLaneMarker["mode"] =
-      !row.online || manyForeignMachines || sameBranchElsewhere ? "name" : "glyph";
+      manyForeignMachines || sameBranchElsewhere ? "name" : "glyph";
     // Active-binding lanes render through the primary lane list, whose key is
     // the bare lane id. Other machines render through composite union rows.
     const markerKey = row.isActiveBinding
@@ -369,7 +405,6 @@ export function resolveCrossMachineLaneMarkers(
     markers.set(markerKey, {
       machineId: row.machineId,
       machineName: row.machineName,
-      online: row.online,
       mode,
       title: row.machineName,
       sameBranchElsewhere,
@@ -552,11 +587,22 @@ type SyncRuntime = {
   scope: CrossMachineLaneScope;
   refCount: number;
   generation: number;
+  /**
+   * Bumped only by teardown and scope change — NOT by each refresh, the way
+   * `generation` is. An in-flight read is stale as soon as a newer refresh
+   * starts, but the first connection snapshot is not: it stays valid until the
+   * runtime is actually torn down or retargeted.
+   */
+  lifecycle: number;
   disposers: Array<() => void>;
   timer: ReturnType<typeof setTimeout> | null;
   refreshTimer: ReturnType<typeof setTimeout> | null;
   refreshInFlight: boolean;
   refreshQueued: boolean;
+  /** First moment each currently-unreachable machine stopped reporting connected. */
+  droppedAtMsByMachineId: Map<string, number>;
+  /** Re-evaluates reachability when the oldest grace window lapses. */
+  graceTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const runtime: SyncRuntime = {
@@ -571,11 +617,14 @@ const runtime: SyncRuntime = {
   },
   refCount: 0,
   generation: 0,
+  lifecycle: 0,
   disposers: [],
   timer: null,
   refreshTimer: null,
   refreshInFlight: false,
   refreshQueued: false,
+  droppedAtMsByMachineId: new Map(),
+  graceTimer: null,
 };
 
 function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean {
@@ -660,6 +709,11 @@ function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null 
   return project?.gitOriginUrl ?? null;
 }
 
+/** Eligibility truth as of the newest snapshot this runtime has seen. */
+function isMachineEligibleNow(machineId: string): boolean {
+  return resolveEligibleMachines().some((option) => option.id === machineId);
+}
+
 async function readMachine(
   machineId: string,
   machineName: string,
@@ -701,7 +755,12 @@ async function readMachine(
       targetId,
       projectId,
       binding,
-      online: true,
+      // Confirm reachable, never resurrect. Reachability is owned by the
+      // connection snapshot and its grace window; a read that was in flight
+      // across a disconnect must not flip a machine the window already hid back
+      // on — nothing would hide it again until the next snapshot happens to
+      // fire. Omitting the flag retains whatever the snapshot path decided.
+      ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
       lanes: decodeForeignLanes(laneResult.result),
       sessions: reconcileCrossMachineOptimisticSessions(
         binding,
@@ -779,24 +838,7 @@ async function runRefresh(): Promise<void> {
   const store = rootAppStoreApi.getState();
   store.applyCrossMachineLaneScope(scope.scopeKey);
 
-  const options = deriveLaneMachineOptions({
-    connections: runtime.connections,
-    boundTargetId: scope.boundTargetId,
-    repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
-    repoDisplayName: scope.repoDisplayName,
-  });
-
-  const targets = options.filter(
-    (option) =>
-      option.id !== THIS_MACHINE_ID
-      && option.id !== (
-        scope.boundTargetId ?? THIS_MACHINE_ID
-      )
-      && option.targetId
-      && option.project?.projectId
-      && option.repoMatch === "matched",
-  );
-  store.setCrossMachineMachinesOnline(targets.map((option) => option.id));
+  const targets = resolveEligibleMachines();
 
   // Bounded fan-out. Reads are independent, so a wedged machine costs one slot
   // for at most `MACHINE_READ_TIMEOUT_MS` and never blocks the others.
@@ -869,14 +911,111 @@ function scheduleRefresh(): void {
   }, REFRESH_COALESCE_MS);
 }
 
+/**
+ * The machines that can contribute rows for the current scope: connected AND
+ * still hosting this repository, excluding This Mac and the tab's own binding
+ * (both of which the primary list already owns).
+ *
+ * Reachability and the read list share this one definition on purpose. When they
+ * were computed separately, a machine that reconnected after the repo had been
+ * removed there stayed `online` — connected, so never hidden — while the read
+ * list dropped it, so its rows were never refreshed either: permanently visible,
+ * permanently stale.
+ */
+function resolveEligibleMachines(): LaneMachineOption[] {
+  const scope = runtime.scope;
+  return deriveLaneMachineOptions({
+    connections: runtime.connections,
+    boundTargetId: scope.boundTargetId,
+    repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
+    repoDisplayName: scope.repoDisplayName,
+  }).filter(
+    (option) =>
+      option.id !== THIS_MACHINE_ID
+      && option.id !== (scope.boundTargetId ?? THIS_MACHINE_ID)
+      && option.targetId
+      && option.project?.projectId
+      && option.repoMatch === "matched",
+  );
+}
+
+/**
+ * Marks machines reachable/unreachable from the latest connection snapshot.
+ *
+ * Connection state is the ONLY input. `runRefresh`'s narrower target list
+ * decides which machines are worth *reading*, not which are visible — folding it
+ * in here would give the two sources contradictory opinions about the same
+ * machine every few seconds.
+ *
+ * Reconnecting is not the same as offline. `connect()` publishes `connecting`
+ * before every attempt — including automatic ones — and a single failed liveness
+ * ping flips a target to `error` and immediately redials. Now that unreachable
+ * means *removed from the sidebar*, reacting to the first non-connected snapshot
+ * would make a websocket blip or a sleep/wake yank a machine's whole lane group
+ * out of the list and animate it back a second later. So a drop only counts once
+ * it has persisted for `RECONNECT_GRACE_MS`, measured from the first drop rather
+ * than the latest snapshot; coming back is applied instantly.
+ */
+function applyReachability(): void {
+  const connected = new Set(resolveEligibleMachines().map((option) => option.id));
+  const store = rootAppStoreApi.getState();
+  const nowMs = Date.now();
+  const reachable: string[] = [];
+  let soonestDeadlineMs: number | null = null;
+
+  for (const machineId of connected) {
+    runtime.droppedAtMsByMachineId.delete(machineId);
+    reachable.push(machineId);
+  }
+  for (const entry of Object.values(store.crossMachineLanesByMachineId)) {
+    // This Mac is not a connection target and is always reachable; holding a
+    // deadline for it would leak a map entry that nothing can ever clear.
+    if (entry.machineId === THIS_MACHINE_ID) continue;
+    if (connected.has(entry.machineId)) continue;
+    // Already hidden: nothing to hold on to, and no timer to keep alive.
+    if (!entry.online) {
+      runtime.droppedAtMsByMachineId.delete(entry.machineId);
+      continue;
+    }
+    const droppedAtMs = runtime.droppedAtMsByMachineId.get(entry.machineId) ?? nowMs;
+    runtime.droppedAtMsByMachineId.set(entry.machineId, droppedAtMs);
+    const deadlineMs = droppedAtMs + RECONNECT_GRACE_MS;
+    if (deadlineMs <= nowMs) continue;
+    reachable.push(entry.machineId);
+    if (soonestDeadlineMs == null || deadlineMs < soonestDeadlineMs) {
+      soonestDeadlineMs = deadlineMs;
+    }
+  }
+
+  store.setCrossMachineMachinesOnline(reachable);
+
+  if (runtime.graceTimer) {
+    clearTimeout(runtime.graceTimer);
+    runtime.graceTimer = null;
+  }
+  // Nothing else re-runs this on its own: a machine held through its grace
+  // window produces no further snapshot, so without this the row would stay
+  // visible indefinitely after a real disconnect.
+  if (soonestDeadlineMs != null) {
+    runtime.graceTimer = setTimeout(() => {
+      runtime.graceTimer = null;
+      applyReachability();
+    }, Math.max(0, soonestDeadlineMs - nowMs));
+  }
+}
+
+/** Forgets every pending drop deadline. Used by teardown and by scope changes. */
+function resetReachabilityGrace(): void {
+  if (runtime.graceTimer) {
+    clearTimeout(runtime.graceTimer);
+    runtime.graceTimer = null;
+  }
+  runtime.droppedAtMsByMachineId.clear();
+}
+
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
-  const connectedIds = runtime.connections
-    .filter((connection) => connection.state === "connected")
-    .map((connection) => connection.target.id);
-  // Dim immediately on the snapshot — the lanes stay put, the read that
-  // confirms or refreshes them can take as long as it likes.
-  rootAppStoreApi.getState().setCrossMachineMachinesOnline(connectedIds);
+  applyReachability();
   scheduleRefresh();
 }
 
@@ -892,7 +1031,19 @@ function attach(): void {
   if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
   const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
   if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
-  void remoteRuntime.getConnectionSnapshot?.().then(applySnapshot).catch(() => {});
+  // Lifecycle-guarded, deliberately NOT generation-guarded: if every consumer
+  // unmounts before this first read resolves, applying it would write
+  // reachability and arm a grace timer for a runtime nobody is subscribed to.
+  // `generation` would be the wrong token — the 400ms coalesced refresh bumps it
+  // on its own, so a snapshot slower than that would be discarded, leaving
+  // `runtime.connections` empty and no foreign machine ever discovered.
+  const lifecycle = runtime.lifecycle;
+  void remoteRuntime.getConnectionSnapshot?.()
+    .then((snapshot) => {
+      if (lifecycle !== runtime.lifecycle) return;
+      applySnapshot(snapshot);
+    })
+    .catch(() => {});
   // The preload event pump follows the active binding only. A bounded refresh
   // is therefore required for every other connected machine; without it their
   // lane/session rows remain stale indefinitely.
@@ -900,6 +1051,7 @@ function attach(): void {
 
 function detach(): void {
   runtime.generation += 1;
+  runtime.lifecycle += 1;
   if (runtime.timer) {
     clearTimeout(runtime.timer);
     runtime.timer = null;
@@ -908,6 +1060,7 @@ function detach(): void {
     clearTimeout(runtime.refreshTimer);
     runtime.refreshTimer = null;
   }
+  resetReachabilityGrace();
   runtime.refreshQueued = false;
   for (const dispose of runtime.disposers.splice(0)) {
     try {
@@ -929,6 +1082,15 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     // the shared runtime immediately; rejecting the new scope would leave it
     // permanently unsubscribed once the previous effect cleans up.
     runtime.generation += 1;
+    // Deliberately NOT a `lifecycle` bump. Connections are machine-global, so a
+    // scope change does not invalidate an in-flight first snapshot — and with
+    // ref-counted consumers overlapping across a project-tab transition,
+    // `refCount` never reaches zero, so no second snapshot read is coming.
+    // Discarding it would leave `runtime.connections` empty for good.
+    // The new scope does wipe every machine slice, though, so a deadline carried
+    // over from the old one could hide a machine with no grace at all the moment
+    // it reappears here.
+    resetReachabilityGrace();
     rootAppStoreApi.getState().applyCrossMachineLaneScope(scope.scopeKey);
   }
   runtime.scope = scope;
@@ -1073,18 +1235,17 @@ export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
     [localLanes, machines, projectBinding],
   );
   return useMemo(() => {
-    const foreignRows = rows
+    // Offline machines are dropped here, once, for everything the sidebar sees.
+    const reachableRows = selectReachableCrossMachineRows(rows);
+    const foreignRows = reachableRows
       .filter((row) => !row.isActiveBinding)
       .sort((left, right) => laneActivityRank(right) - laneActivityRank(left));
     // Single-machine setups take this branch forever: no marker map is built and
     // the lane header renders exactly as it did before this feature existed.
-    if (foreignRows.length === 0) {
-      return { rows, foreignRows: EMPTY_ROWS, markersByLaneId: EMPTY_MARKERS };
-    }
+    if (foreignRows.length === 0) return EMPTY_CROSS_MACHINE_UNION;
     return {
-      rows,
       foreignRows,
-      markersByLaneId: resolveCrossMachineLaneMarkers(rows),
+      markersByLaneId: resolveCrossMachineLaneMarkers(reachableRows),
     };
   }, [rows]);
 }

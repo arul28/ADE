@@ -178,7 +178,9 @@ lane starts as the same minimal header with inline counts and uses
 returns, `SessionListPane` clears that marker so the next all-quiet state starts
 collapsed. Card selection and context actions still carry the owning runtime
 binding. **Manage lane** opens the shared dialog with every read and mutation
-pinned to that machine; offline/unavailable rows remain disabled.
+pinned to that machine. Offline machines have no rows here at all — the union
+filters them out — so the only disabled foreign row left is one whose reachable
+machine has not resolved a project binding yet.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
