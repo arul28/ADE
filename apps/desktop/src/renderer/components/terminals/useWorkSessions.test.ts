@@ -2476,3 +2476,147 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     })).toEqual(["unpinned-a", "unpinned-c", "pinned-b"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chip filters and lane ordering
+// ---------------------------------------------------------------------------
+
+describe("useWorkSessions — chip filters and lane ordering", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFakeAppStoreState();
+    installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    setDocumentVisibility("visible");
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete (window as any).ade;
+  });
+
+  function seedViewState(patch: Record<string, unknown>) {
+    // The store is mocked, so the persisted blob is handed to the hook as-is —
+    // it has to carry the fields the hook dereferences, same as the other suites.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: {
+        "/fake/project": {
+          openItemIds: [] as string[],
+          activeItemId: null,
+          selectedItemId: null,
+          gridSets: [],
+          activeGridSetId: null,
+          draftKind: "chat" as const,
+          laneFilter: "all",
+          search: "",
+          sessionListOrganization: "by-lane" as const,
+          workCollapsedLaneIds: [] as string[],
+          workCollapsedTabGroupIds: [] as string[],
+          workCollapsedSectionIds: [] as string[],
+          workFocusSessionsHidden: false,
+          ...patch,
+        },
+      },
+    };
+  }
+
+  async function renderWithSessions(sessions: unknown[]) {
+    listSessionsCachedMock.mockResolvedValue(sessions);
+    const rendered = renderHook(() => useWorkSessions());
+    await waitFor(() => {
+      expect(rendered.result.current.sessions.length).toBe(sessions.length);
+    });
+    return rendered;
+  }
+
+  const runningSession = makeSession("session-running", "lane-1");
+  const snoozedSession = makeSession("session-snoozed", "lane-1", {
+    snoozedUntil: "2099-01-01T00:00:00.000Z",
+  });
+
+  it("narrows the buckets and the by-lane grouping but not the exported filtered list", async () => {
+    seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false } });
+    const { result } = await renderWithSessions([runningSession, snoozedSession]);
+
+    // The lane/search result is what pane counts describe, so it must stay whole.
+    expect(result.current.filtered.map((s) => s.id))
+      .toEqual(["session-running", "session-snoozed"]);
+    expect(result.current.runningFiltered).toEqual([]);
+    expect(result.current.snoozedFiltered.map((s) => s.id)).toEqual(["session-snoozed"]);
+    expect(result.current.sessionsGroupedByLane?.get("lane-1")?.map((s) => s.id))
+      .toEqual(["session-snoozed"]);
+  });
+
+  it("keeps a snoozed row's wake timer armed while a chip hides it", async () => {
+    // The trap: if the snooze-deadline effect read the chip-filtered list, a
+    // snoozed row hidden by a chip would stop scheduling its own wake and never
+    // come back. `filtered` still holds it, so the timer still arms.
+    seedViewState({ workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false } });
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const { result } = await renderWithSessions([runningSession, snoozedSession]);
+
+    expect(result.current.snoozedFiltered).toEqual([]);
+    expect(result.current.filtered.some((s) => s.id === "session-snoozed")).toBe(true);
+    expect(setTimeoutSpy).toHaveBeenCalled();
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("returns the unfiltered list by reference when no chip is set", async () => {
+    const { result } = await renderWithSessions([runningSession, snoozedSession]);
+    const first = result.current.filtered;
+    // Referential stability is what keeps the feature free when unused: the
+    // downstream memo chain must not see a new array every render.
+    expect(result.current.sessionsGroupedByLane?.get("lane-1")?.length).toBe(2);
+    expect(result.current.filtered).toBe(first);
+  });
+
+  it("toggling a lane pin writes only that key", async () => {
+    const { result } = await renderWithSessions([runningSession]);
+    act(() => {
+      result.current.toggleWorkLanePinned("lane-1");
+    });
+    expect(setWorkViewStateSpy).toHaveBeenCalledWith("/fake/project", expect.any(Function));
+    const updater = setWorkViewStateSpy.mock.calls.at(-1)![1] as (
+      prev: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    expect(updater({ workPinnedLaneIds: [] }).workPinnedLaneIds).toEqual(["lane-1"]);
+    expect(updater({ workPinnedLaneIds: ["lane-1"] }).workPinnedLaneIds).toEqual([]);
+  });
+
+  it("a drag from a non-manual mode seeds the order from what is on screen and flips to manual", async () => {
+    const { result } = await renderWithSessions([runningSession]);
+    act(() => {
+      result.current.reorderWorkLanes({
+        movedLaneId: "lane-c",
+        targetLaneId: "lane-a",
+        edge: "before",
+        renderedLaneIds: ["lane-a", "lane-b", "lane-c"],
+      });
+    });
+    const updater = setWorkViewStateSpy.mock.calls.at(-1)![1] as (
+      prev: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    const next = updater({ workLaneSortMode: "created", workLaneOrder: [] });
+    expect(next.workLaneSortMode).toBe("manual");
+    expect(next.workLaneOrder).toEqual(["lane-c", "lane-a", "lane-b"]);
+  });
+
+  it("drops ids for lanes that no longer exist when writing a manual move", async () => {
+    const { result } = await renderWithSessions([runningSession]);
+    act(() => {
+      result.current.reorderWorkLanes({
+        movedLaneId: "lane-b",
+        targetLaneId: "lane-a",
+        edge: "before",
+        renderedLaneIds: ["lane-a", "lane-b"],
+      });
+    });
+    const updater = setWorkViewStateSpy.mock.calls.at(-1)![1] as (
+      prev: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    const next = updater({ workLaneSortMode: "manual", workLaneOrder: ["deleted", "lane-a", "lane-b"] });
+    expect(next.workLaneOrder).toEqual(["lane-b", "lane-a"]);
+  });
+});

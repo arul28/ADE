@@ -28,6 +28,14 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
+import { useLanePrsByLaneId } from "./useLanePrs";
+import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
+import {
+  EMPTY_WORK_SESSION_FILTERS,
+  isWorkSessionFilterEmpty,
+  matchesWorkSessionFilters,
+  type WorkSessionFilters,
+} from "./workSessionFilters";
 import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
@@ -562,6 +570,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
   const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
+  const workPinnedLaneIds = projectViewState.workPinnedLaneIds ?? EMPTY_STRING_ARRAY;
+  const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
+  const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
+  const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
   const localSessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -696,6 +708,89 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     (org: WorkSessionListOrganization) => {
       clearDeeplinkViewOverride();
       setProjectViewState({ sessionListOrganization: org });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  // Chip filters, lane pins and lane sort all clear the deeplink override for
+  // the same reason `setFilterLaneId` does: touching a view control is the user
+  // taking over the framing a deeplink temporarily imposed.
+  const setWorkSessionFilters = useCallback(
+    (next: WorkSessionFilters | ((prev: WorkSessionFilters) => WorkSessionFilters)) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState((prev) => ({
+        ...prev,
+        workSessionFilters: typeof next === "function"
+          ? next(prev.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS)
+          : next,
+      }));
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  const setWorkLaneSortMode = useCallback(
+    (mode: WorkLaneSortMode) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState({ workLaneSortMode: mode });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  const toggleWorkLanePinned = useCallback(
+    (laneId: string) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState((prev) => {
+        const current = prev.workPinnedLaneIds ?? [];
+        return {
+          ...prev,
+          workPinnedLaneIds: current.includes(laneId)
+            ? current.filter((id) => id !== laneId)
+            : [...current, laneId],
+        };
+      });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  /**
+   * Move one lane beside another in the manual order.
+   *
+   * Dragging from any sort mode switches to "manual" and seeds the order from
+   * what is currently on screen, so the drop lands where the user aimed instead
+   * of against an empty (or stale) order. Dead ids are pruned here, on write —
+   * pruning on read would cost a lane its slot whenever it is briefly absent
+   * during a lane refresh.
+   */
+  const reorderWorkLanes = useCallback(
+    (args: {
+      movedLaneId: string;
+      targetLaneId: string;
+      edge: "before" | "after";
+      renderedLaneIds: readonly string[];
+    }) => {
+      const { movedLaneId, targetLaneId, edge, renderedLaneIds } = args;
+      clearDeeplinkViewOverride();
+      setProjectViewState((prev) => {
+        const liveIds = new Set(renderedLaneIds);
+        const kept = (prev.workLaneOrder ?? []).filter((id) => liveIds.has(id));
+        const base = kept.length > 0
+          ? [...kept, ...renderedLaneIds.filter((id) => !kept.includes(id))]
+          : [...renderedLaneIds];
+        const next = applyWorkLaneManualMove({
+          currentOrder: base,
+          movedLaneId,
+          targetLaneId,
+          edge,
+        });
+        if (!next) {
+          // No-op drop. Still adopt manual mode if the user dragged from another
+          // mode, so the Sort control explains why nothing moved.
+          return prev.workLaneSortMode === "manual"
+            ? prev
+            : { ...prev, workLaneSortMode: "manual", workLaneOrder: base };
+        }
+        return { ...prev, workLaneSortMode: "manual", workLaneOrder: next };
+      });
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
@@ -1426,6 +1521,36 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     });
   }, [sessions, filterLaneId, q]);
 
+  const prsByLaneId = useLanePrsByLaneId();
+  const laneStatusById = useMemo(() => {
+    const map = new Map<string, LaneSummary>();
+    for (const lane of lanes) map.set(lane.id, lane);
+    return map;
+  }, [lanes]);
+
+  /**
+   * The chip-filtered view. Deliberately a SEPARATE memo layered on top of
+   * `filtered` rather than an extra clause inside it: `filtered` is exported and
+   * drives counts elsewhere, and the snooze-deadline effect below must keep
+   * seeing rows a chip is hiding — otherwise a snoozed row filtered off screen
+   * stops scheduling its own wake and never comes back.
+   *
+   * With no chips set this returns `filtered` BY REFERENCE, so every downstream
+   * memo stays referentially stable and the feature costs nothing when unused.
+   */
+  const chipFiltered = useMemo(() => {
+    if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
+    const ctx = {
+      nowMs: Date.now(),
+      laneHasPr: (laneId: string) => (prsByLaneId.get(laneId)?.length ?? 0) > 0,
+      laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
+    };
+    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
+    // `snoozeEpoch` matters here too: a lapsing snooze changes a row's filing
+    // bucket, which is what the status chips match on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, workSessionFilters, prsByLaneId, laneStatusById, snoozeEpoch]);
+
   const {
     runningFiltered,
     awaitingInputFiltered,
@@ -1440,7 +1565,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const ended: TerminalSessionSummary[] = [];
     const settled: TerminalSessionSummary[] = [];
     const snoozed: TerminalSessionSummary[] = [];
-    for (const session of filtered) {
+    for (const session of chipFiltered) {
       // Snooze is a visibility overlay: it pulls the row OUT of whatever bucket
       // it would otherwise sit in, including Running — but it YIELDS to a raised
       // hand. A needs_you row is filed normally even while snoozed, which is
@@ -1472,11 +1597,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // `snoozeEpoch` re-partitions when the soonest snooze deadline lapses; there
     // is no snooze scheduler anywhere, expiry is always derived from now.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, snoozeEpoch]);
+  }, [chipFiltered, snoozeEpoch]);
 
   // Exactly one timer, armed only while something is actually snoozed, firing at
   // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
   // overflow setTimeout). No polling and no document-level listener.
+  //
+  // Reads `filtered`, NOT `chipFiltered`, on purpose: a snoozed row hidden by a
+  // status chip must still schedule its own wake, or it would never return.
   useEffect(() => {
     if (!isWorkRoute) return undefined;
     const deadlineMs = nextSnoozeDeadlineMs(filtered);
@@ -1489,13 +1617,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const sessionsGroupedByLane = useMemo(() => {
     if (sessionListOrganization !== "by-lane") return null;
     const map = new Map<string, TerminalSessionSummary[]>();
-    for (const s of filtered) {
+    for (const s of chipFiltered) {
       const list = map.get(s.laneId) ?? [];
       list.push(s);
       map.set(s.laneId, list);
     }
     return map;
-  }, [sessionListOrganization, filtered]);
+  }, [sessionListOrganization, chipFiltered]);
 
   const runningSessions = useMemo(
     () => sessions.filter((session) => session.status === "running"),
@@ -1869,6 +1997,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
     filterLaneId,
     setFilterLaneId,
+
+    workSessionFilters,
+    setWorkSessionFilters,
+    workPinnedLaneIds,
+    toggleWorkLanePinned,
+    workLaneSortMode,
+    setWorkLaneSortMode,
+    workLaneOrder,
+    reorderWorkLanes,
     q,
     setQ,
 

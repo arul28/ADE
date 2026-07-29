@@ -58,6 +58,7 @@ import {
 import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
   chatCompanionUiStorageKey,
+  patchChatCompanionUiState,
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
   writeChatCompanionUiState,
@@ -1329,6 +1330,78 @@ describe("AgentChatPane remote startup", () => {
     await waitFor(() => {
       expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(session.sessionId);
     });
+  });
+});
+
+describe("AgentChatPane pane reserve", () => {
+  // Wide enough that a floating pane does NOT fit in the centered column's own
+  // side margin ((1000 - 832) / 2 = 84px < the 276px pane), so the chat must
+  // reserve a gutter — the only regime where this bug is visible at all.
+  const OBSERVED_WIDTH_PX = 1000;
+  const EXPECTED_RESERVE = "276px";
+  let originalResizeObserver: unknown;
+
+  beforeEach(() => {
+    // jsdom has no ResizeObserver, so the pane's width stays 0 and every
+    // reserve computes to "0px" — which would make this test pass vacuously.
+    originalResizeObserver = (globalThis as Record<string, unknown>).ResizeObserver;
+    (globalThis as Record<string, unknown>).ResizeObserver = class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        this.callback(
+          [{ target, contentRect: { width: OBSERVED_WIDTH_PX } } as unknown as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  afterEach(() => {
+    if (originalResizeObserver === undefined) {
+      delete (globalThis as Record<string, unknown>).ResizeObserver;
+    } else {
+      (globalThis as Record<string, unknown>).ResizeObserver = originalResizeObserver;
+    }
+  });
+
+  function readLeftReserve(container: HTMLElement): string {
+    const shell = container.querySelector("[data-chat-shell-layout]") as HTMLElement | null;
+    if (!shell) throw new Error("chat shell not found");
+    return shell.style.getPropertyValue("--chat-pane-reserve-left").trim();
+  }
+
+  it("reserves a left gutter for the floating PR pane on the session surface", async () => {
+    const session = buildSession("session-1", { title: "PR pane chat" });
+    installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    // The session surface keys its companion state by session id.
+    patchChatCompanionUiState(session.sessionId, { prPaneOpen: true });
+
+    const { container } = renderPane(session);
+
+    await waitFor(() => {
+      expect(readLeftReserve(container)).toBe(EXPECTED_RESERVE);
+    });
+  });
+
+  it("reserves nothing on the draft surface, which renders no floating panes", async () => {
+    installAdeMocks({ sessions: [] });
+    seedDrawerStore();
+    // A draft keys by lane. `prPaneOpen` is durable, so a lane that once had the
+    // PR pane open arrives here with it still true — but the draft branch never
+    // mounts that pane, so reserving for it would shove the hero composer right.
+    patchChatCompanionUiState("draft:lane-1", { prPaneOpen: true });
+
+    const { container } = render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(readLeftReserve(container)).toBe("0px");
   });
 });
 

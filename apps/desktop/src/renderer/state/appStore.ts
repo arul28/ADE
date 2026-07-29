@@ -15,6 +15,12 @@ import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
+import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
+import {
+  EMPTY_WORK_SESSION_FILTERS,
+  normalizeWorkSessionFilters,
+  type WorkSessionFilters,
+} from "../components/terminals/workSessionFilters";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -183,6 +189,19 @@ export type WorkProjectViewState = {
   /** Session ids pinned to the front of their lane's tab group. */
   pinnedSessionIds: string[];
   /**
+   * Work-sidebar lane pins. Deliberately NOT `lanesPinnedLaneIds` below: that
+   * set belongs to the Lanes tab, and the two surfaces pin for different
+   * reasons. Pinned lanes sort above everything and never take the compact
+   * quiet styling.
+   */
+  workPinnedLaneIds: string[];
+  /** Lane ordering mode for the Work sidebar's by-lane list. */
+  workLaneSortMode: WorkLaneSortMode;
+  /** Manual lane order. Sparse — lanes not listed sort after those that are. */
+  workLaneOrder: string[];
+  /** Funnel-panel chip selections. OR within an axis, AND across axes. */
+  workSessionFilters: WorkSessionFilters;
+  /**
    * Lanes-tab view state. The Lanes route is unmounted whenever it isn't active
    * (unlike Work, which is kept warm), so component state there cannot survive a
    * tab switch by construction — it has to live here to be preserved at all.
@@ -242,6 +261,12 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarWidthPct: 36,
     laneSessionOrder: {},
     pinnedSessionIds: [],
+    workPinnedLaneIds: [],
+    // Today's ordering (primary first, then newest-created) stays the default,
+    // so upgrading never reshuffles a sidebar someone already knows.
+    workLaneSortMode: "created",
+    workLaneOrder: [],
+    workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
     lanesFilter: "",
     lanesPinnedLaneIds: [],
     lanesExpandedLaneId: null,
@@ -254,6 +279,10 @@ function normalizeStringArray(value: unknown): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function normalizeUniqueStringArray(value: unknown): string[] {
+  return Array.from(new Set(normalizeStringArray(value)));
 }
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -314,6 +343,12 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
+    // Deduped: a hand-edited or half-written blob must not be able to render the
+    // same lane twice or hand the comparator two positions for one id.
+    workPinnedLaneIds: normalizeUniqueStringArray(candidate.workPinnedLaneIds),
+    workLaneSortMode: normalizeWorkLaneSortMode(candidate.workLaneSortMode),
+    workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
+    workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
     lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
@@ -362,8 +397,12 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
  * 3: adds Lanes-tab view state (`lanesFilter`, `lanesPinnedLaneIds`,
  *    `lanesExpandedLaneId`). Purely additive — `normalizeWorkProjectViewState`
  *    fills the defaults, so there is no migration step for it.
+ * 4: adds Work-sidebar lane ordering + chip filters (`workPinnedLaneIds`,
+ *    `workLaneSortMode`, `workLaneOrder`, `workSessionFilters`). Also purely
+ *    additive: a v3 blob normalizes to "created" order with no pins and no
+ *    chips, which is exactly the behaviour it had before the bump.
  */
-const WORK_VIEW_STATE_VERSION = 3;
+const WORK_VIEW_STATE_VERSION = 4;
 /** The version whose one-time Settled collapse must not re-run on later bumps. */
 const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
 

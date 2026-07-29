@@ -1278,6 +1278,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             workCollapsedSectionIds={work.workCollapsedSectionIds}
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
+            workSessionFilters={work.workSessionFilters}
+            setWorkSessionFilters={work.setWorkSessionFilters}
+            workPinnedLaneIds={work.workPinnedLaneIds}
+            toggleWorkLanePinned={work.toggleWorkLanePinned}
+            workLaneSortMode={work.workLaneSortMode}
+            setWorkLaneSortMode={work.setWorkLaneSortMode}
+            workLaneOrder={work.workLaneOrder}
+            reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
             crossMachineSyncActive={active}
           />
