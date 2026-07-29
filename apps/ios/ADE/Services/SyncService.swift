@@ -443,6 +443,38 @@ struct AccountAdoptionIdentityVerificationError: LocalizedError, Equatable {
   }
 }
 
+/// A route this build cannot negotiate -- today, a host that named an adoption
+/// cipher this client does not implement. That is a version gap, not evidence
+/// the Mac is an impostor, so it fails only its own route: another route (or
+/// another host build) may negotiate fine, and the user needs "update", not a
+/// security warning. The unsupported cipher itself is still never used.
+struct AccountAdoptionRouteCompatibilityError: LocalizedError, Equatable {
+  let machineName: String
+
+  var errorDescription: String? {
+    "\(machineName) offered a security cipher this version of ADE doesn't support. Update ADE on both devices."
+  }
+}
+
+/// One-time repair of a persisted auto-reconnect pause. The flag survives app
+/// updates and blocks reconnecting forever, and builds that set it as FAILURE
+/// fallout are why the app could open on a dead "Disconnected" screen. A pause
+/// written by a user action records its source alongside it, so a paused flag
+/// with no source is provably fallout and is cleared.
+func syncAutoReconnectPausedAfterMigration(paused: Bool, pauseSource: String?) -> Bool {
+  guard paused else { return false }
+  return pauseSource?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+}
+
+/// Whether an adoption failure ends the whole attempt or only its own route.
+/// Identity verification, a changed authorization, and a superseded attempt all
+/// describe the ATTEMPT; everything else describes one route.
+func syncAccountAdoptionFailureIsFatal(_ error: Error) -> Bool {
+  error is AccountAdoptionIdentityVerificationError
+    || error is AccountPairingAuthorizationChangedError
+    || error is AccountPairingConnectionSupersededError
+}
+
 private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
   let machineName: String
   let routeLabels: [String]
@@ -3103,6 +3135,10 @@ final class SyncService: ObservableObject {
   private let profilesKey = "ade.sync.hostProfiles"
   private let legacyDeviceIdKey = "ade.sync.deviceId"
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
+  /// Records that a paused flag came from a user action rather than from a
+  /// failed attempt. See the migration in `init`.
+  private let autoReconnectPauseSourceKey = "ade.sync.autoReconnectPauseSource"
+  private let autoReconnectPauseSourceUser = "user"
   private let lastProjectRouteIdKey = "ade.sync.lastProjectRoute.projectId"
   private let lastProjectRouteSavedAtKey = "ade.sync.lastProjectRoute.savedAt"
   private let lastProjectRouteWorkSessionIdKey = "ade.sync.lastProjectRoute.workSessionId"
@@ -4503,13 +4539,24 @@ final class SyncService: ObservableObject {
     self.socketSessionDelegate = socketSessionDelegate
     self.socketSession = socketSession
     self.database = database
-    // One-time migration: builds before the chunked-envelope transport set
-    // this flag on "message too long" transport errors and it survives app
-    // updates, silently blocking auto-reconnect forever. Current builds only
-    // set it for a real user pause, so clear the stale value once.
-    let pausedFlagMigrationKey = "ade.sync.autoReconnectPausedMigratedV2"
+    // This flag survives app updates and blocks auto-reconnect forever, so a
+    // build that ever set it as FAILURE fallout leaves users opening the app on
+    // a dead "Disconnected" screen with a manual Reconnect button. A V2
+    // migration cleared it once, but the failure paths kept re-latching it, so
+    // clearing alone was never going to hold. It is now written only by an
+    // explicit user pause, which stamps `autoReconnectPauseSourceKey`
+    // alongside it -- so a paused flag with no source is provably fallout from
+    // an older build and is cleared. The V3 one-shot means a genuine pause
+    // taken on this build is never swept later.
+    let pausedFlagMigrationKey = "ade.sync.autoReconnectPausedMigratedV3"
     if !UserDefaults.standard.bool(forKey: pausedFlagMigrationKey) {
-      UserDefaults.standard.removeObject(forKey: autoReconnectPausedKey)
+      let keepsPause = syncAutoReconnectPausedAfterMigration(
+        paused: UserDefaults.standard.bool(forKey: autoReconnectPausedKey),
+        pauseSource: UserDefaults.standard.string(forKey: autoReconnectPauseSourceKey)
+      )
+      if !keepsPause {
+        UserDefaults.standard.removeObject(forKey: autoReconnectPausedKey)
+      }
       UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
     }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
@@ -5316,6 +5363,112 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  /// One racing adoption candidate's private socket. Adoption used to run on
+  /// the service's single shared socket, which is exactly why it could only try
+  /// one route at a time.
+  private struct AdoptionCandidateTransport {
+    let task: URLSessionWebSocketTask
+    let mailbox: SyncConnectionRaceTextMailbox
+  }
+
+  private struct AdoptedConnectionCandidate: @unchecked Sendable {
+    var scheduled: SyncConnectionRaceScheduledCandidate
+    var route: AccountAdoptionRoute
+    var task: URLSessionWebSocketTask
+    var helloPayload: [String: Any]
+    var negotiatedReadyV2: Bool
+  }
+
+  private enum AdoptedConnectionRaceEvent: @unchecked Sendable {
+    case adopted(AdoptedConnectionCandidate)
+    case failed(candidateId: Int, error: Error)
+    case budgetExpired
+  }
+
+  /// Carries the race bookkeeping the caller needs out through a `throw`.
+  private struct AccountAdoptionRaceFailure: Error {
+    let underlying: Error
+    let relayRouteFailed: Bool
+  }
+
+  /// Request/response over ONE candidate socket. Mirrors what `awaitResponse`
+  /// does for the shared socket, minus the shared state: frames arrive through
+  /// this candidate's mailbox, so a losing candidate can never resolve a
+  /// winner's request.
+  private func adoptionCandidateRequest(
+    _ transport: AdoptionCandidateTransport,
+    type: String,
+    payload: [String: Any],
+    timeoutNanoseconds: UInt64,
+    timeoutMessage: String,
+    relayAccountOwnerId: String?
+  ) async throws -> Any {
+    let requestId = makeRequestId()
+    let text = try encodedCandidateEnvelope(type: type, requestId: requestId, payload: payload)
+    try await transport.task.send(.string(text))
+    let deadlineUptime = ProcessInfo.processInfo.systemUptime
+      + TimeInterval(timeoutNanoseconds) / 1_000_000_000
+    while true {
+      let event = try await nextRelayNegotiationEvent(
+        mailbox: transport.mailbox,
+        deadlineUptime: deadlineUptime
+      )
+      guard case .frame(let frame) = event else {
+        throw NSError(
+          domain: "ADE",
+          code: 35,
+          userInfo: [NSLocalizedDescriptionKey: timeoutMessage]
+        )
+      }
+      if let object = try? JSONSerialization.jsonObject(with: Data(frame.utf8)),
+         syncRelayTransportControl(from: object) != nil {
+        continue
+      }
+      guard let preprocessed = try await Task.detached(priority: .userInitiated, operation: {
+        try syncPreprocessIncoming(frame)
+      }).value else { continue }
+      guard preprocessed.requestId == requestId else { continue }
+      switch preprocessed.type {
+      case "account_challenge_ok", "hello_ok":
+        return preprocessed.payload
+      case "account_challenge_error":
+        let message = syncNonEmpty((preprocessed.payload as? [String: Any])?["message"] as? String)
+          ?? "That route could not verify the Mac's identity."
+        throw NSError(
+          domain: "ADE.AdoptChannel",
+          code: 6,
+          userInfo: [NSLocalizedDescriptionKey: message]
+        )
+      case "hello_error":
+        throw adoptionCandidateHelloError(
+          preprocessed.payload,
+          relayAccountOwnerId: relayAccountOwnerId
+        )
+      default:
+        continue
+      }
+    }
+  }
+
+  private func adoptionCandidateHelloError(
+    _ payload: Any,
+    relayAccountOwnerId: String?
+  ) -> Error {
+    let errorPayload = payload as? [String: Any]
+    let code = (errorPayload?["code"] as? String) ?? "auth_failed"
+    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    if code == "relay_account_required" {
+      return syncRelayAuthorizationRequirementForHostRejection(
+        relayAccountOwnerId: relayAccountOwnerId,
+        currentAccountOwnerId: AccountService.shared.identity?.userId
+      )
+    }
+    return NSError(domain: "ADE", code: 5, userInfo: [
+      NSLocalizedDescriptionKey: message,
+      "ADEErrorCode": code,
+    ])
+  }
+
   private struct AccountAdoptionChallengeSession {
     let key: SymmetricKey
     let hostDeviceId: String
@@ -5406,6 +5559,7 @@ final class SyncService: ObservableObject {
   }
 
   private func performAccountAdoptionChallenge(
+    transport: AdoptionCandidateTransport,
     expectedHostIdentity: String,
     signingPublicKey: Curve25519.Signing.PublicKey,
     machineName: String,
@@ -5420,20 +5574,19 @@ final class SyncService: ObservableObject {
     let nonce = Data(nonceBytes)
     let nonceBase64 = nonce.base64EncodedString()
     let clientEphemeralPublicKey = clientPrivateKey.publicKey.rawRepresentation.base64EncodedString()
-    let requestId = makeRequestId()
-    let raw = try await awaitResponse(
-      requestId: requestId,
-      disconnectOnTimeout: false,
-      timeoutMessage: "That Mac did not answer the secure identity challenge.",
-      timeoutNanoseconds: AdoptChannelCrypto.challengeTimeoutNanoseconds
-    ) {
-      self.sendEnvelope(type: "account_challenge", requestId: requestId, payload: [
+    let raw = try await adoptionCandidateRequest(
+      transport,
+      type: "account_challenge",
+      payload: [
         "v": 1,
         "nonce": nonceBase64,
         "clientEphemeralPublicKey": clientEphemeralPublicKey,
         "supportedAeads": AdoptChannelCrypto.supportedAeads.map(\.rawValue),
-      ])
-    }
+      ],
+      timeoutNanoseconds: AdoptChannelCrypto.challengeTimeoutNanoseconds,
+      timeoutMessage: "That Mac did not answer the secure identity challenge.",
+      relayAccountOwnerId: nil
+    )
     guard isCurrentCandidate() else {
       throw AccountPairingConnectionSupersededError()
     }
@@ -5456,7 +5609,7 @@ final class SyncService: ObservableObject {
     do {
       aead = try AdoptChannelCrypto.resolveHostAead(responseAead)
     } catch {
-      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+      throw AccountAdoptionRouteCompatibilityError(machineName: machineName)
     }
     let timestampValue = timestampNumber.doubleValue
     // `Double(Int64.max)` rounds up to 2^63, so `<=` would admit a value that
@@ -5502,6 +5655,7 @@ final class SyncService: ObservableObject {
   }
 
   private func performAccountAdoptionHello(
+    transport: AdoptionCandidateTransport,
     route: AccountAdoptionRoute,
     expectedHostIdentity: String,
     signingPublicKey: Curve25519.Signing.PublicKey?,
@@ -5509,6 +5663,7 @@ final class SyncService: ObservableObject {
     owner: String,
     authorization: AccountPairingAuthorization,
     generation: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata,
     isCurrentCandidate: @escaping () -> Bool
   ) async throws -> Any {
     guard isCurrentConnectAttempt(generation) else {
@@ -5521,6 +5676,7 @@ final class SyncService: ObservableObject {
       }
       publishAccountConnectStage("Verifying it's really \(machineName)…")
       challenge = try await performAccountAdoptionChallenge(
+        transport: transport,
         expectedHostIdentity: expectedHostIdentity,
         signingPublicKey: signingPublicKey,
         machineName: machineName,
@@ -5583,16 +5739,17 @@ final class SyncService: ObservableObject {
       auth = unsealedAuth
     }
 
-    let requestId = makeRequestId()
-    let raw = try await awaitResponse(
-      requestId: requestId,
-      timeoutMessage: "That Mac did not finish account connection. Try again."
-    ) {
-      self.sendEnvelope(type: "hello", requestId: requestId, payload: [
-        "peer": self.currentPeerMetadata(),
+    let raw = try await adoptionCandidateRequest(
+      transport,
+      type: "hello",
+      payload: [
+        "peer": self.currentPeerMetadata(connectionAttempt: connectionAttempt),
         "auth": auth,
-      ])
-    }
+      ],
+      timeoutNanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds,
+      timeoutMessage: "That Mac did not finish account connection. Try again.",
+      relayAccountOwnerId: owner
+    )
     guard isCurrentCandidate() else {
       throw AccountPairingConnectionSupersededError()
     }
@@ -5618,6 +5775,317 @@ final class SyncService: ObservableObject {
       return payload
     } catch {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+  }
+
+  /// Dials one adoption candidate on its own socket and runs the full
+  /// challenge + hello on it. Relay candidates keep the `?ready=2` negotiation
+  /// and one legacy redial, and hold the same single-flight dial key as the
+  /// paired path so two tunnels never open on one Durable Object.
+  private func adoptionCandidateAttempt(
+    _ candidate: SyncConnectionRaceScheduledCandidate,
+    route: AccountAdoptionRoute,
+    expectedHostIdentity: String,
+    signingPublicKey: Curve25519.Signing.PublicKey?,
+    machineName: String,
+    owner: String,
+    authorization: AccountPairingAuthorization,
+    connectAttemptGeneration: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata
+  ) async throws -> AdoptedConnectionCandidate {
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
+    let endpoint = candidate.endpoint
+    let isRelay = syncIsFullWebSocketRoute(endpoint.address)
+    let parsed = syncParseRouteEndpoint(endpoint.address)
+    let socketHost = parsed?.host ?? endpoint.address.trimmingCharacters(in: .whitespacesAndNewlines)
+    let socketPort = parsed?.port ?? endpoint.port
+    let urlHost = parsed?.scheme == nil ? socketHost : endpoint.address
+    guard let rawURLString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+    }
+    let legacyURLString = isRelay
+      ? syncRelayCorrelatedURL(
+        syncRelayLegacyURL(rawURLString),
+        correlationID: connectionAttempt.id
+      )
+      : rawURLString
+    guard let legacyURL = URL(string: legacyURLString) else {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+    }
+
+    if isRelay {
+      guard let readyV2URL = URL(string: syncRelayReadyV2URL(legacyURLString)) else {
+        throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+      }
+      do {
+        return try await adoptionCandidateSocket(
+          candidate,
+          route: route,
+          url: readyV2URL,
+          isRelay: true,
+          awaitsRelayReadyV2: true,
+          expectedHostIdentity: expectedHostIdentity,
+          signingPublicKey: signingPublicKey,
+          machineName: machineName,
+          owner: owner,
+          authorization: authorization,
+          connectAttemptGeneration: connectAttemptGeneration,
+          connectionAttempt: connectionAttempt
+        )
+      } catch SyncRelayReadyNegotiationError.retryLegacySocket {
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+        // Adoption has no saved profile yet, so there is no per-endpoint memory
+        // of a previous ready-v2 handshake: a silent window here is always the
+        // first meeting with this endpoint and earns its one legacy redial.
+        syncConnectLog.info(
+          "ADE_SYNC_TRACE adoption relay candidate did not negotiate ready-v2; retrying on a legacy socket"
+        )
+      }
+    }
+
+    return try await adoptionCandidateSocket(
+      candidate,
+      route: route,
+      url: legacyURL,
+      isRelay: isRelay,
+      awaitsRelayReadyV2: false,
+      expectedHostIdentity: expectedHostIdentity,
+      signingPublicKey: signingPublicKey,
+      machineName: machineName,
+      owner: owner,
+      authorization: authorization,
+      connectAttemptGeneration: connectAttemptGeneration,
+      connectionAttempt: connectionAttempt
+    )
+  }
+
+  private func adoptionCandidateSocket(
+    _ candidate: SyncConnectionRaceScheduledCandidate,
+    route: AccountAdoptionRoute,
+    url: URL,
+    isRelay: Bool,
+    awaitsRelayReadyV2: Bool,
+    expectedHostIdentity: String,
+    signingPublicKey: Curve25519.Signing.PublicKey?,
+    machineName: String,
+    owner: String,
+    authorization: AccountPairingAuthorization,
+    connectAttemptGeneration: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata
+  ) async throws -> AdoptedConnectionCandidate {
+    let dialKey = isRelay ? syncRelayMachineKey(from: url.absoluteString) : nil
+    var dialToken: UUID?
+    if let dialKey {
+      guard let token = relayDialRegistry.acquire(dialKey) else {
+        throw SyncRelayDialInFlight()
+      }
+      dialToken = token
+    }
+    defer {
+      if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
+    }
+    let candidateTask = socketSession.webSocketTask(with: url)
+    candidateTask.maximumMessageSize = 32 * 1_024 * 1_024
+    return try await withTaskCancellationHandler {
+      do {
+        try await awaitSocketOpen(candidateTask)
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+        let mailbox = SyncConnectionRaceTextMailbox()
+        let reader = Task {
+          do {
+            while !Task.isCancelled {
+              let message = try await candidateTask.receive()
+              let text: String
+              switch message {
+              case .string(let value): text = value
+              case .data(let data): text = String(decoding: data, as: UTF8.self)
+              @unknown default: text = ""
+              }
+              await mailbox.deliver(text)
+              if self.isCandidateHelloTerminalFrame(text) { return }
+            }
+          } catch {
+            await mailbox.finish(message: error.localizedDescription)
+          }
+        }
+        defer { reader.cancel() }
+
+        if awaitsRelayReadyV2 {
+          try await awaitRelayCandidateReady(mailbox: mailbox)
+        }
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+        guard AccountService.shared.isPairingCommitAuthorized(authorization) else {
+          throw AccountPairingAuthorizationChangedError()
+        }
+
+        let transport = AdoptionCandidateTransport(task: candidateTask, mailbox: mailbox)
+        let isCurrentCandidate = { [weak self] in
+          guard let self else { return false }
+          return self.isCurrentConnectAttempt(connectAttemptGeneration) && !Task.isCancelled
+        }
+        let raw = try await performAccountAdoptionHello(
+          transport: transport,
+          route: route,
+          expectedHostIdentity: expectedHostIdentity,
+          signingPublicKey: signingPublicKey,
+          machineName: machineName,
+          owner: owner,
+          authorization: authorization,
+          generation: connectAttemptGeneration,
+          connectionAttempt: connectionAttempt,
+          isCurrentCandidate: isCurrentCandidate
+        )
+        guard let helloPayload = raw as? [String: Any] else {
+          throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+        }
+        return AdoptedConnectionCandidate(
+          scheduled: candidate,
+          route: route,
+          task: candidateTask,
+          helloPayload: helloPayload,
+          negotiatedReadyV2: awaitsRelayReadyV2
+        )
+      } catch {
+        candidateTask.cancel(with: .goingAway, reason: nil)
+        throw error
+      }
+    } onCancel: {
+      candidateTask.cancel(with: .goingAway, reason: nil)
+    }
+  }
+
+  /// Races every adoption route at once, the way the paired reconnect path
+  /// already does. The serial version paid a socket open plus a 3s identity
+  /// challenge per route before moving on, so on cellular — where no direct
+  /// route can ever succeed — the user watched 10-20s of dead time before relay
+  /// was even dialed.
+  private func raceAccountAdoptionCandidates(
+    _ candidates: [SyncConnectionRaceScheduledCandidate],
+    routesByEndpoint: [SyncConnectionEndpointAttempt: AccountAdoptionRoute],
+    expectedHostIdentity: String,
+    signingPublicKey: Curve25519.Signing.PublicKey?,
+    machineName: String,
+    owner: String,
+    authorization: AccountPairingAuthorization,
+    connectAttemptGeneration: UInt64
+  ) async throws -> AdoptedConnectionCandidate {
+    guard !candidates.isEmpty else { throw noConnectableAddressError() }
+    let connectionAttempt = makeConnectionAttemptMetadata()
+    var relayRouteFailed = false
+    let triedRouteLabels = candidates
+      .compactMap { routesByEndpoint[$0.endpoint]?.attemptLabel }
+      .reduce(into: [String]()) { labels, label in
+        if !labels.contains(label) { labels.append(label) }
+      }
+    func fail(_ error: Error) -> AccountAdoptionRaceFailure {
+      AccountAdoptionRaceFailure(underlying: error, relayRouteFailed: relayRouteFailed)
+    }
+
+    return try await withThrowingTaskGroup(of: AdoptedConnectionRaceEvent.self) { group in
+      var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
+      func start(_ candidate: SyncConnectionRaceScheduledCandidate, in group: inout ThrowingTaskGroup<AdoptedConnectionRaceEvent, Error>) {
+        guard let route = routesByEndpoint[candidate.endpoint] else { return }
+        group.addTask { @MainActor [weak self] in
+          guard let self else { return .failed(candidateId: candidate.id, error: CancellationError()) }
+          do {
+            if candidate.delayNanoseconds > 0 {
+              try await Task.sleep(nanoseconds: candidate.delayNanoseconds)
+            }
+            return .adopted(try await self.adoptionCandidateAttempt(
+              candidate,
+              route: route,
+              expectedHostIdentity: expectedHostIdentity,
+              signingPublicKey: signingPublicKey,
+              machineName: machineName,
+              owner: owner,
+              authorization: authorization,
+              connectAttemptGeneration: connectAttemptGeneration,
+              connectionAttempt: connectionAttempt
+            ))
+          } catch {
+            return .failed(candidateId: candidate.id, error: error)
+          }
+        }
+      }
+      for candidate in scheduler.startInitialCandidates() { start(candidate, in: &group) }
+      group.addTask {
+        do {
+          try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+          return .budgetExpired
+        } catch {
+          return .failed(candidateId: -1, error: error)
+        }
+      }
+
+      var ownership = SyncConnectionRaceOwnership(candidateIds: Set(candidates.map(\.id)))
+      var lastFailure: Error?
+      func drainAndCancel(_ group: inout ThrowingTaskGroup<AdoptedConnectionRaceEvent, Error>) async throws {
+        group.cancelAll()
+        while let lateEvent = try await group.next() {
+          if case .adopted(let lateCandidate) = lateEvent {
+            lateCandidate.task.cancel(with: .goingAway, reason: nil)
+          }
+        }
+      }
+
+      while let event = try await group.next() {
+        switch event {
+        case .adopted(let candidate):
+          switch ownership.authenticated(candidateId: candidate.scheduled.id) {
+          case .acceptWinner:
+            try await drainAndCancel(&group)
+            return candidate
+          default:
+            candidate.task.cancel(with: .goingAway, reason: nil)
+          }
+        case .failed(let candidateId, let error):
+          lastFailure = error
+          if routesByEndpoint[candidates.first(where: { $0.id == candidateId })?.endpoint
+            ?? SyncConnectionEndpointAttempt(address: "", port: 0)]?.kind == .relay {
+            relayRouteFailed = true
+          }
+          syncConnectLog.info(
+            "ADE_SYNC_TRACE adoption race failure error=\(syncLogErrorSummary(error), privacy: .public)"
+          )
+          // An impostor host, a revoked authorization, or a superseded attempt
+          // all describe the ATTEMPT. Everything else — including a route this
+          // build cannot negotiate — only describes its own route.
+          if syncAccountAdoptionFailureIsFatal(error) {
+            try await drainAndCancel(&group)
+            throw fail(error)
+          }
+          if ownership.failed(candidateId: candidateId) == .exhausted {
+            group.cancelAll()
+            throw fail(AccountAdoptionRoutesExhaustedError(
+              machineName: machineName,
+              routeLabels: triedRouteLabels,
+              finalFailure: lastFailure
+            ))
+          }
+          if let nextCandidate = scheduler.candidateFinished(candidateId) {
+            start(nextCandidate, in: &group)
+          }
+        case .budgetExpired:
+          _ = ownership.expireBudget()
+          try await drainAndCancel(&group)
+          throw fail(AccountAdoptionRoutesExhaustedError(
+            machineName: machineName,
+            routeLabels: triedRouteLabels,
+            finalFailure: lastFailure
+          ))
+        }
+      }
+      throw fail(AccountAdoptionRoutesExhaustedError(
+        machineName: machineName,
+        routeLabels: triedRouteLabels,
+        finalFailure: lastFailure
+      ))
     }
   }
 
@@ -5746,138 +6214,122 @@ final class SyncService: ObservableObject {
       connectionState = .connecting
 
       markConnectAttemptStarted(generation)
-      var lastFailure: Error?
-      var triedRouteLabels: [String] = []
-      for route in routes {
-        var candidateSocket: URLSessionWebSocketTask?
-        let routeAttemptStartedAt = ProcessInfo.processInfo.systemUptime
-        publishAccountConnectStage(route.stageLabel)
-        if !triedRouteLabels.contains(route.attemptLabel) {
-          triedRouteLabels.append(route.attemptLabel)
-        }
-        do {
-          guard AccountService.shared.isPairingCommitAuthorized(authorization) else {
-            throw AccountPairingAuthorizationChangedError()
+      publishAccountConnectStage("Connecting to \(machine.displayName)…")
+      let routesByEndpoint = Dictionary(
+        routes.map { ($0.endpoint, $0) },
+        uniquingKeysWith: { first, _ in first }
+      )
+      // The same planner the paired reconnect path uses: direct candidates
+      // lead, the relay joins the SAME race behind them by a short delay rather
+      // than waiting for them to exhaust a 10s budget, and the whole race is
+      // bounded once.
+      let racePlan = syncConnectionRaceCandidatePlan(
+        rankedAttempts: routes.map(\.endpoint)
+      )
+      let raceStartedAt = ProcessInfo.processInfo.systemUptime
+      let winner: AdoptedConnectionCandidate
+      do {
+        winner = try await raceAccountAdoptionCandidates(
+          racePlan,
+          routesByEndpoint: routesByEndpoint,
+          expectedHostIdentity: expectedHostIdentity,
+          signingPublicKey: signingPublicKey,
+          machineName: machine.displayName,
+          owner: owner,
+          authorization: authorization,
+          connectAttemptGeneration: generation
+        )
+      } catch let failure as AccountAdoptionRaceFailure {
+        relayRouteFailed = failure.relayRouteFailed
+        throw failure.underlying
+      }
+      guard isCurrentConnectAttempt(generation) else {
+        winner.task.cancel(with: .goingAway, reason: nil)
+        throw AccountPairingConnectionSupersededError()
+      }
+      let route = winner.route
+      // Only the winner touches app state. Its socket becomes the service
+      // socket before the hello payload is applied, exactly as the paired race
+      // installs its own winner.
+      teardownSocket(closeCode: .goingAway)
+      socket = winner.task
+      if syncIsFullWebSocketRoute(route.endpoint.address) {
+        relayTransportNegotiations[winner.task.taskIdentifier] = SyncRelayReadyNegotiation()
+      }
+      receiveLoop(for: winner.task)
+      _ = try await performAuthorizedAccountPairingCommit(
+        authorization: authorization,
+        receiveHello: { winner.helloPayload },
+        prepare: { raw in
+          guard let payload = raw as? [String: Any],
+                let brain = payload["brain"] as? [String: Any],
+                self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
+            throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
           }
-          try await openSocket(
-            host: route.endpoint.address,
-            port: route.endpoint.port,
-            connectAttemptGeneration: generation
-          )
-          guard let openedSocket = socket else {
+          let pairing = payload["accountPairing"] as? [String: Any]
+          guard self.syncNonEmpty(pairing?["deviceId"] as? String) == self.deviceId,
+                let pairedSecret = self.syncNonEmpty(pairing?["secret"] as? String) else {
             throw NSError(
               domain: "ADE",
-              code: 31,
-              userInfo: [NSLocalizedDescriptionKey: "That Mac connection closed before account verification began."]
+              code: 33,
+              userInfo: [NSLocalizedDescriptionKey: "The Mac did not return saved connection details. Remove this iPhone from the Mac and try again."]
             )
           }
-          candidateSocket = openedSocket
-          let isCurrentCandidate = {
-            self.isCurrentConnectAttempt(generation) && self.socket === openedSocket
-          }
-          let raw = try await performAccountAdoptionHello(
-            route: route,
-            expectedHostIdentity: expectedHostIdentity,
-            signingPublicKey: signingPublicKey,
-            machineName: machine.displayName,
-            owner: owner,
-            authorization: authorization,
-            generation: generation,
-            isCurrentCandidate: isCurrentCandidate
-          )
-          _ = try await performAuthorizedAccountPairingCommit(
-            authorization: authorization,
-            receiveHello: { raw },
-            prepare: { raw in
-              guard let payload = raw as? [String: Any],
-                    let brain = payload["brain"] as? [String: Any],
-                    self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
-                throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
-              }
-              let pairing = payload["accountPairing"] as? [String: Any]
-              guard self.syncNonEmpty(pairing?["deviceId"] as? String) == self.deviceId,
-                    let pairedSecret = self.syncNonEmpty(pairing?["secret"] as? String) else {
-                throw NSError(
-                  domain: "ADE",
-                  code: 33,
-                  userInfo: [NSLocalizedDescriptionKey: "The Mac did not return saved connection details. Remove this iPhone from the Mac and try again."]
-                )
-              }
 
-              let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
-              let allRelays = self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? []))
-              let profile = HostConnectionProfile(
-                hostIdentity: expectedHostIdentity,
-                hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
-                siteId: self.syncNonEmpty(brain["siteId"] as? String),
-                port: preferredDirectPort ?? route.endpoint.port,
-                authKind: "paired",
-                pairedDeviceId: self.deviceId,
-                lastRemoteDbVersion: 0,
-                lastHostDeviceId: expectedHostIdentity,
-                lastSuccessfulAddress: route.endpoint.address,
-                savedAddressCandidates: directHosts,
-                discoveredLanAddresses: lanHosts,
-                tailscaleAddress: tailnetHosts.first,
-                savedRelayCandidates: allRelays,
-                accountOwnerId: owner,
-                relayAccountOwnerId: owner
-              )
-              return (payload: payload, pairedSecret: pairedSecret, profile: profile)
-            },
-            isAuthorized: { candidate in
-              AccountService.shared.isPairingCommitAuthorized(candidate)
-            },
-            isCurrentCandidate: isCurrentCandidate,
-            commit: { prepared in
-              self.keychain.saveToken(prepared.pairedSecret)
-              if let key = self.profileStorageKey(prepared.profile) {
-                self.keychain.saveToken(prepared.pairedSecret, hostKey: key)
-              }
-              self.saveProfile(prepared.profile)
-              try self.applyHelloPayload(
-                prepared.payload,
-                connectedHost: route.endpoint.address,
-                port: prepared.profile.port,
-                authKind: "paired",
-                pairedDeviceId: self.deviceId,
-                expectedHostIdentity: expectedHostIdentity,
-                connectAttemptGeneration: generation
-              )
-            }
+          let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
+          let allRelays = self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? []))
+          let profile = HostConnectionProfile(
+            hostIdentity: expectedHostIdentity,
+            hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
+            siteId: self.syncNonEmpty(brain["siteId"] as? String),
+            port: preferredDirectPort ?? route.endpoint.port,
+            authKind: "paired",
+            pairedDeviceId: self.deviceId,
+            lastRemoteDbVersion: 0,
+            lastHostDeviceId: expectedHostIdentity,
+            lastSuccessfulAddress: route.endpoint.address,
+            savedAddressCandidates: directHosts,
+            discoveredLanAddresses: lanHosts,
+            tailscaleAddress: tailnetHosts.first,
+            savedRelayCandidates: allRelays,
+            accountOwnerId: owner,
+            relayAccountOwnerId: owner
           )
-          lastConnectedRouteKind = route.connectionRouteKind
-          schedulePostHelloWork(for: generation)
-          Task { await PushNotificationService.shared.enableIfPaired() }
-          LiveActivityService.shared.start()
-          accountPairingPinFallbackHost = nil
-          publishAccountConnectSuccess(
-            route: route,
-            attemptStartedAt: routeAttemptStartedAt
+          return (payload: payload, pairedSecret: pairedSecret, profile: profile)
+        },
+        isAuthorized: { candidate in
+          AccountService.shared.isPairingCommitAuthorized(candidate)
+        },
+        isCurrentCandidate: { self.isCurrentConnectAttempt(generation) && self.socket === winner.task },
+        commit: { prepared in
+          self.keychain.saveToken(prepared.pairedSecret)
+          if let key = self.profileStorageKey(prepared.profile) {
+            self.keychain.saveToken(prepared.pairedSecret, hostKey: key)
+          }
+          self.saveProfile(prepared.profile)
+          try self.applyHelloPayload(
+            prepared.payload,
+            connectedHost: route.endpoint.address,
+            port: prepared.profile.port,
+            authKind: "paired",
+            pairedDeviceId: self.deviceId,
+            expectedHostIdentity: expectedHostIdentity,
+            connectAttemptGeneration: generation,
+            negotiatedReadyV2: winner.negotiatedReadyV2
           )
-          ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
-          return true
-        } catch {
-          lastFailure = error
-          if route.kind == .relay {
-            relayRouteFailed = true
-          }
-          if let candidateSocket, socket === candidateSocket {
-            teardownSocket()
-          }
-          if error is AccountAdoptionIdentityVerificationError
-              || error is AccountPairingAuthorizationChangedError
-              || error is AccountPairingConnectionSupersededError
-              || !isCurrentConnectAttempt(generation) {
-            throw error
-          }
         }
-      }
-      throw AccountAdoptionRoutesExhaustedError(
-        machineName: machine.displayName,
-        routeLabels: triedRouteLabels,
-        finalFailure: lastFailure
       )
+      lastConnectedRouteKind = route.connectionRouteKind
+      schedulePostHelloWork(for: generation)
+      Task { await PushNotificationService.shared.enableIfPaired() }
+      LiveActivityService.shared.start()
+      accountPairingPinFallbackHost = nil
+      publishAccountConnectSuccess(
+        route: route,
+        attemptStartedAt: raceStartedAt
+      )
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
+      return true
     } catch {
       if error is AccountPairingConnectionSupersededError
           || pairingGeneration.map({ !isCurrentConnectAttempt($0) }) == true {
@@ -5885,8 +6337,9 @@ final class SyncService: ObservableObject {
       }
       let message = SyncUserFacingError.message(for: error)
       resetAndCancelReconnectLoop()
+      // `allowAutoReconnect` stops THIS attempt from retrying. Persisting a
+      // pause here would outlive the relaunch and the network that caused it.
       allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
       teardownSocket(reason: message)
       clearConnectTimingMetrics()
       accountConnectSuccessClearTask?.cancel()
@@ -6782,6 +7235,20 @@ final class SyncService: ObservableObject {
         savedRelayCandidates: nil
       )
       currentAddress = preferredAddress
+      if let rotation = payload["rotation"] as? [String: Any] {
+        syncConnectLog.info(
+          "ADE_SYNC_TRACE re-pair staged by host, previous secret stays valid for \((rotation["expiresInMs"] as? NSNumber)?.intValue ?? 0)ms"
+        )
+      }
+      // Persist BEFORE the hello. The host may commit this secret while the
+      // hello_ok that reports it is still in flight, and a drop right there
+      // used to leave the phone holding a secret the Mac had already retired --
+      // recoverable only by typing another PIN at the Mac. Saving first cannot
+      // strand the phone the other way: a host that never commits keeps
+      // accepting the previous secret, and this device reconnects within
+      // seconds, far inside that window.
+      keychain.saveToken(secret)
+      keychain.saveToken(secret, hostKey: profileStorageKey(profile))
       try await hello(
         host: preferredAddress,
         port: preferredPort,
@@ -6809,8 +7276,8 @@ final class SyncService: ObservableObject {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       resetAndCancelReconnectLoop()
+      // Session-scoped only; a failed pairing must not persist a pause.
       allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
       teardownSocket(reason: friendlyMessage)
       clearConnectTimingMetrics()
       lastError = friendlyMessage
@@ -6845,6 +7312,9 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// - Parameter suspendAutoReconnect: pass `true` only when the USER asked to
+  ///   stop connecting. It persists across relaunches, so it must never be used
+  ///   to mean "this attempt failed".
   func disconnect(clearCredentials: Bool = false, suspendAutoReconnect: Bool = true) {
     beginConnectAttempt()
     clearConnectTimingMetrics()
@@ -12185,9 +12655,21 @@ final class SyncService: ObservableObject {
     return normalized.isEmpty ? nil : normalized
   }
 
+  /// Only ever called for an explicit user action. A failed connection attempt
+  /// must use `allowAutoReconnect`, which is session-scoped: latching a
+  /// persisted flag because the network was bad is how the app ends up refusing
+  /// to reconnect across relaunches.
   private func setAutoReconnectPausedByUser(_ paused: Bool) {
     autoReconnectPausedByUser = paused
     UserDefaults.standard.set(paused, forKey: autoReconnectPausedKey)
+    if paused {
+      UserDefaults.standard.set(
+        autoReconnectPauseSourceUser,
+        forKey: autoReconnectPauseSourceKey
+      )
+    } else {
+      UserDefaults.standard.removeObject(forKey: autoReconnectPauseSourceKey)
+    }
   }
 
   @discardableResult
