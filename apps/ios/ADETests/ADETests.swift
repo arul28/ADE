@@ -14920,6 +14920,8 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(groups.map(\.id), ["lane:lane-primary", "lane:lane-deleted-a", "lane:lane-deleted-b"])
     XCTAssertEqual(groups.map(\.label), ["Primary", "feature/cleanup", "feature/recent"])
+    XCTAssertEqual(groups.map(\.isOrphaned), [false, true, true])
+    XCTAssertEqual(groups.map(\.icon), [.laneBranch, .warning, .warning])
     XCTAssertEqual(groups.last?.sessions.count, 2)
   }
 
@@ -14940,6 +14942,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(groups.map(\.id), ["lane:lane-deleting"])
     XCTAssertEqual(groups.first?.label, "Updating lane…")
+    XCTAssertEqual(groups.first?.isOrphaned, true)
   }
 
   func testWorkRootPresentationForwardsPendingLaneDeletionToLaneGroups() {

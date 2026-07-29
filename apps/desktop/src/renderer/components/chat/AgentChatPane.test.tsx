@@ -17,6 +17,7 @@ import type {
   ComputerUseArtifactView,
   ComputerUseEventPayload,
   ComputerUseOwnerSnapshot,
+  OpenProjectBinding,
   PrSummary,
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
@@ -555,6 +556,11 @@ function installAdeMocks(options?: {
   const renameLane = vi.fn().mockResolvedValue(undefined);
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
   const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
+  const saveTempAttachment = vi.fn().mockImplementation(
+    async ({ filename }: { filename: string }) => ({
+      path: `/tmp/project-under-test/.ade/attachments/${filename}`,
+    }),
+  );
   const deleteChat = vi.fn().mockResolvedValue(undefined);
   const archive = vi.fn().mockResolvedValue(undefined);
   const unarchive = vi.fn().mockResolvedValue(undefined);
@@ -691,6 +697,7 @@ function installAdeMocks(options?: {
         setGoalStatus: setCodexGoalStatus,
       },
       fileSearch: vi.fn().mockResolvedValue([]),
+      saveTempAttachment,
       promptStashes: {
         list: vi.fn().mockResolvedValue([]),
         create: vi.fn().mockResolvedValue({
@@ -813,6 +820,7 @@ function installAdeMocks(options?: {
     renameLane,
     parallelLaunchStateGet,
     parallelLaunchStateSet,
+    saveTempAttachment,
     handoff,
     writeClipboardText,
     emitChatEvent: (event: AgentChatEventEnvelope) => {
@@ -863,6 +871,13 @@ function LocationProbe() {
 const originalAde = globalThis.window.ade;
 const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
+const LOCAL_PROJECT_BINDING: OpenProjectBinding = {
+  kind: "local",
+  key: "local:/tmp/project-under-test",
+  rootPath: "/tmp/project-under-test",
+  displayName: "project-under-test",
+  gitOriginUrl: null,
+};
 let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: string; mode?: string }) => void) | null = null;
 
 function installMatchMediaMock(): void {
@@ -1020,6 +1035,7 @@ function renderTabbedPane(session: AgentChatSessionSummary) {
 function seedDrawerStore() {
   useAppStore.setState({
     project: { rootPath: "/tmp/project-under-test" } as any,
+    projectBinding: LOCAL_PROJECT_BINDING,
     lanes: [{
       id: "lane-1",
       name: "drawer lane",
@@ -1095,6 +1111,7 @@ function renderParallelDraftPane(args?: {
   const laneId = args?.laneId ?? "lane-1";
   useAppStore.setState({
     project: { rootPath: "/tmp/project-under-test" } as any,
+    projectBinding: LOCAL_PROJECT_BINDING,
     lanes: [{
       id: laneId,
       name: "parent-lane",
@@ -1138,6 +1155,8 @@ function renderAutoCreateDraftPane(args?: {
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   lanes?: any[];
+  project?: { rootPath: string; displayName?: string };
+  projectBinding?: OpenProjectBinding;
 }) {
   const lanes = args?.lanes ?? [
     {
@@ -1157,7 +1176,8 @@ function renderAutoCreateDraftPane(args?: {
     },
   ] as any[];
   useAppStore.setState({
-    project: { rootPath: "/tmp/project-under-test" } as any,
+    project: (args?.project ?? { rootPath: "/tmp/project-under-test" }) as any,
+    projectBinding: args?.projectBinding ?? LOCAL_PROJECT_BINDING,
     lanes,
     selectedLaneId: "lane-1",
   });
@@ -1204,13 +1224,14 @@ function composerDraftStorageKeyForTest(args: {
 }
 
 function draftLaunchJobsScopeKeyForTest(args: {
-  projectRoot: string;
+  projectBindingKey?: string;
+  projectRoot?: string;
   laneId: string;
   workDraftKind?: "work-start";
 }) {
   return [
     "draft-launch-jobs",
-    args.projectRoot,
+    args.projectBindingKey ?? args.projectRoot ?? "project",
     args.laneId,
     "standard",
     args.workDraftKind ?? "work-start",
@@ -1311,7 +1332,7 @@ describe("AgentChatPane remote startup", () => {
     expect(parallelLaunchStateGet).toHaveBeenCalledWith({
       projectRoot: "/Users/admin/Projects/perf pass",
       parentLaneId: "lane-1",
-    });
+    }, useAppStore.getState().projectBinding);
   });
 
   it("fetches remote session delta after a turn completes", async () => {
@@ -1343,7 +1364,10 @@ describe("AgentChatPane remote startup", () => {
     });
 
     await waitFor(() => {
-      expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(session.sessionId);
+      expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(
+        session.sessionId,
+        null,
+      );
     });
   });
 });
@@ -2233,7 +2257,7 @@ describe("AgentChatPane submit recovery", () => {
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -2298,7 +2322,7 @@ describe("AgentChatPane submit recovery", () => {
         permissionMode: "full-auto",
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -2321,6 +2345,7 @@ describe("AgentChatPane submit recovery", () => {
     ] as any[];
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
       lanes,
       selectedLaneId: "lane-1",
     });
@@ -2413,7 +2438,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-2",
         provider: "claude",
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -2445,7 +2470,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         provider: "claude",
         projectRoot: "/tmp/project-under-test",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -3973,6 +3998,7 @@ describe("AgentChatPane submit recovery", () => {
     });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
       lanes: [{
         id: "lane-1",
         name: "Lane 1",
@@ -4040,6 +4066,7 @@ describe("AgentChatPane submit recovery", () => {
     });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
       lanes: [{
         id: "lane-1",
         name: "Lane 1",
@@ -4769,6 +4796,7 @@ describe("AgentChatPane submit recovery", () => {
   it("does not wait for onSessionCreated before sending the first message in a new chat", async () => {
     const onSessionCreated = vi.fn().mockImplementation(() => new Promise<void>(() => {}));
     const { send, create, writeClipboardText } = installAdeMocks({ sessions: [] });
+    seedDrawerStore();
 
     render(
       <MemoryRouter>
@@ -4809,6 +4837,7 @@ describe("AgentChatPane submit recovery", () => {
       sessions: [],
       createError: new Error("create exploded"),
     });
+    seedDrawerStore();
 
     render(
       <MemoryRouter>
@@ -4839,6 +4868,7 @@ describe("AgentChatPane submit recovery", () => {
   it("copies submitted prompts when the launch clipboard reminder is disabled", async () => {
     useAppStore.setState({ launchPromptClipboardNoticeEnabled: false });
     const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
+    seedDrawerStore();
 
     render(
       <MemoryRouter>
@@ -4869,6 +4899,7 @@ describe("AgentChatPane submit recovery", () => {
   it("does not copy submitted prompts when the launch clipboard setting is disabled", async () => {
     useAppStore.setState({ launchPromptClipboardEnabled: false });
     const { send, writeClipboardText } = installAdeMocks({ sessions: [] });
+    seedDrawerStore();
 
     render(
       <MemoryRouter>
@@ -4904,6 +4935,7 @@ describe("AgentChatPane submit recovery", () => {
       throw new Error("callback exploded");
     });
     const { send } = installAdeMocks({ sessions: [] });
+    seedDrawerStore();
 
     try {
       render(
@@ -4978,23 +5010,34 @@ describe("AgentChatPane submit recovery", () => {
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
         fallbackName: "fix-auto-create-lane-routing",
-      }));
+      }), LOCAL_PROJECT_BINDING);
       // The lane is created instantly with the deterministic name; the AI name is
       // applied in the background via lanes.rename.
       expect(createLane).toHaveBeenCalledWith({
         name: "fix-auto-create-lane-routing",
         baseBranch: "origin/main",
-      });
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-created", name: "fix-auto-create-flow" });
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
+      }, LOCAL_PROJECT_BINDING);
+      expect(renameLane).toHaveBeenCalledWith(
+        { laneId: "lane-created", name: "fix-auto-create-flow" },
+        LOCAL_PROJECT_BINDING,
+      );
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-created" }),
+        LOCAL_PROJECT_BINDING,
+      );
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Fix auto create lane routing.",
-      }));
+      }), LOCAL_PROJECT_BINDING);
       expect(writeClipboardText).toHaveBeenCalledWith("Fix auto create lane routing.");
       expect(onSessionCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
-        { activate: false, source: "draft-launch" },
+        {
+          activate: false,
+          laneName: "fix-auto-create-flow",
+          source: "draft-launch",
+          runtimePin: LOCAL_PROJECT_BINDING,
+        },
       );
     });
     await waitFor(() => {
@@ -5028,7 +5071,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith({
         name: "default-base-when-remote-refs",
-      });
+      }, LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -5078,7 +5121,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(createLane).toHaveBeenCalledWith({
         name: "create-local-main-without-fetching",
         baseBranch: "main",
-      });
+      }, LOCAL_PROJECT_BINDING);
     });
     expect((window as any).ade.git.fetch).not.toHaveBeenCalled();
   });
@@ -5117,8 +5160,11 @@ describe("AgentChatPane submit recovery", () => {
         expect(createLane).toHaveBeenCalledWith({
           name: "keep-going-even-naming-fails",
           baseBranch: "origin/main",
-        });
-        expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
+        }, LOCAL_PROJECT_BINDING);
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({ laneId: "lane-created" }),
+          LOCAL_PROJECT_BINDING,
+        );
       });
       await waitFor(() => {
         expect(suggestLaneName).toHaveBeenCalledTimes(2);
@@ -5169,7 +5215,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(renameLane).toHaveBeenCalledWith({
         laneId: "lane-created",
         name: "auto-create-lane-fix",
-      });
+      }, LOCAL_PROJECT_BINDING);
     }, { timeout: 5000 });
   });
 
@@ -5213,11 +5259,11 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         modelId: "openai/gpt-5.4",
-      }));
+      }), LOCAL_PROJECT_BINDING);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Stay in the lane work pane.",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
     expect(screen.getByTestId("location").textContent).toBe("/lanes?laneId=lane-1");
   });
@@ -5384,7 +5430,15 @@ describe("AgentChatPane submit recovery", () => {
       onConnectionSnapshotChanged: vi.fn(() => () => {}),
     } as any;
 
-    renderAutoCreateDraftPane({ lanes: remoteLanes, onSessionCreated });
+    renderAutoCreateDraftPane({
+      lanes: remoteLanes,
+      onSessionCreated,
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+      },
+      projectBinding: remoteBinding,
+    });
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create this on my MacBook." } });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
@@ -5446,15 +5500,15 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         interactionMode: "orchestrator-lead",
         provider: "claude",
-      }));
+      }), LOCAL_PROJECT_BINDING);
       expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
         laneId: "lane-1",
         leadSessionId: "created-session",
-      });
+      }, LOCAL_PROJECT_BINDING);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         interactionMode: "orchestrator-lead",
-      }));
+      }), LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -5468,7 +5522,7 @@ describe("AgentChatPane submit recovery", () => {
     const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
     useAppStore.setState({ projectBinding: binding as any });
 
-    renderAutoCreateDraftPane({ orchestratorEnabled: true });
+    renderAutoCreateDraftPane({ orchestratorEnabled: true, projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
@@ -5519,16 +5573,18 @@ describe("AgentChatPane submit recovery", () => {
         expect(create).toHaveBeenCalledWith(expect.objectContaining({
           interactionMode: "orchestrator-lead",
           provider: "claude",
-        }));
+        }), LOCAL_PROJECT_BINDING);
         expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
           laneId: "lane-1",
           leadSessionId: "created-session",
-        });
+        }, LOCAL_PROJECT_BINDING);
       });
       expect(send).not.toHaveBeenCalled();
-      // Orchestrator lead rollback is pinned to the originating project's binding
-      // (null in the default test store).
-      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" }, null);
+      // Orchestrator lead rollback stays pinned to the originating project.
+      expect(deleteChat).toHaveBeenCalledWith(
+        { sessionId: "created-session" },
+        LOCAL_PROJECT_BINDING,
+      );
       expect(await screen.findByText("Orchestration bundle could not be allocated: disk full")).toBeTruthy();
       expect(warnSpy).toHaveBeenCalled();
     } finally {
@@ -5568,7 +5624,12 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(onSessionCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
-        { activate: false, source: "draft-launch" },
+        {
+          activate: false,
+          laneName: "background-lane",
+          source: "draft-launch",
+          runtimePin: LOCAL_PROJECT_BINDING,
+        },
       );
       expect(screen.getByText(/Launch this in the background\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
@@ -5617,11 +5678,15 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "This first send will fail.",
-      }));
-      // Rollback is pinned to the originating project's binding (null here in
-      // the default test store) so a concurrent project switch can't misroute it.
-      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" }, null);
-      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true }, null);
+      }), LOCAL_PROJECT_BINDING);
+      expect(deleteChat).toHaveBeenCalledWith(
+        { sessionId: "created-session" },
+        LOCAL_PROJECT_BINDING,
+      );
+      expect(deleteLane).toHaveBeenCalledWith(
+        { laneId: "lane-created", force: true },
+        LOCAL_PROJECT_BINDING,
+      );
       expect(onSessionCreated).not.toHaveBeenCalled();
     });
   });
@@ -5701,7 +5766,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true }, null);
+      expect(deleteLane).toHaveBeenCalledWith(
+        { laneId: "lane-created", force: true },
+        LOCAL_PROJECT_BINDING,
+      );
       expect(deleteChat).not.toHaveBeenCalled();
       expect(send).not.toHaveBeenCalled();
       expect(onSessionCreated).not.toHaveBeenCalled();
@@ -5727,7 +5795,7 @@ describe("AgentChatPane submit recovery", () => {
     // The originating project's binding is captured when the launch starts.
     useAppStore.setState({ projectBinding: binding as any });
 
-    renderAutoCreateDraftPane({ onSessionCreated });
+    renderAutoCreateDraftPane({ onSessionCreated, projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
@@ -5805,7 +5873,7 @@ describe("AgentChatPane submit recovery", () => {
     });
     useAppStore.setState({ projectBinding: binding as any });
 
-    renderAutoCreateDraftPane();
+    renderAutoCreateDraftPane({ projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
@@ -6081,7 +6149,7 @@ describe("AgentChatPane submit recovery", () => {
   it("allows stale active draft launch rows to be hidden", async () => {
     installAdeMocks({ sessions: [] });
     const scopeKey = draftLaunchJobsScopeKeyForTest({
-      projectRoot: "/tmp/project-under-test",
+      projectBindingKey: LOCAL_PROJECT_BINDING.key,
       laneId: "lane-1",
     });
     useAppStore.setState({
@@ -6165,7 +6233,7 @@ describe("AgentChatPane submit recovery", () => {
       });
 
       const scopeKey = draftLaunchJobsScopeKeyForTest({
-        projectRoot: "/tmp/project-under-test",
+        projectBindingKey: LOCAL_PROJECT_BINDING.key,
         laneId: "lane-1",
       });
       const draftLaunchJobsByScope = useAppStore.getState().draftLaunchJobsByScope;
@@ -6303,6 +6371,7 @@ describe("AgentChatPane submit recovery", () => {
     ] as any[];
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
       lanes,
       selectedLaneId: "lane-1",
     });
@@ -6443,6 +6512,7 @@ describe("AgentChatPane submit recovery", () => {
   it("launches a tracked CLI session from the Work draft composer instead of creating an ADE chat", async () => {
     const { send, create } = installAdeMocks({ sessions: [] });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    seedDrawerStore();
 
     render(
       <MemoryRouter>
@@ -6571,6 +6641,70 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("persists Work-sidebar visual context on the draft's selected machine", async () => {
+    const { saveTempAttachment } = installAdeMocks({ sessions: [] });
+    const draftContextTargetId = "work-draft-visual-context";
+    const binding = {
+      kind: "local",
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: null,
+    } as const;
+    useAppStore.setState({
+      project: { rootPath: binding.rootPath } as any,
+      projectBinding: binding,
+      lanes: [{
+        id: "lane-1",
+        name: "lane-1",
+        branchRef: "refs/heads/lane-1",
+        laneType: "worktree",
+        worktreePath: "/tmp/project-under-test/.ade/worktrees/lane-1",
+        status: {},
+      } as any],
+      selectedLaneId: "lane-1",
+    });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          draftContextTargetId={draftContextTargetId}
+        />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("textbox");
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-ios-context", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          item: {
+            kind: "ios_element",
+            id: "ios-context-1",
+            componentId: "ContinueButton",
+            sourceFile: null,
+            sourceLine: null,
+            frame: { x: 1, y: 2, width: 3, height: 4 },
+            metadata: {},
+            accessibilityIdentifier: null,
+            screenshotDataUrl: "data:image/png;base64,aW9z",
+            selectedAt: "2026-07-29T00:00:00.000Z",
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => {
+      expect(saveTempAttachment).toHaveBeenCalledWith({
+        data: "aW9z",
+        filename: "ios-element.png",
+      }, binding);
+    });
+  });
+
   it("does not restore a CLI-only Cursor model into a Chat Work draft", async () => {
     const { cliOnlyId } = seedCursorRuntimeModelCatalog();
     installAdeMocks({ sessions: [] });
@@ -6606,6 +6740,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -6676,6 +6811,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -6743,6 +6879,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -6809,6 +6946,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -6872,6 +7010,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -6940,6 +7079,7 @@ describe("AgentChatPane submit recovery", () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
     useAppStore.setState({
       project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
     });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
     const launchConfigKey = [
@@ -7033,11 +7173,11 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-created",
         prompt: "Launch a CLI agent on a new lane.",
         modelId: "openai/gpt-5.4",
-      }));
+      }), LOCAL_PROJECT_BINDING);
       expect(createLane).toHaveBeenCalledWith({
         name: "launch-cli-agent-new-lane",
         baseBranch: "origin/main",
-      });
+      }, LOCAL_PROJECT_BINDING);
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         profile: "codex",
@@ -7109,6 +7249,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("keeps immediate agent events for a freshly created chat before session refresh catches up", async () => {
     const { create, emitChatEvent } = installAdeMocks({ sessions: [] });
+    seedDrawerStore();
     const send = vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
       emitChatEvent({
         sessionId,
@@ -7888,6 +8029,7 @@ describe("AgentChatPane submit recovery", () => {
         "anthropic/claude-sonnet-5",
       ],
     });
+    const launchBinding = useAppStore.getState().projectBinding;
 
     const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
@@ -7915,7 +8057,7 @@ describe("AgentChatPane submit recovery", () => {
         prompt: "Fix the login bug",
         modelId: "openai/gpt-5.4",
         fallbackName: "fix-login-bug",
-      }));
+      }), launchBinding);
       expect(createChild).toHaveBeenCalledTimes(2);
     });
     // Child lanes are created instantly with the deterministic base name…
@@ -7925,8 +8067,8 @@ describe("AgentChatPane submit recovery", () => {
     ]);
     // …then renamed to the AI base name in the background.
     await waitFor(() => {
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" });
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet-5" });
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" }, launchBinding);
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet-5" }, launchBinding);
     });
 
     await waitFor(() => {
@@ -7939,22 +8081,22 @@ describe("AgentChatPane submit recovery", () => {
       laneId: "lane-child-1",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }));
+    }), launchBinding);
     expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
       laneId: "lane-child-2",
       provider: "claude",
       modelId: "anthropic/claude-sonnet-5",
-    }));
+    }), launchBinding);
     expect(send).toHaveBeenNthCalledWith(1, expect.objectContaining({
       sessionId: "session-lane-child-1",
       text: "Fix the login bug",
       displayText: "Fix the login bug",
-    }));
+    }), launchBinding);
     expect(send).toHaveBeenNthCalledWith(2, expect.objectContaining({
       sessionId: "session-lane-child-2",
       text: "Fix the login bug",
       displayText: "Fix the login bug",
-    }));
+    }), launchBinding);
     expect(parallelLaunchStateSet.mock.calls.some(([args]) =>
       args.projectRoot === "/tmp/project-under-test"
       && args.parentLaneId === "lane-1"
@@ -7973,7 +8115,7 @@ describe("AgentChatPane submit recovery", () => {
         projectRoot: "/tmp/project-under-test",
         parentLaneId: "lane-1",
         state: null,
-      });
+      }, launchBinding);
     });
   });
 
@@ -7997,14 +8139,17 @@ describe("AgentChatPane submit recovery", () => {
       expect(parallelLaunchStateGet).toHaveBeenCalledWith({
         projectRoot: "/tmp/project-under-test",
         parentLaneId: "lane-1",
-      });
-      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-child-1", force: true });
+      }, LOCAL_PROJECT_BINDING);
+      expect(deleteLane).toHaveBeenCalledWith(
+        { laneId: "lane-child-1", force: true },
+        LOCAL_PROJECT_BINDING,
+      );
     });
     expect(parallelLaunchStateSet).toHaveBeenCalledWith({
       projectRoot: "/tmp/project-under-test",
       parentLaneId: "lane-1",
       state: null,
-    });
+    }, LOCAL_PROJECT_BINDING);
   });
 
   it("surfaces partial rollback failures when a parallel launch cannot clean up", async () => {
@@ -8085,8 +8230,16 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(deleteLane).toHaveBeenCalledTimes(2), { timeout: 5000 });
     expect(await screen.findByText(/Lane 2 failed to send\./i, {}, { timeout: 5000 })).toBeTruthy();
     expect(await screen.findByText(/Cleanup could not delete lane lane-child-1/i, {}, { timeout: 5000 })).toBeTruthy();
-    expect(deleteLane).toHaveBeenNthCalledWith(1, { laneId: "lane-child-1", force: true });
-    expect(deleteLane).toHaveBeenNthCalledWith(2, { laneId: "lane-child-2", force: true });
+    expect(deleteLane).toHaveBeenNthCalledWith(
+      1,
+      { laneId: "lane-child-1", force: true },
+      LOCAL_PROJECT_BINDING,
+    );
+    expect(deleteLane).toHaveBeenNthCalledWith(
+      2,
+      { laneId: "lane-child-2", force: true },
+      LOCAL_PROJECT_BINDING,
+    );
     expect(errorSpy).toHaveBeenCalledWith(
       "parallel launch cleanup failed",
       expect.objectContaining({ laneId: "lane-child-1" }),
@@ -9353,6 +9506,22 @@ describe("AgentChatPane per-chat runtime routing", () => {
     ));
     // ...and the window's project tab is STILL bound to machine A.
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+
+  it("does not mount machine-control panels against the globally bound runtime for a foreign chat", async () => {
+    bindWindowToMachineA();
+    const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
+    installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
+
+    renderPane(session);
+
+    const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
+    fireEvent.click(appControlButton);
+
+    expect(screen.queryByTestId("app-control-panel")).toBeNull();
+    expect(screen.getByText(
+      "Switch this project tab to machine-b before using this tool. Chat and attachments remain pinned to that machine.",
+    )).toBeTruthy();
   });
 
   it("pins This Mac history and live events while the project tab stays remote-bound", async () => {

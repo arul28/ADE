@@ -155,7 +155,7 @@ are dimmed and blocked in all three organization modes, not only beneath the
 lane-group header.
 
 In `by-lane` mode, any session whose `laneId` is not in the current
-lanes list is still rendered under its own sticky "orphan lane" group
+lanes list is still rendered under its own sticky "orphaned sessions" group
 below the active lane groups. The list is built from
 `missingLaneSessionGroups`: every `laneId` from `sessionsGroupedByLane`
 that's absent from the `lanes` set becomes a group, labelled with the
@@ -164,7 +164,10 @@ most-recent `startedAt`, with ties broken alphabetically. These groups
 reuse the same `workCollapsedLaneIds` persistence, so a user who
 collapses an orphan group sees it stay collapsed on reload. This keeps
 sessions reachable when their lane has been archived, deleted, or not
-yet loaded, instead of quietly dropping them from the sidebar.
+yet loaded, instead of quietly dropping them from the sidebar. They use a
+warning icon and neutral tint rather than pretending to be a current lane,
+explain that chat history is still preserved, and offer a non-destructive
+lane refresh. ADE never deletes a session or Git data from this recovery row.
 
 Foreign-machine lane rows follow the same filing contract instead of using a
 parallel card-only renderer. `partitionQuietSessions` splits each row with
@@ -174,7 +177,8 @@ lane starts as the same minimal header with inline counts and uses
 `lane-open:<machineId>:<laneId>` for explicit expansion. When active work
 returns, `SessionListPane` clears that marker so the next all-quiet state starts
 collapsed. Card selection and context actions still carry the owning runtime
-binding, and offline/unavailable rows remain disabled.
+binding. **Manage lane** opens the shared dialog with every read and mutation
+pinned to that machine; offline/unavailable rows remain disabled.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`

@@ -327,4 +327,49 @@ describe("ChatAppControlPanel", () => {
       expect(api.appControl.selectPoint.mock.calls.length).toBeGreaterThan(selectCallsBeforeReattach);
     });
   });
+
+  it("forwards screenshot data to the context owner when attachment persistence is delegated", async () => {
+    const api = installAdeMock({ status: connectedStatus, targetList: targets });
+    const onAddContext = vi.fn();
+    api.appControl.selectPoint.mockResolvedValue({
+      item: {
+        ...contextItem,
+        screenshotDataUrl: transparentPngDataUrl,
+      },
+      source: "cdp",
+      snapshot: null,
+    });
+
+    render(
+      <ChatAppControlPanel
+        sessionId="chat-inspect"
+        laneId="lane-1"
+        projectRoot="/repo"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTitle("Re-capture screenshot and DOM snapshot"));
+    const image = await screen.findByAltText("Electron app screenshot") as HTMLImageElement;
+    image.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 80,
+      width: 100,
+      height: 80,
+      toJSON: () => ({}),
+    });
+    fireEvent.click(screen.getByText("Inspect"));
+    fireEvent.click(image, { clientX: 60, clientY: 60 });
+
+    await waitFor(() => {
+      expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+        screenshotDataUrl: expect.stringMatching(/^data:image\//),
+      }));
+    });
+    expect(api.agentChat.saveTempAttachment).not.toHaveBeenCalled();
+  });
 });

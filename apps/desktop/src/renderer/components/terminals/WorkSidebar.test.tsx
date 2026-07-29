@@ -376,6 +376,7 @@ describe("WorkSidebar context targets", () => {
     renderSidebar({ tab: "ios", contextTarget: { kind: "chat", sessionId: "chat-1" } });
 
     expect(screen.getByTestId("ios-panel").getAttribute("data-session-id")).toBe("chat-1");
+    expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByText("Add iOS context"));
 
     expect(received).toEqual([expect.objectContaining({

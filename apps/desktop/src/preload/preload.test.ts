@@ -6890,6 +6890,42 @@ describe("per-chat runtime routing", () => {
     );
   });
 
+  it("routes machine-scoped Work helpers and lane management to the selected machine", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.ai.getStatus({}, machineB);
+    await bridge.agentChat.models({ provider: "codex" }, machineB);
+    await bridge.agentChat.parallelLaunchState.set(
+      { scopeKey: "draft", state: { count: 2 } },
+      machineB,
+    );
+    await bridge.files.quickOpen({ workspaceId: "workspace-b", query: "src" }, machineB);
+    await bridge.computerUse.getOwnerSnapshot({ ownerId: "chat-b" }, machineB);
+    await bridge.sessions.getDelta("session-b", machineB);
+    await bridge.lanes.archive({ laneId: "lane-b" }, machineB);
+    await bridge.lanes.getDeleteRisk({ laneId: "lane-b" }, machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => (
+        payload as { request: { domain: string; action: string } }
+      ).request);
+    expect(remoteRequests.map(({ domain, action }) => `${domain}.${action}`)).toEqual([
+      "ai.getStatus",
+      "chat.getAvailableModels",
+      "chat.setParallelLaunchState",
+      "file.quickOpen",
+      "computer_use_artifacts.getOwnerSnapshot",
+      "session.getDelta",
+      "lane.archive",
+      "lane.getDeleteRisk",
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
   it("streams a pinned This Mac chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
     try {

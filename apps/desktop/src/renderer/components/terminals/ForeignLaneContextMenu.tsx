@@ -18,6 +18,7 @@ type ForeignLaneContextMenuProps = {
   y: number;
   onClose: () => void;
   onStartChat: () => void;
+  onManage: () => void;
   onOpenInLanes: () => void;
 };
 
@@ -33,6 +34,7 @@ export function ForeignLaneContextMenu({
   y,
   onClose,
   onStartChat,
+  onManage,
   onOpenInLanes,
 }: ForeignLaneContextMenuProps) {
   const { ref, position } = useClampedFixedPosition(
@@ -110,6 +112,15 @@ export function ForeignLaneContextMenu({
         }}
       >
         Start chat in lane
+      </HoverButton>
+      <HoverButton
+        style={menuItemStyle}
+        disabled={!online}
+        onClick={() => {
+          if (online) onManage();
+        }}
+      >
+        Manage lane
       </HoverButton>
       <HoverButton
         style={menuItemStyle}

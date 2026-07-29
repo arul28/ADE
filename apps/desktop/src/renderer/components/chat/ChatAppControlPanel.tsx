@@ -21,6 +21,7 @@ import type {
   AppControlSnapshot,
   AppControlStatus,
   AppControlTarget,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -34,6 +35,7 @@ type ChatAppControlPanelProps = {
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
   onShowTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  runtimePin?: OpenProjectBinding | null;
 };
 
 type MessageTone = "info" | "error";
@@ -265,6 +267,7 @@ export function ChatAppControlPanel({
   onAddAttachment,
   onInsertDraft,
   onShowTerminal,
+  runtimePin = null,
 }: ChatAppControlPanelProps) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const uiStateKey = panelUiStateKey(sessionId, projectRoot, laneId);
@@ -835,14 +838,12 @@ export function ChatAppControlPanel({
           const { path } = await window.ade.agentChat.saveTempAttachment({
             data: stripDataUrlPrefix(screenshotDataUrl),
             filename: "app-control-selection.png",
-          });
+          }, ...(runtimePin ? [runtimePin] as const : []));
           attachmentPath = path;
           onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
         } catch (error) {
           throw new Error(`Could not attach screenshot crop: ${errorMessage(error)}`);
         }
-      } else if (screenshotDataUrl && !onAddAttachment) {
-        throw new Error("Context insertion is not available in this panel.");
       }
       const contextItem = {
         ...result.item,
@@ -874,7 +875,7 @@ export function ChatAppControlPanel({
         text: `Inserted ${attachedLabel} context.`,
       });
     },
-    [controlsDisabled, controlsDisabledMessage, onAddAttachment, onAddContext, projectRoot, screenshotBlank, snapshot],
+    [controlsDisabled, controlsDisabledMessage, onAddAttachment, onAddContext, projectRoot, runtimePin, screenshotBlank, snapshot],
   );
 
   const handleImageClick = useCallback(

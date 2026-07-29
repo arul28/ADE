@@ -112,11 +112,49 @@ describe("SessionListPane", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("renders by-lane sessions whose lane is missing from the cached lane list", () => {
-    renderPane();
+  it("renders a missing lane as an explicit orphaned-session group", () => {
+    const onSelectSession = vi.fn();
+    renderPane({ onSelectSession });
 
-    expect(screen.getByText("Mobile-created lane")).toBeTruthy();
-    expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
+    expect(screen.getByRole("heading", {
+      name: "Orphaned sessions: Mobile-created lane (1)",
+    })).toBeTruthy();
+    expect(screen.getByTestId("orphan-session-explanation").textContent).toContain(
+      "will not delete sessions, Git branches, worktrees, commits, or pull requests",
+    );
+    expect((screen.getByRole("button", {
+      name: "Refresh lane and session records for Mobile-created lane",
+    }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /Mobile Tool Streaming UI/ }));
+    expect(onSelectSession).toHaveBeenCalledWith(
+      "session-mobile",
+      expect.anything(),
+      ["session-mobile"],
+    );
+  });
+
+  it("offers non-destructive reconciliation for an orphaned session group", () => {
+    const ended = makeSession({
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-04-23T01:00:00.000Z",
+      exitCode: 0,
+    });
+    const onRefreshOrphanSessions = vi.fn();
+    renderPane({
+      runningFiltered: [],
+      endedFiltered: [ended],
+      allSessionsUnfiltered: [ended],
+      sessionsGroupedByLane: new Map([[ended.laneId, [ended]]]),
+      onRefreshOrphanSessions,
+    });
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Refresh lane and session records for Mobile-created lane",
+    }));
+
+    expect(onRefreshOrphanSessions).toHaveBeenCalledTimes(1);
   });
 
   it("disables a lane and its chats while lane deletion is in progress", () => {
@@ -1019,7 +1057,9 @@ describe("SessionListPane", () => {
       expect(markers).toHaveLength(1);
       const foreignHeader = screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header");
       expect(foreignHeader?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
-      const localHeader = screen.getByText("Mobile-created lane").closest(".ade-lane-group-header");
+      const localHeader = screen.getByRole("heading", {
+        name: "Orphaned sessions: Mobile-created lane (1)",
+      });
       expect(localHeader?.querySelector("[data-machine-marker-mode]")).toBeNull();
 
       fireEvent.click(screen.getByRole("button", { name: /Chat on the other machine/ }));
@@ -1124,6 +1164,7 @@ describe("SessionListPane", () => {
       fireEvent.contextMenu(header);
 
       expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Manage lane" })).toBeTruthy();
       expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 

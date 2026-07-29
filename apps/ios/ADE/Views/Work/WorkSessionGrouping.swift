@@ -90,6 +90,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let sessions: [TerminalSessionSummary]
   let laneColor: String?
   let laneIcon: LaneIcon?
+  let isOrphaned: Bool
   /// Every session in this lane is settled (snoozed rows are already lifted into
   /// the `status:snoozed` tail, so they can't be here). The section renders as a
   /// single thin row instead of a full header over nothing.
@@ -98,6 +99,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
   enum Icon: Equatable {
     case statusDot
     case laneBranch
+    case warning
     case none
   }
 
@@ -109,6 +111,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     sessions: [TerminalSessionSummary],
     laneColor: String? = nil,
     laneIcon: LaneIcon? = nil,
+    isOrphaned: Bool = false,
     isQuiet: Bool = false
   ) {
     self.id = id
@@ -118,6 +121,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     self.sessions = sessions
     self.laneColor = laneColor
     self.laneIcon = laneIcon
+    self.isOrphaned = isOrphaned
     self.isQuiet = isQuiet
   }
 
@@ -139,6 +143,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
       && lhs.tint == rhs.tint
       && lhs.laneColor == rhs.laneColor
       && lhs.laneIcon == rhs.laneIcon
+      && lhs.isOrphaned == rhs.isOrphaned
       && lhs.isQuiet == rhs.isQuiet
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
@@ -778,7 +783,14 @@ func workSessionGroupsByLane(
     let label = deletingLaneIds.contains(laneId)
       ? "Updating lane…"
       : orphanLabel(list.first?.laneName, fallback: laneId)
-    groups.append(WorkSessionGroup(id: "lane:\(laneId)", label: label, icon: .laneBranch, tint: ADEColor.textMuted, sessions: list))
+    groups.append(WorkSessionGroup(
+      id: "lane:\(laneId)",
+      label: label,
+      icon: .warning,
+      tint: ADEColor.warning,
+      sessions: list,
+      isOrphaned: true
+    ))
   }
   return groups
 }

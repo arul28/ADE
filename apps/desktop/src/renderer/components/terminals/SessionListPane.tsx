@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, CircleNotch, Desktop, DesktopTower, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, DesktopTower, Funnel, MagnifyingGlass, Moon, Plus, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -682,6 +682,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   onBulkClose,
   onBulkDelete,
   onBulkStopAndDelete,
+  onRefreshOrphanSessions,
   onContextMenu,
   sessionListOrganization,
   setSessionListOrganization,
@@ -744,6 +745,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
   onBulkStopAndDelete?: () => void;
+  onRefreshOrphanSessions?: () => void;
   onContextMenu: (
     session: TerminalSessionSummary,
     e: React.MouseEvent,
@@ -1692,17 +1694,47 @@ export const SessionListPane = React.memo(function SessionListPane({
         const collapsed = workCollapsedLaneIds.includes(laneId);
         const trimmedLaneName = (list[0]?.laneName ?? "").trim();
         const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneHandoffJobs[0]?.laneName ?? laneId;
+        const canRefreshRecords = Boolean(onRefreshOrphanSessions);
         return (
           <StickyGroupHeader
             key={laneId}
-            sectionId={laneId}
-            icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
-            label={label}
-            variant="lane"
+            sectionId={`orphan:${laneId}`}
+            icon={<WarningCircle size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
+            label={`Orphaned sessions: ${label}`}
             count={list.length + laneHandoffJobs.length}
             collapsed={collapsed}
+            heading
+            headerAction={(
+              <SmartTooltip
+                forceEnabled
+                content={{
+                  label: "Refresh lane and session records",
+                  description: "Reconcile this group with its owning runtime. Nothing is deleted.",
+                }}
+              >
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
+                  aria-label={`Refresh lane and session records for ${label}`}
+                  disabled={!canRefreshRecords}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRefreshOrphanSessions?.();
+                  }}
+                >
+                  <ArrowClockwise size={12} aria-hidden />
+                </button>
+              </SmartTooltip>
+            )}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
+            <div
+              className="mx-1.5 mb-1.5 border-l border-white/[0.08] px-2 py-1 text-[10px] leading-relaxed text-muted-fg/65"
+              data-testid="orphan-session-explanation"
+            >
+              The lane record is missing from the latest runtime snapshot. Refresh to reconcile this group with its
+              owning machine. ADE will not delete sessions, Git branches, worktrees, commits, or pull requests.
+            </div>
             {renderHandoffCards(laneHandoffJobs)}
             {renderLaneSessionLists(laneId, list)}
           </StickyGroupHeader>

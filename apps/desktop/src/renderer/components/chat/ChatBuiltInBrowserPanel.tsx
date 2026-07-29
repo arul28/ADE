@@ -16,7 +16,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import type { AgentChatFileRef } from "../../../shared/types";
+import type { AgentChatFileRef, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
   BuiltInBrowserPermissionDecision,
@@ -175,6 +175,7 @@ type ChatBuiltInBrowserPanelProps = {
   onAddContext?: (item: BuiltInBrowserContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
+  runtimePin?: OpenProjectBinding | null;
 };
 
 type MessageTone = "info" | "error";
@@ -731,6 +732,7 @@ export function ChatBuiltInBrowserPanel({
   onAddContext,
   onAddAttachment,
   onInsertDraft,
+  runtimePin = null,
 }: ChatBuiltInBrowserPanelProps) {
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const projectRoot = projectRootOverride === undefined
@@ -854,7 +856,7 @@ export function ChatBuiltInBrowserPanel({
         const saved = await window.ade.agentChat.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
-        });
+        }, ...(runtimePin ? [runtimePin] as const : []));
         attachmentPath = saved.path;
         onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
       } catch (error) {
@@ -890,7 +892,7 @@ export function ChatBuiltInBrowserPanel({
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
-  }, [onAddAttachment, onAddContext, sessionId]);
+  }, [onAddAttachment, onAddContext, runtimePin, sessionId]);
 
   const reportBounds = useCallback((visibleOverride?: boolean) => {
     const api = getBrowserApi();
@@ -1572,7 +1574,7 @@ export function ChatBuiltInBrowserPanel({
       const saved = await window.ade.agentChat.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
-      });
+      }, ...(runtimePin ? [runtimePin] as const : []));
       attachmentPath = saved.path;
       onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
     }
@@ -1660,7 +1662,7 @@ export function ChatBuiltInBrowserPanel({
       label: domItem ? "Browser capture + DOM attached." : "Browser capture attached.",
     });
     restoreLiveBrowserView();
-  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, sessionId, withBrowserScope]);
+  }, [attachBrowserContextItem, captureBase, onAddAttachment, onAddContext, restoreLiveBrowserView, runtimePin, sessionId, withBrowserScope]);
 
   const handleBrowserCapturePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!captureImageDataUrl || !captureBase?.width || !captureBase.height) return;

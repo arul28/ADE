@@ -830,6 +830,54 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("copies Electron file-path uploads into the composer runtime", async () => {
+    const composerMachineBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "ade",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    };
+    const saveTempAttachment = vi.fn().mockResolvedValue({
+      path: "/Users/admin/Projects/ADE/.ade/attachments/spec.txt",
+    });
+    (window as any).ade = {
+      agentChat: { saveTempAttachment },
+    };
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+      composerMachineBinding,
+    });
+    const uploadInput = props.container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["remote-safe"], "spec.txt", { type: "text/plain" }) as File & { path?: string };
+    Object.defineProperty(file, "path", {
+      configurable: true,
+      value: "/Users/arul/Desktop/spec.txt",
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new TextEncoder().encode("remote-safe").buffer),
+    });
+
+    fireEvent.change(uploadInput, { target: { files: [file] } });
+
+    await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledWith({
+      data: "cmVtb3RlLXNhZmU=",
+      filename: "spec.txt",
+    }, composerMachineBinding));
+    expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/Users/admin/Projects/ADE/.ade/attachments/spec.txt",
+      type: "file",
+    });
+    expect(props.onAddAttachment).not.toHaveBeenCalledWith({
+      path: "/Users/arul/Desktop/spec.txt",
+      type: "file",
+    });
+  });
+
   it("moves from the prompt to image attachments and removes them from the keyboard", () => {
     const props = renderComposer({
       turnActive: false,
@@ -1741,10 +1789,20 @@ describe("AgentChatComposer", () => {
       agentChat: { saveTempAttachment },
     };
 
+    const composerMachineBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "ade",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    };
     try {
       const props = renderComposer({
         turnActive: false,
         draft: "",
+        composerMachineBinding,
       });
 
       fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
@@ -1756,7 +1814,7 @@ describe("AgentChatComposer", () => {
       expect(saveTempAttachment).toHaveBeenCalledWith({
         data: "abc123",
         filename: "clipboard.png",
-      });
+      }, composerMachineBinding);
       expect(props.onAddAttachment).toHaveBeenCalledWith({
         path: "/tmp/ade-clipboard.png",
         type: "image",
@@ -1767,6 +1825,29 @@ describe("AgentChatComposer", () => {
         value: originalPlatform,
       });
     }
+  });
+
+  it("fails closed when the selected machine cannot own new attachments", async () => {
+    const readClipboardImage = vi.fn();
+    const saveTempAttachment = vi.fn();
+    (window as any).ade = {
+      app: { readClipboardImage },
+      agentChat: { saveTempAttachment },
+    };
+    const reason = "Reconnect the selected machine project or choose another machine before attaching files.";
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      composerMachineBinding: null,
+      attachmentPersistenceUnavailableReason: reason,
+    });
+
+    const input = screen.getByPlaceholderText("Type to vibecode...");
+    fireEvent.keyDown(input, { key: "v", metaKey: true });
+
+    expect((screen.getByRole("button", { name: "Upload file from disk" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(readClipboardImage).not.toHaveBeenCalled();
+    expect(saveTempAttachment).not.toHaveBeenCalled();
   });
 
   it("uses runtime temp attachments for native macOS clipboard image fallback even when local save IPC is available", async () => {
@@ -1791,10 +1872,20 @@ describe("AgentChatComposer", () => {
       agentChat: { saveTempAttachment },
     };
 
+    const composerMachineBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:studio:ade",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "ade",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    };
     try {
       const props = renderComposer({
         turnActive: false,
         draft: "",
+        composerMachineBinding,
       });
 
       fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
@@ -1807,7 +1898,7 @@ describe("AgentChatComposer", () => {
       expect(saveTempAttachment).toHaveBeenCalledWith({
         data: "abc123",
         filename: "clipboard.png",
-      });
+      }, composerMachineBinding);
       expect(props.onAddAttachment).toHaveBeenCalledWith({
         path: "/remote/project/.ade/attachments/clipboard.png",
         type: "image",

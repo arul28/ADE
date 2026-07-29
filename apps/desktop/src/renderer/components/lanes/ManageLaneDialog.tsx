@@ -23,12 +23,14 @@ import {
 import { Button } from "../ui/Button";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type {
+  LaneDeleteEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
   LaneReclaimRisk,
   LaneDeleteStep,
   LaneDeleteStepName,
-  LaneSummary
+  LaneSummary,
+  OpenProjectBinding,
 } from "../../../shared/types";
 
 /** Independent delete targets shown as a checklist. */
@@ -87,10 +89,12 @@ function ManageLaneRenameControls({
   lane,
   allLanes,
   onRenamed,
+  runtimePin,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(lane.name);
@@ -125,7 +129,10 @@ function ManageLaneRenameControls({
     setRenameBusy(true);
     setRenameError(null);
     try {
-      await window.ade.lanes.rename({ laneId: lane.id, name: trimmedDraft });
+      const args = { laneId: lane.id, name: trimmedDraft };
+      await (runtimePin
+        ? window.ade.lanes.rename(args, runtimePin)
+        : window.ade.lanes.rename(args));
       setEditing(false);
       await onRenamed?.();
     } catch (error) {
@@ -215,11 +222,13 @@ function ManageLaneHeaderDetails({
   isBatch,
   allLanes,
   onRenamed,
+  runtimePin,
 }: {
   lanes: LaneSummary[];
   isBatch: boolean;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   if (isBatch) {
     return (
@@ -254,7 +263,12 @@ function ManageLaneHeaderDetails({
     <div data-tour="lanes.manageDialog.laneInfo" className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <LaneIcon size={14} weight="duotone" className="shrink-0 text-accent/80" />
-        <ManageLaneRenameControls lane={lane} allLanes={allLanes} onRenamed={onRenamed} />
+        <ManageLaneRenameControls
+          lane={lane}
+          allLanes={allLanes}
+          onRenamed={onRenamed}
+          runtimePin={runtimePin}
+        />
         {lane.status.dirty ? (
           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
             dirty
@@ -374,7 +388,8 @@ export function ManageLaneDialog({
   onArchive,
   onDelete,
   onAppearanceChanged,
-  onStackReorganized
+  onStackReorganized,
+  runtimePin,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -395,6 +410,7 @@ export function ManageLaneDialog({
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -458,11 +474,17 @@ export function ManageLaneDialog({
     }
     let cancelled = false;
     const getReclaimRisk = window.ade.lanes.getReclaimRisk;
+    const deleteRiskPromise = runtimePin
+      ? window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }, runtimePin)
+      : window.ade.lanes.getDeleteRisk({ laneId: singleLaneId });
+    const reclaimRiskPromise = typeof getReclaimRisk === "function"
+      ? runtimePin
+        ? getReclaimRisk({ laneId: singleLaneId }, runtimePin)
+        : getReclaimRisk({ laneId: singleLaneId })
+      : Promise.resolve(null);
     void Promise.all([
-      window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }),
-      typeof getReclaimRisk === "function"
-        ? getReclaimRisk({ laneId: singleLaneId })
-        : Promise.resolve(null),
+      deleteRiskPromise,
+      reclaimRiskPromise,
     ])
       .then(([deleteResult, reclaimResult]) => {
         if (!cancelled) {
@@ -477,19 +499,22 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, singleLaneId, singleLaneType]);
+  }, [open, runtimePin, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
     if (!open || !singleLaneId) return;
-    const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
+    const handleDeleteEvent = (event: LaneDeleteEvent) => {
       if (event.progress.laneId !== singleLaneId) return;
       setDeleteProgress(event.progress);
-    });
+    };
+    const unsubscribe = runtimePin
+      ? window.ade.lanes.onDeleteEvent(handleDeleteEvent, runtimePin)
+      : window.ade.lanes.onDeleteEvent(handleDeleteEvent);
     return () => {
       unsubscribe?.();
     };
-  }, [open, singleLaneId]);
+  }, [open, runtimePin, singleLaneId]);
 
   const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
   const showStaticBusy = laneActionBusy && !deleteProgress;
@@ -505,11 +530,14 @@ export function ManageLaneDialog({
     setReclaimBusy(true);
     setReclaimError(null);
     try {
-      await window.ade.lanes.archiveAndReclaim({
+      const args = {
         laneId: singleLane.id,
-        confirmation: "RECLAIM",
+        confirmation: "RECLAIM" as const,
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
-      });
+      };
+      await (runtimePin
+        ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
+        : window.ade.lanes.archiveAndReclaim(args));
       await onAppearanceChanged?.();
       onOpenChange(false);
     } catch (error) {
@@ -561,7 +589,15 @@ export function ManageLaneDialog({
 
   const headerExtra =
     lanes.length > 0 && !allPrimary
-      ? <ManageLaneHeaderDetails lanes={lanes} isBatch={isBatch} allLanes={allLanes} onRenamed={onAppearanceChanged} />
+      ? (
+          <ManageLaneHeaderDetails
+            lanes={lanes}
+            isBatch={isBatch}
+            allLanes={allLanes}
+            onRenamed={onAppearanceChanged}
+            runtimePin={runtimePin}
+          />
+        )
       : undefined;
 
   return (
@@ -606,7 +642,13 @@ export function ManageLaneDialog({
 
           {activeTab === "appearance" && singleLane ? (
             <ManageLaneTabPanel tone="accent">
-              <AppearanceSection lane={singleLane} allLanes={allLanes} disabled={laneActionBusy} onChanged={onAppearanceChanged} />
+              <AppearanceSection
+                lane={singleLane}
+                allLanes={allLanes}
+                disabled={laneActionBusy}
+                onChanged={onAppearanceChanged}
+                runtimePin={runtimePin}
+              />
             </ManageLaneTabPanel>
           ) : null}
 
@@ -617,6 +659,7 @@ export function ManageLaneDialog({
                 allLanes={allLanes}
                 disabled={laneActionBusy}
                 onDone={onStackReorganized}
+                runtimePin={runtimePin}
               />
             </ManageLaneTabPanel>
           ) : null}
@@ -1157,11 +1200,13 @@ function AppearanceSection({
   allLanes,
   disabled,
   onChanged,
+  runtimePin,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   disabled: boolean;
   onChanged?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -1180,7 +1225,10 @@ function AppearanceSection({
     setError(null);
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: lane.id, color: next });
+      const args = { laneId: lane.id, color: next };
+      await (runtimePin
+        ? window.ade.lanes.updateAppearance(args, runtimePin)
+        : window.ade.lanes.updateAppearance(args));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
@@ -1254,11 +1302,13 @@ function StackPositionSection({
   allLanes,
   disabled,
   onDone,
+  runtimePin,
 }: {
   lane: LaneSummary;
   allLanes: LaneSummary[];
   disabled: boolean;
   onDone?: () => void | Promise<void>;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const primaryLane = React.useMemo(
     () => allLanes.find((l) => l.laneType === "primary" && !l.archivedAt) ?? null,
@@ -1329,11 +1379,14 @@ function StackPositionSection({
     setSuccess(null);
     setBusy(true);
     try {
-      await window.ade.lanes.reparent({
+      const args = {
         laneId: lane.id,
         newParentLaneId: stackParentId,
         stackBaseBranchRef: baseOverrideTrim || null,
-      });
+      };
+      await (runtimePin
+        ? window.ade.lanes.reparent(args, runtimePin)
+        : window.ade.lanes.reparent(args));
       setSuccess("Stack position updated.");
       await onDone?.();
     } catch (err) {

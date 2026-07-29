@@ -3620,7 +3620,6 @@ export function AgentChatPane({
   const [appControlAvailable, setAppControlAvailable] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
-  const latestAttachmentRef = useRef<{ path: string; type: AgentChatFileRef["type"]; addedAt: number } | null>(null);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
   const linkedAppControlAttachmentPathsRef = useRef<Set<string>>(new Set());
   const linkedBuiltInBrowserAttachmentPathsRef = useRef<Set<string>>(new Set());
@@ -3839,6 +3838,7 @@ export function AgentChatPane({
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const draftExecutionLanesRef = useRef<RoutedDraftLane[]>([]);
   const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
+  const draftExecutionBindingRequiredRef = useRef(false);
   const draftMachineUnavailableRef = useRef(false);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const turnActiveBySessionRef = useRef<Record<string, boolean>>({});
@@ -4751,18 +4751,25 @@ export function AgentChatPane({
     setChatActionsOpen(true);
   }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
 
-  const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
-    if (!projectRoot || !laneId) return;
+  const persistParallelLaunchState = useCallback(async (
+    state: AgentChatParallelLaunchState | null,
+    pin?: OpenProjectBinding | null,
+  ) => {
+    const stateProjectRoot = pin?.rootPath ?? projectRoot;
+    if (!stateProjectRoot || !laneId) return;
     try {
-      await window.ade.agentChat.parallelLaunchState.set({
-        projectRoot,
+      const args = {
+        projectRoot: stateProjectRoot,
         parentLaneId: laneId,
         state,
-      });
+      };
+      await (pin
+        ? window.ade.agentChat.parallelLaunchState.set(args, pin)
+        : window.ade.agentChat.parallelLaunchState.set(args));
     } catch (persistError) {
       console.error("parallel launch state persist failed", {
         laneId,
-        projectRoot,
+        projectRoot: stateProjectRoot,
         error: persistError instanceof Error ? persistError.message : String(persistError),
       });
     }
@@ -4774,9 +4781,13 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
-    if (!projectRoot || !laneId) return;
+    if (!laneId) return;
     if (lockSessionId || initialSessionId) return;
-    const recoveryKey = `${projectRoot}::${laneId}`;
+    const recoveryBinding = draftExecutionBindingRef.current ?? projectBinding;
+    if (!recoveryBinding) return;
+    const recoveryProjectRoot = recoveryBinding.rootPath?.trim();
+    if (!recoveryProjectRoot) return;
+    const recoveryKey = `${recoveryBinding.key}::${recoveryProjectRoot}::${laneId}`;
     if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
     recoveredParallelLaunchKeyRef.current = recoveryKey;
     let cancelled = false;
@@ -4787,20 +4798,20 @@ export function AgentChatPane({
         let pendingState: AgentChatParallelLaunchState | null = null;
         try {
           pendingState = await window.ade.agentChat.parallelLaunchState.get({
-            projectRoot,
+            projectRoot: recoveryProjectRoot,
             parentLaneId: laneId,
-          });
+          }, recoveryBinding);
         } catch {
           return;
         }
         if (!pendingState) return;
         if (isCompletedParallelLaunchState(pendingState)) {
-          await persistParallelLaunchState(null);
+          await persistParallelLaunchState(null, recoveryBinding);
           return;
         }
 
         if (!pendingState.createdLaneIds.length) {
-          await persistParallelLaunchState(null);
+          await persistParallelLaunchState(null, recoveryBinding);
           return;
         }
 
@@ -4810,13 +4821,15 @@ export function AgentChatPane({
         try {
           const cleanupIssues = await cleanupTransientParallelLaunchLanes({
             laneIds: pendingState.createdLaneIds,
-            deleteLane: (args) => window.ade.lanes.delete(args),
-            refreshLanes: refreshLanesStore,
+            deleteLane: (args) => window.ade.lanes.delete(args, recoveryBinding),
+            refreshLanes: projectBinding?.key === recoveryBinding.key
+              ? refreshLanesStore
+              : async () => {},
             onCleanupError: logParallelLaunchCleanupError,
           });
 
           if (cleanupIssues.length === 0) {
-            await persistParallelLaunchState(null);
+            await persistParallelLaunchState(null, recoveryBinding);
           } else {
             await persistParallelLaunchState(buildParallelLaunchState({
               parentLaneId: pendingState.parentLaneId,
@@ -4824,7 +4837,7 @@ export function AgentChatPane({
               sentLaneIds: pendingState.sentLaneIds,
               status: "cleanup_pending",
               lastError: pendingState.lastError,
-            }));
+            }), recoveryBinding);
             if (!cancelled) {
               setError(formatParallelLaunchFailureMessage({
                 launchError: "Recovered an unfinished parallel launch from before ADE closed.",
@@ -4839,7 +4852,7 @@ export function AgentChatPane({
       })();
     };
 
-    if (isRemoteProject) {
+    if (recoveryBinding.kind === "remote") {
       recoveryTimer = window.setTimeout(recoverParallelLaunchState, REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS);
     } else {
       recoverParallelLaunchState();
@@ -4855,11 +4868,11 @@ export function AgentChatPane({
     };
   }, [
     initialSessionId,
-    isRemoteProject,
+    initialDraftMachineId,
     laneId,
     lockSessionId,
     persistParallelLaunchState,
-    projectRoot,
+    projectBinding,
     refreshLanesStore,
   ]);
 
@@ -5674,12 +5687,23 @@ export function AgentChatPane({
         selectedSession?.provider === "opencode"
         || selectedModelProvider === "opencode"
       );
+    const runtimePin = selectedSessionIdRef.current
+      ? chatRuntimePinRef.current
+      : draftExecutionBindingRef.current;
+    if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !runtimePin) {
+      setAiStatus(null);
+      setProviderConnections(null);
+      setAvailableModelIds([]);
+      return [];
+    }
+    const runtimeProjectRoot = runtimePin?.rootPath ?? projectRoot;
     if (options?.force === true) {
-      invalidateAiDiscoveryCache(projectRoot);
+      invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
     try {
       const status = await getAiStatusCached({
-        projectRoot,
+        projectRoot: runtimeProjectRoot,
+        pin: runtimePin,
         force: options?.force === true,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
@@ -5702,14 +5726,15 @@ export function AgentChatPane({
 
     try {
       const [codexModels, claudeModels, cursorModels, droidModels, openCodeModels] = await Promise.all([
-        getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "cursor", activateRuntime: true }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "droid" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: runtimePin }).catch(() => []),
         getAgentChatModelsCached({
-          projectRoot,
+          projectRoot: runtimeProjectRoot,
           provider: "opencode",
           activateRuntime: shouldRefreshOpenCodeInventory,
+          pin: runtimePin,
         }).catch(() => []),
       ]);
       const available = new Set<string>();
@@ -5952,7 +5977,7 @@ export function AgentChatPane({
       try {
         const snapshot = await window.ade.computerUse.getOwnerSnapshot({
           owner: { kind: "chat_session", id: sessionId },
-        });
+        }, chatRuntimePinRef.current);
         lastComputerUseSnapshotRef.current = {
           sessionId,
           fetchedAt: Date.now(),
@@ -6979,9 +7004,12 @@ export function AgentChatPane({
     const args = selectedSessionId
       ? { sessionId: selectedSessionId, projectRoot }
       : { laneId, provider: sessionProvider, projectRoot };
-    getAgentChatSlashCommandsCached(args, {
-      pin: selectedSessionId ? chatRuntimePinRef.current : null,
-    })
+    const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
+    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) {
+      setSdkSlashCommands([]);
+      return;
+    }
+    getAgentChatSlashCommandsCached(args, { pin })
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
@@ -7013,7 +7041,7 @@ export function AgentChatPane({
     }
     let cancelled = false;
     const fetchDelta = () => {
-      window.ade.sessions.getDelta(selectedSessionId)
+      window.ade.sessions.getDelta(selectedSessionId, chatRuntimePinRef.current)
         .then((delta) => {
           if (cancelled) return;
           if (delta && (delta.insertions > 0 || delta.deletions > 0)) {
@@ -7415,7 +7443,7 @@ export function AgentChatPane({
       } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
-    });
+    }, chatRuntimePinRef.current);
     return unsubscribe;
   }, [
     isTileActive,
@@ -7474,11 +7502,13 @@ export function AgentChatPane({
       }
     }
 
+    const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
+    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
     const hits = await window.ade.files.quickOpen({
       workspaceId: laneId,
       query: trimmed,
       limit: 60
-    });
+    }, pin);
     return hits.map((hit) => ({
       path: hit.path,
       type: inferAttachmentType(hit.path)
@@ -7486,26 +7516,60 @@ export function AgentChatPane({
   }, [laneId, selectedSessionId, sessionProvider]);
 
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
-    latestAttachmentRef.current = { path: attachment.path, type: attachment.type, addedAt: Date.now() };
     setAttachments((prev) => {
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
   }, []);
 
-  const addIosElementContext = useCallback((item: IosElementContextItem) => {
+  const saveContextScreenshot = useCallback(async (args: {
+    dataUrl: string;
+    filename: string;
+    surfaceLabel: string;
+  }): Promise<{ path: string | null; cancelled: boolean }> => {
+    const attachmentOwnerBinding = selectedSessionIdRef.current
+      ? chatRuntimePinRef.current
+      : draftExecutionBindingRef.current;
+    if (!selectedSessionIdRef.current && draftExecutionBindingRequiredRef.current && !attachmentOwnerBinding) {
+      setError(`Reconnect the selected machine project or choose another machine before adding ${args.surfaceLabel} context.`);
+      return { path: null, cancelled: true };
+    }
+    try {
+      const saved = await window.ade.agentChat.saveTempAttachment({
+        data: stripDataUrlPrefix(args.dataUrl),
+        filename: args.filename,
+      }, ...chatPinArgsForBinding(attachmentOwnerBinding));
+      const currentBinding = selectedSessionIdRef.current
+        ? chatRuntimePinRef.current
+        : draftExecutionBindingRef.current;
+      if (currentBinding?.key !== attachmentOwnerBinding?.key) {
+        setError(`The selected machine changed while saving ${args.surfaceLabel} context. Capture it again.`);
+        return { path: null, cancelled: true };
+      }
+      addAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
+      return { path: saved.path, cancelled: false };
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      return { path: null, cancelled: false };
+    }
+  }, [addAttachment]);
+
+  const addIosElementContext = useCallback(async (item: IosElementContextItem) => {
     const nextSurface = iosContextSurface(item);
     const replacedAttachmentPaths = iosElementContextItems
       .filter((entry) => iosContextSurface(entry) !== nextSurface)
       .map(getIosContextAttachmentPath)
       .filter((path): path is string => Boolean(path));
-    const latestAttachment = latestAttachmentRef.current;
-    const attachmentPath = item.screenshotDataUrl
-      && latestAttachment?.type === "image"
-      && Date.now() - latestAttachment.addedAt < 10_000
-      && !linkedIosAttachmentPathsRef.current.has(latestAttachment.path)
-        ? latestAttachment.path
-        : null;
+    let attachmentPath = getIosContextAttachmentPath(item);
+    if (item.screenshotDataUrl && !attachmentPath) {
+      const saved = await saveContextScreenshot({
+        dataUrl: item.screenshotDataUrl,
+        filename: "ios-element.png",
+        surfaceLabel: "iOS",
+      });
+      if (saved.cancelled) return;
+      attachmentPath = saved.path;
+    }
     const instanceId = createIosContextInstanceId(item);
     if (attachmentPath) {
       linkedIosAttachmentPathsRef.current.add(attachmentPath);
@@ -7530,16 +7594,19 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [iosElementContextItems]);
+  }, [iosElementContextItems, saveContextScreenshot]);
 
-  const addAppControlContext = useCallback((item: AppControlContextItem) => {
-    const latestAttachment = latestAttachmentRef.current;
-    const attachmentPath = item.screenshotDataUrl
-      && latestAttachment?.type === "image"
-      && Date.now() - latestAttachment.addedAt < 10_000
-      && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
-        ? latestAttachment.path
-        : getAppControlContextAttachmentPath(item);
+  const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
+    let attachmentPath = getAppControlContextAttachmentPath(item);
+    if (item.screenshotDataUrl && !attachmentPath) {
+      const saved = await saveContextScreenshot({
+        dataUrl: item.screenshotDataUrl,
+        filename: "app-control-selection.png",
+        surfaceLabel: "App Control",
+      });
+      if (saved.cancelled) return;
+      attachmentPath = saved.path;
+    }
     const instanceId = createAppControlContextInstanceId(item);
     if (attachmentPath) {
       linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
@@ -7557,23 +7624,20 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, []);
+  }, [saveContextScreenshot]);
 
   const addBuiltInBrowserContext = useCallback(async (rawItem: unknown) => {
     const item = normalizeBuiltInBrowserContextItem(rawItem);
     if (!item) return;
     let attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
-      try {
-        const saved = await window.ade.agentChat.saveTempAttachment({
-          data: stripDataUrlPrefix(item.screenshotDataUrl),
-          filename: "built-in-browser-selection.png",
-        }, ...chatPinArgsFor(chatRuntimePinRef));
-        attachmentPath = saved.path;
-        addAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
-      } catch (error) {
-        setError(error instanceof Error ? error.message : String(error));
-      }
+      const saved = await saveContextScreenshot({
+        dataUrl: item.screenshotDataUrl,
+        filename: "built-in-browser-selection.png",
+        surfaceLabel: "Browser",
+      });
+      if (saved.cancelled) return;
+      attachmentPath = saved.path;
     }
 
     const instanceId = createBuiltInBrowserContextInstanceId(item);
@@ -7594,7 +7658,7 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, [addAttachment, selectedSessionId]);
+  }, [saveContextScreenshot, selectedSessionId]);
 
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
@@ -7636,12 +7700,12 @@ export function AgentChatPane({
     const onAddIosContext = (event: Event) => {
       const detail = composerDetail(event);
       if (!detail?.item) return;
-      addIosElementContext(detail.item as IosElementContextItem);
+      void addIosElementContext(detail.item as IosElementContextItem);
     };
     const onAddAppControlContext = (event: Event) => {
       const detail = composerDetail(event);
       if (!detail?.item) return;
-      addAppControlContext(detail.item as AppControlContextItem);
+      void addAppControlContext(detail.item as AppControlContextItem);
     };
     const onAddBuiltInBrowserContext = (event: Event) => {
       const detail = composerDetail(event);
@@ -8640,6 +8704,7 @@ export function AgentChatPane({
       modelId: args.modelId,
       fallbackName: args.fallbackBase,
       flagLaneIds: args.children.map((child) => child.laneId),
+      pin: args.pin,
       apply: async (suggested) => {
         for (const child of args.children) {
           const renameArgs = { laneId: child.laneId, name: `${suggested}-${child.suffix}` };
@@ -8988,6 +9053,11 @@ export function AgentChatPane({
         : "Add a message before sending.");
       return;
     }
+    const launchBinding = draftExecutionBindingRef.current;
+    if (!launchBinding) {
+      setError("The selected machine project is not available. Reconnect it or choose another machine.");
+      return;
+    }
     const requestKey = draftLaunchRequestKey({
       kind,
       mode,
@@ -9010,23 +9080,10 @@ export function AgentChatPane({
     // `launchTimedOut` is the normal abort source: withDraftLaunchTimeout rejects
     // the renderer wait but cannot cancel the underlying IPC, so a timed-out
     // step that keeps running must be stopped before its next mutation.
-    const launchBinding = draftExecutionBindingRef.current
-      ?? rootAppStoreApi.getState().projectBinding
-      ?? projectBinding;
-    const launchProjectRoot = projectRoot;
     let launchTimedOut = false;
     const assertLaunchActive = () => {
       if (launchTimedOut) {
         throw new Error("Draft launch aborted after timeout.");
-      }
-      // Bound launches are intentionally routed by `launchBinding`; this abort
-      // is only for legacy/unpinned launches where the active project is the
-      // only routing signal left.
-      if (!launchBinding && launchProjectRoot) {
-        const activeProjectRoot = selectActiveProjectRoot(rootAppStoreApi.getState());
-        if (activeProjectRoot && activeProjectRoot !== launchProjectRoot) {
-          throw new Error(LAUNCH_PROJECT_CHANGED_MESSAGE);
-        }
       }
     };
     const markLaunchTimedOut = () => {
@@ -9521,6 +9578,12 @@ export function AgentChatPane({
     if (isParallelLaunch) {
       const text = draft.trim();
       if ((!text.length && attachments.length === 0 && contextAttachments.length === 0) || !laneId || !projectRoot) return;
+      const launchBinding = draftExecutionBindingRef.current;
+      if (!launchBinding) {
+        setError("The selected machine project is not available. Reconnect it or choose another machine.");
+        return;
+      }
+      const launchProjectRoot = launchBinding.rootPath || projectRoot;
       if (parallelModelSlots.length < 2) {
         setError("Add at least two models for a parallel launch.");
         return;
@@ -9575,7 +9638,11 @@ export function AgentChatPane({
             issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
-        const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: false }).catch(() => null);
+        const projectConfigSnapshot = await getProjectConfigCached({
+          projectRoot: launchProjectRoot,
+          pin: launchBinding,
+          force: false,
+        }).catch(() => null);
         const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
         const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
         const namingModelId = titleModelId || parallelModelSlots[0]!.modelId;
@@ -9591,7 +9658,10 @@ export function AgentChatPane({
           const desc = getModelById(slot.modelId);
           const suffix = parallelLaneModelSuffix(desc);
           const laneName = `${baseName}-${suffix}`;
-          const childLane = await window.ade.lanes.createChild({ parentLaneId: laneId, name: laneName });
+          const childLane = await window.ade.lanes.createChild(
+            { parentLaneId: laneId, name: laneName },
+            launchBinding,
+          );
           createdLaneIds.push(childLane.id);
           childLaneNamings.push({ laneId: childLane.id, suffix });
           await persistParallelLaunchState(buildParallelLaunchState({
@@ -9599,7 +9669,7 @@ export function AgentChatPane({
             createdLaneIds,
             sentLaneIds,
             status: "creating_lanes",
-          }));
+          }), launchBinding);
           const provider = resolveChatRuntimeProvider(desc);
           const model = provider === "opencode" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
           const created = await window.ade.agentChat.create({
@@ -9611,11 +9681,13 @@ export function AgentChatPane({
             reasoningEffort: slot.reasoningEffort,
             ...(modelSupportsFastMode(desc) ? { fastMode: slot.fastMode } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
-          });
+          }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
         }
 
-        await refreshLanesStore();
+        if (canRefreshPinnedProject(launchBinding)) {
+          await refreshLanesStore();
+        }
 
         if (titleSettings?.enabled !== false) {
           startBackgroundParallelLaneNaming({
@@ -9624,6 +9696,7 @@ export function AgentChatPane({
             modelId: namingModelId,
             fallbackBase: baseName,
             children: childLaneNamings,
+            pin: launchBinding,
           });
         }
 
@@ -9639,7 +9712,7 @@ export function AgentChatPane({
           createdLaneIds,
           sentLaneIds,
           status: "sending",
-        }));
+        }), launchBinding);
         for (let idx = 0; idx < parallelModelSlots.length; idx += 1) {
           const slot = parallelModelSlots[idx]!;
           const childLaneId = createdLaneIds[idx];
@@ -9658,7 +9731,7 @@ export function AgentChatPane({
             interactionMode: provider === "claude" ? slot.interactionMode : null,
           };
           try {
-            await window.ade.agentChat.send(sendPayload);
+            await window.ade.agentChat.send(sendPayload, launchBinding);
           } catch (sendError) {
             if (isTurnAlreadyActiveError(sendError)) {
               try {
@@ -9667,10 +9740,10 @@ export function AgentChatPane({
                   text: sendText,
                   ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
                   ...(contextAttachmentsSnapshot.length ? { contextAttachments: contextAttachmentsSnapshot } : {}),
-                });
+                }, launchBinding);
               } catch (steerError) {
                 if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
-                await window.ade.agentChat.send(sendPayload);
+                await window.ade.agentChat.send(sendPayload, launchBinding);
               }
             } else {
               throw sendError;
@@ -9682,13 +9755,16 @@ export function AgentChatPane({
             createdLaneIds,
             sentLaneIds,
             status: sentLaneIds.length >= createdLaneIds.length ? "completed" : "sending",
-          }));
+          }), launchBinding);
           if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
-            window.ade.agentChat.warmupModel({ sessionId, modelId: slot.modelId }).catch(() => {});
+            window.ade.agentChat.warmupModel(
+              { sessionId, modelId: slot.modelId },
+              launchBinding,
+            ).catch(() => {});
           }
         }
 
-        setWorkViewState(projectRoot, (prev) => {
+        setWorkViewState(launchProjectRoot, (prev) => {
           let nextOpen = [...prev.openItemIds];
           for (const sid of sessionByLane.values()) {
             if (!nextOpen.includes(sid)) nextOpen.push(sid);
@@ -9696,7 +9772,7 @@ export function AgentChatPane({
           return { ...prev, openItemIds: nextOpen };
         });
         for (const [childLaneId, sid] of sessionByLane) {
-          setLaneWorkViewState(projectRoot, childLaneId, {
+          setLaneWorkViewState(launchProjectRoot, childLaneId, {
             activeItemId: sid,
             selectedItemId: sid,
             draftKind: "chat",
@@ -9709,23 +9785,27 @@ export function AgentChatPane({
         setParallelChatMode(false);
         setParallelModelSlots([]);
         setParallelConfiguringIndex(null);
-        await persistParallelLaunchState(null);
+        await persistParallelLaunchState(null, launchBinding);
 
         const q = new URLSearchParams();
         q.set("laneIds", createdLaneIds.join(","));
         q.set("workFocus", "1");
-        navigate(`/lanes?${q.toString()}`);
+        if (canRefreshPinnedProject(launchBinding)) {
+          navigate(`/lanes?${q.toString()}`);
+        }
       } catch (submitError) {
         setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up child lanes…" : null);
         const cleanupIssues = await cleanupTransientParallelLaunchLanes({
           laneIds: createdLaneIds,
-          deleteLane: (args) => window.ade.lanes.delete(args),
-          refreshLanes: refreshLanesStore,
+          deleteLane: (args) => window.ade.lanes.delete(args, launchBinding),
+          refreshLanes: canRefreshPinnedProject(launchBinding)
+            ? refreshLanesStore
+            : async () => {},
           onCleanupError: logParallelLaunchCleanupError,
         });
         const message = submitError instanceof Error ? submitError.message : String(submitError);
         if (cleanupIssues.length === 0) {
-          await persistParallelLaunchState(null);
+          await persistParallelLaunchState(null, launchBinding);
         } else {
           await persistParallelLaunchState(buildParallelLaunchState({
             parentLaneId: laneId,
@@ -9733,7 +9813,7 @@ export function AgentChatPane({
             sentLaneIds,
             status: "cleanup_pending",
             lastError: message,
-          }));
+          }), launchBinding);
         }
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
@@ -10172,6 +10252,7 @@ export function AgentChatPane({
     projectRoot,
     navigate,
     buildNativeControlPayloadForSlot,
+    canRefreshPinnedProject,
     refreshLanesStore,
     startBackgroundParallelLaneNaming,
     persistParallelLaunchState,
@@ -10655,7 +10736,75 @@ export function AgentChatPane({
   });
   draftExecutionLanesRef.current = draftExecutionLanes;
   draftExecutionBindingRef.current = draftExecutionBinding;
+  draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
   draftMachineUnavailableRef.current = draftMachineUnavailable;
+  const activeComposerRuntimeBinding = selectedSessionId
+    ? (chatRuntimePin ?? projectBinding)
+    : draftExecutionBinding;
+  const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftExecutionBinding
+    ? "Reconnect the selected machine project or choose another machine before attaching files."
+    : null;
+  const auxiliaryToolDisabledReason = !activeComposerRuntimeBinding
+    ? "Reconnect the selected machine project before using this tool."
+    : !projectBinding || activeComposerRuntimeBinding.key !== projectBinding.key
+      ? `Switch this project tab to ${
+          activeComposerRuntimeBinding.kind === "remote"
+            ? activeComposerRuntimeBinding.runtimeName
+            : "This Mac"
+        } before using this tool. Chat and attachments remain pinned to that machine.`
+      : null;
+
+  const previousDraftMachineRef = useRef<{ id: string; name: string } | null>(null);
+  useEffect(() => {
+    if (!showDraftLaunchControls) {
+      previousDraftMachineRef.current = null;
+      return;
+    }
+    const currentMachine = {
+      id: selectedDraftMachine?.id ?? boundLaneMachineId,
+      name: selectedDraftMachine?.name ?? "This Mac",
+    };
+    const previousMachine = previousDraftMachineRef.current;
+    previousDraftMachineRef.current = currentMachine;
+    if (!previousMachine || previousMachine.id === currentMachine.id) return;
+
+    const removedCount =
+      attachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length;
+    if (removedCount === 0) return;
+    setAttachments([]);
+    setIosElementContextItems([]);
+    setAppControlContextItems([]);
+    setBuiltInBrowserContextItems([]);
+    linkedIosAttachmentPathsRef.current.clear();
+    linkedAppControlAttachmentPathsRef.current.clear();
+    linkedBuiltInBrowserAttachmentPathsRef.current.clear();
+    setError(
+      `Removed ${removedCount} machine-owned attachment${removedCount === 1 ? "" : "s"} from ${previousMachine.name}. `
+      + `Attach them again on ${currentMachine.name}.`,
+    );
+  }, [
+    appControlContextItems.length,
+    attachments.length,
+    boundLaneMachineId,
+    builtInBrowserContextItems.length,
+    iosElementContextItems.length,
+    selectedDraftMachine?.id,
+    selectedDraftMachine?.name,
+    showDraftLaunchControls,
+  ]);
+
+  useEffect(() => {
+    if (!showDraftLaunchControls || !isTileActive) return;
+    void refreshAvailableModels();
+  }, [
+    draftExecutionBinding?.key,
+    isTileActive,
+    refreshAvailableModels,
+    showDraftLaunchControls,
+  ]);
 
   useEffect(() => {
     if (!showDraftLaunchControls && draftLaunchTargetId) {
@@ -11192,15 +11341,22 @@ export function AgentChatPane({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-        <ChatIosSimulatorPanel
-          sessionId={selectedSessionId}
-          laneId={selectedSession?.laneId ?? laneId}
-          projectRoot={iosSimulatorProjectRoot}
-          onAddAttachment={addAttachment}
-          onInsertDraft={insertComposerDraft}
-          onAddContext={addIosElementContext}
-          drawerModeRequest={iosSimulatorDrawerModeRequest}
-        />
+        {auxiliaryToolDisabledReason ? (
+          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
+            {auxiliaryToolDisabledReason}
+          </div>
+        ) : (
+          <ChatIosSimulatorPanel
+            sessionId={selectedSessionId}
+            laneId={selectedSession?.laneId ?? laneId}
+            projectRoot={iosSimulatorProjectRoot}
+            onAddAttachment={selectedSessionId ? addAttachment : undefined}
+            onInsertDraft={insertComposerDraft}
+            onAddContext={addIosElementContext}
+            drawerModeRequest={iosSimulatorDrawerModeRequest}
+            runtimePin={activeComposerRuntimeBinding}
+          />
+        )}
       </div>
     </>
   );
@@ -11218,17 +11374,24 @@ export function AgentChatPane({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-        <ChatAppControlPanel
-          sessionId={selectedSessionId}
-          laneId={laneId}
-          projectRoot={iosSimulatorProjectRoot}
-          onAddAttachment={addAttachment}
-          onInsertDraft={insertComposerDraft}
-          onShowTerminal={(terminal) => {
-            revealChatTerminal(terminal);
-          }}
-          onAddContext={addAppControlContext}
-        />
+        {auxiliaryToolDisabledReason ? (
+          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
+            {auxiliaryToolDisabledReason}
+          </div>
+        ) : (
+          <ChatAppControlPanel
+            sessionId={selectedSessionId}
+            laneId={laneId}
+            projectRoot={iosSimulatorProjectRoot}
+            runtimePin={activeComposerRuntimeBinding}
+            onAddAttachment={selectedSessionId ? addAttachment : undefined}
+            onInsertDraft={insertComposerDraft}
+            onShowTerminal={(terminal) => {
+              revealChatTerminal(terminal);
+            }}
+            onAddContext={addAppControlContext}
+          />
+        )}
       </div>
     </>
   );
@@ -11597,9 +11760,7 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  const composerMachineBinding = selectedSessionId
-    ? (chatRuntimePin ?? projectBinding)
-    : (draftExecutionBinding ?? projectBinding);
+  const composerMachineBinding = activeComposerRuntimeBinding;
   const composerMachineId = selectedSessionId
     ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.targetId : "this-mac")
     : (selectedDraftMachine?.id ?? boundLaneMachineId);
@@ -11651,6 +11812,7 @@ export function AgentChatPane({
             lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}

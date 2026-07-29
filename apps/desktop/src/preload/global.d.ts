@@ -955,7 +955,7 @@ declare global {
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;
-        }) => Promise<AiSettingsStatus>;
+        }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
@@ -1334,7 +1334,10 @@ declare global {
         ) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
-        createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
+        createChild: (
+          args: CreateChildLaneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneSummary>;
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
         ) => Promise<LaneSummary>;
@@ -1351,21 +1354,45 @@ declare global {
         ) => Promise<ResolveLaneBranchDriftResult>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
-        adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
+        adoptAttached: (
+          args: AdoptAttachedLaneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
-        updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
-        archive: (args: ArchiveLaneArgs) => Promise<void>;
-        archiveAndReclaim: (args: ArchiveAndReclaimLaneArgs) => Promise<ArchiveAndReclaimLaneResult>;
+        reparent: (
+          args: ReparentLaneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ReparentLaneResult>;
+        updateAppearance: (
+          args: UpdateLaneAppearanceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        archive: (
+          args: ArchiveLaneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        archiveAndReclaim: (
+          args: ArchiveAndReclaimLaneArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ArchiveAndReclaimLaneResult>;
         unarchive: (args: ArchiveLaneArgs) => Promise<RestoreLaneResult>;
         delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         cancelDelete: (args: {
           laneId: string;
         }) => Promise<{ cancelled: boolean; reason?: string }>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
-        getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
-        getReclaimRisk: (args: { laneId: string }) => Promise<LaneReclaimRisk>;
-        onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
+        getDeleteRisk: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneDeleteRisk>;
+        getReclaimRisk: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<LaneReclaimRisk>;
+        onDeleteEvent: (
+          cb: (ev: LaneDeleteEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
@@ -1531,7 +1558,10 @@ declare global {
           args: ReadTranscriptTailArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<string>;
-        getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
+        getDelta: (
+          sessionId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
         ) => () => void;
@@ -1554,8 +1584,12 @@ declare global {
         parallelLaunchState: {
           get: (
             args: AgentChatParallelLaunchStateArgs,
+            pin?: OpenProjectBinding | null,
           ) => Promise<AgentChatParallelLaunchState | null>;
-          set: (args: AgentChatSetParallelLaunchStateArgs) => Promise<void>;
+          set: (
+            args: AgentChatSetParallelLaunchStateArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<void>;
         };
         handoff: (
           args: AgentChatHandoffArgs,
@@ -1620,7 +1654,10 @@ declare global {
           args: AgentChatRespondToInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
-        models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
+        models: (
+          args: AgentChatModelsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatModelInfo[]>;
         modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
         archive: (
           args: AgentChatArchiveArgs,
@@ -1789,6 +1826,7 @@ declare global {
         ) => Promise<ComputerUseArtifactView[]>;
         getOwnerSnapshot: (
           args: ComputerUseOwnerSnapshotArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ComputerUseOwnerSnapshot>;
         deleteArtifacts: (
           args: ComputerUseArtifactDeleteArgs,
@@ -1804,7 +1842,10 @@ declare global {
           args: ComputerUseArtifactReviewArgs,
         ) => Promise<ComputerUseArtifactView>;
         readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
-        onEvent: (cb: (ev: ComputerUseEventPayload) => void) => () => void;
+        onEvent: (
+          cb: (ev: ComputerUseEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       iosSimulator: {
         getStatus: () => Promise<IosSimulatorStatus>;
@@ -2058,7 +2099,10 @@ declare global {
         delete: (args: FilesDeleteArgs) => Promise<void>;
         watchChanges: (args: FilesWatchArgs) => Promise<void>;
         stopWatching: (args: FilesWatchArgs) => Promise<void>;
-        quickOpen: (args: FilesQuickOpenArgs) => Promise<FilesQuickOpenItem[]>;
+        quickOpen: (
+          args: FilesQuickOpenArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FilesQuickOpenItem[]>;
         searchText: (
           args: FilesSearchTextArgs,
         ) => Promise<FilesSearchTextMatch[]>;

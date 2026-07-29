@@ -1,4 +1,9 @@
-import type { AgentChatModelInfo, AgentChatProvider, AiSettingsStatus } from "../../shared/types";
+import type {
+  AgentChatModelInfo,
+  AgentChatProvider,
+  AiSettingsStatus,
+  OpenProjectBinding,
+} from "../../shared/types";
 
 type StatusCacheEntry = {
   value: AiSettingsStatus | null;
@@ -31,29 +36,40 @@ export type AiStatusCacheUpdatedEventDetail = {
 const aiStatusCache = new Map<string, StatusCacheEntry>();
 const providerModelsCache = new Map<string, ModelsCacheEntry>();
 
+function detailEvent<T>(type: string, detail: T): Event {
+  if (typeof CustomEvent !== "undefined") {
+    return new CustomEvent<T>(type, { detail });
+  }
+  const event = new Event(type);
+  Object.defineProperty(event, "detail", { configurable: true, value: detail });
+  return event;
+}
+
 function normalizeProjectRoot(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "<no-project>";
 }
 
-function statusCacheKey(projectRoot: string | null | undefined): string {
-  return normalizeProjectRoot(projectRoot);
+function bindingCacheSuffix(pin: OpenProjectBinding | null | undefined): string {
+  return pin?.key ? `::pin:${pin.key}` : "";
+}
+
+function statusCacheKey(
+  projectRoot: string | null | undefined,
+  pin?: OpenProjectBinding | null,
+): string {
+  return `${normalizeProjectRoot(projectRoot)}${bindingCacheSuffix(pin)}`;
 }
 
 function emitAiStatusCacheInvalidated(detail: AiStatusCacheInvalidatedEventDetail): void {
   if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
-  if (typeof CustomEvent === "undefined") return;
-  window.dispatchEvent(new CustomEvent<AiStatusCacheInvalidatedEventDetail>(
-    AI_STATUS_CACHE_INVALIDATED_EVENT,
-    { detail },
-  ));
+  window.dispatchEvent(detailEvent(AI_STATUS_CACHE_INVALIDATED_EVENT, detail));
 }
 
 function emitAiStatusCacheUpdated(projectRoot: string | null | undefined): void {
   if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
-  if (typeof CustomEvent === "undefined") return;
-  window.dispatchEvent(new CustomEvent<AiStatusCacheUpdatedEventDetail>(
+  window.dispatchEvent(detailEvent<AiStatusCacheUpdatedEventDetail>(
     AI_STATUS_CACHE_UPDATED_EVENT,
-    { detail: { projectRoot: projectRoot?.trim() || null } },
+    { projectRoot: projectRoot?.trim() || null },
   ));
 }
 
@@ -62,14 +78,15 @@ function modelsCacheKey(
   provider: AgentChatProvider,
   activateRuntime: boolean,
   cursorSource?: "sdk" | "cli" | "all",
+  pin?: OpenProjectBinding | null,
 ): string {
-  return `${normalizeProjectRoot(projectRoot)}::${provider}::${activateRuntime ? "active" : "passive"}::${cursorSource ?? "all"}`;
+  return `${normalizeProjectRoot(projectRoot)}${bindingCacheSuffix(pin)}::${provider}::${activateRuntime ? "active" : "passive"}::${cursorSource ?? "all"}`;
 }
 
 /**
- * Synchronous peek at the most recent AI status for `projectRoot`, regardless
- * of TTL freshness. Returns `null` if nothing has ever been cached for this
- * project in the current session.
+ * Synchronous peek at the most recent AI status for the `(projectRoot, pin)`
+ * scope, regardless of TTL freshness. Returns `null` if nothing has ever been
+ * cached for that project binding in the current session.
  *
  * Designed for renderer components that want to seed initial state without
  * flashing a "not configured" placeholder while the async re-check is in
@@ -78,8 +95,9 @@ function modelsCacheKey(
  */
 export function peekAiStatusCached(
   projectRoot: string | null | undefined,
+  pin?: OpenProjectBinding | null,
 ): AiSettingsStatus | null {
-  const key = statusCacheKey(projectRoot);
+  const key = statusCacheKey(projectRoot, pin);
   return aiStatusCache.get(key)?.value ?? null;
 }
 
@@ -88,8 +106,9 @@ export async function getAiStatusCached(args: {
   force?: boolean;
   ttlMs?: number;
   refreshOpenCodeInventory?: boolean;
+  pin?: OpenProjectBinding | null;
 }): Promise<AiSettingsStatus> {
-  const key = statusCacheKey(args.projectRoot);
+  const key = statusCacheKey(args.projectRoot, args.pin);
   const ttlMs = args.ttlMs ?? DEFAULT_AI_STATUS_TTL_MS;
   const now = Date.now();
   const existing = aiStatusCache.get(key);
@@ -115,7 +134,7 @@ export async function getAiStatusCached(args: {
   request = window.ade.ai.getStatus({
     force: args.force === true,
     refreshOpenCodeInventory: requiresOpenCodeInventory,
-  }).then((status) => {
+  }, ...(args.pin ? [args.pin] as const : [])).then((status) => {
     const current = aiStatusCache.get(key);
     if (current?.inFlight === request) {
       aiStatusCache.set(key, {
@@ -160,9 +179,10 @@ export async function getAgentChatModelsCached(args: {
   cursorSource?: "sdk" | "cli" | "all";
   force?: boolean;
   ttlMs?: number;
+  pin?: OpenProjectBinding | null;
 }): Promise<AgentChatModelInfo[]> {
   const activateRuntime = args.activateRuntime === true;
-  const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime, args.cursorSource);
+  const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime, args.cursorSource, args.pin);
   const ttlMs = args.ttlMs ?? DEFAULT_MODELS_TTL_MS;
   const now = Date.now();
   const existing = providerModelsCache.get(key);
@@ -179,7 +199,7 @@ export async function getAgentChatModelsCached(args: {
     provider: args.provider,
     ...(activateRuntime ? { activateRuntime: true } : {}),
     ...(args.cursorSource ? { cursorSource: args.cursorSource } : {}),
-  }).then((models) => {
+  }, ...(args.pin ? [args.pin] as const : [])).then((models) => {
     const current = providerModelsCache.get(key);
     if (current?.inFlight === request) {
       providerModelsCache.set(key, {
@@ -219,7 +239,11 @@ export function invalidateAiDiscoveryCache(projectRoot?: string | null): void {
   }
 
   const normalized = normalizeProjectRoot(projectRoot);
-  aiStatusCache.delete(normalized);
+  for (const key of aiStatusCache.keys()) {
+    if (key === normalized || key.startsWith(`${normalized}::pin:`)) {
+      aiStatusCache.delete(key);
+    }
+  }
   for (const key of providerModelsCache.keys()) {
     if (key.startsWith(`${normalized}::`)) {
       providerModelsCache.delete(key);
