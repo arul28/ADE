@@ -15015,10 +15015,10 @@ async function spawnMachineRuntimeDaemon(
   // false here would turn a slow brain start into a hard error for the second
   // of two concurrent commands — and on the build-mismatch path, where the old
   // brain has already been shut down, would leave the machine with none.
-  const { hasRecentRuntimeSpawn, recordRuntimeSpawn } = await import(
-    "./services/runtime/runtimeSpawnRecord"
-  );
-  if (hasRecentRuntimeSpawn(socketPath)) return true;
+  const [{ hasRecentRuntimeSpawn, recordRuntimeSpawn }, { withSocketSpawnLock }] = await Promise.all([
+    import("./services/runtime/runtimeSpawnRecord"),
+    import("./services/runtime/socketSpawnLock"),
+  ]);
 
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
@@ -15048,15 +15048,23 @@ async function spawnMachineRuntimeDaemon(
     delete env.ADE_RUNTIME_BUILD_HASH;
   }
 
-  const child = spawn(serviceCommand.command, args, {
-    detached: true,
-    stdio: "ignore",
-    env,
+  // The record check and the spawn must be ONE atomic claim. Two CLI processes
+  // reaching an absent record concurrently would otherwise both pass the check
+  // and both launch a detached brain — the exact burst the record exists to
+  // prevent, and on named-pipe platforms the loser cannot even use the socket
+  // liveness abort to exit.
+  return await withSocketSpawnLock(socketPath, async () => {
+    if (hasRecentRuntimeSpawn(socketPath)) return true;
+    const child = spawn(serviceCommand.command, args, {
+      detached: true,
+      stdio: "ignore",
+      env,
+    });
+    child.once("error", () => {});
+    if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
+    child.unref();
+    return true;
   });
-  child.once("error", () => {});
-  if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
-  child.unref();
-  return true;
 }
 
 async function connectMachineRuntimeDaemon(

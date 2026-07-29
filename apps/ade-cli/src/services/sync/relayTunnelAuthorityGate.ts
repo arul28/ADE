@@ -69,6 +69,10 @@ export function createRelayTunnelAuthorityGate(
   const hasSyncListener = args.hostListener != null;
   let running = false;
   let releaseTimer: NodeJS.Timeout | null = null;
+  // Bumped by every start/stop. `stop()` and `start()` are async, so a lease
+  // reacquired mid-teardown could otherwise be shut down by the stop that was
+  // already in flight.
+  let lifecycleGeneration = 0;
   // Whether this gate has ever seen authority go away. A gate constructed while
   // the lease is already held (opening a second project) must not re-arm the
   // eviction suppression: that would reset the 4505 re-attempt budget and let
@@ -83,6 +87,7 @@ export function createRelayTunnelAuthorityGate(
 
   const startTunnel = (): void => {
     running = true;
+    const generation = ++lifecycleGeneration;
     // Re-attach on every start. `stop()` drops the listener reference, and it
     // is otherwise attached exactly once per runtime at construction — so a
     // gate-driven stop/start cycle would come back with a live control socket
@@ -95,6 +100,7 @@ export function createRelayTunnelAuthorityGate(
       args.tunnel.clearControlSuppression();
     }
     void args.tunnel.start().catch((error) => {
+      if (generation !== lifecycleGeneration) return;
       log?.warn?.("sync.tunnel_start_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -103,10 +109,20 @@ export function createRelayTunnelAuthorityGate(
 
   const stopTunnel = (): void => {
     running = false;
+    const generation = ++lifecycleGeneration;
     log?.info?.("sync.tunnel_stopped_without_sync_host_lease", {
       reason: "This runtime no longer holds the machine-wide sync host lease.",
     });
-    void args.tunnel.stop().catch(() => {});
+    void args.tunnel.stop().then(
+      () => {
+        // A start that landed while this stop was in flight owns the tunnel
+        // now; finishing the stop would tear down the live one.
+        if (generation !== lifecycleGeneration || !running) return;
+        args.tunnel.attachHostListener(args.hostListener);
+        void args.tunnel.start().catch(() => {});
+      },
+      () => {},
+    );
   };
 
   const apply = (held: boolean): void => {

@@ -196,6 +196,41 @@ describe("createRelayTunnelAuthorityGate", () => {
     );
   });
 
+  // stop() and start() are async, so a lease reacquired while a stop is still
+  // in flight must not be torn down by that stop when it settles.
+  it("keeps the tunnel running when the lease returns mid-stop", async () => {
+    const tunnel = createTunnel();
+    let releaseStop: (() => void) | undefined;
+    tunnel.stop.mockImplementation(() => new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    }));
+    const lease = createLeaseHarness(true);
+
+    const gate = createRelayTunnelAuthorityGate({
+      hostListener: listener,
+      tunnel,
+      holdsLease: lease.holdsLease,
+      subscribe: lease.subscribe,
+    });
+
+    lease.set(false);
+    vi.advanceTimersByTime(SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS + 1);
+    expect(tunnel.stop).toHaveBeenCalledTimes(1);
+
+    // Lease comes back before the stop settles.
+    lease.set(true);
+    expect(gate.isRunning()).toBe(true);
+
+    releaseStop?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gate.isRunning()).toBe(true);
+    // The settling stop re-established the tunnel rather than leaving it down.
+    expect(tunnel.start).toHaveBeenCalled();
+    expect(tunnel.attachHostListener).toHaveBeenLastCalledWith(listener);
+  });
+
   it("does not restart on repeated acquire notifications", () => {
     const tunnel = createTunnel();
     const lease = createLeaseHarness(false);

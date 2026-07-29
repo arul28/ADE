@@ -1624,7 +1624,13 @@ export async function createAdeRuntime(args: {
           ? { userId, expiresAt: refreshed.expiresAt }
           : null;
       },
-      onPublicationStateChanged: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
+      onPublicationStateChanged: () => {
+        // Relay state changes are machine-level; without this nudge an idle
+        // machine emits no sync-status snapshot and the desktop relay banner
+        // never appears (or never clears).
+        syncService?.notifyRouteStateChanged();
+        resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
+      },
       // The analytics service is machine-scoped and shared, so capturing it in
       // this one-per-machine factory closure is safe (unlike the listener
       // accessors above, which is why those moved to attachHostListener).

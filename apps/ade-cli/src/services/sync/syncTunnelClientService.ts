@@ -649,6 +649,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
    * the "which subset does this one clear" divergence cannot creep back in.
    */
   const resetControlEvictionState = (): void => {
+    // Recovery is as invisible as the failure was, so it publishes too. Sits
+    // here rather than in clearControlSuppression so the markStable path — a
+    // war that healed on its own — notifies as well.
+    const wasSuppressed = controlSuppressedReason != null || controlReplacedStopped;
     if (controlReplacedAttempts > 0) controlSuppressionEpisodeId += 1;
     controlReplacedAttempts = 0;
     controlReplacedStopped = false;
@@ -658,6 +662,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       controlReplacedRearmTimer = null;
     }
     if (lastError === RELAY_CONTROL_REPLACED_MESSAGE) lastError = null;
+    if (wasSuppressed && !stopped) requestPublicationStatePublish("route-state-changed");
   };
 
   /**
@@ -668,7 +673,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
    */
   const noteControlReplaced = (): void => {
     controlReplacedAttempts += 1;
+    const wasSuppressed = controlSuppressedReason != null;
     controlSuppressedReason = RELAY_CONTROL_REPLACED_MESSAGE;
+    // Route state just changed in a way the UI must see. Without this the
+    // desktop banner stays hidden on an idle machine until some unrelated sync
+    // activity happens to emit a status snapshot — which is precisely the
+    // silence this whole change exists to end.
+    if (!wasSuppressed) requestPublicationStatePublish("route-state-changed");
     // Keep the raw `Relay control closed (4505): …` in lastControlError as the
     // protocol-level diagnostic; lastError carries the actionable sentence.
     recordFailure(RELAY_CONTROL_REPLACED_MESSAGE);

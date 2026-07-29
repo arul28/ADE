@@ -486,17 +486,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           : next
       ));
     };
-    // Prefer the LOCAL snapshot: relay control belongs to the physical machine
-    // this window runs on, not to whichever runtime a remote-bound project routes to.
-    const seed =
+    // Always read the LOCAL snapshot: relay control belongs to the physical
+    // machine this window runs on, not to whichever runtime a remote-bound
+    // project routes to.
+    const readLocal =
       typeof syncApi.getLocalStatus === "function"
         ? syncApi.getLocalStatus
         : syncApi.getStatus;
-    if (typeof seed === "function") {
-      void seed.call(syncApi).then(apply).catch(() => {});
-    }
+    const refresh = () => {
+      if (typeof readLocal !== "function") return;
+      void readLocal.call(syncApi).then(apply).catch(() => {});
+    };
+    refresh();
+    // The event is an INVALIDATION, not the payload. On a remote-bound project
+    // the preload subscription fans out the remote runtime's snapshot too, and
+    // applying that directly would let a remote outage raise a warning about
+    // this machine — or let remote health mask this machine's own outage.
+    // Same pattern useSyncConnections already uses.
     const dispose = syncApi.onEvent?.((event) => {
-      if (event.type === "sync-status") apply(event.snapshot);
+      if (event.type === "sync-status") refresh();
     });
     return () => {
       cancelled = true;

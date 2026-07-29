@@ -1758,6 +1758,18 @@ export function createSyncService(args: SyncServiceArgs) {
       hostService?.broadcastPrsUpdated();
     },
 
+    /**
+     * Push a fresh status snapshot to subscribers now.
+     *
+     * The relay tunnel is machine-level and changes state (notably 4505
+     * suppression) without any project-scoped activity, so on an idle machine
+     * nothing would otherwise emit a snapshot and the desktop banner would stay
+     * hidden until some unrelated sync event happened along.
+     */
+    notifyRouteStateChanged(): void {
+      void emitStatus();
+    },
+
     getHostService(): SyncHostService | null {
       return hostService;
     },
