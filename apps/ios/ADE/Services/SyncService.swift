@@ -475,6 +475,24 @@ func syncAccountAdoptionFailureIsFatal(_ error: Error) -> Bool {
     || error is AccountPairingConnectionSupersededError
 }
 
+/// Old hosts omit `rotation`; new hosts advertise it only when they staged an
+/// existing credential and can consume the post-hello commit.
+func syncPairingCommitRequired(_ payload: [String: Any]) -> Bool {
+  guard let rotation = payload["rotation"] as? [String: Any] else { return false }
+  return (rotation["pendingCommit"] as? Bool) == true
+}
+
+/// Keep the ordering contract testable without exposing Keychain internals.
+/// Persisting first means a dropped hello_ok cannot leave the host committed to
+/// a secret this phone never saved.
+func syncPersistPairingBeforeHello(
+  persist: () -> Void,
+  hello: () async throws -> Void
+) async rethrows {
+  persist()
+  try await hello()
+}
+
 private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
   let machineName: String
   let routeLabels: [String]
@@ -7186,6 +7204,9 @@ final class SyncService: ObservableObject {
         var pairingPayload: [String: Any] = [
           "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
           "peer": self.currentPeerMetadata(),
+          // New hosts keep both secrets live until this client acknowledges
+          // hello_ok. Old hosts ignore the field and never advertise rotation.
+          "pairingCommitVersion": 1,
         ]
         // Register this device's DPoP public key at pairing time so the host
         // has a key on record from the first paired hello onward.
@@ -7235,6 +7256,7 @@ final class SyncService: ObservableObject {
         savedRelayCandidates: nil
       )
       currentAddress = preferredAddress
+      let pairingCommitRequired = syncPairingCommitRequired(payload)
       if let rotation = payload["rotation"] as? [String: Any] {
         syncConnectLog.info(
           "ADE_SYNC_TRACE re-pair staged by host, previous secret stays valid for \((rotation["expiresInMs"] as? NSNumber)?.intValue ?? 0)ms"
@@ -7247,17 +7269,41 @@ final class SyncService: ObservableObject {
       // strand the phone the other way: a host that never commits keeps
       // accepting the previous secret, and this device reconnects within
       // seconds, far inside that window.
-      keychain.saveToken(secret)
-      keychain.saveToken(secret, hostKey: profileStorageKey(profile))
-      try await hello(
-        host: preferredAddress,
-        port: preferredPort,
-        token: secret,
-        authKind: "paired",
-        pairedDeviceId: pairedDeviceId,
-        expectedHostIdentity: hostIdentity,
-        connectAttemptGeneration: connectAttemptGeneration
+      try await syncPersistPairingBeforeHello(
+        persist: {
+          self.keychain.saveToken(secret)
+          self.keychain.saveToken(secret, hostKey: self.profileStorageKey(profile))
+        },
+        hello: {
+          try await self.hello(
+            host: preferredAddress,
+            port: preferredPort,
+            token: secret,
+            authKind: "paired",
+            pairedDeviceId: pairedDeviceId,
+            expectedHostIdentity: hostIdentity,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+        }
       )
+      if pairingCommitRequired {
+        let commitRequestId = makeRequestId()
+        let commitRaw = try await awaitResponse(requestId: commitRequestId) {
+          self.sendEnvelope(
+            type: "pairing_commit",
+            requestId: commitRequestId,
+            payload: ["deviceId": pairedDeviceId]
+          )
+        }
+        guard let commitPayload = commitRaw as? [String: Any],
+              (commitPayload["ok"] as? Bool) == true else {
+          throw NSError(
+            domain: "ADE",
+            code: 36,
+            userInfo: [NSLocalizedDescriptionKey: "The Mac did not finish saving this pairing. Try again."]
+          )
+        }
+      }
       let finalizedProfile = syncProfileAfterDirectPairing(
         connectedProfile: activeHostProfile ?? profile,
         previousProfile: previousProfile,
@@ -15825,7 +15871,7 @@ final class SyncService: ObservableObject {
         code: 5,
         userInfo: userInfo
       )))
-    case "pairing_result":
+    case "pairing_result", "pairing_commit_result":
       resolve(requestId: requestId, result: .success(payload))
     case "changeset_batch":
       var batchPayload = payload

@@ -575,6 +575,12 @@ type PeerState = {
   authKind: SyncHostAuthKind;
   pairedDeviceId: string | null;
   pairingRecord: SyncPairingRecord | null;
+  /** Commit negotiation belongs to the socket that requested this re-pair. */
+  pairingCommitOfferedForDeviceId: string | null;
+  /** Set only after this socket authenticates with that staged replacement. */
+  pendingPairingCommitDeviceId: string | null;
+  /** Binds a later commit to the exact rotation this socket authenticated. */
+  pendingPairingCommitSecret: string | null;
   connectedAt: string;
   lastSeenAt: string;
   lastAppliedAt: string | null;
@@ -1556,6 +1562,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
     return null;
   }
   const runtimeHostGrant = toOptionalString(value?.runtimeHostGrant);
+  const pairingCommitVersion = value?.pairingCommitVersion === 1 ? 1 : null;
   return {
     code,
     peer: {
@@ -1569,6 +1576,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
     ...(relayAccountToken ? { relayAccountToken } : {}),
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
+    ...(pairingCommitVersion ? { pairingCommitVersion } : {}),
   };
 }
 
@@ -3173,6 +3181,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       authKind: null,
       pairedDeviceId: null,
       pairingRecord: null,
+      pairingCommitOfferedForDeviceId: null,
+      pendingPairingCommitDeviceId: null,
+      pendingPairingCommitSecret: null,
       connectedAt: nowIso(),
       lastSeenAt: nowIso(),
       framesReceived: 0,
@@ -6749,6 +6760,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 }
               : {}),
           }, envelope.requestId);
+          peer.pairingCommitOfferedForDeviceId =
+            result.pendingRotationExpiresAtMs != null && pairing.pairingCommitVersion === 1
+              ? pairing.peer.deviceId
+              : null;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const thrownCode = (error as { code?: string } | null)?.code ?? null;
@@ -6875,6 +6890,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let relayAccountExpiresAtMs: number | null = null;
       let connectionAttemptReserved = false;
       let connectionAttemptRejected = false;
+      let pendingPairingCommitDeviceId: string | null = null;
       let authFailureCode: SyncHelloErrorPayload["code"] = "auth_failed";
       // Every rejection below used to arrive as this one string. The client
       // renders whatever it is handed, so a bare "authentication failed" left
@@ -7023,7 +7039,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // nothing and the client showed a bare "authentication". Name it,
           // and tell the client the one thing that actually resolves it.
           const knownRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
-          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) {
+          const presentedSecretState = pairingStore.verifySecret(
+            pairedAuth.deviceId,
+            pairedAuth.secret,
+          );
+          const deferPendingCommit =
+            presentedSecretState === "pending"
+            && peer.pairingCommitOfferedForDeviceId === pairedAuth.deviceId;
+          if (!pairingStore.authenticate(
+            pairedAuth.deviceId,
+            pairedAuth.secret,
+            { deferPendingCommit },
+          )) {
             // Deliberately identical for both cases. The host knows which it
             // is and logs it below, but telling an UNAUTHENTICATED caller
             // whether a device id exists here turns this into an existence
@@ -7034,7 +7061,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             });
             return authFail(REPAIR_REQUIRED);
           }
-          authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          authenticatedPairingRecord = pairingStore.getPairingRecordForSecret(
+            pairedAuth.deviceId,
+            pairedAuth.secret,
+          );
           if (!authenticatedPairingRecord) {
             return authFail("This machine could not read its pairing record for this device. Pair it again.");
           }
@@ -7078,10 +7108,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // legacy keyless record. Reload it before installing Relay refresh;
           // otherwise this first socket advertises reauthorization while its
           // peer-local record still has no usable key.
-          authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          authenticatedPairingRecord = pairingStore.getPairingRecordForSecret(
+            pairedAuth.deviceId,
+            pairedAuth.secret,
+          );
           if (!authenticatedPairingRecord) {
             return authFail("This machine could not read its pairing record for this device. Pair it again.");
           }
+          pendingPairingCommitDeviceId = deferPendingCommit ? pairedAuth.deviceId : null;
           return false;
         }
         if (hello.auth?.kind === "account") {
@@ -7285,6 +7319,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const recordBackedAuth = auth.kind === "paired" || auth.kind === "account";
       peer.pairedDeviceId = recordBackedAuth ? auth.deviceId : null;
       peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
+      peer.pendingPairingCommitDeviceId = pendingPairingCommitDeviceId;
+      peer.pendingPairingCommitSecret = pendingPairingCommitDeviceId
+        ? (auth.kind === "paired" ? auth.secret : null)
+        : null;
       installRelayAuthorization(
         peer,
         peer.transportOrigin === "relay-bridge"
@@ -7372,6 +7410,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // serialized hello queue has had a chance to admit subscriptions.
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       broadcastBrainStatus();
+      return;
+    }
+
+    if (envelope.type === "pairing_commit") {
+      const payload = safeObjectValue(envelope.payload);
+      const deviceId = toOptionalString(payload?.deviceId);
+      if (!deviceId || peer.pendingPairingCommitDeviceId !== deviceId) {
+        send(peer.ws, "pairing_commit_result", {
+          ok: false,
+          error: {
+            code: "no_pending_rotation",
+            message: "This connection has no staged pairing to commit.",
+          },
+        }, envelope.requestId);
+        return;
+      }
+      const authenticatedSecret = peer.pendingPairingCommitSecret;
+      const committed = authenticatedSecret
+        ? pairingStore.commitPendingRotation(deviceId, authenticatedSecret)
+        : null;
+      if (!committed) {
+        peer.pendingPairingCommitDeviceId = null;
+        peer.pendingPairingCommitSecret = null;
+        send(peer.ws, "pairing_commit_result", {
+          ok: false,
+          error: {
+            code: "pairing_commit_failed",
+            message: "The staged pairing expired. Pair this device again.",
+          },
+        }, envelope.requestId);
+        return;
+      }
+      peer.pairingRecord = committed;
+      peer.pendingPairingCommitDeviceId = null;
+      peer.pendingPairingCommitSecret = null;
+      peer.pairingCommitOfferedForDeviceId = null;
+      send(peer.ws, "pairing_commit_result", { ok: true }, envelope.requestId);
       return;
     }
 

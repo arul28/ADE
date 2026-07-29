@@ -197,6 +197,71 @@ describe("PIN re-pair staged rotation", () => {
     expect(store.authenticate(peer.deviceId, rotated.secret)).toBe(true);
   });
 
+  it("keeps both secrets live until a commit-capable client acknowledges hello_ok", () => {
+    const store = createStore();
+    const original = store.pairPeer(peer, PIN);
+    const rotated = store.pairPeer(
+      { ...peer, deviceName: "Committed iPhone" },
+      PIN,
+      { dpopPublicKey: VALID_DPOP_PUBLIC_KEY },
+    );
+
+    expect(store.authenticate(
+      peer.deviceId,
+      rotated.secret,
+      { deferPendingCommit: true },
+    )).toBe(true);
+    expect(store.getPairingRecordForSecret(peer.deviceId, rotated.secret)).toMatchObject({
+      peerName: "Committed iPhone",
+      dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
+    });
+    expect(store.verifySecret(peer.deviceId, original.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, rotated.secret)).toBe("pending");
+
+    expect(store.commitPendingRotation(peer.deviceId, rotated.secret)).toMatchObject({
+      peerName: "Committed iPhone",
+      dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
+    });
+    expect(store.verifySecret(peer.deviceId, original.secret)).toBeNull();
+    expect(store.verifySecret(peer.deviceId, rotated.secret)).toBe("committed");
+  });
+
+  it("refuses an explicit commit after its staged rotation expires", () => {
+    vi.useFakeTimers();
+    const store = createStore();
+    const original = store.pairPeer(peer, PIN);
+    const rotated = store.pairPeer(peer, PIN);
+
+    expect(store.authenticate(
+      peer.deviceId,
+      rotated.secret,
+      { deferPendingCommit: true },
+    )).toBe(true);
+    vi.advanceTimersByTime(PAIRING_ROTATION_WINDOW_MS + 1_000);
+
+    expect(store.commitPendingRotation(peer.deviceId, rotated.secret)).toBeNull();
+    expect(store.verifySecret(peer.deviceId, original.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, rotated.secret)).toBeNull();
+  });
+
+  it("does not let a stale socket commit a newer staged rotation", () => {
+    const store = createStore();
+    const original = store.pairPeer(peer, PIN);
+    const stale = store.pairPeer(peer, PIN);
+    expect(store.authenticate(
+      peer.deviceId,
+      stale.secret,
+      { deferPendingCommit: true },
+    )).toBe(true);
+
+    const newer = store.pairPeer(peer, PIN);
+
+    expect(store.commitPendingRotation(peer.deviceId, stale.secret)).toBeNull();
+    expect(store.verifySecret(peer.deviceId, original.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, stale.secret)).toBeNull();
+    expect(store.verifySecret(peer.deviceId, newer.secret)).toBe("pending");
+  });
+
   it("reverts to the committed secret once the rotation window lapses", () => {
     vi.useFakeTimers();
     const store = createStore();

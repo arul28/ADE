@@ -994,6 +994,12 @@ export type SyncPairingRequestPayload = {
   code: string;
   peer: SyncPeerMetadata;
   /**
+   * Version 1 clients persist a replacement secret before hello and explicitly
+   * commit it after hello_ok. Older hosts ignore this field; older clients omit
+   * it and retain the host's hello-as-commit compatibility path.
+   */
+  pairingCommitVersion?: 1;
+  /**
    * Short-lived account bearer presented only when this request crosses ADE
    * Relay. The host verifies that it belongs to its current signed-in user;
    * direct LAN and tailnet pairing never require or receive it.
@@ -1018,11 +1024,9 @@ export type SyncPairingResultPayload = {
   secret?: string;
   /**
    * Advisory. Present only when this was a RE-pair that the host staged behind
-   * the device's existing secret: that older secret stays valid until a hello
-   * authenticates with the one returned here (or until the window lapses, at
-   * which point the host keeps the old one). Purely diagnostic — a client that
-   * ignores this field behaves correctly, and hosts predating the staged
-   * rotation never send it.
+   * the device's existing secret. Commit-capable clients keep that older secret
+   * valid until `pairing_commit` follows hello_ok; legacy clients use
+   * hello-as-commit. Hosts predating staged rotation never send this field.
    */
   rotation?: {
     pendingCommit: true;
@@ -1034,6 +1038,18 @@ export type SyncPairingResultPayload = {
       | "pin_not_set"
       | "relay_account_required"
       | "pairing_failed";
+    message: string;
+  };
+};
+
+export type SyncPairingCommitPayload = {
+  deviceId: string;
+};
+
+export type SyncPairingCommitResultPayload = {
+  ok: boolean;
+  error?: {
+    code: "no_pending_rotation" | "pairing_commit_failed";
     message: string;
   };
 };
@@ -1843,6 +1859,8 @@ export type SyncProjectListMyGitHubReposRequestEnvelope = SyncEnvelopeWithPayloa
 export type SyncProjectListMyGitHubReposResultEnvelope = SyncEnvelopeWithPayload<"project_list_my_github_repos_result", SyncProjectListMyGitHubReposResultPayload>;
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
+export type SyncPairingCommitEnvelope = SyncEnvelopeWithPayload<"pairing_commit", SyncPairingCommitPayload>;
+export type SyncPairingCommitResultEnvelope = SyncEnvelopeWithPayload<"pairing_commit_result", SyncPairingCommitResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
 export type SyncInvalidationBatchEnvelope = SyncEnvelopeWithPayload<"invalidation_batch", SyncInvalidationBatchPayload>;
 export type SyncChangesetAckEnvelope = SyncEnvelopeWithPayload<"changeset_ack", SyncChangesetAckPayload>;
@@ -1918,6 +1936,8 @@ export type SyncEnvelope =
   | SyncProjectListMyGitHubReposResultEnvelope
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
+  | SyncPairingCommitEnvelope
+  | SyncPairingCommitResultEnvelope
   | SyncChangesetBatchEnvelope
   | SyncInvalidationBatchEnvelope
   | SyncChangesetAckEnvelope

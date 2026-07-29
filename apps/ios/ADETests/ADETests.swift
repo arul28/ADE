@@ -3643,6 +3643,23 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(syncAccountAdoptionFailureIsFatal(AccountPairingConnectionSupersededError()))
   }
 
+  func testPairingSecretPersistsBeforeHelloAndCommitIsVersionNegotiated() async throws {
+    var order: [String] = []
+    try await syncPersistPairingBeforeHello(
+      persist: { order.append("persist") },
+      hello: { order.append("hello") }
+    )
+
+    XCTAssertEqual(order, ["persist", "hello"])
+    XCTAssertFalse(syncPairingCommitRequired([:]))
+    XCTAssertFalse(syncPairingCommitRequired([
+      "rotation": ["pendingCommit": false]
+    ]))
+    XCTAssertTrue(syncPairingCommitRequired([
+      "rotation": ["pendingCommit": true, "expiresInMs": 600_000]
+    ]))
+  }
+
   func testAutoReconnectPauseMigrationClearsFailureFalloutButKeepsAUserPause() {
     // Written by a build that latched on any failed attempt: no source, so it
     // is swept.

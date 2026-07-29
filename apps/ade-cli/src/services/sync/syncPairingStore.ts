@@ -31,7 +31,8 @@ export type SyncPairingRecord = {
   /**
    * A PIN re-pair that the device has not proven it received. See
    * `writeNewPairingRecord`: the fields above stay live and authoritative until
-   * a hello authenticates with the staged secret.
+   * a legacy hello promotes the staged secret or a commit-capable client
+   * acknowledges hello_ok.
    */
   pendingRotation?: PendingPairingRotation | null;
 };
@@ -65,6 +66,20 @@ type NewPairingRecordOptions = {
    * LAN/tailnet socket. It must remain false for Relay-origin pairings.
    */
   allowDirectPinRuntimeHost?: boolean;
+};
+
+type AuthenticatePairingOptions = {
+  /**
+   * Accept a staged secret for this hello without retiring the committed one.
+   * The authenticated socket must call `commitPendingRotation` after hello_ok.
+   */
+  deferPendingCommit?: boolean;
+};
+
+type NewPairingResult = {
+  deviceId: string;
+  secret: string;
+  pendingRotationExpiresAtMs: number | null;
 };
 
 type PairingTrust =
@@ -190,7 +205,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     options?: NewPairingRecordOptions,
     trust: PairingTrust = { kind: "pin" },
     stageRotation = false,
-  ): { deviceId: string; secret: string; pendingRotationExpiresAtMs: number | null } => {
+  ): NewPairingResult => {
     // Consume every presented grant to preserve its one-time semantics. A
     // direct LAN/tailnet PIN may authorize a desktop runtime host explicitly;
     // Relay PIN pairing never gets that exception. Verified same-owner account
@@ -260,10 +275,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     // gap left the host holding credentials the device never saw, and the only
     // way out was walking back to the Mac for another PIN. So a re-pair now
     // STAGES: the committed secret the device is still holding stays live, and
-    // the replacement is promoted by the first hello that authenticates with
-    // it. Nothing to promote means nothing was lost — the staged record simply
-    // expires. A first-time pair has no committed secret to protect and is
-    // written straight through.
+    // the replacement waits for a legacy hello or a commit-capable client's
+    // post-hello acknowledgement. Nothing to promote means nothing was lost —
+    // the staged record simply expires. A first-time pair has no committed
+    // secret to protect and is written straight through.
     if (stageRotation && existing) {
       const expiresAtMs = Date.now() + PAIRING_ROTATION_WINDOW_MS;
       records[peer.deviceId] = {
@@ -310,7 +325,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       peer: SyncPeerMetadata,
       pin: string,
       options?: NewPairingRecordOptions,
-    ): { deviceId: string; secret: string; pendingRotationExpiresAtMs: number | null } {
+    ): NewPairingResult {
       if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
@@ -324,7 +339,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       peer: SyncPeerMetadata,
       attestation: VerifiedAccountAttestation,
       options?: NewPairingRecordOptions,
-    ): { deviceId: string; secret: string } {
+    ): NewPairingResult {
       if (!isVerifiedAccountAttestation(attestation)) {
         throw pairingError("account_not_verified", "Account attestation was not verified.");
       }
@@ -344,7 +359,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     pairPeerViaLocalTrust(
       peer: SyncPeerMetadata,
       options?: NewPairingRecordOptions,
-    ): { deviceId: string; secret: string } {
+    ): NewPairingResult {
       return writeNewPairingRecord(peer, options, { kind: "local" });
     },
 
@@ -367,12 +382,16 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     },
 
     /**
-     * Authenticates a device and, when it presents a staged re-pair's secret,
-     * promotes that rotation — the device proving possession IS the commit, so
-     * no extra wire message is needed and clients that predate staging get the
-     * protection for free.
+     * Authenticates a device. Legacy clients promote a staged secret when their
+     * hello proves possession. Commit-capable clients defer that promotion until
+     * their post-hello `pairing_commit`, keeping both secrets valid across a
+     * dropped hello_ok.
      */
-    authenticate(deviceId: string, secret: string): boolean {
+    authenticate(
+      deviceId: string,
+      secret: string,
+      options: AuthenticatePairingOptions = {},
+    ): boolean {
       const normalized = deviceId.trim();
       if (!normalized) return false;
       const records = readRecords();
@@ -387,7 +406,17 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       }
       const pending = entry.pendingRotation;
       if (pending && safeHashEquals(pending.record.secretHash, presented)) {
-        records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+        if (options.deferPendingCommit) {
+          records[normalized] = {
+            ...entry,
+            pendingRotation: {
+              ...pending,
+              record: { ...pending.record, lastUsedAt: nowIso() },
+            },
+          };
+        } else {
+          records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+        }
         writeRecords(records);
         return true;
       }
@@ -396,6 +425,49 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         writeRecords(records);
       }
       return false;
+    },
+
+    /**
+     * Returns the record whose secret authenticated this socket. Unlike
+     * `getPairingRecord`, this may expose the staged replacement to the one
+     * connection that proved it, while every unrelated authorization read
+     * continues to see only the committed record.
+     */
+    getPairingRecordForSecret(deviceId: string, secret: string): SyncPairingRecord | null {
+      const normalized = deviceId.trim();
+      if (!normalized) return null;
+      const entry = pruneExpiredRotation(readRecords()[normalized], Date.now()).record;
+      if (!entry) return null;
+      const presented = hashSecret(secret);
+      if (safeHashEquals(entry.secretHash, presented)) return committedView(entry);
+      const pending = entry.pendingRotation;
+      return pending && safeHashEquals(pending.record.secretHash, presented)
+        ? { ...pending.record }
+        : null;
+    },
+
+    /**
+     * Promotes the replacement only after a socket authenticated with it and
+     * received hello_ok. The host owns that session check; the store makes the
+     * mutation atomic and refuses absent/expired rotations.
+     */
+    commitPendingRotation(deviceId: string, authenticatedSecret: string): SyncPairingRecord | null {
+      const normalized = deviceId.trim();
+      if (!normalized) return null;
+      const records = readRecords();
+      const pruned = pruneExpiredRotation(records[normalized], Date.now());
+      const pending = pruned.record?.pendingRotation;
+      const presented = hashSecret(authenticatedSecret);
+      if (!pending || !safeHashEquals(pending.record.secretHash, presented)) {
+        if (pruned.changed && pruned.record) {
+          records[normalized] = pruned.record;
+          writeRecords(records);
+        }
+        return null;
+      }
+      records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+      writeRecords(records);
+      return committedView(records[normalized]!);
     },
 
     /**
