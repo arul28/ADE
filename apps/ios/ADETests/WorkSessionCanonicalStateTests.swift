@@ -42,24 +42,6 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         exitCode: nil
       ),
       Case(
-        name: "waiting-input beats stale",
-        status: "running",
-        runtimeState: "waiting-input",
-        toolType: "codex",
-        pendingInputItemId: nil,
-        lastActivityAt: silentFor(sessionStaleAfterSeconds + 60),
-        exitCode: nil
-      ),
-      Case(
-        name: "waiting-input beats calm idle chat preview",
-        status: "running",
-        runtimeState: "waiting-input",
-        toolType: "codex-chat",
-        pendingInputItemId: nil,
-        lastActivityAt: iso(now),
-        exitCode: nil
-      ),
-      Case(
         name: "pendingInput beats a non-zero exit (deterministic ask still actionable)",
         status: "ended",
         runtimeState: "running",
@@ -86,6 +68,29 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     }
   }
 
+  func testRuntimeWaitingInputAloneDoesNotRaiseAttention() {
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running",
+        runtimeState: "waiting-input",
+        toolType: "codex",
+        lastActivityAt: silentFor(sessionStaleAfterSeconds + 60),
+        now: now
+      ).phase,
+      .stale
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        status: "running",
+        runtimeState: "waiting-input",
+        toolType: "codex-chat",
+        lastActivityAt: iso(now),
+        now: now
+      ).phase,
+      .running
+    )
+  }
+
   func testStoppedDisposedSessionsAreNotFailed() {
     let disposed = workCanonicalSessionState(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
     XCTAssertEqual(disposed.phase, .stopped)
@@ -106,9 +111,9 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let killed = workCanonicalSessionState(status: "ended", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
     XCTAssertEqual(killed.phase, .failed)
 
-    // Clean exit (0) → settled: the process itself declared completion.
+    // Clean exit (0) → ended: process completion is not a lifecycle declaration.
     let clean = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0, now: now)
-    XCTAssertEqual(clean.phase, .settled)
+    XCTAssertEqual(clean.phase, .ended)
     XCTAssertNil(clean.badge)
 
     // A non-zero exit while still running is ignored (failure is an ended-only
@@ -157,9 +162,9 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(state.phase, .stale)
   }
 
-  // MARK: - Preview heuristic (running → needs_you, LAST)
+  // MARK: - Prompt previews are observational only
 
-  func testPreviewHeuristicUpgradesRunningToNeedsYou() {
+  func testPromptPreviewLeavesRunningCalm() {
     let prompts = ["Continue? (y/n)", "Press enter to proceed", "Allow this action? (Y)es / (N)o"]
     for prompt in prompts {
       let state = workCanonicalSessionState(
@@ -170,7 +175,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         lastActivityAt: iso(now),
         now: now
       )
-      XCTAssertEqual(state.phase, .needsYou, "prompt: \(prompt)")
+      XCTAssertEqual(state.phase, .running, "prompt: \(prompt)")
     }
   }
 
@@ -185,7 +190,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       exitCode: 0,
       now: now
     )
-    XCTAssertEqual(state.phase, .settled)
+    XCTAssertEqual(state.phase, .ended)
     XCTAssertNil(state.badge)
   }
 
@@ -244,6 +249,28 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let summary = makeChatSummary(status: "active", awaitingInput: true)
     let badge = workSessionCapsuleBadge(session: session, summary: summary, now: now)
     XCTAssertEqual(badge?.kind, .needsYou)
+  }
+
+  func testRowWrapperMapsChatSummaryPendingItemToNeedsYou() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    let summary = makeChatSummary(
+      status: "active",
+      awaitingInput: false,
+      pendingInputItemId: "provider-question-1"
+    )
+    XCTAssertEqual(
+      workCanonicalSessionState(session: session, summary: summary, now: now).phase,
+      .needsYou
+    )
+  }
+
+  func testRowWrapperMapsHydratedProviderSourceToNeedsYou() {
+    var session = makeSession(status: "running", runtimeState: "waiting-input", toolType: "codex-chat")
+    session.attentionSource = "provider_structured"
+    XCTAssertEqual(
+      workCanonicalSessionState(session: session, summary: nil, now: now).phase,
+      .needsYou
+    )
   }
 
   func testCapsuleBadgeSurfacesFailedExit() {
@@ -527,7 +554,11 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
-  private func makeChatSummary(status: String, awaitingInput: Bool?) -> AgentChatSessionSummary {
+  private func makeChatSummary(
+    status: String,
+    awaitingInput: Bool?,
+    pendingInputItemId: String? = nil
+  ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: "chat-1",
       laneId: "lane-1",
@@ -568,7 +599,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       lastOutputPreview: nil,
       summary: nil,
       awaitingInput: awaitingInput,
-      pendingInputItemId: nil,
+      pendingInputItemId: pendingInputItemId,
       threadId: nil,
       requestedCwd: nil
     )
@@ -661,23 +692,21 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   // MARK: - Settle override tri-state (desktop sessionCanonicalState.ts parity)
   //
-  // Mirrors `describe("settle override tri-state")`. The bug the override
-  // exists to fix: exit 0 auto-settles WITHOUT stamping settled_at, so the row
-  // had no lifecycle action at all and was pinned to the quiet tier forever.
+  // Mirrors `describe("settle override tri-state")`.
 
-  func testNullOverrideLeavesDerivedExitZeroAutoSettleIntact() {
+  func testNullOverrideLeavesCleanExitEnded() {
     XCTAssertEqual(
-      cleanExitState(settleOverride: nil).phase, .settled,
-      "no override: a clean exit still auto-settles"
+      cleanExitState(settleOverride: nil).phase, .ended,
+      "no override: a clean exit remains ended"
     )
-    XCTAssertEqual(cleanExitState(settleOverride: "").phase, .settled, "blank override reads as none")
+    XCTAssertEqual(cleanExitState(settleOverride: "").phase, .ended, "blank override reads as none")
     XCTAssertEqual(
-      cleanExitState(settleOverride: "nonsense").phase, .settled,
+      cleanExitState(settleOverride: "nonsense").phase, .ended,
       "unknown override values must not invent a state"
     )
   }
 
-  func testActiveOverrideBeatsDerivedExitZeroRule() {
+  func testActiveOverrideKeepsCleanExitEnded() {
     let result = cleanExitState(settleOverride: "active")
     XCTAssertEqual(result.phase, .ended)
     XCTAssertNil(result.badge)
@@ -798,9 +827,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   //
   // Regression: an "Until I'm asked" snooze (~100 years) hid a needs-you row
   // forever. Every early-wake trigger was chat-only, and a tracked CLI row's
-  // needs-input state is DERIVED (runtime "waiting-input" / preview heuristic)
-  // with no event to hook — so the FILING rule, not an event, is what has to
-  // bring the row back.
+  // needs-input state is explicit or provider-structured, so the filing rule
+  // must bring a genuinely blocked row back.
 
   /// Snoozed "until I'm asked": the deadline that used to bury a blocked row.
   private var indefiniteSnooze: SessionSnoozeState {
@@ -813,14 +841,14 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   func testSnoozedNeedsYouRowIsNotFiledAsSnoozed() {
     XCTAssertFalse(isSessionFiledAsSnoozed(indefiniteSnooze, phase: .needsYou, now: now))
 
-    // A tracked CLI row blocked at a permission prompt: the phase is derived
-    // from the runtime, and no early-wake event exists for it at all.
-    let blocked = snoozedSession(
+    // A tracked CLI row with an explicit pending item is actionable.
+    var blocked = snoozedSession(
       untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
       atOffset: -60,
       status: "running",
       runtimeState: "waiting-input"
     )
+    blocked.pendingInputItemId = "item-1"
     XCTAssertEqual(
       workCanonicalSessionState(session: blocked, summary: nil, now: now).phase,
       .needsYou
@@ -869,6 +897,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       runtimeState: "waiting-input"
     )
     blocked.id = "s-blocked"
+    blocked.pendingInputItemId = "item-1"
     var calm = snoozedSession(untilOffset: 3_600, atOffset: -60)
     calm.id = "s-calm"
 

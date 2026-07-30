@@ -1568,9 +1568,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const session of chipFiltered) {
       // Snooze is a visibility overlay: it pulls the row OUT of whatever bucket
       // it would otherwise sit in, including Running — but it YIELDS to a raised
-      // hand. A needs_you row is filed normally even while snoozed, which is
-      // what keeps "Until I'm asked" honest for tracked CLI rows (their
-      // needs-input state is derived, so no early-wake event can fire).
+      // hand. A needs_you row is filed normally even while snoozed, which
+      // keeps "Until I'm asked" honest.
       const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
       const filingBucket = sessionFilingBucket(session, nowMs);
       if (filingBucket === "snoozed") {

@@ -84,6 +84,7 @@ export function createPrMergeAutoSettlementService(args: {
             [session.id],
             `PR #${pr.githubPrNumber} merged`,
             polledAt,
+            "pr_merge",
           ));
         }
       }

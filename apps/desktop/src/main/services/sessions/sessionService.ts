@@ -2,6 +2,8 @@ import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
   ClaudeSessionPointer,
+  SessionAttentionSource,
+  SessionSettleSource,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionDetail,
@@ -54,8 +56,10 @@ type SessionRow = {
   statusNote: string | null;
   attentionRequestedAt: string | null;
   attentionMessage: string | null;
+  attentionSource: string | null;
   lastTurnFailedAt: string | null;
   settleOverride: string | null;
+  settleSource: string | null;
   snoozedUntil: string | null;
   snoozedAt: string | null;
   wokeAt: string | null;
@@ -106,8 +110,10 @@ const SESSION_COLUMNS = `
   s.status_note as statusNote,
   s.attention_requested_at as attentionRequestedAt,
   s.attention_message as attentionMessage,
+  s.attention_source as attentionSource,
   s.last_turn_failed_at as lastTurnFailedAt,
   s.settle_override as settleOverride,
+  s.settle_source as settleSource,
   s.snoozed_until as snoozedUntil,
   s.snoozed_at as snoozedAt,
   s.woke_at as wokeAt,
@@ -137,6 +143,18 @@ const CLAUDE_SESSION_COLUMNS = `
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
   return value === "claude" || value === "codex" || value === "cursor" || value === "droid" || value === "opencode";
+}
+
+function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
+  return value === "agent_explicit" || value === "provider_structured" || value === "user"
+    ? value
+    : null;
+}
+
+function normalizeSettleSource(value: unknown): SessionSettleSource | null {
+  return value === "agent_explicit" || value === "user" || value === "pr_merge" || value === "operator"
+    ? value
+    : null;
 }
 
 function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
@@ -530,8 +548,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
       statusNote: normalizeOptionalText(row.statusNote, 200),
       attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
       attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
+      attentionSource: normalizeAttentionSource(row.attentionSource),
       lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
       settleOverride: normalizeSettleOverride(row.settleOverride),
+      settleSource: normalizeSettleSource(row.settleSource),
       snoozedUntil: normalizeIsoTimestamp(row.snoozedUntil),
       snoozedAt: normalizeIsoTimestamp(row.snoozedAt),
       wokeAt: normalizeIsoTimestamp(row.wokeAt),
@@ -646,7 +666,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
   const settleMany = (
     sessionIds: string[],
-    options: { outcome?: string; settledAt?: string } = {},
+    options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
   ): string[] => {
     const ids = normalizeSessionIds(sessionIds);
     if (!ids.length) return [];
@@ -667,14 +687,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
         update terminal_sessions
         set settled_at = coalesce(settled_at, ?),
             settle_override = null,
+            settle_source = ?,
             ${hasOutcome ? "status_note = ?," : ""}
             attention_requested_at = null,
-            attention_message = null
+            attention_message = null,
+            attention_source = null
         where (settled_at is null or settle_override is not null)
           and id in (${updatePlaceholders})
       `,
       [
         normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
+        options.source ?? "user",
         ...(hasOutcome ? [normalizeOptionalText(options.outcome, 200)] : []),
         ...newlySettled,
       ],
@@ -1264,7 +1287,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       db.run(
         opts?.clearSettled
-          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null, settle_override = null where id = ?"
+          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null, settle_override = null, settle_source = null where id = ?"
           : "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
         [preview, new Date().toISOString(), sessionId]
       );
@@ -1287,7 +1310,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run(
         opts?.clearSettled === false
           ? "update terminal_sessions set last_output_at = ? where id = ?"
-          : "update terminal_sessions set last_output_at = ?, settled_at = null, settle_override = null where id = ?",
+          : "update terminal_sessions set last_output_at = ?, settled_at = null, settle_override = null, settle_source = null where id = ?",
         [at, sessionId]
       );
     },
@@ -1347,8 +1370,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       // persisted "woke · errored" marker instead of staying hidden until its
       // (possibly ~100-year "until I'm asked") deadline. Reason "error" keeps
       // the newer-than-`snoozed_at` guard, so snoozing on top of an already
-      // dead session stays snoozed. A clean exit 0 does NOT wake — that is the
-      // settled path.
+      // dead session stays snoozed. A clean exit 0 does not wake because it is
+      // neither a failure nor an explicit request for attention.
       if (isFailedSessionEnd(exitCode, status)) {
         const woke = wakeSnoozedRow(sessionId, "error", { errorAt: endedAt });
         if (woke) emitChanged({ sessionId, reason: "meta-updated" });
@@ -1383,7 +1406,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     settleSession(
       sessionId: string,
-      opts: { outcome?: string | null; settledAt?: string } = {},
+      opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
     ): boolean {
       const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
       const outcome = normalizeOptionalText(opts.outcome, 200);
@@ -1396,12 +1419,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
               update terminal_sessions
               set settled_at = coalesce(settled_at, ?),
                   settle_override = null,
+                  settle_source = ?,
                   status_note = ?,
                   attention_requested_at = null,
-                  attention_message = null
+                  attention_message = null,
+                  attention_source = null
               where id = ?
             `,
-            [settledAt, outcome, id],
+            [settledAt, opts.source ?? "user", outcome, id],
           );
         } else {
           db.run(
@@ -1409,30 +1434,27 @@ export function createSessionService({ db }: { db: AdeDb }) {
               update terminal_sessions
               set settled_at = coalesce(settled_at, ?),
                   settle_override = null,
+                  settle_source = ?,
                   attention_requested_at = null,
-                  attention_message = null
+                  attention_message = null,
+                  attention_source = null
               where id = ?
             `,
-            [settledAt, id],
+            [settledAt, opts.source ?? "user", id],
           );
         }
       });
     },
 
-    /**
-     * Clears a declared settle plus any `'settled'` override. An `'active'`
-     * pin survives, because un-settling must not undo an explicit keep-active
-     * decision. Rows that derive settle from a clean exit need
-     * `setSettleOverride(id, "active")`, not unsettle — there is no
-     * `settled_at` for unsettle to clear on those.
-     */
+    /** Clears a declared settle plus any `'settled'` override. */
     unsettleSession(sessionId: string): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
           `
             update terminal_sessions
             set settled_at = null,
-                settle_override = case when settle_override = 'settled' then null else settle_override end
+                settle_override = case when settle_override = 'settled' then null else settle_override end,
+                settle_source = null
             where id = ?
           `,
           [id],
@@ -1440,16 +1462,28 @@ export function createSessionService({ db }: { db: AdeDb }) {
       });
     },
 
-    /**
-     * Tri-state settle override: `"settled"` behaves like a declared settle,
-     * `"active"` is the explicit keep-active pin that beats the derived exit-0
-     * auto-settle, `null` hands the row back to the derived rules. Real
-     * activity clears it at the same write sites that clear `settled_at`.
-     */
-    setSettleOverride(sessionId: string, override: SessionSettleOverride | null): boolean {
+    /** Explicit settle override, cleared with `settled_at` on real activity. */
+    setSettleOverride(
+      sessionId: string,
+      override: SessionSettleOverride | null,
+      source: SessionSettleSource = "user",
+    ): boolean {
       const normalized = override == null ? null : normalizeSettleOverride(override);
+      const normalizedSource = normalizeSettleSource(source) ?? "user";
       return mutateSessionMeta(sessionId, (id) => {
-        db.run("update terminal_sessions set settle_override = ? where id = ?", [normalized, id]);
+        db.run(
+          `
+            update terminal_sessions
+            set settle_override = ?,
+              settle_source = case
+                  when ? = 'settled' then ?
+                  when settled_at is null then null
+                  else settle_source
+                end
+            where id = ?
+          `,
+          [normalized, normalized, normalizedSource, id],
+        );
       });
     },
 
@@ -1465,8 +1499,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (!present.length) return [];
       const updatePlaceholders = present.map(() => "?").join(", ");
       db.run(
-        `update terminal_sessions set settle_override = ? where id in (${updatePlaceholders})`,
-        [normalized, ...present],
+        `
+          update terminal_sessions
+          set settle_override = ?,
+              settle_source = case
+                when ? = 'settled' then 'user'
+                when settled_at is null then null
+                else settle_source
+              end
+          where id in (${updatePlaceholders})
+        `,
+        [normalized, normalized, ...present],
       );
       for (const id of present) {
         emitChanged({ sessionId: id, reason: "meta-updated" });
@@ -1482,8 +1525,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
       sessionIds: string[],
       outcome: string,
       settledAt: string = new Date().toISOString(),
+      source: SessionSettleSource = "user",
     ): string[] {
-      return settleMany(sessionIds, { outcome, settledAt });
+      return settleMany(sessionIds, { outcome, settledAt, source });
     },
 
     unsettleSessions(sessionIds: string[]): void {
@@ -1494,7 +1538,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `
           update terminal_sessions
           set settled_at = null,
-              settle_override = case when settle_override = 'settled' then null else settle_override end
+              settle_override = case when settle_override = 'settled' then null else settle_override end,
+              settle_source = null
           where id in (${placeholders})
         `,
         ids,
@@ -1638,18 +1683,24 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * it un-settles (including any override) and it wakes a snoozed row early,
      * before its timer.
      */
-    requestAttention(sessionId: string, message: string | null): boolean {
+    requestAttention(
+      sessionId: string,
+      message: string | null,
+      source: SessionAttentionSource = "agent_explicit",
+    ): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
           `
             update terminal_sessions
             set attention_requested_at = ?,
                 attention_message = ?,
+                attention_source = ?,
                 settled_at = null,
-                settle_override = null
+                settle_override = null,
+                settle_source = null
             where id = ?
           `,
-          [new Date().toISOString(), normalizeOptionalText(message, 500), id],
+          [new Date().toISOString(), normalizeOptionalText(message, 500), source, id],
         );
         wakeSnoozedRow(id, "needs_you");
       });
@@ -1658,7 +1709,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     clearAttentionRequest(sessionId: string): boolean {
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
-          "update terminal_sessions set attention_requested_at = null, attention_message = null where id = ?",
+          "update terminal_sessions set attention_requested_at = null, attention_message = null, attention_source = null where id = ?",
           [id],
         );
       });
@@ -1672,7 +1723,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         // settled/failed mutually exclusive at write time, so every surface's
         // precedence order agrees by construction.
         db.run(
-          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null, settle_override = null where id = ?",
+          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null, settle_override = null, settle_source = null where id = ?",
           [failedAt, id],
         );
         // Early wake, but ONLY for an error newer than the snooze. Snoozing on
@@ -1701,8 +1752,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
             set last_turn_failed_at = null,
                 settled_at = null,
                 settle_override = null,
+                settle_source = null,
                 attention_requested_at = null,
-                attention_message = null
+                attention_message = null,
+                attention_source = null
             where id = ?
           `,
           [id],

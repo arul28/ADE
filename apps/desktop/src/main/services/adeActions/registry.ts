@@ -1951,7 +1951,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const blockers = runtime.agentChatService
         ? await runtime.agentChatService.getSettlementBlockers(sessionId)
         : [
-            ...(session.attentionRequestedAt || session.runtimeState === "waiting-input"
+            ...(session.attentionRequestedAt || session.pendingInputItemId
               ? [{ code: "pending_input", message: "Resolve the pending input before settling." } as const]
               : []),
             ...(session.lastTurnFailedAt
@@ -1967,7 +1967,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       if (!await settleTerminalSession({
         sessionId,
-        opts: { outcome },
+        opts: { outcome, source: "agent_explicit" },
         sessionService,
         agentChatService: runtime.agentChatService,
         ptyService: runtime.ptyService,
@@ -1988,6 +1988,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         opts: {
           ...(outcome ? { outcome } : {}),
           ...(dismissPendingInput ? { dismissPendingInput: true } : {}),
+          source: "user",
         },
         sessionService,
         agentChatService: runtime.agentChatService,

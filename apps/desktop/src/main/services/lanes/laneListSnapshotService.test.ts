@@ -19,7 +19,7 @@ function makeHarness(session: Record<string, unknown>) {
 }
 
 describe("laneListSnapshotService", () => {
-  it("buckets idle AI CLI sessions as awaiting input", async () => {
+  it("does not infer awaiting input from an idle AI CLI", async () => {
     const services = makeHarness({
       laneId: "lane-1",
       status: "running",
@@ -39,9 +39,9 @@ describe("laneListSnapshotService", () => {
     );
 
     expect(snapshot?.runtime).toMatchObject({
-      bucket: "awaiting-input",
-      runningCount: 0,
-      awaitingInputCount: 1,
+      bucket: "running",
+      runningCount: 1,
+      awaitingInputCount: 0,
       pendingInputCount: 0,
       endedCount: 0,
       sessionCount: 1,
@@ -86,7 +86,7 @@ describe("laneListSnapshotService", () => {
     });
   });
 
-  it("does not count stale chat awaiting state without a pending item id", async () => {
+  it("counts provider-structured awaiting state without an item id", async () => {
     const services = {
       ...makeHarness({
         id: "chat-1",
@@ -151,9 +151,9 @@ describe("laneListSnapshotService", () => {
     );
 
     expect(snapshot?.runtime).toMatchObject({
-      bucket: "awaiting-input",
-      runningCount: 0,
-      awaitingInputCount: 1,
+      bucket: "running",
+      runningCount: 1,
+      awaitingInputCount: 0,
     });
   });
 

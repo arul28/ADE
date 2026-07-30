@@ -106,6 +106,7 @@ type SessionCanonicalUiInput = {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: TerminalSessionSummary["attentionSource"];
   lastActivityAt?: string | null;
   exitCode?: number | null;
   settledAt?: string | null;
@@ -127,6 +128,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     runtimeState: session.runtimeState,
     toolType: session.toolType,
     pendingInputItemId: session.pendingInputItemId,
+    attentionSource: session.attentionSource,
     lastActivityAt: session.lastActivityAt,
     exitCode: session.exitCode,
     settledAt: session.settledAt,
@@ -142,6 +144,7 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     runtimeState: session.runtimeState ?? null,
     toolType: session.toolType ?? null,
     pendingInputItemId: session.pendingInputItemId ?? null,
+    attentionSource: session.attentionSource ?? null,
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: session.lastActivityAt ?? null,
     exitCode: session.exitCode ?? null,
@@ -150,7 +153,6 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     nowMs: session.nowMs,
-    previewSuggestsNeedsInput: runningSessionNeedsAttention,
     isChatTool: isChatToolType,
   });
 }
@@ -171,32 +173,17 @@ export function sessionInlineStatusLabel(session: SessionCanonicalUiInput): stri
   return null;
 }
 
-export function sessionNeedsUserInput(args: {
-  status: TerminalSessionStatus;
-  lastOutputPreview: string | null;
-  runtimeState?: TerminalRuntimeState;
-  toolType?: TerminalToolType | null;
-  pendingInputItemId?: string | null;
-  attentionRequestedAt?: string | null;
-}): boolean {
-  if (args.runtimeState === "waiting-input") return true;
-  if (args.pendingInputItemId) return true;
-  if (args.attentionRequestedAt) return true;
-  if (isChatToolType(args.toolType)) return false;
-  if (args.status !== "running") return false;
-  return runningSessionNeedsAttention(args.lastOutputPreview);
-}
-
 /** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */
 export function sessionNeedsChatTabHighlight(args: {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: TerminalSessionSummary["attentionSource"];
   attentionRequestedAt?: string | null;
 }): boolean {
   if (!isChatToolType(args.toolType)) return false;
-  if (args.runtimeState === "waiting-input") return true;
   if (args.pendingInputItemId) return true;
+  if (args.attentionSource === "provider_structured") return true;
   if (args.attentionRequestedAt) return true;
   return false;
 }

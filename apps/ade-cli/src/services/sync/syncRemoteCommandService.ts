@@ -1663,13 +1663,26 @@ function projectChatOntoSession(
       runtimeState: "waiting-input" as const,
       chatIdleSinceAt: null,
       pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+      attentionSource: "provider_structured" as const,
     };
   }
   if (chat.status === "active") {
-    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
+    return {
+      ...base,
+      runtimeState: "running" as const,
+      chatIdleSinceAt: null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
   }
   if (chat.status === "idle" || chat.status === "ended") {
-    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    return {
+      ...base,
+      runtimeState: "idle" as const,
+      chatIdleSinceAt: chat.idleSinceAt ?? null,
+      pendingInputItemId: null,
+      attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
+    };
   }
   return base;
 }
@@ -2225,17 +2238,7 @@ async function listRemoteWorkSessions(
     if (!isChatToolType(session.toolType) || session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
-    if (chat.awaitingInput) {
-      return {
-        ...session,
-        runtimeState: "waiting-input" as const,
-        chatIdleSinceAt: null,
-        pendingInputItemId: chat.pendingInputItemId ?? null,
-      };
-    }
-    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-    return session;
+    return projectChatOntoSession(session, chat);
   });
 }
 
@@ -3494,11 +3497,12 @@ async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
 
 function sessionStatusBucket(argsIn: {
   status: string;
-  lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
   settledAt?: string | null;
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
+  pendingInputItemId?: string | null;
+  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
@@ -3507,21 +3511,17 @@ function sessionStatusBucket(argsIn: {
   // turn is not running. The tri-state override is consulted at that same
   // declared-settle tier: "active" is an explicit keep-active pin that
   // suppresses settle, "settled" behaves like a declared settle.
-  if (argsIn.attentionRequestedAt) return "awaiting-input";
+  if (
+    argsIn.attentionRequestedAt
+    || argsIn.pendingInputItemId
+    || argsIn.attentionSource === "provider_structured"
+  ) return "awaiting-input";
   const effectiveSettled = argsIn.settleOverride === "active"
     ? false
     : argsIn.settleOverride === "settled" || Boolean(argsIn.settledAt);
   if (effectiveSettled && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
   if (argsIn.lastTurnFailedAt) return "ended";
   if (argsIn.status === "running") {
-    if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
-    const preview = argsIn.lastOutputPreview ?? "";
-    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
-      return "awaiting-input";
-    }
-    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
-      return "awaiting-input";
-    }
     return "running";
   }
   return "ended";
@@ -3555,10 +3555,10 @@ function summarizeLaneRuntime(
     else if (bucket === "awaiting-input") awaitingInputCount += 1;
     else endedCount += 1;
   }
-  const bucket = runningCount > 0
-    ? "running"
-    : awaitingInputCount > 0
-      ? "awaiting-input"
+  const bucket = awaitingInputCount > 0
+    ? "awaiting-input"
+    : runningCount > 0
+      ? "running"
       : endedCount > 0
         ? "ended"
         : "none";
@@ -3576,8 +3576,10 @@ async function buildLaneListSnapshots(
   lanes: Awaited<ReturnType<ReturnType<typeof createLaneService>["list"]>>,
   options: ListLanesArgs = {},
 ): Promise<LaneListSnapshot[]> {
-  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+  const [rawSessions, chatSessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
     Promise.resolve(args.sessionService.list({ limit: 500 })),
+    args.agentChatService?.listSessions(undefined, { includeAutomation: true }).catch(() => [])
+      ?? Promise.resolve([]),
     options.includeRebaseSuggestions === false
       ? Promise.resolve([])
       : Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? []),
@@ -3589,6 +3591,11 @@ async function buildLaneListSnapshots(
       ? Promise.resolve(null)
       : args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
   ]);
+  const chatBySessionId = new Map(chatSessions.map((chat) => [chat.sessionId, chat] as const));
+  const sessions = rawSessions.map((session) => {
+    const chat = chatBySessionId.get(session.id);
+    return chat ? projectChatOntoSession(session, chat) : session;
+  });
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
   const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
@@ -3646,7 +3653,7 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   ] = await Promise.all([
     args.laneService.getChildren(laneId),
     Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
-    args.agentChatService?.listSessions(laneId, { includeAutomation: true }) ?? Promise.resolve([]),
+    args.agentChatService?.listSessions(laneId, { includeAutomation: true }).catch(() => []) ?? Promise.resolve([]),
     Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: suggestionLanes }) ?? []),
     Promise.resolve(args.autoRebaseService?.listStatuses({ lanes: [lane] }) ?? []),
     Promise.resolve(args.laneService.getStateSnapshot(laneId)),
@@ -3662,7 +3669,13 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
 
   return {
     lane,
-    runtime: summarizeLaneRuntime(laneId, sessions),
+    runtime: summarizeLaneRuntime(
+      laneId,
+      sessions.map((session) => {
+        const chat = chatSessions.find((candidate) => candidate.sessionId === session.id);
+        return chat ? projectChatOntoSession(session, chat) : session;
+      }),
+    ),
     stackChain,
     children,
     stateSnapshot: stateSnapshot as LaneStateSnapshotSummary | null,

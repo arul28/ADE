@@ -79,9 +79,8 @@ export async function wakeSessionNow(
 }
 
 /**
- * Pin a session's lifecycle. `"active"` is the keep-active pin that also
- * unsettles a DERIVED settle (clean exit 0 with no `settledAt`), which is the
- * only lifecycle action such a row has.
+ * Pin a session's lifecycle. `"active"` is the keep-active pin that suppresses
+ * a declared settle until real activity clears the override.
  */
 export async function setSessionSettleOverride(
   session: Pick<TerminalSessionSummary, "id">,
@@ -98,20 +97,14 @@ export async function setSessionSettleOverride(
 }
 
 /**
- * Lift a settle, whichever kind it is. A DECLARED settle (`settledAt` set)
- * clears the column; a DERIVED settle (clean exit 0, no `settledAt`) has no
- * column to clear, so the keep-active pin is its only unsettle. Both the Work
- * row menu and the chat header chip route through here, so the branch can never
- * drift apart — and a failed write is reported instead of swallowed.
+ * Lift a declared settle. Both the Work row menu and the chat header chip route
+ * through here, so the branch can never drift apart — and a failed write is
+ * reported instead of swallowed.
  */
 export async function unsettleSession(
   session: Pick<TerminalSessionSummary, "id" | "settledAt">,
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
-  if (!session.settledAt) {
-    await setSessionSettleOverride(session, "active", pin);
-    return;
-  }
   try {
     await (pin
       ? window.ade.sessions.unsettle(session.id, pin)

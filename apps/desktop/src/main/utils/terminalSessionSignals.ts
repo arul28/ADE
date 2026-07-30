@@ -498,10 +498,6 @@ export function runtimeStateFromOsc133Chunk(
   if (!chunk) return next;
   for (const match of chunk.matchAll(OSC_133_REGEX)) {
     const marker = (match[1] ?? "").toUpperCase();
-    if (marker === "A" || marker === "D") {
-      next = "waiting-input";
-      continue;
-    }
     if (marker === "B" || marker === "C") {
       next = "running";
     }

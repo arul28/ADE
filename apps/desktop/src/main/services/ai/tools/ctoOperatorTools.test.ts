@@ -409,15 +409,18 @@ describe("createCtoOperatorTools", () => {
         sessionId: "chat-1",
         outcome: "CI green",
       })).resolves.toMatchObject({ success: true });
-      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", { outcome: "CI green" });
+      expect(sessionService.settleSession).toHaveBeenCalledWith("chat-1", {
+        outcome: "CI green",
+        source: "operator",
+      });
 
       await (tools.unsettleSession as any).execute({ sessionId: "chat-1" });
       expect(sessionService.unsettleSession).toHaveBeenCalledWith("chat-1");
 
       await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "active" });
-      expect(sessionService.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+      expect(sessionService.setSettleOverride).toHaveBeenCalledWith("chat-1", "active", "operator");
       await (tools.setSessionSettleOverride as any).execute({ sessionId: "chat-1", override: "clear" });
-      expect(sessionService.setSettleOverride).toHaveBeenLastCalledWith("chat-1", null);
+      expect(sessionService.setSettleOverride).toHaveBeenLastCalledWith("chat-1", null, "operator");
     });
 
     it("snoozes by duration or explicit deadline and rejects neither", async () => {

@@ -203,17 +203,13 @@ export type SessionLifecycleSnapshot = Partial<TuiSessionLifecycleFields> & {
 
 /**
  * The deterministic hand-raise a text row can see, mirroring rule 1 of
- * `canonicalSessionState`: a pending input item, a "waiting-input" runtime, an
- * `ade chat ask` escalation, or the runtime's own awaiting-input flag. This is
- * all the TUI needs to decide filing — the preview heuristic only ever upgrades
- * running → needs_you, and a running row is not the case at risk here.
+ * `canonicalSessionState`: a provider-structured pending input item or an
+ * explicit `ade chat ask` escalation. Runtime/prompt inference is deliberately
+ * excluded because it is not an auditable request for the user.
  */
 function snapshotRaisesHand(session: SessionLifecycleSnapshot): boolean {
-  if (session.awaitingInput === true) return true;
-  if (typeof session.runtimeState === "string" && session.runtimeState.trim().toLowerCase() === "waiting-input") {
-    return true;
-  }
   if (typeof session.pendingInputItemId === "string" && session.pendingInputItemId.trim().length > 0) return true;
+  if (session.awaitingInput === true) return true;
   return typeof session.attentionRequestedAt === "string" && session.attentionRequestedAt.trim().length > 0;
 }
 

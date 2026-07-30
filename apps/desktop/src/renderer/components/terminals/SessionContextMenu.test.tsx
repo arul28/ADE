@@ -112,16 +112,13 @@ describe("SessionContextMenu settle safety", () => {
     expect(onSettle).toHaveBeenCalledWith(session, null);
   });
 
-  it("allows stale provider input without a live response handle to be dismissed", () => {
-    const session = makeSession({
+  it("does not infer dismissible input from a provider runtime marker", () => {
+    renderMenu(makeSession({
       toolType: "codex-chat",
       runtimeState: "waiting-input",
       pendingInputItemId: null,
-    });
-    const { onSettle } = renderMenu(session);
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
-    expect(onSettle).toHaveBeenCalledWith(session, null);
+    }));
+    expect(screen.queryByRole("button", { name: "Dismiss & settle" })).toBeNull();
   });
 
   it("passes the owning machine binding directly to deferred lifecycle actions", () => {
@@ -158,7 +155,7 @@ describe("SessionContextMenu settle safety", () => {
     expect(screen.getByRole("button", { name: "Dismiss & settle" })).toBeTruthy();
   });
 
-  it("requires resolving a native CLI prompt that ADE cannot dismiss truthfully", () => {
+  it("does not infer a native CLI prompt from the runtime marker", () => {
     const onSettle = vi.fn();
     renderMenu(makeSession({
       toolType: "codex",
@@ -167,13 +164,12 @@ describe("SessionContextMenu settle safety", () => {
       attentionRequestedAt: null,
     }), vi.fn(), onSettle);
 
-    const button = screen.getByRole("button", { name: "Resolve input to settle" });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Resolve input to settle" })).toBeNull();
     expect(onSettle).not.toHaveBeenCalled();
   });
 });
 
-describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
+describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
   let sessionsApi: Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
@@ -189,34 +185,6 @@ describe("SessionContextMenu snooze and derived-settle lifecycle", () => {
   afterEach(() => {
     delete (window as unknown as { ade?: unknown }).ade;
     vi.clearAllMocks();
-  });
-
-  /** exit-0 PTY with no `settledAt`: canonically settled, but nothing declared it. */
-  function derivedSettledSession(): TerminalSessionSummary {
-    return makeSession({
-      toolType: "shell",
-      status: "completed",
-      runtimeState: "exited",
-      endedAt: "2026-07-10T12:30:00.000Z",
-      exitCode: 0,
-      settledAt: null,
-    });
-  }
-
-  it("gives a DERIVED settled row an Unsettle action backed by the keep-active override", async () => {
-    // Regression: this row previously fell out of every branch of the settle
-    // chain and rendered no lifecycle action at all.
-    renderMenu(derivedSettledSession());
-
-    fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
-
-    await waitFor(() => {
-      expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
-    });
-    // There is no `settledAt` column to clear, so the declared path stays unused.
-    expect(sessionsApi.unsettle).not.toHaveBeenCalled();
-    // "Keep active" would be the identical call here, so it is not duplicated.
-    expect(screen.queryByRole("button", { name: "Keep active" })).toBeNull();
   });
 
   it("keeps the declared-settle path for settledAt rows and adds a keep-active pin", async () => {

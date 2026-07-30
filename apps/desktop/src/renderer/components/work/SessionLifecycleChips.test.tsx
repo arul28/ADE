@@ -88,7 +88,7 @@ describe("SessionLifecycleChips", () => {
     await waitFor(() => expect(sessionsApi.wakeSession).toHaveBeenCalledWith("session-1", "manual"));
   });
 
-  it("shows a settled chip and unsettles a DERIVED settle through the keep-active override", async () => {
+  it("does not render a settled chip for a clean process exit", () => {
     seedSessions([makeSession({
       toolType: "shell",
       status: "completed",
@@ -99,11 +99,9 @@ describe("SessionLifecycleChips", () => {
     })]);
     render(<SessionLifecycleChips sessionId="session-1" />);
 
-    fireEvent.click(screen.getByTestId("chat-session-settled-chip"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle" }));
-
-    await waitFor(() => expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("session-1", "active"));
+    expect(screen.queryByTestId("chat-session-settled-chip")).toBeNull();
     expect(sessionsApi.unsettle).not.toHaveBeenCalled();
+    expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
   });
 
   it("clears a declared settle through the settle column", async () => {

@@ -80,12 +80,11 @@ func isWorkChatToolType(_ toolType: String?) -> Bool {
 
 /// The tri-state settle override persisted on `terminal_sessions.settle_override`.
 /// Mirrors the desktop `SessionSettleOverride`. Consulted at the declared-settle
-/// tier, i.e. BEFORE the derived exit-0 rule.
+/// tier.
 enum SessionSettleOverride: String, Equatable {
   /// Behaves exactly like a declared settle, without a `settled_at` stamp.
   case settled
-  /// Explicit keep-active pin: suppresses settle, derived AND declared, so a
-  /// clean PTY exit is not permanently stuck in the quiet tier.
+  /// Explicit keep-active pin: suppresses a declared settle.
   case active
 
   /// Tolerant parse of the persisted column — unknown/blank values mean "no
@@ -98,17 +97,15 @@ enum SessionSettleOverride: String, Equatable {
 }
 
 /// Canonical precedence (highest first), identical to the desktop module:
-///   1. deterministic needs-input — pending item, "waiting-input" runtime, or
-///      an explicit attention request (never outvoted by anything below),
+///   1. explicit/structured needs-input — pending item or an explicit
+///      attention request (never outvoted by anything below),
 ///   2. settled — explicitly declared, or forced by a "settled" override; an
 ///      "active" override suppresses this tier entirely,
-///   3. ended branch — stopped, failed, chat ready/ended, clean-exit settled
-///      (which an "active" override also vetoes),
+///   3. ended branch — stopped, failed, chat ready/ended,
 ///   4. running-chat turn failure,
 ///   5. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
 ///   6. idle — ready(chat)/idle,
-///   7. preview heuristic's needs_you upgrade, consulted LAST,
-///   8. running.
+///   7. running.
 ///
 /// Snooze is deliberately absent: it is a visibility overlay and never changes
 /// the phase. See `isSessionSnoozed(_:now:)`.
@@ -117,6 +114,7 @@ func workCanonicalSessionState(
   runtimeState: String? = nil,
   toolType: String? = nil,
   pendingInputItemId: String? = nil,
+  providerStructuredInput: Bool = false,
   lastOutputPreview: String? = nil,
   lastActivityAt: String? = nil,
   exitCode: Int? = nil,
@@ -125,7 +123,6 @@ func workCanonicalSessionState(
   attentionRequestedAt: String? = nil,
   lastTurnFailedAt: String? = nil,
   now: Date = Date(),
-  previewSuggestsNeedsInput: (String?) -> Bool = workSessionPreviewSuggestsNeedsInput,
   isChatTool: (String?) -> Bool = isWorkChatToolType
 ) -> CanonicalSessionState {
   let chat = isChatTool(toolType)
@@ -140,7 +137,7 @@ func workCanonicalSessionState(
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
   // An escalated ask outranks BOTH override values.
-  if !pending.isEmpty || runtimeLower == "waiting-input" || !attentionRequested.isEmpty {
+  if !pending.isEmpty || providerStructuredInput || !attentionRequested.isEmpty {
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
 
@@ -149,10 +146,7 @@ func workCanonicalSessionState(
   // the turn streams, then re-settles at idle (settledAt survives background
   // wakes; only user activity clears it).
   //
-  // The tri-state override is consulted HERE, i.e. before the derived exit-0
-  // rule below. "active" is an explicit keep-active pin: it beats derived
-  // settle (a clean exit) and a stale declared settle alike, so the row keeps a
-  // real lifecycle action instead of being stuck in the quiet tier forever.
+  // An "active" override suppresses a stale declared settle.
   let pinnedActive = override == .active
   let atRest = statusLower != "running" || runtimeLower == "idle"
   if !pinnedActive && atRest && (override == .settled || !settled.isEmpty) {
@@ -192,11 +186,7 @@ func workCanonicalSessionState(
       return CanonicalSessionState(phase: .ready, badge: nil)
     }
 
-    // A non-chat clean exit is the process declaring the work done. An "active"
-    // override vetoes it — that is the whole point of the pin.
-    if exitCode == 0 && !pinnedActive {
-      return CanonicalSessionState(phase: .settled, badge: nil)
-    }
+    // Process completion is not a lifecycle declaration.
     return CanonicalSessionState(phase: .ended, badge: nil)
   }
 
@@ -219,67 +209,7 @@ func workCanonicalSessionState(
       : CanonicalSessionState(phase: .idle, badge: nil)
   }
 
-  // 7. Preview heuristic LAST: it may only upgrade running → needs_you.
-  if previewSuggestsNeedsInput(lastOutputPreview) {
-    return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
-  }
-
   return CanonicalSessionState(phase: .running, badge: nil)
-}
-
-// MARK: - Preview-text heuristic (mirrors desktop `runningSessionNeedsAttention`)
-
-private let workNeedsInputPatterns: [NSRegularExpression] = {
-  let specs: [(String, Bool)] = [
-    ("\\b(?:waiting|awaiting)\\b.{0,28}\\b(?:input|confirmation|response|prompt)\\b", true),
-    ("\\b(?:press|hit)\\b.{0,14}\\b(?:enter|return|any key)\\b", true),
-    ("\\b(?:select|choose|pick)\\b.{0,28}\\b(?:option|number|profile|item)\\b", true),
-    ("\\b(?:confirm|continue|proceed|retry)\\b.{0,24}\\?", true),
-    ("\\((?:y/n|yes/no)\\)", true),
-    ("\\[(?:y/n|yes/no)\\]", true),
-    ("\\b(?:enter|type)\\b.{0,24}:\\s*$", true),
-    // Claude Code tool-approval / plan-mode prompts: "(Y)es / (N)o".
-    ("\\([Yy]\\)\\w*\\s*.{0,12}\\([Nn]\\)\\w*", false),
-    ("\\ballow\\b.{0,40}\\?\\s", true),
-  ]
-  return specs.compactMap { pattern, caseInsensitive in
-    let options: NSRegularExpression.Options = caseInsensitive ? [.caseInsensitive] : []
-    return try? NSRegularExpression(pattern: pattern, options: options)
-  }
-}()
-
-// ESC-introduced control sequences (OSC/CSI) plus a two-char escape sweep so a
-// raw terminal-tail preview reads as plain text before pattern matching.
-private let workAnsiEscapeRegexes: [NSRegularExpression] = {
-  // ICU escape syntax (\uHHHH) — not Swift/JS \u{..}. Matches ESC-introduced OSC/CSI sequences plus a two-char escape sweep.
-  [
-    "\\u001B\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)",
-    "\\u001B\\[[0-?]*[ -/]*[@-~]",
-    "\\u001B(?:[@-Z\\\\-_]|[0-9=>])",
-  ].compactMap { try? NSRegularExpression(pattern: $0) }
-}()
-
-/// The preview-text needs-input heuristic, ported from the desktop
-/// `runningSessionNeedsAttention`. Consulted LAST by `workCanonicalSessionState`
-/// and can only upgrade a plain running session to needs_you.
-func workSessionPreviewSuggestsNeedsInput(_ preview: String?) -> Bool {
-  guard var text = preview, !text.isEmpty else { return false }
-  let fullRange = { NSRange(text.startIndex..<text.endIndex, in: text) }
-  for regex in workAnsiEscapeRegexes {
-    text = regex.stringByReplacingMatches(in: text, range: fullRange(), withTemplate: "")
-  }
-  // Drop remaining control characters, collapse whitespace, and cap length to
-  // match the desktop sanitizer's 280-char window.
-  let stripped = String(text.unicodeScalars.filter { scalar in
-    scalar == " " || scalar == "\n" || scalar == "\t" || !(scalar.properties.generalCategory == .control)
-  })
-  let normalized = stripped
-    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-    .trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !normalized.isEmpty else { return false }
-  let capped = normalized.count <= 280 ? normalized : String(normalized.prefix(280))
-  let range = NSRange(capped.startIndex..<capped.endIndex, in: capped)
-  return workNeedsInputPatterns.contains { $0.firstMatch(in: capped, range: range) != nil }
 }
 
 // MARK: - Row capsule wiring
@@ -312,18 +242,12 @@ func workCanonicalSessionState(
   summary: AgentChatSessionSummary?,
   now: Date = Date()
 ) -> CanonicalSessionState {
-  let statusLower = session.status.lowercased()
-  let runtimeLower = session.runtimeState.lowercased()
-  let isAwaiting = summary?.awaitingInput == true
-    || runtimeLower == "waiting-input"
-    || statusLower == "awaiting-input"
-    || statusLower == "awaiting_input"
-  let effectiveRuntime = isAwaiting ? "waiting-input" : session.runtimeState
   return workCanonicalSessionState(
     status: session.status,
-    runtimeState: effectiveRuntime,
+    runtimeState: session.runtimeState,
     toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
+    pendingInputItemId: summary?.pendingInputItemId ?? session.pendingInputItemId,
+    providerStructuredInput: summary?.awaitingInput == true || session.attentionSource == "provider_structured",
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: workSessionStaleActivityTimestamp(session: session, summary: summary),
     exitCode: session.exitCode,
@@ -442,10 +366,8 @@ func isSessionSnoozed(_ session: SessionSnoozeState, now: Date = Date()) -> Bool
 /// Mirrors the desktop `isSessionFiledAsSnoozed`. Snooze is a visibility overlay
 /// and an overlay must YIELD to a session actually blocked on the user, or the
 /// "Until I'm asked" window (~100 years) buries the very row whose hand is
-/// raised. Only chat paths ever wrote an early wake; a tracked CLI row's
-/// needs-input state is derived (runtime "waiting-input" / preview heuristic)
-/// with no event to hook, so deriving the filing rule from the phase is what
-/// covers chat and CLI identically.
+/// raised. Explicit and structured requests project to `needsYou`, so deriving
+/// the filing rule from the phase covers chat and CLI identically.
 ///
 /// Deliberately separate from `isSessionSnoozed`, which stays the raw
 /// two-column read that chips, menus, and wake labels want, and the canonical
@@ -608,9 +530,7 @@ extension TerminalSessionSummary {
 
   /// Whether a list may file this row into its quiet Snoozed tail. A row whose
   /// canonical phase is `needsYou` is filed normally even while snoozed: the
-  /// overlay yields to a raised hand, which is the only thing that makes
-  /// "Until I'm asked" honest for tracked CLI rows (no early-wake event exists
-  /// for them — their needs-input state is derived).
+  /// overlay yields to a raised hand, which keeps "Until I'm asked" honest.
   func isFiledAsSnoozed(summary: AgentChatSessionSummary?, now: Date = Date()) -> Bool {
     guard isSnoozed(now: now) else { return false }
     let phase = workCanonicalSessionState(session: self, summary: summary, now: now).phase

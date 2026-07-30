@@ -1,11 +1,13 @@
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "./sessionService";
+import type { SessionSettleSource } from "../../../shared/types";
 import { isChatToolType } from "./chatSessionProjection";
 
 export type SettleTerminalSessionOptions = {
   outcome?: string;
   dismissPendingInput?: boolean;
+  source?: SessionSettleSource;
 };
 
 export async function settleTerminalSession(args: {
@@ -37,6 +39,9 @@ export async function settleTerminalSession(args: {
 
   return args.sessionService.settleSession(
     args.sessionId,
-    args.opts?.outcome ? { outcome: args.opts.outcome } : {},
+    {
+      ...(args.opts?.outcome ? { outcome: args.opts.outcome } : {}),
+      ...(args.opts?.source ? { source: args.opts.source } : {}),
+    },
   );
 }

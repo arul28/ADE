@@ -196,6 +196,10 @@ export type PushPublisherSources = {
     title: string | null;
     toolType?: string | null;
     chatSessionId?: string | null;
+    status?: string | null;
+    runtimeState?: string | null;
+    settledAt?: string | null;
+    settleOverride?: "settled" | "active" | null;
   } | null;
 };
 
@@ -932,6 +936,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           runs.delete(run.sessionId);
           continue;
         }
+        const atRest = record.status !== "running" || record.runtimeState === "idle";
+        if (
+          atRest
+          && (
+            record.settleOverride === "settled"
+            || (record.settleOverride !== "active" && record.settledAt)
+          )
+        ) {
+          run.phase = "completed";
+          recentRuns.set(run.sessionId, { ...run });
+          runs.delete(run.sessionId);
+          continue;
+        }
         run.title = record.title?.trim() || run.title || null;
         run.agent = providerDisplayName(record.toolType) ?? run.agent ?? "CLI";
         run.metaResolved = true;
@@ -1548,22 +1565,49 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   /**
-   * OSC 133-derived terminal state for tracked CLI sessions. Feeds the Live
-   * Activity only — no alert pushes: a CLI agent returns to its prompt
-   * (waiting-input) after EVERY turn, so alerting on it would ping the user
-   * once per turn. Failure alerts stay with onPtyExit's non-zero-exit path.
+   * Terminal runtime state for tracked CLI sessions. Prompt/marker inference
+   * must never raise attention: only an explicit `ade chat ask` or a
+   * provider-structured pending input may publish `waiting_for_input`.
    */
   const onCliRuntimeSignal = (scopeKey: string, signal: PushCliRuntimeSignal): void => {
     if (disposed || !signal.sessionId) return;
     const existing = runs.get(signal.sessionId);
+    const session = scopes.get(scopeKey)?.resolveCliSession?.(signal.sessionId) ?? null;
+    const atRest = session?.status !== "running" || signal.runtimeState === "idle";
+    if (
+      atRest
+      && (
+        session?.settleOverride === "settled"
+        || (session?.settleOverride !== "active" && Boolean(session?.settledAt))
+      )
+    ) {
+      if (existing) {
+        existing.phase = "completed";
+        existing.itemId = null;
+        markRunUpdated(existing);
+        recentRuns.set(signal.sessionId, { ...existing });
+        runs.delete(signal.sessionId);
+        pendingAlerts = pendingAlerts.filter(
+          (alert) =>
+            alert.dedupeKey !== `alert:${signal.sessionId}:approval`
+            && alert.dedupeKey !== `alert:${signal.sessionId}:question`,
+        );
+        clearAlertDedupe(`alert:${signal.sessionId}:approval`);
+        clearAlertDedupe(`alert:${signal.sessionId}:question`);
+        scheduleFlush(true);
+      }
+      return;
+    }
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
+    // Explicit/provider-structured attention owns this phase until the
+    // lifecycle event that resolves it. PTY heartbeats are observational and
+    // must not erase a real request.
+    if (existing?.phase === "waiting_for_input" || existing?.phase === "waiting_for_approval") return;
     // `idle` = no output for 12s with no OSC prompt marker — we can't prove
     // the CLI is working OR at a prompt, so publish it as `stale` (dimmed,
     // not counted active) instead of overstating it as a live running row.
-    const phase: AgentRunPhase = signal.runtimeState === "waiting-input"
-      ? "waiting_for_input"
-      : signal.runtimeState === "idle"
+    const phase: AgentRunPhase = signal.runtimeState === "waiting-input" || signal.runtimeState === "idle"
         ? "stale"
         : "running";
     // Signals re-fire on a ~10s heartbeat; only a phase change is worth a
@@ -1883,6 +1927,43 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         phase: "waiting",
         interruptionLevel: "time-sensitive",
       });
+      scheduleFlush(true);
+    },
+
+    handleSessionAttentionResolved(scopeKey: string | null, sessionId: string): void {
+      if (disposed || !sessionId) return;
+      const run = runs.get(sessionId);
+      if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
+      if (run.phase !== "waiting_for_input" && run.phase !== "waiting_for_approval") return;
+      run.phase = "running";
+      run.itemId = null;
+      markRunUpdated(run);
+      pendingAlerts = pendingAlerts.filter(
+        (alert) =>
+          alert.dedupeKey !== `alert:${sessionId}:approval`
+          && alert.dedupeKey !== `alert:${sessionId}:question`,
+      );
+      clearAlertDedupe(`alert:${sessionId}:approval`);
+      clearAlertDedupe(`alert:${sessionId}:question`);
+      scheduleFlush(true);
+    },
+
+    handleSessionSettled(scopeKey: string | null, sessionId: string): void {
+      if (disposed || !sessionId) return;
+      const run = runs.get(sessionId);
+      if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
+      run.phase = "completed";
+      run.itemId = null;
+      markRunUpdated(run);
+      recentRuns.set(sessionId, { ...run });
+      runs.delete(sessionId);
+      pendingAlerts = pendingAlerts.filter(
+        (alert) =>
+          alert.dedupeKey !== `alert:${sessionId}:approval`
+          && alert.dedupeKey !== `alert:${sessionId}:question`,
+      );
+      clearAlertDedupe(`alert:${sessionId}:approval`);
+      clearAlertDedupe(`alert:${sessionId}:question`);
       scheduleFlush(true);
     },
 

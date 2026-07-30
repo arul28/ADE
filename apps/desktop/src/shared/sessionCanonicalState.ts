@@ -1,4 +1,5 @@
 import type {
+  SessionAttentionSource,
   SessionSettleOverride,
   SessionWakeReason,
   TerminalRuntimeState,
@@ -64,6 +65,7 @@ export type CanonicalSessionInputs = {
   runtimeState?: TerminalRuntimeState | null;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: SessionAttentionSource | null;
   lastOutputPreview?: string | null;
   /** ISO timestamp of most recent output/activity (drives stale). */
   lastActivityAt?: string | null;
@@ -74,17 +76,10 @@ export type CanonicalSessionInputs = {
    * PTY output), so no timestamp comparison happens here.
    */
   settledAt?: string | null;
-  /**
-   * Tri-state settle override, consulted BEFORE the derived exit-0 rule.
-   * "settled" behaves like a declared settle; "active" is an explicit
-   * keep-active pin that suppresses settle (derived AND declared) so a clean
-   * PTY exit is not permanently pinned to the quiet tier. Cleared on real
-   * activity at the same write sites that clear `settledAt`.
-   */
+  /** Explicit lifecycle override. Cleared with `settledAt` on real activity. */
   settleOverride?: SessionSettleOverride | null;
   /**
-   * Escalated ask from `ade chat ask` (chat sessions; CLI sessions ride
-   * runtimeState "waiting-input" instead). Cleared by the next user message.
+   * Escalated ask from `ade chat ask`. Cleared by the next user message.
    */
   attentionRequestedAt?: string | null;
   /**
@@ -93,12 +88,6 @@ export type CanonicalSessionInputs = {
    */
   lastTurnFailedAt?: string | null;
   nowMs?: number;
-  /**
-   * The preview-text heuristic (regex over terminal output) supplied by the
-   * caller so this module stays dependency-free. It is consulted LAST and can
-   * only upgrade running → needs_you — deterministic signals always win.
-   */
-  previewSuggestsNeedsInput?: (preview: string | null | undefined) => boolean;
   /** Chat sessions idle between turns are "ready", not running/ended. */
   isChatTool?: (toolType: TerminalToolType | null | undefined) => boolean;
 };
@@ -112,21 +101,17 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
 
 /**
  * Canonical precedence (highest first):
- *   1. deterministic needs-input — pendingInputItemId, runtimeState
- *      "waiting-input", or an `ade chat ask` escalation (never outvoted by
- *      anything below),
+ *   1. explicit/structured needs-input — pendingInputItemId or an
+ *      `ade chat ask` escalation (never outvoted by anything below),
  *   2. settled — explicitly declared (agent/user) or forced by a "settled"
  *      override; presence wins over failure because a declared quiet is a
  *      human/agent judgment call. An "active" override suppresses this tier
  *      entirely. Cleared at the write site on any new activity,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death,
- *   5. clean exit — a PTY that exited 0 IS the process declaring it's done;
- *      auto-settles without any declaration, UNLESS an "active" override pins
- *      it (rule 2's override check runs first),
- *   6. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
- *   7. running (incl. the preview heuristic's needs_you upgrade, LAST),
- *   8. resting states — ready (idle chat, quiet "your move"), idle, ended.
+ *   5. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
+ *   6. running,
+ *   7. resting states — ready (idle chat, quiet "your move"), idle, ended.
  */
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
@@ -134,7 +119,11 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
-  if (args.pendingInputItemId || args.runtimeState === "waiting-input" || args.attentionRequestedAt) {
+  if (
+    args.pendingInputItemId
+    || args.attentionRequestedAt
+    || args.attentionSource === "provider_structured"
+  ) {
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
   }
 
@@ -145,10 +134,6 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   // goes idle again (the settledAt column survives background wakes; only user
   // activity clears it).
   //
-  // The tri-state override is consulted here, i.e. BEFORE the derived exit-0
-  // rule below. "active" is an explicit keep-active pin: it beats derived
-  // settle (a clean exit) and a stale declared settle alike, so the row keeps a
-  // real lifecycle action instead of being stuck in the quiet tier forever.
   const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
   if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
@@ -190,12 +175,9 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
       }
       return { phase: "ready", badge: null };
     }
-    // 5. Clean exit auto-settle: exit 0 is the one deterministic "done"
-    // declaration a process can make. Unknown exits stay "ended" (red).
-    // An "active" override vetoes it — that is the whole point of the pin.
-    if (args.exitCode === 0 && !pinnedActive) {
-      return { phase: "settled", badge: null };
-    }
+    // A clean process exit only says the CLI ended. Settlement is a lifecycle
+    // declaration made by the agent/user (or the lane PR-merge policy), never
+    // inferred from process mechanics.
     return { phase: "ended", badge: null };
   }
 
@@ -217,11 +199,6 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return chat ? { phase: "ready", badge: null } : { phase: "idle", badge: null };
   }
 
-  // 7. Preview heuristic LAST: it may only upgrade running → needs_you.
-  if (args.previewSuggestsNeedsInput?.(args.lastOutputPreview)) {
-    return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
-  }
-
   return { phase: "running", badge: null };
 }
 
@@ -233,7 +210,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
  *   awaiting-input — "your move": loud needs_you rows and quiet resting chats
  *                    and idle CLIs share the section; the badge alone is loud,
  *   ended     — died (failed / stopped / unknown exit),
- *   settled   — declared or clean-exit done; quiet tier at the bottom.
+ *   settled   — explicitly declared done; quiet tier at the bottom.
  */
 export type CanonicalStatusBucket = "running" | "awaiting-input" | "ended" | "settled";
 
@@ -289,12 +266,9 @@ export function isSessionSnoozed(session: SessionSnoozeState, nowMs: number = Da
  *
  * Snooze is a visibility overlay, and an overlay must yield to a session that
  * is actually blocked on the user — otherwise the "Until I'm asked" window
- * (~100 years) can bury a row whose hand IS raised. Only three events ever
- * wrote an early wake (`ade chat ask`, chat turn failure, chat turn complete),
- * all chat-only, so a tracked CLI session that hits a permission prompt has no
- * event to fire: for it, `needs_you` is DERIVED (runtimeState "waiting-input"
- * or the output-preview heuristic) and nothing persists a flag. Deriving the
- * filing rule from the phase covers chat and CLI identically with no event.
+ * (~100 years) can bury a row whose hand IS raised. Explicit and structured
+ * requests project to `needs_you`, so deriving the filing rule from the phase
+ * covers chat and CLI identically.
  *
  * Deliberately separate from `isSessionSnoozed`, which stays the raw two-column
  * read: chips, menus, and wake labels legitimately want "is this row snoozed?"

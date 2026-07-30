@@ -103,7 +103,7 @@ describe("SessionCard orchestration identity", () => {
     expect(screen.getByLabelText("Needs you")).toBeTruthy();
   });
 
-  it("uses the same Needs you copy for CLI input prompts", () => {
+  it("does not infer Needs you from a CLI runtime marker", () => {
     render(
       <SessionCard
         session={makeSession({
@@ -119,7 +119,7 @@ describe("SessionCard orchestration identity", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Needs you")).toBeTruthy();
+    expect(screen.queryByLabelText("Needs you")).toBeNull();
   });
 
   it("renders a Claude session tag beside the title", () => {

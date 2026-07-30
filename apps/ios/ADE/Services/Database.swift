@@ -102,8 +102,10 @@ final class DatabaseService {
     let statusNote: String?
     let attentionRequestedAt: String?
     let attentionMessage: String?
+    let attentionSource: String?
     let lastTurnFailedAt: String?
     let settleOverride: String?
+    let settleSource: String?
     let snoozedUntil: String?
     let snoozedAt: String?
     let wokeAt: String?
@@ -1122,9 +1124,9 @@ final class DatabaseService {
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
             last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id,
-            pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, last_turn_failed_at,
-            settle_override, snoozed_until, snoozed_at, woke_at, woke_reason
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, attention_source, last_turn_failed_at,
+            settle_override, settle_source, snoozed_until, snoozed_at, woke_at, woke_reason
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -1156,8 +1158,10 @@ final class DatabaseService {
             status_note = excluded.status_note,
             attention_requested_at = excluded.attention_requested_at,
             attention_message = excluded.attention_message,
+            attention_source = excluded.attention_source,
             last_turn_failed_at = excluded.last_turn_failed_at,
             settle_override = excluded.settle_override,
+            settle_source = excluded.settle_source,
             snoozed_until = excluded.snoozed_until,
             snoozed_at = excluded.snoozed_at,
             woke_at = excluded.woke_at,
@@ -1266,35 +1270,45 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 31)
           }
-          if let lastTurnFailedAt = session.lastTurnFailedAt {
-            try bindText(lastTurnFailedAt, to: statement, index: 32)
+          if let attentionSource = session.attentionSource {
+            try bindText(attentionSource, to: statement, index: 32)
           } else {
             sqlite3_bind_null(statement, 32)
           }
-          if let settleOverride = session.settleOverride {
-            try bindText(settleOverride, to: statement, index: 33)
+          if let lastTurnFailedAt = session.lastTurnFailedAt {
+            try bindText(lastTurnFailedAt, to: statement, index: 33)
           } else {
             sqlite3_bind_null(statement, 33)
           }
-          if let snoozedUntil = session.snoozedUntil {
-            try bindText(snoozedUntil, to: statement, index: 34)
+          if let settleOverride = session.settleOverride {
+            try bindText(settleOverride, to: statement, index: 34)
           } else {
             sqlite3_bind_null(statement, 34)
           }
-          if let snoozedAt = session.snoozedAt {
-            try bindText(snoozedAt, to: statement, index: 35)
+          if let settleSource = session.settleSource {
+            try bindText(settleSource, to: statement, index: 35)
           } else {
             sqlite3_bind_null(statement, 35)
           }
-          if let wokeAt = session.wokeAt {
-            try bindText(wokeAt, to: statement, index: 36)
+          if let snoozedUntil = session.snoozedUntil {
+            try bindText(snoozedUntil, to: statement, index: 36)
           } else {
             sqlite3_bind_null(statement, 36)
           }
-          if let wokeReason = session.wokeReason {
-            try bindText(wokeReason, to: statement, index: 37)
+          if let snoozedAt = session.snoozedAt {
+            try bindText(snoozedAt, to: statement, index: 37)
           } else {
             sqlite3_bind_null(statement, 37)
+          }
+          if let wokeAt = session.wokeAt {
+            try bindText(wokeAt, to: statement, index: 38)
+          } else {
+            sqlite3_bind_null(statement, 38)
+          }
+          if let wokeReason = session.wokeReason {
+            try bindText(wokeReason, to: statement, index: 39)
+          } else {
+            sqlite3_bind_null(statement, 39)
           }
         }
       }
@@ -1887,8 +1901,8 @@ final class DatabaseService {
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
-             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at,
-             s.settle_override, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.attention_source, s.last_turn_failed_at,
+             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1912,8 +1926,8 @@ final class DatabaseService {
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
-             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at,
-             s.settle_override, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.attention_source, s.last_turn_failed_at,
+             s.settle_override, s.settle_source, s.snoozed_until, s.snoozed_at, s.woke_at, s.woke_reason
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where s.id = ? and (l.project_id = ? or l.id is null)
@@ -1959,12 +1973,14 @@ final class DatabaseService {
       statusNote: stringValue(statement, index: 27),
       attentionRequestedAt: stringValue(statement, index: 28),
       attentionMessage: stringValue(statement, index: 29),
-      lastTurnFailedAt: stringValue(statement, index: 30),
-      settleOverride: stringValue(statement, index: 31),
-      snoozedUntil: stringValue(statement, index: 32),
-      snoozedAt: stringValue(statement, index: 33),
-      wokeAt: stringValue(statement, index: 34),
-      wokeReason: stringValue(statement, index: 35)
+      attentionSource: stringValue(statement, index: 30),
+      lastTurnFailedAt: stringValue(statement, index: 31),
+      settleOverride: stringValue(statement, index: 32),
+      settleSource: stringValue(statement, index: 33),
+      snoozedUntil: stringValue(statement, index: 34),
+      snoozedAt: stringValue(statement, index: 35),
+      wokeAt: stringValue(statement, index: 36),
+      wokeReason: stringValue(statement, index: 37)
     )
   }
 
@@ -1988,8 +2004,10 @@ final class DatabaseService {
       statusNote: row.statusNote,
       attentionRequestedAt: row.attentionRequestedAt,
       attentionMessage: row.attentionMessage,
+      attentionSource: row.attentionSource,
       lastTurnFailedAt: row.lastTurnFailedAt,
       settleOverride: row.settleOverride,
+      settleSource: row.settleSource,
       snoozedUntil: row.snoozedUntil,
       snoozedAt: row.snoozedAt,
       wokeAt: row.wokeAt,
@@ -2090,6 +2108,7 @@ final class DatabaseService {
     sessionId: String,
     settledAt: String?? = nil,
     settleOverride: String?? = nil,
+    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -2100,6 +2119,7 @@ final class DatabaseService {
         sessionId: sessionId,
         settledAt: settledAt,
         settleOverride: settleOverride,
+        settleSource: settleSource,
         snoozedUntil: snoozedUntil,
         snoozedAt: snoozedAt,
         wokeAt: wokeAt,
@@ -2112,6 +2132,7 @@ final class DatabaseService {
     sessionId: String,
     settledAt: String?? = nil,
     settleOverride: String?? = nil,
+    settleSource: String?? = nil,
     snoozedUntil: String?? = nil,
     snoozedAt: String?? = nil,
     wokeAt: String?? = nil,
@@ -2132,6 +2153,7 @@ final class DatabaseService {
 
     assign("settled_at", settledAt)
     assign("settle_override", settleOverride)
+    assign("settle_source", settleSource)
     assign("snoozed_until", snoozedUntil)
     assign("snoozed_at", snoozedAt)
     assign("woke_at", wokeAt)
@@ -2919,6 +2941,11 @@ final class DatabaseService {
     )
     try ensureColumn(
       tableName: "terminal_sessions",
+      columnName: "attention_source",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
       columnName: "last_turn_failed_at",
       definition: "text"
     )
@@ -2930,6 +2957,11 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "settle_override",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settle_source",
       definition: "text"
     )
     try ensureColumn(

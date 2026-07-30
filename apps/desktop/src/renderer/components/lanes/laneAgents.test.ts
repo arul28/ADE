@@ -98,11 +98,27 @@ describe("buildLaneAgents", () => {
         chat({ sessionId: "ended", status: "ended" }),
         chat({ sessionId: "working", status: "active" }),
       ],
-      [cli({ id: "waiting", runtimeState: "waiting-input" })],
+      [cli({ id: "waiting", runtimeState: "waiting-input", attentionRequestedAt: "2026-01-01T00:00:01.000Z" })],
     );
     expect(agents.map((a) => a.sessionId)).toEqual(["working", "waiting", "ended"]);
     expect(agents.find((a) => a.sessionId === "ended")?.activity).toBe("ended");
     expect(agents.find((a) => a.sessionId === "waiting")?.activity).toBe("awaiting-input");
+  });
+
+  it("does not infer awaiting input from a CLI runtime marker alone", () => {
+    const agents = buildLaneAgents([], [cli({ id: "waiting", runtimeState: "waiting-input" })]);
+    expect(agents[0]?.activity).toBe("idle");
+    expect(agents[0]?.lastHint).toBeNull();
+  });
+
+  it("marks provider-structured CLI attention as awaiting input", () => {
+    const agents = buildLaneAgents([], [cli({
+      id: "provider-waiting",
+      runtimeState: "waiting-input",
+      attentionSource: "provider_structured",
+    })]);
+    expect(agents[0]?.activity).toBe("awaiting-input");
+    expect(agents[0]?.lastHint).toBe("Awaiting your input");
   });
 
   it("marks awaiting-input chats with a hint", () => {

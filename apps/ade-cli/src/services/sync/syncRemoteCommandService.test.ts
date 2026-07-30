@@ -60,6 +60,7 @@ function createService(options?: {
     ensureResumeTargets: vi.fn().mockResolvedValue(undefined),
     enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     getRuntimeState: vi.fn(() => "idle"),
+    setSessionRuntimeState: vi.fn(),
     listTerminals: vi.fn().mockReturnValue([]),
     activeForChat: vi.fn().mockReturnValue(null),
     ...options?.ptyService,
@@ -1767,8 +1768,9 @@ describe("createSyncRemoteCommandService", () => {
     const enrichedSession = { ...session, runtimeState: "running" };
     const getSessionSummary = vi.fn().mockResolvedValue({
       sessionId: "session-1",
-      status: "idle",
-      idleSinceAt: "2026-01-01T00:00:00.000Z",
+      status: "active",
+      awaitingInput: true,
+      pendingInputItemId: "provider-question-1",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",
@@ -1792,11 +1794,30 @@ describe("createSyncRemoteCommandService", () => {
     expect(getSessionSummary).toHaveBeenCalledWith("session-1");
     expect(result).toEqual(expect.objectContaining({
       id: "session-1",
-      runtimeState: "idle",
-      chatIdleSinceAt: "2026-01-01T00:00:00.000Z",
+      runtimeState: "waiting-input",
+      chatIdleSinceAt: null,
+      pendingInputItemId: "provider-question-1",
+      attentionSource: "provider_structured",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",
+    }));
+
+    getSessionSummary.mockResolvedValueOnce({
+      sessionId: "session-1",
+      status: "active",
+      awaitingInput: false,
+    });
+    ptyService.enrichSessions.mockReturnValueOnce([{
+      ...enrichedSession,
+      pendingInputItemId: "provider-question-1",
+      attentionSource: "provider_structured",
+    }]);
+    const resumed = await service.execute(makePayload("work.getSession", { sessionId: "session-1" }));
+    expect(resumed).toEqual(expect.objectContaining({
+      runtimeState: "running",
+      pendingInputItemId: null,
+      attentionSource: null,
     }));
   });
 
@@ -2215,7 +2236,10 @@ describe("createSyncRemoteCommandService", () => {
 });
 
 describe("session lifecycle remote commands", () => {
-  function createLifecycleService() {
+  function createLifecycleService(options?: {
+    pushPublisherService?: Record<string, unknown>;
+    session?: Record<string, unknown>;
+  }) {
     const sessionService = {
       settleSession: vi.fn(() => true),
       unsettleSession: vi.fn(() => true),
@@ -2227,9 +2251,12 @@ describe("session lifecycle remote commands", () => {
       wakeSessions: vi.fn(() => ["session-1"]),
       setSettleOverride: vi.fn(() => true),
       clearWokeMarker: vi.fn(() => true),
-      get: vi.fn(() => ({ id: "session-1", toolType: "codex-chat" })),
+      get: vi.fn(() => options?.session ?? ({ id: "session-1", toolType: "codex-chat" })),
     };
-    const { service } = createService({ sessionService });
+    const { service } = createService({
+      sessionService,
+      ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
+    });
     return { service, sessionService };
   }
 
@@ -2244,6 +2271,38 @@ describe("session lifecycle remote commands", () => {
     await expect(service.execute(makePayload("session.unsettleSession", { sessionId: "session-1" })))
       .resolves.toEqual({ ok: true, sessionId: "session-1" });
     expect(sessionService.unsettleSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("resolves push attention when dismissing an explicit CLI ask", async () => {
+    const handleSessionSettled = vi.fn();
+    const { service, sessionService } = createLifecycleService({
+      pushPublisherService: { handleSessionSettled },
+      session: {
+        id: "session-1",
+        toolType: "codex",
+        attentionRequestedAt: "2026-07-29T21:00:00.000Z",
+      },
+    });
+
+    await expect(service.execute(makePayload("session.settleSession", {
+      sessionId: "session-1",
+      dismissPendingInput: true,
+    }))).resolves.toEqual({ ok: true, sessionId: "session-1" });
+
+    expect(handleSessionSettled).not.toHaveBeenCalled();
+    expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
+  });
+
+  it("leaves settlement push projection to the central session listener", async () => {
+    const handleSessionSettled = vi.fn();
+    const { service } = createLifecycleService({
+      pushPublisherService: { handleSessionSettled },
+    });
+
+    await service.execute(makePayload("session.settleSession", { sessionId: "session-1" }));
+    await service.execute(makePayload("session.settleSessions", { sessionIds: ["session-1"] }));
+
+    expect(handleSessionSettled).not.toHaveBeenCalled();
   });
 
   it("normalizes the snooze deadline and rejects unparseable ones", async () => {
@@ -2629,24 +2688,70 @@ describe("lanes.unarchive", () => {
 });
 
 describe("lanes.refreshSnapshots conditional responses", () => {
-  function createLaneListService() {
+  function createLaneListService(options?: {
+    sessions?: Record<string, unknown>[];
+    chats?: Record<string, unknown>[];
+  }) {
     const lanes = [{ id: "lane-1", name: "Lane one", status: { dirty: false, ahead: 0, behind: 0 } }];
     const laneService = {
       refreshSnapshots: vi.fn().mockResolvedValue({ refreshedCount: 1, lanes }),
       listStateSnapshots: vi.fn().mockReturnValue([]),
     };
-    const sessionService = { list: vi.fn().mockReturnValue([]) };
+    const sessionService = { list: vi.fn().mockReturnValue(options?.sessions ?? []) };
     const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
     const service = createSyncRemoteCommandService({
       laneService,
       prService: {},
       ptyService: {},
       sessionService,
+      ...(options?.chats
+        ? { agentChatService: { listSessions: vi.fn().mockResolvedValue(options.chats) } }
+        : {}),
       fileService: {},
       logger,
     } as any);
     return { service, laneService };
   }
+
+  it("prioritizes provider-blocked chat attention over another running session", async () => {
+    const { service } = createLaneListService({
+      sessions: [
+        {
+          id: "cli-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "codex",
+          lastOutputPreview: "Working",
+        },
+        {
+          id: "chat-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "idle",
+          toolType: "codex-chat",
+          lastOutputPreview: "Question restored",
+        },
+      ],
+      chats: [{
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        status: "active",
+        awaitingInput: true,
+        pendingInputItemId: null,
+      }],
+    });
+
+    const result = await service.execute(makePayload("lanes.refreshSnapshots")) as {
+      snapshots: Array<{ runtime: { bucket: string; runningCount: number; awaitingInputCount: number } }>;
+    };
+
+    expect(result.snapshots[0]?.runtime).toMatchObject({
+      bucket: "awaiting-input",
+      runningCount: 1,
+      awaitingInputCount: 1,
+    });
+  });
 
   it("returns the full payload with a signature, then notModified for a matching ifNoneMatch", async () => {
     const { service } = createLaneListService();

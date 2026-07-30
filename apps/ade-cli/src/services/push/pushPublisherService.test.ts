@@ -285,7 +285,15 @@ describe("createPushPublisherService flush", () => {
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
-    const cliSessions = new Map<string, { title: string | null; toolType?: string | null; chatSessionId?: string | null }>();
+    const cliSessions = new Map<string, {
+      title: string | null;
+      toolType?: string | null;
+      chatSessionId?: string | null;
+      status?: string | null;
+      runtimeState?: string | null;
+      settledAt?: string | null;
+      settleOverride?: "settled" | "active" | null;
+    }>();
     const detach = publisher.attachSources("scope-1", {
       agentChatService: agentChatService as never,
       projectName: "ADE",
@@ -1843,7 +1851,7 @@ describe("createPushPublisherService flush", () => {
       run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
     ])).toBe(1);
     const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
-    expect(waitingRun.phase).toBe("waiting_for_input");
+    expect(waitingRun.phase).toBe("stale");
 
     publisher.dispose();
   });
@@ -1873,6 +1881,27 @@ describe("createPushPublisherService flush", () => {
       id: "cli-ask-1",
       phase: "waiting_for_input",
       detail: "Which account should the e2e test use?",
+    });
+
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-ask-1",
+      runtimeState: "idle",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    const heartbeatPayload = publish.mock.calls.at(-1)?.[0];
+    expect(heartbeatPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "waiting_for_input",
+    });
+
+    publisher.handleSessionAttentionResolved("scope-1", "cli-ask-1");
+    expect(publisher._debug.getPendingAlerts()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
+    const resolvedPayload = publish.mock.calls.at(-1)?.[0];
+    expect(resolvedPayload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "running",
     });
 
     publisher.dispose();
@@ -1912,6 +1941,45 @@ describe("createPushPublisherService flush", () => {
     );
     expect(askRun).toMatchObject({ phase: "waiting_for_input" });
     expect(askRun.itemId).toBeUndefined();
+
+    publisher.dispose();
+  });
+
+  it("terminates a waiting CLI run when dismiss-and-settle resolves attention", async () => {
+    const { publisher, cliSessions } = makeHarness();
+    await publisher.start();
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "cli-settle-1",
+      kind: "cli",
+      title: "Fix auth race",
+      message: "Choose an account",
+      laneId: "auth-lane",
+    });
+    publisher.handleSessionSettled("scope-1", "cli-settle-1");
+
+    expect(publisher._debug.getPendingAlerts()).toEqual([]);
+    expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
+
+    cliSessions.set("cli-settle-1", {
+      title: "Fix auth race",
+      toolType: "codex",
+      status: "running",
+      settledAt: "2026-07-29T22:00:00.000Z",
+    });
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-settle-1",
+      runtimeState: "running",
+    });
+    expect(publisher._debug.runs.get("cli-settle-1")?.phase).toBe("running");
+
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "auth-lane",
+      sessionId: "cli-settle-1",
+      runtimeState: "idle",
+    });
+    expect(publisher._debug.runs.has("cli-settle-1")).toBe(false);
 
     publisher.dispose();
   });

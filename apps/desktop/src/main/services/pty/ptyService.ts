@@ -1480,6 +1480,7 @@ export function createPtyService({
   broadcastExit,
   onSessionEnded,
   onSessionRuntimeSignal,
+  onSessionUserInput,
   diskPressureMonitor,
   loadPty,
   disposePtyBackend
@@ -1511,6 +1512,7 @@ export function createPtyService({
     lastOutputPreview: string | null;
     at: string;
   }) => void;
+  onSessionUserInput?: (args: { laneId: string; sessionId: string }) => void;
   diskPressureMonitor?: DiskPressureMonitor | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
@@ -4102,6 +4104,7 @@ export function createPtyService({
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       clearTrackedCliTurnStartMarkers(entry.sessionId);
       entry.attentionRequested = false;
+      onSessionUserInput?.({ laneId: entry.laneId, sessionId: entry.sessionId });
       return;
     }
     if (entry.attentionRequested) {

@@ -556,7 +556,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ sessionId, outcome }) => {
       try {
-        const ok = deps.sessionService.settleSession(sessionId, outcome ? { outcome } : {});
+        const ok = deps.sessionService.settleSession(sessionId, {
+          ...(outcome ? { outcome } : {}),
+          source: "operator",
+        });
         if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {
@@ -586,7 +589,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.setSessionSettleOverride = tool({
     description:
       "Pin an ADE session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
-      "pin that beats the derived clean-exit auto-settle, and null hands the row back to the derived rules.",
+      "pin, and `clear` returns the row to the declared lifecycle state.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
       override: z.enum(["settled", "active", "clear"]).describe("'clear' removes the pin."),
@@ -594,7 +597,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ sessionId, override }) => {
       try {
         const normalized = override === "clear" ? null : override;
-        const ok = deps.sessionService.setSettleOverride(sessionId, normalized);
+        const ok = deps.sessionService.setSettleOverride(sessionId, normalized, "operator");
         if (!ok) return { success: false, error: `Session not found: ${sessionId}` };
         return { success: true, sessionId, ...readSessionLifecycle(deps, sessionId) };
       } catch (error) {

@@ -1711,7 +1711,7 @@ describe("runtime session actions", () => {
       dismissPendingInput: true,
     })).resolves.toEqual({ ok: true, sessionId: "chat-1" });
     expect(dismissPendingInputForSettlement).toHaveBeenCalledWith({ sessionId: "chat-1" });
-    expect(settleSession).toHaveBeenCalledWith("chat-1", {});
+    expect(settleSession).toHaveBeenCalledWith("chat-1", { source: "user" });
     expect(dismissPendingInputForSettlement.mock.invocationCallOrder[0]).toBeLessThan(
       settleSession.mock.invocationCallOrder[0]!,
     );

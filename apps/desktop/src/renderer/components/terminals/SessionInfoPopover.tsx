@@ -48,6 +48,15 @@ function normalizeLoose(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+function lifecycleSourceLabel(source: TerminalSessionSummary["attentionSource"] | TerminalSessionSummary["settleSource"]): string {
+  if (source === "agent_explicit") return "Agent declaration";
+  if (source === "provider_structured") return "Provider request";
+  if (source === "pr_merge") return "Lane PR merge";
+  if (source === "operator") return "ADE operator";
+  if (source === "user") return "User action";
+  return "—";
+}
+
 function sectionShell({ title, icon: Icon, children }: { title: string; icon: typeof Info; children: ReactNode }) {
   return (
     <div className="rounded-[12px] border border-white/[0.06] bg-white/[0.02] p-3 backdrop-blur-sm">
@@ -210,6 +219,14 @@ export function SessionInfoPopover({
                   ["Process", runtimeStateLabel(session.runtimeState)],
                   session.toolType ? ["Tool", formatToolTypeLabel(session.toolType)] : null,
                   session.exitCode != null ? ["Exit code", String(session.exitCode)] : null,
+                  session.attentionRequestedAt
+                    || session.pendingInputItemId
+                    || session.attentionSource === "provider_structured"
+                    ? ["Attention source", lifecycleSourceLabel(session.attentionSource)]
+                    : null,
+                  session.settledAt || session.settleOverride === "settled"
+                    ? ["Settlement source", lifecycleSourceLabel(session.settleSource)]
+                    : null,
                   !session.tracked ? ["Worktree", "Not linked to this lane’s worktree"] : null,
                   isChat && session.archivedAt ? ["Archived", formatWhen(session.archivedAt)] : null,
                   ["Started", formatWhen(session.startedAt)],
