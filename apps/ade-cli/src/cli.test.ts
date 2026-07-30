@@ -3060,16 +3060,6 @@ describe("ADE CLI", () => {
         action: "setSessionStatusNote",
         args: { note: "running e2e shard 2/4" },
       },
-      {
-        command: ["settle", "--outcome", "opened PR #841, CI green"],
-        action: "settleSelfSession",
-        args: { outcome: "opened PR #841, CI green" },
-      },
-      {
-        command: ["unsettle"],
-        action: "unsettleSelfSession",
-        args: {},
-      },
     ];
 
     for (const testCase of cases) {
@@ -3083,41 +3073,6 @@ describe("ADE CLI", () => {
         },
       });
     }
-    const settlePlan = expectExecutePlan(buildCliPlan([
-      "chat",
-      "settle",
-      "--outcome",
-      "done",
-    ]));
-    expect(settlePlan.formatter).toBe("session-settlement");
-    expect(settlePlan.exitCodeFromResult?.({ ok: false, blockers: [] })).toBe(1);
-    expect(settlePlan.exitCodeFromResult?.({ ok: true })).toBe(0);
-    expect(() => buildCliPlan(["chat", "settle"]))
-      .toThrow(/outcome is required/i);
-    expect(() => buildCliPlan(["chat", "settle", "--outcome", ""]))
-      .toThrow(/outcome is required/i);
-
-    const blockedText = formatOutput({
-      ok: false,
-      sessionId: "session-x",
-      blockers: [
-        {
-          code: "pending_input",
-          message: "Resolve the pending input before settling.",
-        },
-        {
-          code: "scheduled_work_active",
-          message: "Cancel or complete scheduled work before settling.",
-        },
-      ],
-    }, { text: true } as any, settlePlan.formatter);
-    expect(blockedText).toContain("Session session-x was not settled.");
-    expect(blockedText).toContain(
-      "- pending_input: Resolve the pending input before settling.",
-    );
-    expect(blockedText).toContain(
-      "- scheduled_work_active: Cancel or complete scheduled work before settling.",
-    );
 
     const clearNote = expectExecutePlan(buildCliPlan(["chat", "note", ""]));
     expect(clearNote.steps[0]?.params).toMatchObject({
@@ -3171,10 +3126,9 @@ describe("ADE CLI", () => {
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
       expect(help.text).toContain("ade chat ask");
-      expect(help.text).toContain("ade chat settle");
-      expect(help.text).toContain("ade chat unsettle");
-      expect(help.text).toContain("runtime lifecycle checks");
-      expect(help.text).toContain("prints exact blockers");
+      // Settling is user-/PR-merge-driven only; the help must say so rather
+      // than advertise a command that no longer exists.
+      expect(help.text).toContain("'chat settle' / 'chat unsettle' were removed");
       expect(help.text).toContain("--session <id>");
     }
   });
@@ -3182,8 +3136,6 @@ describe("ADE CLI", () => {
   it.each([
     ["ask", ["q"], "requestSessionAttention", { message: "q" }],
     ["note", ["working"], "setSessionStatusNote", { note: "working" }],
-    ["settle", ["--outcome", "done"], "settleSelfSession", { outcome: "done" }],
-    ["unsettle", [], "unsettleSelfSession", {}],
   ])(
     "passes --session through for chat %s",
     (subcommand, commandArgs, action, expectedArgs) => {
@@ -3319,15 +3271,6 @@ describe("ADE CLI", () => {
         sessionId: "session-x",
         reason: "needs_you",
       }],
-      [["settle", "session-x", "--outcome", "done"], "settleSelfSession", {
-        sessionId: "session-x",
-        outcome: "done",
-      }],
-      [["settle", "session-x", "--keep-active"], "setSettleOverride", {
-        sessionId: "session-x",
-        override: "active",
-      }],
-      [["unsettle", "session-x"], "unsettleSelfSession", { sessionId: "session-x" }],
       [["clear-woke", "session-x"], "clearWokeMarker", { sessionId: "session-x" }],
       [["show", "session-x"], "get", { sessionId: "session-x" }],
     ])("plans ade session %s", (commandArgs, action, expectedArgs) => {
@@ -3351,9 +3294,9 @@ describe("ADE CLI", () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;
       process.env.ADE_CHAT_SESSION_ID = "session-env";
       try {
-        const envPlan = expectExecutePlan(buildCliPlan(["session", "unsettle"]));
+        const envPlan = expectExecutePlan(buildCliPlan(["session", "clear-woke"]));
         expect(envPlan.steps[0]?.params).toMatchObject({
-          arguments: { action: "unsettleSelfSession", args: { sessionId: "session-env" } },
+          arguments: { action: "clearWokeMarker", args: { sessionId: "session-env" } },
         });
       } finally {
         if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
@@ -3382,11 +3325,14 @@ describe("ADE CLI", () => {
         expect(help.text).toContain("ade session snooze <id> --for 1h");
         expect(help.text).toContain("ade session wake <id>");
         expect(help.text).toContain("--until-asked");
-        expect(help.text).toContain("--keep-active");
+        // Settle is gone from this family and the help says why.
+        expect(help.text).not.toContain("ade session settle");
+        expect(help.text).toContain("'settle' and 'unsettle' were removed");
       }
       const top = buildCliPlan([]);
       if (top.kind === "help") {
-        expect(top.text).toContain("ade session snooze | wake | settle | unsettle");
+        expect(top.text).toContain("ade session show | snooze | wake | clear-woke");
+        expect(top.text).not.toContain("ade session snooze | wake | settle | unsettle");
       }
     });
   });

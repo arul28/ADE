@@ -6875,7 +6875,7 @@ describe("per-chat runtime routing", () => {
       "snoozeSession",
       "wakeSession",
       "settleSession",
-      "unsettleSelfSession",
+      "unsettleSession",
       "setSettleOverride",
       "clearWokeMarker",
       "deleteSession",

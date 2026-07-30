@@ -30,6 +30,7 @@ import type {
   ProjectIcon,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
+  TerminalSessionSummary,
   WorktreeParentRef,
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
@@ -43,9 +44,21 @@ import {
   relativeFilePathForResult,
   useUniversalSearch,
 } from "./commandPaletteSearch";
+import {
+  THREAD_RESULT_LIMIT,
+  ThreadOverflowNote,
+  ThreadResultRow,
+  rankThreads,
+  useThreadIndex,
+  type ThreadIndexEntry,
+} from "./commandPaletteThreads";
 import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
-import { useAppStore } from "../../state/appStore";
+import {
+  selectActiveProjectStateKey,
+  useAppStore,
+  useRootAppStore,
+} from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
@@ -241,6 +254,9 @@ function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
   }
 }
 
+/** Stable empty array so the "no sessions yet" case never re-memoizes the index. */
+const EMPTY_SESSIONS: TerminalSessionSummary[] = [];
+
 function pathLabel(input: string | null | undefined): string {
   if (!input) return "";
   const segments = input.split(/[\\/]/).filter(Boolean);
@@ -265,6 +281,30 @@ export function CommandPalette({
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const hasActiveProject = Boolean(project?.rootPath);
+
+  // Thread results are read straight out of the Work tab's per-project session
+  // cache — no new IPC. The Work tab is keep-alive mounted and mirrors its
+  // fetched list into `sessionsCacheByProject`, so by the time the palette can
+  // be opened this is the same list the sidebar is rendering. Selecting the
+  // array (not the whole map) keeps the palette from re-rendering when an
+  // unrelated project's cache is refreshed.
+  const threadSessions =
+    useAppStore((s) => {
+      const key = selectActiveProjectStateKey(s);
+      return key ? (s.sessionsCacheByProject[key] ?? null) : null;
+    }) ?? EMPTY_SESSIONS;
+  const activeSessionId = useAppStore((s) => {
+    const key = selectActiveProjectStateKey(s);
+    return key ? (s.workViewByProject[key]?.activeItemId ?? null) : null;
+  });
+  // The Work sidebar is a union across every connected machine, always. The
+  // palette is that sidebar's search, so it reads the same union — otherwise it
+  // would report "no matches" for a thread visible one pane over. Read straight
+  // off the root store rather than through `useCrossMachineLaneUnion`: that hook
+  // also *starts* the cross-machine sync and fires a `project.listRecent` on
+  // mount, and the palette is mounted for the whole session. Whatever the Work
+  // tab's sync has populated is what we search.
+  const foreignMachines = useRootAppStore((s) => s.crossMachineLanesByMachineId);
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
   const [actionOutcome, setActionOutcome] =
@@ -792,16 +832,42 @@ export function CommandPalette({
   const canEntitySearch =
     open && mode === "default" && hasActiveProject && trimmedQuery.length > 0;
 
+  // Built once per session/lane list, not per keystroke — the palette can be
+  // opened against hundreds of sessions and the lowercasing is the expensive
+  // half of the match.
+  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines);
+  const threadMatches = useMemo(
+    () =>
+      open && mode === "default" ? rankThreads(threadIndex, trimmedQuery) : [],
+    [mode, open, threadIndex, trimmedQuery],
+  );
+  const visibleThreads = useMemo(
+    () => threadMatches.slice(0, THREAD_RESULT_LIMIT),
+    [threadMatches],
+  );
+  const visibleThreadIds = useMemo(
+    () => new Set(visibleThreads.map((match) => match.entry.session.id)),
+    [visibleThreads],
+  );
+
   const {
     loading: searchLoading,
     sections: entitySections,
     flatEntities,
     expandedKinds,
     toggleExpandKind,
-  } = useUniversalSearch(trimmedQuery, canEntitySearch);
+  } = useUniversalSearch(trimmedQuery, canEntitySearch, {
+    excludeSessionIds: visibleThreadIds,
+  });
 
+  // Flat keyboard index layout: threads, then commands, then entity results.
+  // Threads lead because the palette is the Work sidebar's search now — with an
+  // empty query the thing you most likely came here for is a chat you were just
+  // in, not a command. When a query matches no thread the section disappears
+  // and commands lead on their own, so the first row is always a live target.
+  const threadCount = visibleThreads.length;
   const commandCount = filtered.length;
-  const totalFlat = commandCount + flatEntities.length;
+  const totalFlat = threadCount + commandCount + flatEntities.length;
 
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
@@ -1106,6 +1172,52 @@ export function CommandPalette({
     [onOpenChange],
   );
 
+  /**
+   * Open a thread. Same two-step as the `chat`/`terminal` search results below:
+   * the Work tab is keep-alive mounted, so the event focuses the session and
+   * the navigate is only what switches the visible tab.
+   */
+  const activateThread = useCallback(
+    (entry: ThreadIndexEntry) => {
+      const { session, binding } = entry;
+      // A foreign thread lives on another machine's project, so focusing it by
+      // id alone would land on whatever session happens to share that id here —
+      // or nothing. The binding rides along in the event detail and the Work
+      // tab switches projects before focusing (see the `ade:work:select-session`
+      // listener in TerminalsPage). Local threads pass `undefined` and take the
+      // original synchronous path.
+      window.dispatchEvent(
+        new CustomEvent("ade:work:select-session", {
+          detail: {
+            sessionId: session.id,
+            laneId: session.laneId || undefined,
+            binding: binding ?? undefined,
+          },
+        }),
+      );
+      // Switch the visible tab either way — the Work tab is where a thread is
+      // read, and the palette can be opened from anywhere. What differs is the
+      // query string: a foreign thread's `sessionId`/`laneId` name rows in the
+      // OTHER project, and `useWorkSessions`' URL-param effect resolves those
+      // against the still-current project one tick from now, finds nothing, and
+      // strips them — so the deeplink would be consumed and discarded before the
+      // switch ever lands. The event's binding is the durable route; the
+      // listener focuses once `switchProjectToPath`/`switchRemoteProject`
+      // resolves.
+      navigate(
+        binding
+          ? "/work"
+          : `/work?sessionId=${encodeURIComponent(session.id)}${
+              session.laneId
+                ? `&laneId=${encodeURIComponent(session.laneId)}`
+                : ""
+            }`,
+      );
+      onOpenChange(false);
+    },
+    [navigate, onOpenChange],
+  );
+
   const activateResult = useCallback(
     (item: SearchResultItem) => {
       switch (item.kind) {
@@ -1233,23 +1345,31 @@ export function CommandPalette({
 
   const activateFlat = useCallback(
     (index: number) => {
-      if (index < commandCount) {
-        const command = filtered[index];
+      if (index < threadCount) {
+        const match = visibleThreads[index];
+        if (match) activateThread(match.entry);
+        return;
+      }
+      if (index < threadCount + commandCount) {
+        const command = filtered[index - threadCount];
         if (command) runCommand(command);
         return;
       }
-      const entity = flatEntities[index - commandCount];
+      const entity = flatEntities[index - threadCount - commandCount];
       if (!entity) return;
       if (entity.type === "result") activateResult(entity.item);
       else toggleExpandKind(entity.kind);
     },
     [
       activateResult,
+      activateThread,
       commandCount,
       filtered,
       flatEntities,
       runCommand,
+      threadCount,
       toggleExpandKind,
+      visibleThreads,
     ],
   );
 
@@ -1488,7 +1608,7 @@ export function CommandPalette({
     ? activeRemoteTargetId
       ? `Browse ${browseMachineName} by path…`
       : "Paste a path, type to filter, or drop a folder anywhere…"
-    : "Search commands...";
+    : "Search commands, projects, and threads…";
 
   const handleProjectActionSuccess = useCallback(
     (
@@ -2135,142 +2255,186 @@ export function CommandPalette({
                     </div>
                   </>
                 ) : (
-                  <div className="flex-1 overflow-auto">
-                    {totalFlat === 0 ? (
-                      trimmedQuery.length > 0 && searchLoading ? (
-                        <div className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                          <CircleNotch
-                            size={14}
-                            weight="bold"
-                            className="animate-spin"
-                          />
-                          Searching…
-                        </div>
-                      ) : trimmedQuery.length > 0 ? (
-                        <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                          No matches — try kind:chat, lane:&lt;name&gt;, since:7d,
-                          or &quot;exact phrase&quot;
-                        </div>
+                  <>
+                    <div className="flex-1 overflow-auto">
+                      {totalFlat === 0 ? (
+                        trimmedQuery.length > 0 && searchLoading ? (
+                          <div className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                            <CircleNotch
+                              size={14}
+                              weight="bold"
+                              className="animate-spin"
+                            />
+                            Searching…
+                          </div>
+                        ) : trimmedQuery.length > 0 ? (
+                          <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                            No matches — try kind:chat, lane:&lt;name&gt;, since:7d,
+                            or &quot;exact phrase&quot;
+                          </div>
+                        ) : (
+                          <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                            No matches.
+                          </div>
+                        )
                       ) : (
-                        <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                          No matches.
-                        </div>
-                      )
-                    ) : (
-                      <ul ref={listRef} className="py-2">
-                        {(() => {
-                          let flatIndex = 0;
-                          const commandNodes = grouped.map((group) => (
-                            <li key={group.label}>
-                              <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                {group.label}
-                              </div>
-                              <ul>
-                                {group.items.map((command) => {
-                                  const index = flatIndex++;
-                                  const isSelected = index === selectedIdx;
-                                  return (
-                                    <li key={command.id}>
-                                      <button
-                                        type="button"
-                                        data-cmd-item
-                                        className={cn(
-                                          "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                                          isSelected
-                                            ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-                                            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
-                                        )}
-                                        onMouseEnter={() =>
-                                          setSelectedIdx(index)
-                                        }
-                                        onClick={() => runCommand(command)}
-                                      >
-                                        <div className="min-w-0">
-                                          <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                            {command.title}
-                                          </div>
-                                          {command.hint ? (
-                                            <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-                                              {command.hint}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                          {command.shortcut ? (
-                                            <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
-                                              {command.shortcut}
-                                            </span>
-                                          ) : null}
-                                          <ArrowRight
-                                            size={14}
-                                            weight="regular"
-                                            className="text-[var(--color-muted-fg)]"
-                                          />
-                                        </div>
-                                      </button>
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            </li>
-                          ));
-
-                          const entityNodes = entitySections.map((section) => {
-                            const expanded = expandedKinds.has(section.kind);
-                            const visible = expanded
-                              ? section.rows
-                              : section.rows.slice(0, ENTITY_SECTION_PREVIEW);
-                            const showMore =
-                              !expanded &&
-                              section.rows.length > ENTITY_SECTION_PREVIEW;
-                            const hiddenCount =
-                              section.total - ENTITY_SECTION_PREVIEW;
-                            return (
-                              <li key={`entity:${section.kind}`}>
+                        <ul ref={listRef} className="py-2">
+                          {(() => {
+                            let flatIndex = 0;
+                            const threadNodes =
+                              visibleThreads.length > 0
+                                ? [
+                                    <li key="threads">
+                                      <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                        Recent threads
+                                      </div>
+                                      <ul>
+                                        {visibleThreads.map((match) => {
+                                          const index = flatIndex++;
+                                          return (
+                                            <ThreadResultRow
+                                              key={match.entry.session.id}
+                                              entry={match.entry}
+                                              query={trimmedQuery}
+                                              index={index}
+                                              isSelected={index === selectedIdx}
+                                              isCurrent={
+                                                match.entry.session.id ===
+                                                activeSessionId
+                                              }
+                                              projectName={
+                                                project?.displayName ?? null
+                                              }
+                                              onHover={setSelectedIdx}
+                                              onActivate={activateThread}
+                                            />
+                                          );
+                                        })}
+                                        <ThreadOverflowNote
+                                          shown={visibleThreads.length}
+                                          total={threadMatches.length}
+                                        />
+                                      </ul>
+                                    </li>,
+                                  ]
+                                : [];
+                            const commandNodes = grouped.map((group) => (
+                              <li key={group.label}>
                                 <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                  {section.label}
+                                  {group.label}
                                 </div>
                                 <ul>
-                                  {visible.map((item) => {
+                                  {group.items.map((command) => {
                                     const index = flatIndex++;
+                                    const isSelected = index === selectedIdx;
                                     return (
-                                      <SearchResultRow
-                                        key={item.id}
-                                        item={item}
-                                        query={trimmedQuery}
-                                        index={index}
-                                        isSelected={index === selectedIdx}
-                                        onHover={setSelectedIdx}
-                                        onActivate={activateResult}
-                                      />
+                                      <li key={command.id}>
+                                        <button
+                                          type="button"
+                                          data-cmd-item
+                                          className={cn(
+                                            "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                                            isSelected
+                                              ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
+                                              : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+                                          )}
+                                          onMouseEnter={() =>
+                                            setSelectedIdx(index)
+                                          }
+                                          onClick={() => runCommand(command)}
+                                        >
+                                          <div className="min-w-0">
+                                            <div className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                              {command.title}
+                                            </div>
+                                            {command.hint ? (
+                                              <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
+                                                {command.hint}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            {command.shortcut ? (
+                                              <span className="hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
+                                                {command.shortcut}
+                                              </span>
+                                            ) : null}
+                                            <ArrowRight
+                                              size={14}
+                                              weight="regular"
+                                              className="text-[var(--color-muted-fg)]"
+                                            />
+                                          </div>
+                                        </button>
+                                      </li>
                                     );
                                   })}
-                                  {showMore
-                                    ? (() => {
-                                        const index = flatIndex++;
-                                        return (
-                                          <ShowMoreRow
-                                            key={`more:${section.kind}`}
-                                            kind={section.kind}
-                                            hiddenCount={hiddenCount}
-                                            index={index}
-                                            isSelected={index === selectedIdx}
-                                            onHover={setSelectedIdx}
-                                            onToggle={toggleExpandKind}
-                                          />
-                                        );
-                                      })()
-                                    : null}
                                 </ul>
                               </li>
-                            );
-                          });
+                            ));
 
-                          return [...commandNodes, ...entityNodes];
-                        })()}
-                      </ul>
-                    )}
-                  </div>
+                            const entityNodes = entitySections.map((section) => {
+                              const expanded = expandedKinds.has(section.kind);
+                              const visible = expanded
+                                ? section.rows
+                                : section.rows.slice(0, ENTITY_SECTION_PREVIEW);
+                              const showMore =
+                                !expanded &&
+                                section.rows.length > ENTITY_SECTION_PREVIEW;
+                              const hiddenCount =
+                                section.total - ENTITY_SECTION_PREVIEW;
+                              return (
+                                <li key={`entity:${section.kind}`}>
+                                  <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                    {section.label}
+                                  </div>
+                                  <ul>
+                                    {visible.map((item) => {
+                                      const index = flatIndex++;
+                                      return (
+                                        <SearchResultRow
+                                          key={item.id}
+                                          item={item}
+                                          query={trimmedQuery}
+                                          index={index}
+                                          isSelected={index === selectedIdx}
+                                          onHover={setSelectedIdx}
+                                          onActivate={activateResult}
+                                        />
+                                      );
+                                    })}
+                                    {showMore
+                                      ? (() => {
+                                          const index = flatIndex++;
+                                          return (
+                                            <ShowMoreRow
+                                              key={`more:${section.kind}`}
+                                              kind={section.kind}
+                                              hiddenCount={hiddenCount}
+                                              index={index}
+                                              isSelected={index === selectedIdx}
+                                              onHover={setSelectedIdx}
+                                              onToggle={toggleExpandKind}
+                                            />
+                                          );
+                                        })()
+                                      : null}
+                                  </ul>
+                                </li>
+                              );
+                            });
+
+                            return [
+                              ...threadNodes,
+                              ...commandNodes,
+                              ...entityNodes,
+                            ];
+                          })()}
+                        </ul>
+                      )}
+                    </div>
+                    <PaletteFooterHints />
+                  </>
                 )}
               </motion.div>
             </Dialog.Content>
@@ -2278,6 +2442,34 @@ export function CommandPalette({
         )}
       </AnimatePresence>
     </Dialog.Root>
+  );
+}
+
+/**
+ * Persistent keyboard legend under the results. Deliberately quiet — hairline
+ * separator, muted text, same `<kbd>` chip the project browser's footer and the
+ * per-row shortcut chips already use, so the palette has exactly one key-cap
+ * treatment.
+ */
+function PaletteFooterHints() {
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-t px-4 py-2 text-[11px] text-[var(--color-muted-fg)]"
+      style={{ borderColor: "var(--color-border)" }}
+    >
+      <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+        ↑↓
+      </kbd>
+      <span>Navigate</span>
+      <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+        ↵
+      </kbd>
+      <span>Select</span>
+      <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+        Esc
+      </kbd>
+      <span>Close</span>
+    </div>
   );
 }
 

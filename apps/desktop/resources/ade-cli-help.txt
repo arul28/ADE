@@ -48,9 +48,9 @@ _    ____  _____
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -185,9 +185,9 @@ _    ____  _____
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -585,9 +585,9 @@ _    ____  _____
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
-    $ ade chat settle --outcome "PR #841, CI green" Mark this session complete
-    $ ade chat unsettle                             Return this session to the active lifecycle
-                                                    These four commands default to the caller and accept --session <id>
+                                                    'note' and 'ask' default to the caller and accept --session <id>.
+                                                    'chat settle' / 'chat unsettle' were removed: only the user (or a
+                                                    merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
@@ -744,9 +744,9 @@ _    ____  _____
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -944,9 +944,9 @@ _    ____  _____
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1359,9 +1359,9 @@ _    ____  _____
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
+    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)

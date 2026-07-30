@@ -1091,8 +1091,12 @@ export function AttentionCenter({ onAction, onOpenItem }: AttentionCenterProps =
               <span>{visibleItems.length} item{visibleItems.length === 1 ? "" : "s"}</span>
             </div>
             {counts.inbox > 0 && view !== "inbox" ? (
+              // "in inbox", not "needs you": this count is the whole inbox —
+              // failures, review requests and unseen outcomes as well as raised
+              // hands — and "needs you" is a claim only a needs_you row may
+              // make. The button jumps to the Inbox tab, which says the same.
               <button type="button" onClick={() => setView("inbox")}>
-                {counts.inbox} need{counts.inbox === 1 ? "s" : ""} you
+                {counts.inbox} in inbox
               </button>
             ) : null}
           </div>

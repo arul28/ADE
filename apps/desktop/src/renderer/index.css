@@ -188,6 +188,7 @@
   --work-pane-border: rgba(255, 255, 255, 0.06);
   --work-pane-header-bg: rgba(255, 255, 255, 0.03);
   --work-sidebar-bg: #161618;
+  --work-session-sidebar-bg: rgb(11, 11, 16);
 
   /* Work tab combobox / popover */
   --work-popover-bg: rgba(22, 20, 30, 0.96);
@@ -321,6 +322,7 @@
   --work-pane-border: color-mix(in srgb, var(--color-border) 70%, transparent);
   --work-pane-header-bg: color-mix(in srgb, var(--color-card) 88%, transparent);
   --work-sidebar-bg: color-mix(in srgb, var(--color-card) 60%, var(--color-bg));
+  --work-session-sidebar-bg: var(--work-sidebar-bg);
 
   --work-popover-bg: color-mix(in srgb, var(--color-card) 96%, white);
   --work-popover-border: color-mix(in srgb, var(--color-border) 90%, transparent);
@@ -1919,6 +1921,26 @@ button:active, [role="button"]:active {
   }
 }
 
+/* The Work sidebar's "Working" status label breathes — the one row state that
+   is actively changing under you gets the only ambient motion in the list.
+   Amplitude is deliberately small: this is a sign of life, not an alert, and
+   `motion-safe:` gates it away entirely for reduced-motion users. */
+@keyframes ade-session-working-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+/* Session row detail tooltips render a key/value list, one pair per line.
+   Only strings that actually contain newlines are affected. */
+.ade-smart-tooltip .ade-stt-desc {
+  white-space: pre-line;
+}
+
 /* Status motion is intentionally duty-cycled. Long flat holds let Chromium
    skip compositor frames while preserving a clear active/working signal. */
 @keyframes ade-duty-pulse {
@@ -3347,20 +3369,6 @@ button:active, [role="button"]:active {
   /* Search stays visible at every sidebar width — never collapse it. */
   flex: 1 1 auto;
   min-width: 3.25rem;
-}
-
-/* On narrow widths, collapse the New Chat button to its icon instead of hiding
-   the search bar. */
-@container session-list-toolbar (max-width: 220px) {
-  .ade-session-list-toolbar-new-chat-label {
-    display: none;
-  }
-
-  .ade-session-list-toolbar-new-chat {
-    width: 1.75rem;
-    justify-content: center;
-    padding-inline: 0;
-  }
 }
 
 /* Chat composer footer — permission preset collapses to dot-only in narrow grid tiles */

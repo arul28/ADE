@@ -35,7 +35,28 @@ export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
 
 export const LANE_CLASSIC_COUNT = LANE_CLASSIC_COLORS.length;
 
-export const LANE_FALLBACK_COLORS: readonly string[] = LANE_COLOR_PALETTE
+/**
+ * ADE purple — `--color-accent` in `index.css`, and `LANE_CLASSIC_COLORS[0]`
+ * ("Violet"). RESERVED for the Primary lane, which exists on every ADE machine
+ * and is the one lane whose colour is worth learning by heart. Reserving it is
+ * what makes that possible: no auto-assigned lane may claim it (see
+ * `ALLOCATABLE_LANE_COLORS`), so purple in the sidebar always means Primary.
+ *
+ * It stays in `LANE_COLOR_PALETTE` on purpose — the manual picker may still
+ * offer it, and lanes that already hold it are left alone.
+ */
+export const PRIMARY_LANE_COLOR = "#a78bfa";
+
+/**
+ * The pool auto-allocation draws from: every palette entry except the reserved
+ * Primary purple.
+ */
+export const ALLOCATABLE_LANE_COLORS: readonly LaneColor[] = LANE_COLOR_PALETTE
+  .filter((entry) => entry.hex.toLowerCase() !== PRIMARY_LANE_COLOR);
+
+// Fallback accents are auto-assigned too (a lane with no stored colour picks one
+// by index), so they come off the allocatable pool rather than the full palette.
+export const LANE_FALLBACK_COLORS: readonly string[] = ALLOCATABLE_LANE_COLORS
   .slice(0, 8)
   .map((entry) => entry.hex);
 
@@ -45,19 +66,33 @@ export function nextAvailableLaneColor(usedColors: Iterable<string>): string | n
       .map((color) => color.trim().toLowerCase())
       .filter((color) => color.length > 0),
   );
-  for (const entry of LANE_COLOR_PALETTE) {
+  for (const entry of ALLOCATABLE_LANE_COLORS) {
     if (!used.has(entry.hex.toLowerCase())) return entry.hex;
   }
   return null;
 }
 
 export function randomLaneColor(): string {
-  const index = Math.floor(Math.random() * LANE_COLOR_PALETTE.length);
-  return LANE_COLOR_PALETTE[index]?.hex ?? LANE_COLOR_PALETTE[0]!.hex;
+  const index = Math.floor(Math.random() * ALLOCATABLE_LANE_COLORS.length);
+  return ALLOCATABLE_LANE_COLORS[index]?.hex ?? ALLOCATABLE_LANE_COLORS[0]!.hex;
 }
 
 export function allocateLaneColor(usedColors: Iterable<string>): string {
   return nextAvailableLaneColor(usedColors) ?? randomLaneColor();
+}
+
+/**
+ * The accent a lane renders with. Primary is LOCKED to ADE purple regardless of
+ * what its row stores: primaries created before the colour was reserved carry a
+ * null colour, and the whole point of the reservation is that Primary looks the
+ * same on every machine and in every project.
+ */
+export function resolveLaneAccentColor(
+  lane: { laneType?: string | null; color?: string | null } | null | undefined,
+): string | null {
+  if (!lane) return null;
+  if (lane.laneType === "primary") return PRIMARY_LANE_COLOR;
+  return lane.color ?? null;
 }
 
 export function laneColorName(hex: string | null | undefined): string | null {

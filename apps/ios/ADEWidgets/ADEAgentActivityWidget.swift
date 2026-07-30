@@ -214,8 +214,11 @@ struct AgentRunsPresentation {
             + secondaryRuns.count
             + secondaryPrs.count
         self.overflowCount = max(0, activeCount + safeState.prs.count - represented)
-        self.isStale = ownershipAccepted
-            && (isStale || safeState.runs.contains { $0.resolvedPhase == .stale })
+        // ActivityKit push staleness only. A run whose *phase* is `.stale` used
+        // to fold in here, which greyed the whole glance and showed
+        // "Reconnecting" because a single agent had gone quiet — a silence, not
+        // a transport failure. The stale run says so on its own row.
+        self.isStale = ownershipAccepted && isStale
         self.machineName = ownershipAccepted ? attributes.machineName : "ADE"
         self.accountWide = accountWide
         self.ownershipAccepted = ownershipAccepted
@@ -223,10 +226,14 @@ struct AgentRunsPresentation {
     }
 
     /// Tint of the glance — attention amber wins, otherwise the primary run's
-    /// phase color, dimmed toward idle when stale.
+    /// phase color, dimmed toward idle when the push feed itself is stale.
+    ///
+    /// Amber is checked first, and deliberately outranks staleness: "your move"
+    /// is the one thing the glance may never swallow, and a late push does not
+    /// make a raised hand less true.
     var tint: Color {
-        if isStale { return ADESharedTheme.statusIdle }
         if waitingCount > 0 { return ADESharedTheme.warningAmber }
+        if isStale { return ADESharedTheme.statusIdle }
         if let primaryPr, primary == nil { return primaryPr.resolvedPhase.tint }
         return primary?.resolvedPhase.tint ?? ADESharedTheme.statusIdle
     }
@@ -254,7 +261,7 @@ struct AgentRunsPresentation {
         let trimmed = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if activeCount > runs.count {
-            return "\(trimmed) · \(activeCount) running"
+            return "\(trimmed) · \(activeCount) working"
         }
         return trimmed
     }
@@ -278,12 +285,23 @@ struct AgentRunsPresentation {
         return target.deepLinkURL ?? workspace
     }
 
+    /// Focus order, matching the desktop sidebar's prominence rule: the states
+    /// that want a human come first, and merely-in-flight work recedes.
+    ///
+    /// `.completed` therefore outranks `.running` — a finished run you have not
+    /// looked at is a result, while a running one is a progress report. This is
+    /// safe here in a way it would not be on the Lock Screen widget: the Live
+    /// Activity roster is the host's current runs, so a `.completed` row is
+    /// freshly finished rather than an outcome from hours ago.
+    ///
+    /// `.stale` sits last on its own — it is neither an outcome nor live work.
     private static func priority(_ phase: AgentRunPhase) -> Int {
         switch phase {
         case .waitingForApproval, .waitingForInput: return 0
         case .failed: return 1
-        case .starting, .running: return 2
-        case .completed, .stale: return 3
+        case .completed: return 2
+        case .starting, .running: return 3
+        case .stale: return 4
         }
     }
 
@@ -388,13 +406,15 @@ private struct AgentRunsLockScreenView: View {
         }
         if presentation.activeCount == 0, let phase = presentation.primary?.resolvedPhase {
             if phase == .failed { return "Agent work failed" }
-            if phase == .completed { return "Agent work completed" }
+            if phase == .completed { return "Agent work done" }
         }
         if presentation.runs.isEmpty && !presentation.prs.isEmpty {
             return presentation.prs.count == 1 ? "1 pull request updated" : "\(presentation.prs.count) pull requests updated"
         }
+        // "working", not "running" — same word the row labels and the desktop
+        // sidebar use for the in-flight phase.
         let count = presentation.activeCount
-        return count == 1 ? "1 agent running" : "\(count) agents running"
+        return count == 1 ? "1 agent working" : "\(count) agents working"
     }
 }
 
@@ -470,8 +490,12 @@ private struct AgentActivityRunHero: View {
         .padding(.horizontal, compact ? 5 : 8)
         .padding(.vertical, compact ? 3 : 7)
         .background(
+            // The stronger fill goes to the states that want a human — needs
+            // you, done, failed. In-flight work recedes, mirroring the desktop
+            // sidebar's rule that prominence is a request for attention, not a
+            // progress report.
             RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
-                .fill(phase.tint.opacity(phase.needsAttention || phase == .failed ? 0.16 : 0.1))
+                .fill(phase.tint.opacity(phase.isProminent ? 0.16 : 0.1))
         )
         .overlay(
             RoundedRectangle(cornerRadius: compact ? 7 : 10, style: .continuous)
@@ -658,9 +682,12 @@ private struct AgentRunRow: View {
 
             Spacer(minLength: 4)
 
+            // Colour is reserved for the states that want a human: a failed or
+            // finished run keeps its hue, working / starting / stale recede to
+            // secondary so the few rows that matter stand out.
             Text(phase.label)
                 .font(compact ? .system(size: 9, weight: .semibold) : .caption2.weight(.semibold))
-                .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
+                .foregroundStyle(phase.isProminent ? phase.tint : .secondary)
                 .lineLimit(1)
         }
         .contentShape(Rectangle())

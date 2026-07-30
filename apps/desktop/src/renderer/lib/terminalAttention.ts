@@ -6,6 +6,13 @@ import {
   type CanonicalSessionState,
   type SessionBadge,
 } from "../../shared/sessionCanonicalState";
+import {
+  sessionStatusPresentation,
+  SESSION_TONE_DOT_CLASS,
+  type SessionStatusOverlay,
+  type SessionStatusPresentation,
+} from "../../shared/sessionStatusPresentation";
+import type { CanonicalSessionPhase } from "../../shared/sessionCanonicalState";
 import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
@@ -72,6 +79,25 @@ function normalizeInlineWhitespace(raw: string): string {
   return raw.replace(/\t/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Rule characters repeated as a separator — `----`, `====`, `━━━━`, a markdown
+ * `---`, a banner of `####`. Agents and CLIs emit these constantly.
+ *
+ * Verbatim, a run like this fills a sidebar row edge to edge and renders as a
+ * horizontal line struck through the card, which reads as a broken layout
+ * rather than as text. Collapsing each run to a single character keeps the
+ * preview honest (the separator WAS there) without letting it draw furniture.
+ *
+ * Deliberately not a blanket "collapse any repeated character": real output
+ * legitimately contains `...`, `!!!`, and `???`, and flattening those would
+ * change the tone of a message rather than just its geometry.
+ */
+const RULE_RUN_REGEX = /([-=_~*#—–─-╿])\1{3,}/g;
+
+function collapseRuleRuns(raw: string): string {
+  return raw.replace(RULE_RUN_REGEX, "$1");
+}
+
 export function sanitizeTerminalInlineText(raw: string | null | undefined, maxChars = 220): string {
   if (!raw) return "";
   const stripped = raw
@@ -83,7 +109,7 @@ export function sanitizeTerminalInlineText(raw: string | null | undefined, maxCh
     .replace(CHARSET_REGEX, "")
     .replace(TWO_CHAR_ESC_REGEX, "")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
-  const normalized = normalizeInlineWhitespace(stripped);
+  const normalized = normalizeInlineWhitespace(collapseRuleRuns(stripped));
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
@@ -173,6 +199,23 @@ export function sessionInlineStatusLabel(session: SessionCanonicalUiInput): stri
   return null;
 }
 
+/**
+ * The row's single status label — `{ label, tone, glyph }` from the shared
+ * presentation module, with the snooze/woke overlays already applied.
+ *
+ * This is what the sidebar's status slot renders, and it replaces the old
+ * scatter of capsule + inline label + dot + wake chip + woke chip, each of
+ * which decided its own copy and color. Callers pass the overlay explicitly
+ * because snooze lives outside the canonical phase by design — see
+ * `sessionStatusPresentation`'s header for why the two stay orthogonal.
+ */
+export function sessionStatusDisplay(
+  session: SessionCanonicalUiInput,
+  overlay: SessionStatusOverlay = {},
+): SessionStatusPresentation | null {
+  return sessionStatusPresentation(sessionCanonicalUiState(session).phase, overlay);
+}
+
 /** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */
 export function sessionNeedsChatTabHighlight(args: {
   runtimeState?: TerminalRuntimeState;
@@ -224,43 +267,63 @@ export type SessionStatusDot = {
 };
 
 /**
- * Map a session's canonical phase to CSS classes for rendering a status dot.
- * Green = work happening · amber = your move (loud or quiet) · red = died ·
- * hollow ring = settled (visually "less than" every filled dot, matching the
- * quietest tier).
+ * The compact status dot, for surfaces too dense for a word (the `compact` row
+ * variant, lane rollups).
+ *
+ * Derived from `sessionStatusPresentation` rather than switching on the phase
+ * itself, so the dot and the label physically cannot disagree. They used to:
+ * a stale session rendered a GREEN dot labelled "Running" while a separate
+ * capsule on the same row said "Stale" — the dot was asserting work was
+ * happening at the exact moment the row was explaining that none was. Anything
+ * that needs a color for a session state must come through here or through the
+ * presentation module; no third mapping.
+ *
+ * Settled keeps its hollow ring, which reads as visually "less than" every
+ * filled dot and matches its position as the quietest tier.
  */
-export function sessionStatusDot(session: SessionCanonicalUiInput): SessionStatusDot {
+export function sessionStatusDot(
+  session: SessionCanonicalUiInput,
+  overlay: SessionStatusOverlay = {},
+): SessionStatusDot {
   const phase = sessionCanonicalUiState(session).phase;
-  switch (phase) {
-    case "starting":
-    case "running":
-    case "stale":
-      return { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
-    case "needs_you":
-      return {
-        cls: "rounded-full bg-amber-300",
-        spinning: false,
-        label: "Needs you",
-      };
-    case "ready":
-      return { cls: "rounded-full bg-amber-300", spinning: false, label: "Ready" };
-    case "idle":
-      return idleRuntimeNeedsAttention(session.toolType)
-        ? { cls: "rounded-full bg-amber-300", spinning: false, label: "Idle" }
-        : { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
-    case "settled":
-      return {
-        cls: "rounded-full border border-white/35 bg-transparent",
-        spinning: false,
-        label: "Settled",
-      };
-    case "stopped":
-      return { cls: "rounded-full bg-red-400", spinning: false, label: "Stopped" };
-    case "failed":
-      return { cls: "rounded-full bg-red-400", spinning: false, label: "Failed" };
-    default:
-      return { cls: "rounded-full bg-red-400", spinning: false, label: "Ended" };
+  if (phase === "settled") {
+    return {
+      cls: "rounded-full border border-white/35 bg-transparent",
+      spinning: false,
+      label: "Settled",
+    };
   }
+  const presentation = sessionStatusPresentation(phase, overlay);
+  if (presentation) {
+    return {
+      cls: `rounded-full ${SESSION_TONE_DOT_CLASS[presentation.tone]}`,
+      spinning: false,
+      label: presentation.label,
+    };
+  }
+  return legacySessionStatusDot(phase);
+}
+
+/**
+ * Fallback for a phase with no presentation entry.
+ *
+ * Currently unreachable — `PHASE_PRESENTATION` is a `Record` over the full
+ * `CanonicalSessionPhase` union, so TypeScript already guarantees every phase
+ * resolves (only `settled` returns null, handled above). It exists so a phase
+ * added to the union later degrades to a visible dot instead of rendering
+ * nothing.
+ *
+ * Deliberately NEUTRAL rather than reproducing the old per-phase colours: an
+ * unknown state has, by definition, not earned a hue. The previous version of
+ * this fallback still mapped `ready`/`idle` to amber, which would have quietly
+ * reintroduced the exact second meaning for amber that this redesign removed.
+ */
+function legacySessionStatusDot(phase: CanonicalSessionPhase): SessionStatusDot {
+  return {
+    cls: `rounded-full ${SESSION_TONE_DOT_CLASS.neutral}`,
+    spinning: false,
+    label: phase,
+  };
 }
 
 /**

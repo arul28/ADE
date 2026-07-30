@@ -9,10 +9,22 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
+import {
+  SESSION_TONE_DOT_CLASS,
+  SESSION_TONE_TEXT_CLASS,
+} from "../../../shared/sessionStatusPresentation";
 import { useAppStore } from "../../state/appStore";
+
+/** Surfaces the router location so navigation assertions read the real URL. */
+function LocationProbe() {
+  const location = useLocation();
+  return (
+    <div data-testid="location">{`${location.pathname}${location.search}`}</div>
+  );
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -24,10 +36,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const PROJECT_ROOT = "/Users/admin/Projects/ADE";
+
 function seedStore(overrides: Record<string, unknown> = {}) {
   useAppStore.setState({
     project: {
-      rootPath: "/Users/admin/Projects/ADE",
+      rootPath: PROJECT_ROOT,
       displayName: "ADE",
       baseRef: "main",
     },
@@ -35,8 +49,127 @@ function seedStore(overrides: Record<string, unknown> = {}) {
     selectedLaneId: null,
     selectLane: vi.fn(),
     switchProjectToPath: vi.fn(async () => {}),
+    // Reset explicitly: `setState` merges, so a thread test's sessions would
+    // otherwise leak into every later test's palette.
+    sessionsCacheByProject: {},
+    workViewByProject: {},
+    crossMachineLanesByMachineId: {},
     ...overrides,
   } as any);
+}
+
+function makeLane(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "lane-1",
+    name: "redesign",
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: "t3code/redesign-new-chat-ui",
+    worktreePath: "/tmp/wt/redesign",
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: "active",
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeSession(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "session-1",
+    laneId: "lane-1",
+    laneName: "redesign",
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType: "claude",
+    title: "Redesign ADE Chat and Prompt UI",
+    status: "running",
+    runtimeState: "running",
+    startedAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: "",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    resumeCommand: null,
+    ...overrides,
+  };
+}
+
+const REMOTE_BINDING = {
+  kind: "remote" as const,
+  key: "remote:target-studio:project-remote-ade",
+  targetId: "target-studio",
+  runtimeName: "Mac Studio",
+  projectId: "project-remote-ade",
+  rootPath: "/remote/ADE",
+  displayName: "ADE",
+};
+
+/**
+ * One machine's slice of the cross-machine Work union
+ * (`CrossMachineMachineLanes`). The palette reads these straight off the root
+ * store — the same slices the Work sidebar renders — so seeding the store is
+ * the whole setup; there is no foreign-session IPC to mock.
+ */
+function makeForeignMachine(overrides: Record<string, unknown> = {}) {
+  return {
+    machineId: "target-studio",
+    machineName: "Mac Studio",
+    targetId: "target-studio",
+    projectId: "project-remote-ade",
+    binding: REMOTE_BINDING,
+    online: true,
+    lanes: [
+      makeLane({
+        id: "lane-remote",
+        name: "release",
+        branchRef: "t3code/release-notes",
+      }),
+    ],
+    sessions: [
+      makeSession({
+        id: "session-remote-1",
+        title: "Ship the release notes",
+        laneId: "lane-remote",
+        laneName: "release",
+      }),
+    ],
+    lastSyncedAtMs: Date.now(),
+    error: null,
+    ...overrides,
+  };
+}
+
+/** Seed the palette with threads sourced from the Work tab's per-project cache. */
+function seedThreads(
+  sessions: Array<Record<string, unknown>>,
+  options: {
+    lanes?: Array<Record<string, unknown>>;
+    activeItemId?: string | null;
+    /** Foreign machine slices, keyed by machine id, as the union stores them. */
+    machines?: Record<string, Record<string, unknown>>;
+  } = {},
+) {
+  seedStore({
+    lanes: options.lanes ?? [makeLane()],
+    sessionsCacheByProject: { [PROJECT_ROOT]: sessions },
+    workViewByProject: {
+      [PROJECT_ROOT]: { activeItemId: options.activeItemId ?? null },
+    },
+    crossMachineLanesByMachineId: options.machines ?? {},
+  });
 }
 
 describe("CommandPalette", () => {
@@ -505,5 +638,387 @@ describe("CommandPalette", () => {
         name: "You already work on this repo locally",
       }),
     ).toBeNull();
+  });
+
+  describe("threads", () => {
+    it("lists recent threads with their lane context and marks the current one", async () => {
+      seedThreads(
+        [
+          makeSession(),
+          makeSession({
+            id: "session-2",
+            title: "Redesign ADE Sidebar UI",
+            laneId: "lane-2",
+            laneName: "sidebar",
+            status: "completed",
+            runtimeState: "exited",
+            exitCode: 0,
+            toolType: "shell",
+            lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          }),
+        ],
+        {
+          lanes: [
+            makeLane(),
+            makeLane({
+              id: "lane-2",
+              name: "sidebar",
+              branchRef: "t3code/refine-ade-chat-sidebar",
+            }),
+          ],
+          activeItemId: "session-2",
+        },
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("Recent threads")).toBeTruthy();
+      expect(screen.getByText("Redesign ADE Chat and Prompt UI")).toBeTruthy();
+      // Project · branch, with the active session annotated in place.
+      expect(
+        screen.getByText("ADE · #t3code/refine-ade-chat-sidebar"),
+      ).toBeTruthy();
+      expect(screen.getByText(/Current thread/)).toBeTruthy();
+    });
+
+    it("matches threads on branch and lane name, not just title", async () => {
+      seedThreads(
+        [
+          makeSession({ id: "session-1", title: "Alpha" }),
+          makeSession({
+            id: "session-2",
+            title: "Beta",
+            laneId: "lane-2",
+            laneName: "payments",
+          }),
+        ],
+        {
+          lanes: [
+            makeLane({ id: "lane-1", branchRef: "t3code/pty-foundation" }),
+            makeLane({
+              id: "lane-2",
+              name: "payments",
+              branchRef: "feat/stripe",
+            }),
+          ],
+        },
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      const input = screen.getByPlaceholderText(
+        "Search commands, projects, and threads…",
+      );
+
+      // Branch-only hit: "pty-foundation" appears in neither title nor lane name.
+      fireEvent.change(input, { target: { value: "pty-foundation" } });
+      await waitFor(() => {
+        expect(screen.getByText("Alpha")).toBeTruthy();
+      });
+      expect(screen.queryByText("Beta")).toBeNull();
+
+      // Lane-name-only hit.
+      fireEvent.change(input, { target: { value: "payments" } });
+      await waitFor(() => {
+        expect(screen.getByText("Beta")).toBeTruthy();
+      });
+      expect(screen.queryByText("Alpha")).toBeNull();
+    });
+
+    it("renders the status indicator from the shared tone classes", async () => {
+      seedThreads([makeSession()]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      const status = await screen.findByTestId("thread-status-session-1");
+      expect(status.textContent).toContain("Working");
+      // The whole point of the redesign: one hue table. A running session is
+      // blue, and both the word and the dot come from the shared maps.
+      expect(status.className).toContain(SESSION_TONE_TEXT_CLASS.blue);
+      const dot = status.querySelector("span");
+      expect(dot?.className).toContain(SESSION_TONE_DOT_CLASS.blue);
+    });
+
+    it("omits the status indicator for calm threads", async () => {
+      seedThreads([
+        makeSession({
+          status: "completed",
+          runtimeState: "exited",
+          exitCode: 0,
+          toolType: "shell",
+          settledAt: new Date().toISOString(),
+        }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("Recent threads")).toBeTruthy();
+      expect(screen.queryByTestId("thread-status-session-1")).toBeNull();
+    });
+
+    it("navigates to the Work tab and focuses the session when a thread is picked", async () => {
+      const onOpenChange = vi.fn();
+      const selectEvents: Array<{
+        sessionId: string;
+        laneId?: string;
+        binding?: unknown;
+      }> = [];
+      const listener = (event: Event) => {
+        selectEvents.push((event as CustomEvent).detail);
+      };
+      window.addEventListener("ade:work:select-session", listener);
+      seedThreads([makeSession()]);
+
+      render(
+        <MemoryRouter>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={onOpenChange} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(
+        await screen.findByText("Redesign ADE Chat and Prompt UI"),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("location").textContent).toBe(
+          "/work?sessionId=session-1&laneId=lane-1",
+        );
+      });
+      expect(selectEvents).toEqual([
+        { sessionId: "session-1", laneId: "lane-1" },
+      ]);
+      // A local thread carries no binding: the Work tab focuses it against the
+      // already-current project, so the deeplink in the URL is the whole route.
+      expect(selectEvents[0]?.binding).toBeUndefined();
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      window.removeEventListener("ade:work:select-session", listener);
+    });
+
+    it("caps the thread group and says how many matches are hidden", async () => {
+      // Age BOTH timestamps: `recencyRank` takes the max of them, so leaving
+      // `startedAt` at the default "now" would make all 12 rows equally recent
+      // and hand the order to sub-millisecond loop timing.
+      const base = Date.now();
+      seedThreads(
+        Array.from({ length: 12 }, (_, i) => {
+          const iso = new Date(base - i * 60_000).toISOString();
+          return makeSession({
+            id: `session-${i}`,
+            title: `Thread ${i}`,
+            startedAt: iso,
+            lastActivityAt: iso,
+          });
+        }),
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("Recent threads")).toBeTruthy();
+      expect(
+        screen.getByText(/Showing 8 of 12 threads/),
+      ).toBeTruthy();
+      // Newest first, oldest past the cap dropped.
+      expect(screen.getByText("Thread 0")).toBeTruthy();
+      expect(screen.queryByText("Thread 8")).toBeNull();
+    });
+
+    it("renders the persistent keyboard hint footer", async () => {
+      seedStore();
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText("Navigate")).toBeTruthy();
+      expect(screen.getByText("Select")).toBeTruthy();
+      expect(screen.getByText("Close")).toBeTruthy();
+    });
+
+    // The Work sidebar is a union across every connected machine, always. The
+    // palette is that sidebar's search, so a thread the user can see one pane
+    // over must be findable here — anything less answers "no results" for work
+    // that is plainly on screen.
+    describe("across machines", () => {
+      it("lists a thread from another machine and marks it with that machine", async () => {
+        seedThreads([makeSession()], {
+          machines: { "target-studio": makeForeignMachine() },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        expect(await screen.findByText("Ship the release notes")).toBeTruthy();
+        // Local and foreign rows share one group — the machine is a property of
+        // the row, not a separate section.
+        expect(screen.getByText("Redesign ADE Chat and Prompt UI")).toBeTruthy();
+
+        const row = document.querySelector<HTMLElement>(
+          '[data-thread-id="session-remote-1"]',
+        );
+        expect(row?.dataset.machineId).toBe("target-studio");
+        // Identity, not status: the marker lives in the context line, so the
+        // row's status slot is still free for the session's own state.
+        const marker = row?.querySelector<HTMLElement>("[data-machine-marker-mode]");
+        expect(marker?.textContent).toContain("Mac Studio");
+        expect(
+          screen.getByTestId("thread-status-session-remote-1").contains(marker!),
+        ).toBe(false);
+        // The foreign lane resolves through its OWN machine's lane list, not
+        // the locally-bound project's.
+        expect(screen.getByText("ADE · #t3code/release-notes")).toBeTruthy();
+      });
+
+      it("matches a thread on its machine name", async () => {
+        seedThreads([makeSession()], {
+          machines: { "target-studio": makeForeignMachine() },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        const input = screen.getByPlaceholderText(
+          "Search commands, projects, and threads…",
+        );
+        // "studio" appears in neither title, lane name, nor branch.
+        fireEvent.change(input, { target: { value: "studio" } });
+
+        await waitFor(() => {
+          expect(screen.getByText("Ship the release notes")).toBeTruthy();
+        });
+        expect(screen.queryByText("Redesign ADE Chat and Prompt UI")).toBeNull();
+      });
+
+      it("keeps an offline machine's threads findable but receded", async () => {
+        seedThreads([], {
+          machines: {
+            "target-studio": makeForeignMachine({ online: false }),
+          },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        expect(await screen.findByText("Ship the release notes")).toBeTruthy();
+
+        const row = document.querySelector<HTMLElement>(
+          '[data-thread-id="session-remote-1"]',
+        );
+        // Same attribute the sidebar puts on a receded cross-machine group.
+        expect(row?.dataset.dimmed).toBe("true");
+        expect(row?.dataset.machineOnline).toBe("false");
+        // The status is the LAST THING REPORTED, not a live claim — a dropped
+        // machine's chat still reads "Working" — so it must not look as
+        // trustworthy as a live row.
+        const status = screen.getByTestId("thread-status-session-remote-1");
+        expect(status.textContent).toContain("Working");
+        expect(status.closest("[data-dimmed]")).toBe(row);
+      });
+
+      it("routes a foreign thread through its binding instead of a stale deeplink", async () => {
+        const onOpenChange = vi.fn();
+        const selectEvents: Array<{
+          sessionId: string;
+          laneId?: string;
+          binding?: unknown;
+        }> = [];
+        const listener = (event: Event) => {
+          selectEvents.push((event as CustomEvent).detail);
+        };
+        window.addEventListener("ade:work:select-session", listener);
+        seedThreads([], {
+          machines: { "target-studio": makeForeignMachine() },
+        });
+
+        render(
+          <MemoryRouter>
+            <LocationProbe />
+            <CommandPalette open onOpenChange={onOpenChange} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByText("Ship the release notes"));
+
+        expect(selectEvents).toEqual([
+          {
+            sessionId: "session-remote-1",
+            laneId: "lane-remote",
+            binding: REMOTE_BINDING,
+          },
+        ]);
+        // The tab still switches to Work, but WITHOUT the session deeplink: the
+        // project switch the listener starts is async, and `useWorkSessions`
+        // would resolve `?sessionId=` against the still-current project a tick
+        // from now, find nothing, and strip it. The binding is the durable
+        // route; the listener focuses once the switch resolves.
+        await waitFor(() => {
+          expect(screen.getByTestId("location").textContent).toBe("/work");
+        });
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+        window.removeEventListener("ade:work:select-session", listener);
+      });
+
+      it("never lists a session twice when the union overlaps the local list", async () => {
+        // While the tab is bound remotely, that machine's slice and the local
+        // session list are the same rows. "Never show one session twice" is the
+        // invariant; the local entry wins so it keeps the local routing path.
+        seedThreads([makeSession()], {
+          machines: {
+            "target-studio": makeForeignMachine({
+              sessions: [makeSession(), makeSession({ id: "session-remote-1" })],
+            }),
+          },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        await screen.findByText("Recent threads");
+        expect(
+          document.querySelectorAll('[data-thread-id="session-1"]'),
+        ).toHaveLength(1);
+        // The deduped row keeps the LOCAL identity — no machine marker, no
+        // binding — so picking it takes the synchronous path.
+        expect(
+          document
+            .querySelector<HTMLElement>('[data-thread-id="session-1"]')
+            ?.dataset.machineId,
+        ).toBeUndefined();
+      });
+    });
   });
 });

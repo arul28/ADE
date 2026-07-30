@@ -282,11 +282,17 @@ export async function settleSession(
   });
 }
 
+/**
+ * `ade code` is a USER surface (it connects at cto role), which is why it may
+ * still settle and unsettle rows: the agent-facing `settleSelfSession` /
+ * `unsettleSelfSession` pair was removed in 2026-07, and both survivors here
+ * are cto-gated in the ADE action registry.
+ */
 export async function unsettleSession(
   connection: AdeCodeConnection,
   sessionId: string,
 ): Promise<void> {
-  await connection.action("session", "unsettleSelfSession", { sessionId });
+  await connection.action("session", "unsettleSession", { sessionId });
 }
 
 /**

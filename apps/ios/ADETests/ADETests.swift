@@ -1,6 +1,7 @@
 import XCTest
 import AVFoundation
 import SQLite3
+import SwiftUI
 import UIKit
 @testable import ADE
 
@@ -10926,6 +10927,76 @@ final class ADETests: XCTestCase {
       state.prs[0].deepLinkURL?.absoluteString,
       "ade://pr/arul28/ADE/42?accountMachineKey=machine-studio"
     )
+  }
+
+  func testAgentRunPhaseLabelsMatchTheDesktopVocabulary() {
+    // The widgets mirror `sessionStatusPresentation.ts` word-for-word: the
+    // in-flight phase reads "Working" (not "Running") and the terminal one
+    // reads "Done" (not "Completed"), so the Lock Screen and the Work sidebar
+    // never describe the same session with two different words.
+    XCTAssertEqual(AgentRunPhase.starting.label, "Starting")
+    XCTAssertEqual(AgentRunPhase.running.label, "Working")
+    XCTAssertEqual(AgentRunPhase.waitingForApproval.label, "Needs you")
+    XCTAssertEqual(AgentRunPhase.waitingForInput.label, "Needs you")
+    XCTAssertEqual(AgentRunPhase.completed.label, "Done")
+    XCTAssertEqual(AgentRunPhase.failed.label, "Failed")
+    XCTAssertEqual(AgentRunPhase.stale.label, "Stale")
+  }
+
+  func testAgentRunPhaseRawValuesArePinnedToThePushWireFormat() {
+    // These slugs are the Live Activity / APNs wire format sent by every
+    // desktop version already in the field. Presentation may change; renaming
+    // a raw value would silently downgrade real payloads to `.running`.
+    XCTAssertEqual(
+      AgentRunPhase.allCases.map(\.rawValue),
+      ["starting", "running", "waiting_for_approval", "waiting_for_input", "completed", "failed", "stale"]
+    )
+  }
+
+  func testAgentRunPhaseSpendsAmberOnlyOnYourMove() {
+    // One hue, one meaning. Amber previously carried five unrelated states
+    // across ADE, which is why it stopped meaning anything.
+    for phase in AgentRunPhase.allCases {
+      let isYourMove = phase == .waitingForApproval || phase == .waitingForInput
+      XCTAssertEqual(
+        phase.tint == ADESharedTheme.warningAmber,
+        isYourMove,
+        "\(phase.rawValue) must \(isYourMove ? "" : "not ")be amber"
+      )
+    }
+
+    // Work in flight is blue and "done" is emerald — never the same hue, or
+    // "still going" and "finished" collide at a glance.
+    XCTAssertEqual(AgentRunPhase.running.tint, ADESharedTheme.statusRunning)
+    XCTAssertEqual(AgentRunPhase.starting.tint, ADESharedTheme.statusRunning)
+    XCTAssertEqual(AgentRunPhase.completed.tint, ADESharedTheme.statusSuccess)
+    XCTAssertNotEqual(AgentRunPhase.running.tint, AgentRunPhase.completed.tint)
+    XCTAssertEqual(AgentRunPhase.failed.tint, ADESharedTheme.statusFailed)
+    // Stale is neutral: alive but silent is true, not actionable.
+    XCTAssertEqual(AgentRunPhase.stale.tint, ADESharedTheme.statusIdle)
+  }
+
+  func testAgentRunPhaseStaleReadsAsSilenceNotDisconnection() {
+    // A stale run is one that has produced no output for hours — the process
+    // is alive. `wifi.slash` sent people to check their network.
+    XCTAssertTrue(
+      AgentRunPhase.stale.symbol.hasPrefix("clock"),
+      "stale must use a clock glyph, got \(AgentRunPhase.stale.symbol)"
+    )
+    XCTAssertEqual(AgentRunPhase.running.symbol, "circle.dotted")
+    XCTAssertEqual(AgentRunPhase.completed.symbol, "checkmark.circle.fill")
+  }
+
+  func testAgentRunPhaseProminenceGoesOnlyToStatesThatWantAHuman() {
+    // Mirrors the sidebar's recede rule: prominence is a request for
+    // attention, not a progress report.
+    XCTAssertTrue(AgentRunPhase.waitingForApproval.isProminent)
+    XCTAssertTrue(AgentRunPhase.waitingForInput.isProminent)
+    XCTAssertTrue(AgentRunPhase.completed.isProminent)
+    XCTAssertTrue(AgentRunPhase.failed.isProminent)
+    XCTAssertFalse(AgentRunPhase.starting.isProminent)
+    XCTAssertFalse(AgentRunPhase.running.isProminent)
+    XCTAssertFalse(AgentRunPhase.stale.isProminent)
   }
 
   @MainActor

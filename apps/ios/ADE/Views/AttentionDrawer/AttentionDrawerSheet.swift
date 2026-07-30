@@ -706,7 +706,10 @@ private struct AttentionDrawerActionRow: View {
             }
             .buttonStyle(.plain)
 
-        case .running, .open, .completed, .merged, .stale:
+        // Nothing to approve, rerun, or restart on any of these — a blocked row
+        // included, which is the point: it is waiting on something that is not
+        // a button in this drawer.
+        case .running, .blocked, .open, .completed, .merged, .stale:
             Button(action: open) {
                 AttentionDrawerActionLabel("Open", systemImage: "arrow.right", variant: .secondary)
             }
@@ -856,18 +859,26 @@ private enum AttentionIcon {
     static func symbol(for kind: AttentionKind) -> String {
         switch kind {
         case .awaitingInput: return "bell.badge.fill"
+        case .blocked: return "hourglass"
         case .failed: return "xmark.octagon.fill"
         case .ciFailing: return "exclamationmark.triangle.fill"
         case .reviewRequested: return "eye.fill"
         case .mergeReady: return "checkmark.seal.fill"
-        case .running: return "waveform.path.ecg"
+        // The dashed circle the widgets and the desktop sidebar use for work
+        // in flight, rather than a heartbeat trace only this surface knew.
+        case .running: return "circle.dotted"
         case .open: return "arrow.triangle.pull"
         case .completed: return "checkmark.circle.fill"
         case .merged: return "arrow.triangle.merge"
-        case .stale: return "wifi.slash"
+        // A clock, not `wifi.slash`: a stale run is reachable and silent, so
+        // the question is how long it has been quiet, not whether the network
+        // dropped.
+        case .stale: return "clock.badge.exclamationmark"
         }
     }
 
+    /// Amber lives on exactly one kind here — `awaitingInput` — and everything
+    /// that merely reports a fact takes a hue that makes no claim on the user.
     static func tint(for kind: AttentionKind) -> Color {
         switch kind {
         case .awaitingInput: return ADESharedTheme.warningAmber
@@ -875,7 +886,7 @@ private enum AttentionIcon {
         case .reviewRequested: return ADESharedTheme.statusReview
         case .mergeReady, .completed, .merged: return ADESharedTheme.statusSuccess
         case .running, .open: return ADESharedTheme.statusRunning
-        case .stale: return ADESharedTheme.statusIdle
+        case .blocked, .stale: return ADESharedTheme.statusIdle
         }
     }
 }

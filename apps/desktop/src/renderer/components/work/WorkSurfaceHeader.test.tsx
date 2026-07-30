@@ -30,6 +30,13 @@ afterEach(() => {
 });
 
 describe("WorkSurfaceHeader", () => {
+  it("uses the canonical 32px work-surface rail", () => {
+    render(<WorkSurfaceHeader title="Some surface" testId="surface-header" />);
+    const header = screen.getByTestId("surface-header");
+    expect(header.className).toContain("h-8");
+    expect(header.firstElementChild?.className).toContain("w-full");
+  });
+
   it("renders the title and skips lane chip / git toolbar / cache badge when their flags are off", () => {
     render(<WorkSurfaceHeader title="Some surface" />);
     expect(screen.getByText("Some surface")).toBeTruthy();

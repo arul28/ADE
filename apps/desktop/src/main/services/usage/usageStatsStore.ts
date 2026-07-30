@@ -215,8 +215,8 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
     return `git.${aliases[action] ?? action}`;
   }
   if (domain === "session") {
-    if (action === "settleSelfSession" || action === "settleSessions") return "work.settleSession";
-    if (action === "unsettleSelfSession" || action === "unsettleSessions") return "work.unsettleSession";
+    if (action === "settleSession" || action === "settleSessions") return "work.settleSession";
+    if (action === "unsettleSession" || action === "unsettleSessions") return "work.unsettleSession";
     // Bulk and single snooze/wake collapse to one usage action each: the count
     // that matters is "how often was work filed away", not the batch shape.
     if (action === "snoozeSession" || action === "snoozeSessions") return "work.snoozeSession";

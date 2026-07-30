@@ -915,6 +915,19 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(groups.last?.sessions.map(\.id), ["s-calm"])
   }
 
+  func testStatusGroupUsesTheSharedWorkingVocabulary() {
+    let running = makeSession(status: "running", runtimeState: "running", toolType: "claude-chat")
+    let groups = workSessionGroupsByStatus(
+      sessions: [running],
+      chatSummaries: [:],
+      archivedSessionIds: []
+    )
+
+    XCTAssertEqual(groups.map(\.id), ["status:running"])
+    XCTAssertEqual(groups.first?.label, "Working")
+    XCTAssertEqual(groups.first?.sessions.map(\.id), [running.id])
+  }
+
   // MARK: - Re-deriving the groups when a deadline lapses
   //
   // Expiry stays derived from the clock, but `WorkRootScreen` CACHES the
@@ -1384,6 +1397,15 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       1,
       "tomorrow 9am is the next calendar day in the user's own time zone"
     )
+
+    let nextWeek = XCTUnwrap2(WorkSnoozeDuration.nextWeek.deadline(from: morning, calendar: calendar))
+    XCTAssertEqual(calendar.component(.weekday, from: nextWeek), 2, "next week always lands on Monday")
+    XCTAssertEqual(calendar.component(.hour, from: nextWeek), 9)
+    XCTAssertEqual(
+      calendar.dateComponents([.day], from: calendar.startOfDay(for: morning), to: calendar.startOfDay(for: nextWeek)).day,
+      7,
+      "choosing next week on Monday means the following Monday"
+    )
   }
 
   /// Past 18:00 "this evening" has gone, so it rolls to the next one rather
@@ -1399,6 +1421,27 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(
       calendar.dateComponents([.day], from: calendar.startOfDay(for: night), to: calendar.startOfDay(for: evening)).day,
       1
+    )
+  }
+
+  func testSnoozeMenuSuppressesThisEveningOnceItDuplicatesOneHour() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let afternoon = calendar.date(from: DateComponents(year: 2026, month: 7, day: 7, hour: 16, minute: 30))!
+    let boundary = calendar.date(from: DateComponents(year: 2026, month: 7, day: 7, hour: 17))!
+    let night = calendar.date(from: DateComponents(year: 2026, month: 7, day: 7, hour: 21))!
+
+    XCTAssertEqual(
+      workSnoozeOptions(now: afternoon, calendar: calendar).map(\.duration),
+      [.oneHour, .thisEvening, .tomorrowMorning, .nextWeek, .untilAsked]
+    )
+    XCTAssertEqual(
+      workSnoozeOptions(now: boundary, calendar: calendar).map(\.duration),
+      [.oneHour, .tomorrowMorning, .nextWeek, .untilAsked]
+    )
+    XCTAssertEqual(
+      workSnoozeOptions(now: night, calendar: calendar).map(\.duration),
+      [.oneHour, .tomorrowMorning, .nextWeek, .untilAsked]
     )
   }
 

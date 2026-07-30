@@ -24,8 +24,9 @@ export type SessionLifecycleChromeState = "ready" | "unsupported";
 
 /**
  * Touch targets are 2rem (32px) rather than the desktop control's 20px, and the
- * duration menu rows get a 44px minimum so the four snooze choices are
- * separately tappable.
+ * duration menu rows get a 44px minimum so the snooze choices are separately
+ * tappable (the row count varies with the time of day — see
+ * `resolveSnoozePresets`).
  */
 const STYLES = `
 @media (pointer: coarse) {

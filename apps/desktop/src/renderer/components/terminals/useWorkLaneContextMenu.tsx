@@ -46,6 +46,77 @@ export type ForeignLaneContextTrigger = (
   e: { preventDefault: () => void; clientX: number; clientY: number },
 ) => void;
 
+/** The behavioural half of the lane menu, minus the menu itself. */
+export type LaneMenuActions = {
+  onAdoptAttached: (laneId: string) => void;
+  onManage: (laneId: string) => void;
+  selectLane: (id: string) => void;
+  onRemoveFromSplit: (laneId: string) => void;
+  onCloseOtherSplits: (keepLaneId: string) => void;
+  onSelectAll: () => void;
+  onBatchManage: (laneIds: string[]) => void;
+  onStartChatInLane: (laneId: string) => void;
+};
+
+/**
+ * Wires the lane menu's actions once, for every surface that renders lane menu
+ * items: the lane divider's own menu here, and the "Lane ▸" submenu a singleton
+ * lane's session card carries. Items come from `buildLaneMenuGroups`; this is
+ * the other half of keeping those two surfaces from drifting apart.
+ *
+ * `onManageLane` is supplied by the host rather than resolved here because the
+ * manage dialog has to outlive the menu that opened it — the host owns the
+ * dialog state, this hook only routes the click.
+ */
+export function useLaneMenuActions(args: {
+  close: () => void;
+  onManageLane: (laneId: string) => void;
+}): LaneMenuActions {
+  const { close, onManageLane } = args;
+  const navigate = useNavigate();
+  const selectLane = useAppStore((s) => s.selectLane);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+
+  const goToLanesAction = useCallback(
+    (laneId: string | null, action: string, extras?: Record<string, string>) => {
+      const init: Record<string, string> = { action, ...(extras ?? {}) };
+      if (laneId) init.laneId = laneId;
+      const params = new URLSearchParams(init);
+      if (laneId) selectLane(laneId);
+      void navigate(`/lanes?${params.toString()}`);
+    },
+    [navigate, selectLane],
+  );
+
+  const startChatInLane = useStartChatInLane({
+    projectStateKey,
+    setWorkViewState,
+    selectLane,
+    navigate,
+  });
+
+  return useMemo<LaneMenuActions>(() => ({
+    onAdoptAttached: (laneId) => goToLanesAction(laneId, "adopt"),
+    onManage: (laneId) => {
+      close();
+      onManageLane(laneId);
+    },
+    selectLane: (laneId) => {
+      if (!laneId) return;
+      goToLanesAction(laneId, "split-open");
+    },
+    onRemoveFromSplit: (laneId) => goToLanesAction(laneId, "split-remove"),
+    onCloseOtherSplits: (keepLaneId) => goToLanesAction(keepLaneId, "split-close-others"),
+    onSelectAll: () => goToLanesAction(null, "select-all"),
+    onBatchManage: (laneIds) => {
+      if (!laneIds.length) return;
+      goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
+    },
+    onStartChatInLane: startChatInLane,
+  }), [close, goToLanesAction, onManageLane, startChatInLane]);
+}
+
 export function useWorkLaneContextMenu(options?: {
   /** Work-sidebar lane pin. Omitted by callers that have no pinning surface. */
   onToggleWorkPin?: (laneId: string) => void;
@@ -119,23 +190,11 @@ export function useWorkLaneContextMenu(options?: {
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [close, foreignMenuState, menuState]);
 
-  const goToLanesAction = useCallback(
-    (laneId: string | null, action: string, extras?: Record<string, string>) => {
-      const init: Record<string, string> = { action, ...(extras ?? {}) };
-      if (laneId) init.laneId = laneId;
-      const params = new URLSearchParams(init);
-      if (laneId) selectLane(laneId);
-      void navigate(`/lanes?${params.toString()}`);
-    },
-    [navigate, selectLane],
-  );
+  const openManageDialog = useCallback((laneId: string) => {
+    setManagedLane({ laneId });
+  }, []);
+  const laneMenuActions = useLaneMenuActions({ close, onManageLane: openManageDialog });
 
-  const startChatInLane = useStartChatInLane({
-    projectStateKey,
-    setWorkViewState,
-    selectLane,
-    navigate,
-  });
   const startForeignChat = useCallback(() => {
     if (!foreignMenuState || !projectStateKey || !foreignMachineOnline) return;
     const laneId = foreignMenuState.lane.id;
@@ -199,26 +258,7 @@ export function useWorkLaneContextMenu(options?: {
               lanesById={lanesById}
               visibleLaneIds={visibleLaneIds}
               onClose={close}
-              onAdoptAttached={(laneId) => goToLanesAction(laneId, "adopt")}
-              onManage={(laneId) => {
-                close();
-                setManagedLane({ laneId });
-              }}
-              selectLane={(laneId) => {
-                if (!laneId) return;
-                goToLanesAction(laneId, "split-open");
-              }}
-              onRemoveFromSplit={(laneId) => goToLanesAction(laneId, "split-remove")}
-              onCloseOtherSplits={(keepLaneId) => goToLanesAction(keepLaneId, "split-close-others")}
-              onSelectAll={() => {
-                if (!menuState) return;
-                goToLanesAction(null, "select-all");
-              }}
-              onBatchManage={(laneIds) => {
-                if (!laneIds.length) return;
-                goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
-              }}
-              onStartChatInLane={startChatInLane}
+              {...laneMenuActions}
               onToggleWorkPin={options?.onToggleWorkPin}
               workPinnedLaneIds={options?.workPinnedLaneIds}
             />

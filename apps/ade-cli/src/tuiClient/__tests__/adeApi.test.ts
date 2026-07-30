@@ -175,7 +175,9 @@ describe("session lifecycle parity", () => {
         outcome: "PR merged",
         dismissPendingInput: true,
       }],
-      ["session", "unsettleSelfSession", { sessionId: "session-1" }],
+      // The `*SelfSession` (agent self-settle) pair is gone; `ade code` is a
+      // user surface and uses the cto-gated actions.
+      ["session", "unsettleSession", { sessionId: "session-1" }],
     ]);
   });
 

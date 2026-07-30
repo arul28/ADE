@@ -71,9 +71,11 @@ export type CanonicalSessionInputs = {
   lastActivityAt?: string | null;
   exitCode?: number | null;
   /**
-   * Declared settle (agent `ade chat settle` or user action). Presence alone
-   * settles — new activity clears the column at the write site (turn start /
-   * PTY output), so no timestamp comparison happens here.
+   * Declared settle. Only two writers exist: the user (desktop row/bulk
+   * actions, `ade code`) and the deterministic PR-merge policy — agents lost
+   * `ade chat settle` in 2026-07 because "is this done" is not their call.
+   * Presence alone settles — new activity clears the column at the write site
+   * (turn start / PTY output), so no timestamp comparison happens here.
    */
   settledAt?: string | null;
   /** Explicit lifecycle override. Cleared with `settledAt` on real activity. */
@@ -103,10 +105,10 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  * Canonical precedence (highest first):
  *   1. explicit/structured needs-input — pendingInputItemId or an
  *      `ade chat ask` escalation (never outvoted by anything below),
- *   2. settled — explicitly declared (agent/user) or forced by a "settled"
- *      override; presence wins over failure because a declared quiet is a
- *      human/agent judgment call. An "active" override suppresses this tier
- *      entirely. Cleared at the write site on any new activity,
+ *   2. settled — explicitly declared (user, or the PR-merge policy) or forced
+ *      by a "settled" override; presence wins over failure because a declared
+ *      quiet is a human judgment call. An "active" override suppresses this
+ *      tier entirely. Cleared at the write site on any new activity,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death,
  *   5. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
@@ -176,8 +178,9 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
       return { phase: "ready", badge: null };
     }
     // A clean process exit only says the CLI ended. Settlement is a lifecycle
-    // declaration made by the agent/user (or the lane PR-merge policy), never
-    // inferred from process mechanics.
+    // declaration made by the user (or the lane PR-merge policy), never
+    // inferred from process mechanics. There is no "derived clean-exit settle"
+    // anywhere in ADE — if you find a comment claiming otherwise, it is stale.
     return { phase: "ended", badge: null };
   }
 

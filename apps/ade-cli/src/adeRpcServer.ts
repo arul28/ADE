@@ -2675,8 +2675,12 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "setScheduledWorkPaused",
   "requestSessionAttention",
   "setSessionStatusNote",
-  "settleSelfSession",
-  "unsettleSelfSession",
+  // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a
+  // bound agent could only settle its OWN row. Both actions were removed in
+  // 2026-07: "is this work finished" is a subjective judgment agents are
+  // unreliable at, so the surviving settle writers (`session.settleSession`,
+  // `session.unsettleSession`, the bulk pair, `session.setSettleOverride`) are
+  // all CTO-only and refuse a session-bound agent outright — no scoping needed.
   "interrupt",
   "interruptWithQueueMode",
   "restoreCancelledQueue",

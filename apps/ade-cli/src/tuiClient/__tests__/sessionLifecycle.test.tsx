@@ -7,12 +7,12 @@ import { Drawer } from "../components/Drawer";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "../commands";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
-  SNOOZE_CHOICES,
   clearWokeMarkerOnVisit,
   isSessionFiledAsSnoozed,
   isSessionSnoozed,
   resolveSessionTarget,
   resolveSnoozeChoice,
+  resolveSnoozeChoices,
   resolveSnoozeFreeText,
   sessionLifecycleCommandFor,
   sessionLifecycleMarker,
@@ -197,19 +197,54 @@ describe("per-session targeting", () => {
 });
 
 describe("duration entry", () => {
-  it("offers the shared four options in the shared order", () => {
-    expect(SNOOZE_CHOICES.map((choice) => choice.label)).toEqual([
-      "1 hour",
-      "Until this evening",
-      "Until tomorrow 9am",
+  /** Local-time anchor, so the time-of-day presets are deterministic. */
+  function localMs(y: number, m: number, d: number, hh: number, mm = 0): number {
+    return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
+  }
+
+  it("offers the shared presets in the shared order, open-ended last", () => {
+    expect(resolveSnoozeChoices(localMs(2026, 4, 8, 10)).map((choice) => choice.label)).toEqual([
+      "In 1 hour",
+      "This evening",
+      "Tomorrow",
+      "Next week",
       "Until I'm asked",
     ]);
+  });
+
+  it("carries the desktop's time column so the palette rows read the same", () => {
+    const choices = resolveSnoozeChoices(localMs(2026, 4, 8, 10));
+    expect(choices.find((choice) => choice.key === "tomorrow")!.whenLabel).toMatch(/9/);
+    expect(choices.find((choice) => choice.key === "next-week")!.whenLabel).toMatch(/Mon/);
+    expect(choices.find((choice) => choice.key === "asked")!.whenLabel).toBe("on a hand-raise");
+  });
+
+  it("re-evaluates evening suppression against NOW, not against import time", () => {
+    // The regression this guards: `SNOOZE_CHOICES` used to be a module-level
+    // const derived once at import. An `ade code` session launched at 2pm would
+    // still offer "This evening" at 11pm — pointing at a deadline that has
+    // already passed — for as long as the process lived.
+    expect(resolveSnoozeChoices(localMs(2026, 4, 8, 14)).map((choice) => choice.key))
+      .toContain("evening");
+    expect(resolveSnoozeChoices(localMs(2026, 4, 8, 23)).map((choice) => choice.key))
+      .not.toContain("evening");
+    // …and the open-ended row survives the reshuffle, still last.
+    const lateChoices = resolveSnoozeChoices(localMs(2026, 4, 8, 23));
+    expect(lateChoices[lateChoices.length - 1]!.key).toBe("asked");
+  });
+
+  it("resolves the next-week choice to the coming Monday morning", () => {
+    const resolved = resolveSnoozeChoice("next-week", localMs(2026, 4, 8, 10));
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(`Expected next-week to resolve, got ${resolved.message}`);
+    expect(Date.parse(resolved.untilIso)).toBe(localMs(2026, 4, 13, 9));
+    expect(resolved.confirmation).toBe("Snoozed until next Monday.");
   });
 
   it("resolves a menu choice to a concrete future deadline", () => {
     const resolved = resolveSnoozeChoice("hour", NOW);
     expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
+    if (!resolved.ok) throw new Error(`Expected hour to resolve, got ${resolved.message}`);
     expect(Date.parse(resolved.untilIso)).toBe(NOW + 60 * 60_000);
     expect(resolved.confirmation).toBe("Snoozed for 1 hour.");
   });
@@ -217,7 +252,7 @@ describe("duration entry", () => {
   it("accepts free text through the shared parser and reuses the shared wake copy", () => {
     const resolved = resolveSnoozeFreeText("3h", NOW);
     expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
+    if (!resolved.ok) throw new Error(`Expected free text to resolve, got ${resolved.message}`);
     expect(Date.parse(resolved.untilIso)).toBe(NOW + 3 * 60 * 60_000);
     expect(resolved.confirmation).toBe("Snoozed · wakes in 3h.");
   });

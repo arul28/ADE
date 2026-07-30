@@ -1225,6 +1225,12 @@ same priority model with compact count/status treatments. The iOS app
 still updates the shared snapshot and calls
 `WidgetCenter.shared.reloadAllTimelines()` after snapshot writes.
 
+Agent rows mirror desktop's shared status vocabulary: blue `Working`, amber
+`Needs you`, emerald `Done`, red `Failed`, and neutral `Stale`. Amber is
+reserved for the one state asking the user to act. Syncing, offline hosts,
+blocked work, and a live-but-silent stale run remain neutral; stale uses a
+clock rather than a network-offline glyph.
+
 Home Screen widgets and Control Center widgets are intentionally not
 registered. ActivityKit and Dynamic Island **are** now registered — see
 the Live Activity section below.
@@ -1357,6 +1363,11 @@ Each row uses the shared item destination and actions:
 - **Failed** — exact agent navigation and a locally safe restart affordance.
 - **CI failing / review requested / merge ready** — exact PR tab navigation.
 - **Completed / merged** — retained in Recent until seen or dismissed.
+
+The drawer uses the same one-hue-one-meaning contract as the widget and desktop
+sidebar. `blocked` is a neutral Live item with an Open action, distinct from the
+amber `awaitingInput` kind; running uses the shared dotted-circle glyph, and a
+stale run says `Stale` with a clock rather than claiming the host is offline.
 
 Acknowledgments write through the account relay so desktop, ADE Notch, and
 mobile settle together. A device never executes a current-host App Intent for
@@ -1598,6 +1609,9 @@ desktop: deterministic approval/question/`ade chat ask` is `Needs you`; an
 explicit settle applies only while the session is at rest; failed and stopped
 remain distinct; a clean process exit is merely ended; and a running row with a
 real activity timestamp at least three hours old is `Stale`, not settled.
+`AgentRunPhase` mirrors `shared/sessionStatusPresentation.ts`: work in flight is
+blue `Working`, only a raised hand is amber, a clean unseen outcome is emerald
+`Done`, failure is red, and stale/non-actionable truth is neutral.
 
 The replicated `terminal_sessions` lifecycle columns flow through
 `Database.swift`, the active-project session summaries, and

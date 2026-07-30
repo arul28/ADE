@@ -1,23 +1,32 @@
 import type { LaneSummary } from "../../../shared/types";
 import {
+  ALLOCATABLE_LANE_COLORS,
   LANE_CLASSIC_COLORS,
   LANE_CLASSIC_COUNT,
   LANE_COLOR_PALETTE,
   LANE_FALLBACK_COLORS,
   LANE_RAINBOW_COLORS,
+  PRIMARY_LANE_COLOR,
   allocateLaneColor,
   laneColorName,
   nextAvailableLaneColor,
+  resolveLaneAccentColor,
   type LaneColor,
 } from "../../../shared/laneColorPalette";
 
 export {
+  // `LANE_COLOR_PALETTE` is everything the manual picker may offer;
+  // `ALLOCATABLE_LANE_COLORS` is what auto-assignment may draw from. They differ
+  // by exactly one entry: the Primary lane's reserved ADE purple.
+  ALLOCATABLE_LANE_COLORS,
   LANE_CLASSIC_COLORS,
   LANE_CLASSIC_COUNT,
   LANE_COLOR_PALETTE,
   LANE_FALLBACK_COLORS,
   LANE_RAINBOW_COLORS,
+  PRIMARY_LANE_COLOR,
   laneColorName,
+  resolveLaneAccentColor,
   type LaneColor,
 };
 

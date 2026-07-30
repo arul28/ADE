@@ -9,7 +9,7 @@ import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shar
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
-import { allocateLaneColor } from "../../../shared/laneColorPalette";
+import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   finalizeLaneLinearIssue,
@@ -2255,11 +2255,24 @@ export function createLaneService({
   };
 
   const ensurePrimaryLane = async (): Promise<void> => {
-    const existing = db.get<{ id: string }>(
-      "select id from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' limit 1",
+    const existing = db.get<{ id: string; color: string | null }>(
+      "select id, color from lanes where project_id = ? and lane_type = 'primary' and status != 'archived' limit 1",
       [projectId]
     );
-    if (existing?.id) return;
+    if (existing?.id) {
+      // Backfill: primaries created before the colour was reserved stored NULL.
+      // The Work sidebar normalises that at render time, but the Lanes tab, the
+      // lane combobox, and iOS all read `lane.color` raw — so without this the
+      // same lane is purple on one surface and grey on another. Repairing at
+      // the source is what makes "Primary is always ADE purple" true everywhere
+      // rather than true in one pane. Idempotent, so it costs nothing on the
+      // overwhelmingly common already-correct path.
+      if (!existing.color) {
+        db.run("update lanes set color = ? where id = ?", [PRIMARY_LANE_COLOR, existing.id]);
+        invalidateLaneListCache();
+      }
+      return;
+    }
 
     const laneId = randomUUID();
     const now = new Date().toISOString();
@@ -2270,9 +2283,12 @@ export function createLaneService({
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
           attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, null, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, ?, null, null, 'active', ?, null)
       `,
-      [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, primaryWorktreePath, now]
+      // Primary does NOT draw from the allocation pool: its colour is reserved
+      // ADE purple in every project on every machine, which is what makes it the
+      // one lane colour worth memorising (see `PRIMARY_LANE_COLOR`).
+      [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, primaryWorktreePath, PRIMARY_LANE_COLOR, now]
     );
     invalidateLaneListCache();
   };

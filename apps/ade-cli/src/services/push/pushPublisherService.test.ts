@@ -1856,6 +1856,45 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("retires a user-stopped CLI run without publishing a failure", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-stopped", {
+      title: "codex in work",
+      toolType: "codex",
+      chatSessionId: null,
+    });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "work",
+      sessionId: "cli-stopped",
+      runtimeState: "running",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publisher._debug.runs.get("cli-stopped")?.phase).toBe("running");
+
+    publisher._debug.onPtyExit("scope-1", {
+      sessionId: "cli-stopped",
+      ptyId: "pty-stopped",
+      laneId: "work",
+      exitCode: 143,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publisher._debug.runs.has("cli-stopped")).toBe(false);
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    expect(lastPayload.liveActivity?.[0]?.contentState?.runs ?? []).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "cli-stopped", phase: "failed" }),
+      ]),
+    );
+    expect((lastPayload.notifications ?? []).filter(
+      (item: { title?: string }) => item.title === "CLI session ended",
+    )).toHaveLength(0);
+
+    publisher.dispose();
+  });
+
   it("publishes explicit CLI attention requests through the gated question path", async () => {
     const { publisher, publish } = makeHarness();
     await publisher.start();
@@ -2589,14 +2628,18 @@ describe("createPushRelayClient", () => {
     const snapshot = client.getAttentionSnapshot();
     await Promise.resolve();
     currentAccountUserId = "account-b";
-    resolveResponse(Response.json({
-      contractVersion: 1,
-      streamId: "account-a",
-      revision: 1,
-      generatedAt: "2026-07-29T00:00:00.000Z",
-      items: [],
-      tombstones: [],
-    }));
+    resolveResponse({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        contractVersion: 1,
+        streamId: "account-a",
+        revision: 1,
+        generatedAt: "2026-07-29T00:00:00.000Z",
+        items: [],
+        tombstones: [],
+      }),
+    } as Response);
 
     await expect(snapshot).rejects.toThrow(/account changed/i);
   });

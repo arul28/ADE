@@ -936,12 +936,101 @@ final class AttentionDrawerModelTests: XCTestCase {
     }
 
     func testAccountAttentionPhaseLabelsUseUnifiedVocabulary() {
-        XCTAssertEqual(AccountAttentionPhase.running.displayLabel, "Running")
+        // Same words as `AgentRunPhase.label` and the desktop sidebar. The
+        // drawer and the Lock Screen sit on one device; two names for one
+        // session state is the bug this vocabulary exists to prevent.
+        XCTAssertEqual(AccountAttentionPhase.running.displayLabel, "Working")
         XCTAssertEqual(AccountAttentionPhase.needsYou.displayLabel, "Needs you")
         XCTAssertEqual(AccountAttentionPhase.checksFailing.displayLabel, "Checks failing")
         XCTAssertEqual(AccountAttentionPhase.reviewRequested.displayLabel, "Review requested")
         XCTAssertEqual(AccountAttentionPhase.mergeReady.displayLabel, "Ready to merge")
-        XCTAssertEqual(AccountAttentionPhase.completed.displayLabel, "Completed")
+        XCTAssertEqual(AccountAttentionPhase.completed.displayLabel, "Done")
+        XCTAssertEqual(AccountAttentionPhase.stale.displayLabel, "Stale")
+        XCTAssertEqual(AgentRunPhase.running.label, AccountAttentionPhase.running.displayLabel)
+        XCTAssertEqual(AgentRunPhase.completed.label, AccountAttentionPhase.completed.displayLabel)
+    }
+
+    func testWorkspaceAgentPhaseFallbackUsesUnifiedVocabulary() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let agents = [
+            AgentSnapshot(
+                sessionId: "working",
+                provider: "codex",
+                title: "Working copy",
+                status: "running",
+                awaitingInput: false,
+                lastActivityAt: now,
+                elapsedSeconds: 20,
+                preview: nil,
+                progress: nil,
+                phase: "running",
+                toolCalls: 1
+            ),
+            AgentSnapshot(
+                sessionId: "done-phase",
+                provider: "claude",
+                title: "Done copy",
+                status: "running",
+                awaitingInput: false,
+                lastActivityAt: now.addingTimeInterval(-1),
+                elapsedSeconds: 30,
+                preview: nil,
+                progress: nil,
+                phase: "completed",
+                toolCalls: 2
+            ),
+        ]
+
+        model.rebuild(from: WorkspaceSnapshot(
+            generatedAt: now,
+            agents: agents,
+            prs: [],
+            connection: "connected"
+        ))
+
+        XCTAssertEqual(model.liveItems.map(\.sessionId), ["working", "done-phase"])
+        XCTAssertEqual(model.liveItems.first(where: { $0.sessionId == "working" })?.subtitle, "Working")
+        XCTAssertEqual(model.liveItems.first(where: { $0.sessionId == "done-phase" })?.subtitle, "Done")
+    }
+
+    func testBlockedItemIsNotFiledOrColouredAsYourMove() {
+        // `blocked` used to borrow `awaitingInput`'s amber bell while filing
+        // itself under `live` — the row said "act on me" in colour and "just
+        // watching" in placement. `needsInbox` excludes it, so neutral is the
+        // honest reading.
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let machine = AccountAttentionMachine(
+            machineKey: "studio",
+            accountMachineKey: "account-studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now
+        )
+        let blocked = AccountAttentionItem(
+            id: "blocked",
+            revision: 1,
+            fingerprint: "blocked:1",
+            kind: .agent,
+            eventKind: .agentRunning,
+            phase: .blocked,
+            machine: machine,
+            project: .init(projectId: "ade", name: "ADE"),
+            title: "Waiting on a dependency",
+            preview: "Blocked",
+            privacyPreview: "Agent blocked",
+            destination: .session(sessionId: "session-blocked", itemId: nil, eventId: nil),
+            occurredAt: now,
+            updatedAt: now
+        )
+
+        XCTAssertFalse(blocked.needsInbox, "blocked never reaches the inbox")
+
+        model.rebuild(from: AccountAttentionSnapshot(revision: 1, generatedAt: now, items: [blocked]))
+
+        XCTAssertEqual(model.liveItems.first?.kind, .blocked)
+        XCTAssertTrue(model.items.isEmpty, "blocked must not land in the Needs you collection")
     }
 
     private func makeAccountItem(

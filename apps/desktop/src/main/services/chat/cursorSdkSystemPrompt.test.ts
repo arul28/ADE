@@ -56,7 +56,10 @@ describe("buildCursorSdkSystemPrompt", () => {
     const out = buildCursorSdkSystemPrompt({ runtime: "local" });
     expect(out.text).toContain('ade chat note "running e2e shard 2/4"');
     expect(out.text).toContain('ade chat ask "<the exact question>"');
-    expect(out.text).toContain("ade chat settle --outcome");
+    // Settlement is user- and PR-merge-driven only; the prompt must never hand
+    // a Cursor agent a settle command again.
+    expect(out.text).toContain("You cannot settle or unsettle a session");
+    expect(out.text).not.toContain("ade chat settle --outcome");
     expect(out.sections.find((section) => section.name === "session-status")).toEqual(
       expect.objectContaining({ truncated: false }),
     );

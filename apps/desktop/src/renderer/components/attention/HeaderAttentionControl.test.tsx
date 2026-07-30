@@ -452,4 +452,67 @@ describe("header Attention summary", () => {
       .toBe("Attention · nothing waiting");
     expect(summarizeAttentionForHeader({}, NOW).tone).toBe("neutral");
   });
+
+  /**
+   * The header is the loudest surface ADE has, so amber there has to keep
+   * meaning exactly one thing. A run that merely finished is an outcome, not a
+   * request: it may collect in the badge, but it must not colour the bell.
+   */
+  it("lights amber only for work that needs the user, and emerald for finished work", () => {
+    const doneOnly = summarizeAttentionForHeader(
+      byId([item("done", "completed"), item("merged", "merged", { kind: "pull_request" })]),
+      NOW,
+    );
+
+    expect(doneOnly.buckets.map((bucket) => bucket.id)).toEqual(["done"]);
+    expect(doneOnly.tone).toBe("emerald");
+    expect(doneOnly.headline).toBe("2 done");
+
+    const raisedHand = summarizeAttentionForHeader(
+      byId([item("done", "completed"), item("asks", "needs_you")]),
+      NOW,
+    );
+
+    expect(raisedHand.tone).toBe("amber");
+    expect(raisedHand.buckets.map((bucket) => bucket.id)).toEqual(["needs_you", "done"]);
+    expect(raisedHand.buckets.map((bucket) => bucket.tone)).toEqual(["amber", "emerald"]);
+  });
+
+  it("separates an outstanding PR review from work that is simply finished", () => {
+    const summary = summarizeAttentionForHeader(
+      byId([
+        item("review", "review_requested", { kind: "pull_request" }),
+        item("done", "completed"),
+      ]),
+      NOW,
+    );
+
+    expect(summary.buckets.map((bucket) => bucket.id)).toEqual(["review", "done"]);
+    expect(summary.buckets.map((bucket) => bucket.tone)).toEqual(["violet", "emerald"]);
+    expect(attentionHeaderTriggerLabel(summary)).toBe("Attention · 1 to review · 1 done");
+  });
+
+  /**
+   * Stale is a silence, not a signal. It used to share amber with a raised
+   * hand; it must now neither colour the header nor inflate the badge.
+   */
+  it("keeps stale and already-open work out of every count", () => {
+    const summary = summarizeAttentionForHeader(
+      byId([
+        item("quiet", "stale"),
+        item("open", "open", { kind: "pull_request" }),
+        item("closed", "closed", { kind: "pull_request" }),
+      ]),
+      NOW,
+    );
+
+    expect(summary.buckets).toEqual([]);
+    expect(summary.waitingCount).toBe(0);
+    expect(summary.liveCount).toBe(0);
+    expect(summary.tone).toBe("neutral");
+    expect(summary.headline).toBe("All clear");
+    // Still tracked — the full Attention center can show them; the header just
+    // stays quiet about them.
+    expect(summary.trackedCount).toBe(3);
+  });
 });

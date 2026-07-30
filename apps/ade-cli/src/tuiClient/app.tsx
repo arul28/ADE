@@ -139,9 +139,9 @@ import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "
 import { deriveChatInfoSnapshot } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
-  SNOOZE_CHOICES,
   resolveSessionTarget,
   resolveSnoozeChoice,
+  resolveSnoozeChoices,
   resolveSnoozeFreeText,
   clearWokeMarkerOnVisit as clearSessionWokeMarkerOnVisit,
   sessionLifecycleCommandFor,
@@ -9395,22 +9395,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   /**
    * Duration entry for `/session snooze` with no duration given. Uses the same
    * right-pane list + arrow/enter selection every other TUI chooser uses
-   * (`/switch`, `/secrets`, `/chats`), with the shared four options in the
-   * shared order; free text stays available by typing the duration on the
-   * command line instead.
+   * (`/switch`, `/secrets`, `/chats`), with the shared presets in the shared
+   * order; free text stays available by typing the duration on the command line
+   * instead.
+   *
+   * Resolved on every open, never hoisted: the shared resolver suppresses
+   * time-of-day presets that have gone stale, and a long-lived `ade code`
+   * session must see that decision made against NOW, not against launch time.
    */
   const openSnoozeDurationPalette = useCallback((sessionId: string, sessionLabel: string): void => {
     pendingSnoozeSessionIdRef.current = sessionId;
     setRightSelectionIndex(0);
+    const choices = resolveSnoozeChoices();
     setRightPane({
       kind: "list",
       title: `Snooze · ${sessionLabel}`,
       rows: [
-        ...SNOOZE_CHOICES.map((choice) => choice.label),
+        ...choices.map((choice) => `${choice.label} · ${choice.whenLabel}`),
         "",
         "Free text: /session snooze [id] 45m · 1.5h · 2d",
       ],
-      action: { kind: "snooze-duration", ids: [...SNOOZE_CHOICES.map((choice) => choice.key), "", ""] },
+      action: { kind: "snooze-duration", ids: [...choices.map((choice) => choice.key), "", ""] },
     });
   }, []);
 
@@ -10840,7 +10845,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           "  /session wake [id]                   bring a snoozed row back now",
           "  /session settle [id] [outcome]       file the row as done",
           "  /session unsettle [id]               undo a settle",
-          "  /session keep-active [id]            pin the row active so it never settles on its own",
+          "  /session keep-active [id]            pin the row active against a later settle",
           "",
           "Run /session snooze with no duration to pick one from the list.",
         ].join("\n"),
@@ -10900,9 +10905,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           await unsettleSession(conn, target.sessionId);
           addNotice(`Removed the session's settled state.${scope}`, "success");
         } else {
-          // keep-active: the tri-state override's "active" pin. It is the only
-          // way to hold a clean-exit row out of the quiet tier, because those
-          // rows derive their settle and have no settledAt to clear.
+          // keep-active: the tri-state override's "active" pin. It suppresses
+          // the settled tier for a row even if something later writes
+          // settled_at (e.g. the PR-merge policy), so the user can hold a row
+          // in the active list. Nothing DERIVES a settle — a clean process
+          // exit is "ended", never "settled" (see sessionCanonicalState.ts).
           await setSessionSettleOverride(conn, target.sessionId, "active");
           addNotice(`Pinned the session active.${scope}`, "success");
         }

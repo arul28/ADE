@@ -345,12 +345,12 @@ private struct LockScreenPriorityStatus {
         } else if let first = running.first {
             self = .init(
                 kind: .running,
-                title: running.count == 1 ? "1 agent running" : "\(running.count) agents running",
+                title: running.count == 1 ? "1 agent working" : "\(running.count) agents working",
                 detail: hideDetails ? "Agent work is in progress" : Self.runningDetail(first),
-                inlineText: "ADE · \(running.count) running",
+                inlineText: "ADE · \(running.count) working",
                 count: running.count,
                 symbol: "circle.dotted",
-                shortLabel: "RUN",
+                shortLabel: "WORK",
                 tint: ADESharedTheme.statusRunning,
                 destinationURL: Self.sessionURL(first.sessionId),
                 metrics: metrics
@@ -377,7 +377,10 @@ private struct LockScreenPriorityStatus {
                 count: 0,
                 symbol: "arrow.triangle.2.circlepath",
                 shortLabel: "SYNC",
-                tint: ADESharedTheme.statusAttention,
+                // Neutral, not amber. A sync in flight is true but not
+                // actionable — nobody is being asked for anything — and amber
+                // is spent only on "your move".
+                tint: ADESharedTheme.statusIdle,
                 destinationURL: Self.workspaceURL,
                 metrics: metrics
             )
@@ -390,7 +393,13 @@ private struct LockScreenPriorityStatus {
                 count: 0,
                 symbol: "wifi.slash",
                 shortLabel: "OFF",
-                tint: ADESharedTheme.statusFailed,
+                // Neutral, like the other two "Mac offline" branches above.
+                // Red is the alarm hue and now means only "it broke" — a host
+                // that is simply not reachable is true, but it is not a
+                // failure, and three offline states in one widget wearing two
+                // different colours is exactly how a hue stops meaning
+                // anything.
+                tint: ADESharedTheme.statusIdle,
                 destinationURL: Self.workspaceURL,
                 metrics: metrics
             )
@@ -482,7 +491,7 @@ private struct LockScreenPriorityStatus {
     ) -> [Metric] {
         var result: [Metric] = []
         if runningCount > 0 {
-            result.append(.init(id: "running", label: "\(runningCount) run", symbol: "circle.dotted"))
+            result.append(.init(id: "running", label: "\(runningCount) working", symbol: "circle.dotted"))
         }
         if waitingCount > 0 {
             result.append(.init(id: "waiting", label: "\(waitingCount) wait", symbol: "bell.fill"))
@@ -508,12 +517,21 @@ private struct LockScreenPriorityStatus {
         }
     }
 
+    /// Glyph / label / hue for the focus row. Amber appears exactly once here,
+    /// on `.needsYou`, and that is the whole rule (see `AgentRunPhase` and the
+    /// desktop's `sessionStatusPresentation`).
     private static func presentation(
         for phase: AccountAttentionPhase
     ) -> (kind: Kind, symbol: String, label: String, tint: Color) {
         switch phase {
-        case .needsYou, .blocked:
+        case .needsYou:
             return (.awaitingInput, "bell.badge.fill", "YOU", ADESharedTheme.warningAmber)
+        // Blocked is neutral, not amber: `AccountAttentionItem.needsInbox`
+        // deliberately excludes it, so it never reaches the inbox and is not
+        // the user's move. Painting it amber made "go act" and "waiting on
+        // something else" the same colour.
+        case .blocked:
+            return (.idle, "hourglass", "HOLD", ADESharedTheme.statusIdle)
         case .failed:
             return (.failed, "xmark.octagon.fill", "FAIL", ADESharedTheme.statusFailed)
         case .checksFailing, .changesRequested:
@@ -523,11 +541,18 @@ private struct LockScreenPriorityStatus {
         case .mergeReady:
             return (.mergeReady, "checkmark.seal.fill", "READY", ADESharedTheme.statusSuccess)
         case .starting, .running:
-            return (.running, "waveform.path.ecg", "LIVE", ADESharedTheme.statusRunning)
+            // Same dashed-circle glyph the snapshot path and the desktop
+            // sidebar use for work in flight; the widget used to show a
+            // heartbeat trace here and a dotted circle two branches down.
+            return (.running, "circle.dotted", "WORK", ADESharedTheme.statusRunning)
         case .open:
             return (.idle, "arrow.triangle.pull", "OPEN", ADESharedTheme.statusRunning)
+        // Stale is a silence, not a disconnection: the run is alive and has
+        // said nothing for hours. A clock asks "how long?", which is the
+        // question the row actually raises; `wifi.slash` sent people to check
+        // their network.
         case .stale:
-            return (.offline, "wifi.slash", "OFF", ADESharedTheme.statusIdle)
+            return (.idle, "clock.badge.exclamationmark", "STALE", ADESharedTheme.statusIdle)
         case .completed:
             return (.idle, "checkmark.circle.fill", "DONE", ADESharedTheme.statusSuccess)
         case .merged:

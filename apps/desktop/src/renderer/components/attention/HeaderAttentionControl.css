@@ -73,6 +73,14 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone-color) 16%, transparent);
 }
 
+/* The one amber in this file that is not a phase tone, and it earns it: a
+   degraded surface always carries an `availability.recovery` the user has to
+   perform (retry, sign in, update or restart the host). It is literally "your
+   move", which is the only meaning amber is allowed to carry — see the one-hue
+   rule in apps/desktop/src/shared/sessionStatusPresentation.ts. It cannot be
+   confused with a phase tone either: `data-state` is single-valued and
+   `degraded` outranks `waiting`, so the trigger paints this amber instead of —
+   never alongside — the leading bucket's colour. */
 .attn-hdr-trigger[data-state="degraded"] {
   border-color: color-mix(in srgb, #f59e0b 42%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b 13%, transparent);

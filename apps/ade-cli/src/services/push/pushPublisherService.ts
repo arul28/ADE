@@ -14,7 +14,8 @@ import {
   type AttentionPresence,
   type AttentionSnapshot,
 } from "../../../../desktop/src/shared/types/attention";
-import type { PtyExitEvent } from "../../../../desktop/src/shared/types/sessions";
+import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
+import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
 import type {
   PushDeviceRegistration,
@@ -50,6 +51,29 @@ const PR_LIVE_ACTIVITY_MAX = 2;
 const DETAIL_MAX_CHARS = 160;
 /** Fixed lock-screen copy for failed runs — never leak error text to the widget. */
 const FAILED_DETAIL = "Run failed";
+
+/**
+ * Does a tracked CLI exit code describe a user-chosen stop rather than a
+ * failure? Derived, not re-invented: `ptyService.statusFromExit` maps 130
+ * (SIGINT / Ctrl-C) and 143 (SIGTERM / the Stop button) to the `disposed`
+ * terminal status, and `canonicalSessionState()` projects `disposed` to the
+ * `stopped` phase — which `sessionStatusPresentation.ts` renders neutral,
+ * explicitly not an alarm. This function asks the canonical module the same
+ * question rather than pattern-matching exit codes at the notification layer.
+ *
+ * The exit-code → status step is the one bit that must be mirrored: it lives in
+ * `apps/desktop/src/main/services/pty/ptyService.ts` (`statusFromExit`), which
+ * is Electron-main code this package cannot import. Keep the two in lockstep.
+ */
+function isUserStoppedExit(exitCode: number | null | undefined): boolean {
+  if (exitCode == null) return false;
+  const status: TerminalSessionStatus = exitCode === 0
+    ? "completed"
+    : exitCode === 130 || exitCode === 143
+      ? "disposed"
+      : "failed";
+  return canonicalSessionState({ status, exitCode }).phase === "stopped";
+}
 
 const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
@@ -666,7 +690,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           : phase === "failed"
             ? `${subject} failed`
             : phase === "completed"
-              ? `${subject} finished`
+              // "Done", not "finished": the shared status vocabulary in
+              // apps/desktop/src/shared/sessionStatusPresentation.ts labels the
+              // ready/idle tier "Done" on every surface, and a push title that
+              // disagrees with the row the user taps through to is a bug.
+              ? `${subject} is done`
               : `${subject} is working`,
         preview,
         privacyPreview: phase === "needs_you"
@@ -674,7 +702,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           : phase === "failed"
             ? "An ADE agent run failed."
             : phase === "completed"
-              ? "An ADE agent finished."
+              ? "An ADE agent is done."
               : "An ADE agent is working.",
         detail: run.detail ? sanitizeAttentionPreview(run.detail, 1_000) : null,
         recentActivity: run.detail ? [sanitizeAttentionPreview(run.detail)] : [],
@@ -1045,7 +1073,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const mostRecentPr = allPrActivities.sort((left, right) => right.updatedAt - left.updatedAt)[0];
     const startAlert = {
       title: activeCount > 0
-        ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`)
+        // "is working" matches the attention-item title built above and the
+        // shared `running` label in sessionStatusPresentation.ts.
+        ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is working` : `${activeCount} agent runs active`)
         : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
       body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
     };
@@ -1633,6 +1663,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const onPtyExit = (scopeKey: string, event: PtyExitEvent & { laneId: string }): void => {
+    // A user-chosen stop is neither a successful completion nor a failure.
+    // The Live Activity wire format has no stopped phase, so retire the row
+    // instead of lying with either terminal state.
+    if (isUserStoppedExit(event.exitCode)) {
+      runs.delete(event.sessionId);
+      recentRuns.delete(event.sessionId);
+      scheduleFlush(false);
+      return;
+    }
     // A tracked CLI run in the aggregate reaches its terminal phase here — the
     // runtime signal stream never reports exit codes.
     const run = runs.get(event.sessionId);
@@ -1642,7 +1681,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       recentRuns.set(run.sessionId, { ...run });
       scheduleFlush(false);
     }
-    // Keep it simple: only surface non-clean exits of tracked CLI sessions.
+    // Only surface non-clean exits of tracked CLI sessions — and only ones the
+    // user did not cause. A SIGINT/SIGTERM exit is `stopped`, not `failed`: the
+    // user pressed Ctrl-C or Stop, so they already know, and pushing an alert
+    // about an outcome they chose is exactly what teaches people to ignore
+    // alerts. Genuine non-zero failures still notify.
     if (event.exitCode == null || event.exitCode === 0) return;
     const resolveLaneName = scopes.get(scopeKey)?.resolveLaneName;
     const lane = resolveLaneName?.(event.laneId) ?? event.laneId ?? null;

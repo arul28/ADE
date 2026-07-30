@@ -123,8 +123,8 @@ The CTO reaches both through `ctoOperatorTools.ts`:
 | Tool | Purpose |
 | --- | --- |
 | `getSessionLifecycle` | Read the settle/snooze slice for any ADE session (chat or tracked CLI). |
-| `settleSession` / `unsettleSession` | Declare a session done (optionally with a one-line `outcome`) or return it to the active lifecycle. |
-| `setSessionSettleOverride` | Pin the tri-state override; `"active"` is what forces a derived clean-exit settle back to active. |
+| `settleSession` / `unsettleSession` | Declare a session done (optionally with a one-line `outcome`) or return it to the active lifecycle. These write `settle_source = "operator"`. The CTO is the one agent that retains this, as a user-configured operator acting on *other* rows; ordinary worker agents lost self-settlement in 2026-07 (see [terminals-and-sessions](../terminals-and-sessions/README.md)). |
+| `setSessionSettleOverride` | Pin the tri-state override; `"active"` is the keep-active pin that suppresses a declared settle. |
 | `snoozeSession` | Hide a row until a deadline (`untilIso` or `durationMinutes`). The session keeps running. |
 | `wakeSession` | "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed." Records `wokeReason` (default `manual`). |
 
