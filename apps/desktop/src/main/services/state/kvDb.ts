@@ -769,10 +769,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // older client hard-rejects, freezing its sync cursor entirely.
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "github_pr_projections",
+  "github_pr_stacks",
+  "github_pr_stack_entries",
   "github_webhook_deliveries",
   "lane_detail_snapshots",
   "lane_list_snapshots",
-  LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "pr_auto_link_ignores",
   // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
   // clients read effective config through RPC, never from a synced replica,
@@ -2497,6 +2498,51 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_github_pr_projections_project_updated on github_pr_projections(project_id, updated_at desc)");
   db.run("create index if not exists idx_github_pr_projections_project_repo on github_pr_projections(project_id, repo_owner, repo_name)");
+
+  db.run(`
+    create table if not exists github_pr_stacks (
+      project_id text not null,
+      repo_owner text collate nocase not null,
+      repo_name text collate nocase not null,
+      github_stack_number integer not null,
+      github_stack_id text not null,
+      github_node_id text,
+      base_branch text not null,
+      is_open integer not null default 1,
+      created_at text not null,
+      synced_at text not null,
+      last_error text,
+      primary key(project_id, repo_owner, repo_name, github_stack_number),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_github_pr_stacks_project_repo on github_pr_stacks(project_id, repo_owner, repo_name)");
+  db.run(`
+    create table if not exists github_pr_stack_entries (
+      project_id text not null,
+      repo_owner text collate nocase not null,
+      repo_name text collate nocase not null,
+      github_stack_number integer not null,
+      github_pr_number integer not null,
+      position integer not null,
+      state text not null,
+      is_draft integer not null default 0,
+      merged_at text,
+      head_branch text not null,
+      head_sha text not null,
+      primary key(project_id, repo_owner, repo_name, github_stack_number, github_pr_number),
+      foreign key(project_id) references projects(id),
+      foreign key(project_id, repo_owner, repo_name, github_stack_number)
+        references github_pr_stacks(project_id, repo_owner, repo_name, github_stack_number)
+        on delete cascade
+    )
+  `);
+  db.run(`
+    create unique index if not exists idx_github_pr_stack_entries_membership
+      on github_pr_stack_entries(project_id, repo_owner, repo_name, github_pr_number)
+  `);
+  db.run("create index if not exists idx_github_pr_stack_entries_pr on github_pr_stack_entries(project_id, repo_owner, repo_name, github_pr_number)");
+  db.run("create index if not exists idx_github_pr_stack_entries_position on github_pr_stack_entries(project_id, repo_owner, repo_name, github_stack_number, position)");
 
   db.run(`
     create table if not exists pr_auto_link_ignores (

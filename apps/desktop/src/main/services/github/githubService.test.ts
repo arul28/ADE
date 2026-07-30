@@ -179,6 +179,14 @@ describe("githubService.apiRequest", () => {
     expect(result.data).toEqual(payload);
     expect(result.response).toBeDefined();
     expect(result.response!.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-github-api-version": "2026-03-10",
+        }),
+      }),
+    );
   });
 
   it("aborts and rejects when the response body never finishes", async () => {

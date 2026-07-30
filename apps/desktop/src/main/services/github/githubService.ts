@@ -25,6 +25,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
+import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import {
   classifyGitHubAuthFailure,
   GitHubRateLimitError,
@@ -801,7 +802,8 @@ export function createGithubService({
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
-        "user-agent": "ade-desktop"
+        "user-agent": "ade-desktop",
+        "x-github-api-version": GITHUB_REST_API_VERSION,
       }
     });
 
@@ -850,6 +852,7 @@ export function createGithubService({
             accept: "application/vnd.github+json",
             authorization: `Bearer ${token}`,
             "user-agent": "ade-desktop",
+            "x-github-api-version": GITHUB_REST_API_VERSION,
           },
         },
       );
@@ -1028,7 +1031,8 @@ export function createGithubService({
       accept: args.accept?.trim() || "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       "content-type": args.body != null ? "application/json" : "text/plain",
-      "user-agent": "ade-desktop"
+      "user-agent": "ade-desktop",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     };
 
     // For GET requests, send If-None-Match with cached ETag if available.

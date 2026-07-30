@@ -947,6 +947,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           setIngressCursor({ source: "github-relay", cursor: pageLastCursor });
           for (const prId of pageIngestedPrIds) committedIngestedPrIds.add(prId);
         }
+        if (payload.cursorExpired === true && repo) {
+          await args.prService?.reconcileGithubStacks(repo).catch((error) => {
+            args.logger.warn("automations.github_stack_cursor_reconcile_failed", {
+              repo: `${repo.owner}/${repo.name}`,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
         lastSeenCursor = pageLastCursor;
         if (useLegacyProjectRoute || payload.hasMore !== true) break;
         if (!pageLastCursor || pageLastCursor === pageCursor) {

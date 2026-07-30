@@ -1,0 +1,1 @@
+export const GITHUB_REST_API_VERSION = "2026-03-10";

@@ -777,6 +777,52 @@ describe("automationIngressService", () => {
     );
   });
 
+  it("repairs repository stack state after an expired relay cursor is committed", async () => {
+    const setIngressCursor = vi.fn();
+    const reconcileGithubStacks = vi.fn(async () => []);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextCursor: "seq:9",
+      cursorExpired: true,
+      hasMore: false,
+    }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: () => "seq:2",
+        setIngressCursor,
+        getIngressStatus: () => ({}),
+      } as never,
+      prService: {
+        ingestGithubWebhook: vi.fn(),
+        reconcileGithubStacks,
+      } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(setIngressCursor).toHaveBeenCalledWith({
+      source: "github-relay",
+      cursor: "seq:9",
+    });
+    expect(reconcileGithubStacks).toHaveBeenCalledWith({
+      owner: "arul28",
+      name: "ADE",
+    });
+    expect(setIngressCursor.mock.invocationCallOrder[0]).toBeLessThan(
+      reconcileGithubStacks.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("skips a failing event and still advances the relay cursor (poison-event guard)", async () => {
     const logger = makeLogger();
     const setIngressCursor = vi.fn();

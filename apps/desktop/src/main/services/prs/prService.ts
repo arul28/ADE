@@ -109,6 +109,8 @@ import type {
   AiReviewSummaryArgs,
   AiReviewSummary,
   GitHubPrListItem,
+  GitHubPrStack,
+  GitHubPrStackMembership,
   GitHubPrSnapshot,
   GitHubWebhookIngestArgs,
   GitHubWebhookIngestResult,
@@ -163,6 +165,7 @@ import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
+import { createGithubStackStore } from "./githubStackStore";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
@@ -4772,8 +4775,9 @@ export function createPrService({
   repository(owner:$owner,name:$name){
     viewerPermission
     pullRequest(number:$number){
-      mergeable mergeStateStatus reviewDecision headRefOid
+      mergeable mergeStateStatus reviewDecision headRefOid baseRefName
       baseRef { branchProtectionRule { requiredApprovingReviewCount } }
+      stack { baseRefName }
       latestOpinionatedReviews(first:100){ nodes { state } }
     }
   }
@@ -4787,7 +4791,9 @@ export function createPrService({
             mergeStateStatus?: unknown;
             reviewDecision?: unknown;
             headRefOid?: unknown;
+            baseRefName?: unknown;
             baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+            stack?: { baseRefName?: unknown } | null;
             latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
           } | null;
         } | null;
@@ -4803,8 +4809,43 @@ export function createPrService({
       const pull = repository?.pullRequest ?? null;
       if (!pull) return null;
 
-      const requiredRaw = pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount;
-      const requiredApprovals = Number.isFinite(Number(requiredRaw)) ? Number(requiredRaw) : null;
+      const directBase = asString(pull.baseRefName).trim();
+      const stackBase = asString(pull.stack?.baseRefName).trim();
+      let requiredRaw = pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount;
+      if (stackBase && stackBase !== directBase) {
+        try {
+          const stackBaseData = await graphqlRequest<{
+            repository?: {
+              ref?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+            } | null;
+          }>(
+            `query($owner:String!,$name:String!,$qualifiedName:String!){
+  repository(owner:$owner,name:$name){
+    ref(qualifiedName:$qualifiedName){
+      branchProtectionRule { requiredApprovingReviewCount }
+    }
+  }
+}`,
+            {
+              owner: repo.owner,
+              name: repo.name,
+              qualifiedName: `refs/heads/${stackBase}`,
+            },
+          );
+          requiredRaw = stackBaseData.repository?.ref?.branchProtectionRule
+            ?.requiredApprovingReviewCount;
+        } catch (error) {
+          requiredRaw = null;
+          logger.warn("prs.computeStatus.stack_base_protection_failed", {
+            repo: `${repo.owner}/${repo.name}`,
+            prNumber,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      const requiredApprovals = requiredRaw != null && Number.isFinite(Number(requiredRaw))
+        ? Number(requiredRaw)
+        : null;
       const reviewNodes = Array.isArray(pull.latestOpinionatedReviews?.nodes)
         ? pull.latestOpinionatedReviews!.nodes!
         : [];
@@ -8539,7 +8580,10 @@ export function createPrService({
     includeStateCounts = false,
   ): void => {
     if (snapshot.repo) activeGithubRepo = snapshot.repo;
-    cachedGithubSnapshot = snapshot;
+    cachedGithubSnapshot = {
+      ...snapshot,
+      stacks: snapshot.repo ? githubStackStore.list(snapshot.repo) : [],
+    };
     cachedGithubSnapshotAt = capturedAt;
     cachedGithubSnapshotIncludesClosed = includeExternalClosed;
     cachedGithubSnapshotHistoryPageLimit = includeExternalClosed ? historyPageLimit : 0;
@@ -8586,6 +8630,7 @@ export function createPrService({
     linkedPrByRepoKey: Map<string, PullRequestRow>;
     groupByPrId: Map<string, { pr_id: string; group_id: string; group_type: "queue" | "integration" }>;
     workflowByPrId: Map<string, IntegrationProposalRow>;
+    stackByPrKey: Map<string, GitHubPrStackMembership>;
   };
 
   const loadGithubSnapshotMetadata = async (): Promise<GithubSnapshotMetadata> => {
@@ -8617,6 +8662,7 @@ export function createPrService({
       linkedPrByRepoKey,
       groupByPrId,
       workflowByPrId,
+      stackByPrKey: githubStackStore.membershipsByPr(activeGithubRepo),
     };
   };
 
@@ -8631,6 +8677,15 @@ export function createPrService({
     if (linked) return "single";
     return null;
   };
+
+  const githubStackStore = createGithubStackStore({
+    db,
+    projectId,
+    githubService,
+    logger,
+    onSnapshotChanged: invalidateGithubSnapshotCache,
+    onReconciled: () => emitPrsUpdated(),
+  });
 
   const gitHubItemFromProjection = (
     row: GitHubPrProjectionRow,
@@ -8673,6 +8728,7 @@ export function createPrService({
       labels: parseProjectionLabels(row.labels_json),
       isBot: Number(row.is_bot ?? 0) !== 0,
       commentCount: Number(row.comment_count ?? 0),
+      stack: metadata.stackByPrKey.get(repoPrKey(row.repo_owner, row.repo_name, githubPrNumber)) ?? null,
     };
   };
 
@@ -8725,6 +8781,9 @@ export function createPrService({
         : [],
       isBot: asString(rawPr?.user?.type).toLowerCase() === "bot",
       commentCount: Number(rawPr?.comments) || 0,
+      stack: githubStackStore.parseMembership(rawPr?.stack)
+        ?? metadata?.stackByPrKey.get(repoPrKey(repoOwner, repoName, githubPrNumber))
+        ?? null,
     };
   };
 
@@ -8805,6 +8864,14 @@ export function createPrService({
       };
     }
 
+    if (options.force === true && githubStackStore.list(repo).length > 0) {
+      await githubStackStore.reconcileRepository(repo).catch((error) => {
+        logger.warn("prs.github_stack_repository_reconcile_failed", {
+          repo: `${repo.owner}/${repo.name}`,
+          error: getErrorMessage(error),
+        });
+      });
+    }
     let metadata = await loadGithubSnapshotMetadata();
     const historyPageLimit = normalizeGithubHistoryPageLimit(options);
     const repoPullRequestMaxPages = options.includeExternalClosed === true
@@ -8835,6 +8902,14 @@ export function createPrService({
       metadata.pullRequestRows,
       { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
     );
+    const observedStackNumbers = new Set<number>();
+    for (const rawPull of repoPullRequestsRaw) {
+      const membership = githubStackStore.parseMembership(rawPull?.stack);
+      if (membership) observedStackNumbers.add(membership.number);
+    }
+    for (const stackNumber of observedStackNumbers) {
+      githubStackStore.scheduleReconcile(repo, stackNumber);
+    }
     upsertGithubPrProjectionsFromRawPulls(repo, repoPullRequestsRaw);
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
@@ -8922,7 +8997,7 @@ export function createPrService({
               hasExactStateCounts,
             );
           }
-          return snapshot;
+          return canPublishSnapshot ? cachedGithubSnapshot ?? snapshot : snapshot;
         })
         .finally(() => {
           if (githubSnapshotInFlight === inFlight) {
@@ -8995,7 +9070,7 @@ export function createPrService({
             });
           });
         }
-        return projectedSnapshot;
+        return cachedGithubSnapshot ?? projectedSnapshot;
       }
     }
     const compatibleInFlight = githubSnapshotInFlight;
@@ -9199,6 +9274,21 @@ export function createPrService({
         pruneGithubPrProjectionsForRepo({ owner: projection.repo_owner, name: projection.repo_name });
         linkedPrIds = applyProjectionToLinkedPrRows(projection);
         const repo = { owner: projection.repo_owner, name: projection.repo_name };
+        const webhookMembership = githubStackStore.parseMembership(
+          isRecord(rawPull?.stack) ? rawPull.stack : payload.stack,
+        );
+        const stackNumber = webhookMembership?.number
+          ?? githubStackStore.knownStackNumberForPr(repo, Number(projection.github_pr_number));
+        if (stackNumber) {
+          try {
+            await githubStackStore.reconcile(repo, stackNumber);
+          } catch {
+            // A dissolved stack returns 404 from the item endpoint. The
+            // authoritative repository list distinguishes that from a
+            // transient failure and removes stale local membership atomically.
+            await githubStackStore.reconcileRepository(repo);
+          }
+        }
         if (linkedPrIds.length === 0) {
           const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
           await autoMapRawPullsByBranch([rawPull], repo, lanes)
@@ -10571,6 +10661,18 @@ export function createPrService({
 
     async getGithubSnapshot(options?: GithubSnapshotOptions): Promise<GitHubPrSnapshot> {
       return await getGithubSnapshot(options);
+    },
+
+    listGithubStacks(repo?: GitHubRepoRef | null): GitHubPrStack[] {
+      return githubStackStore.list(repo);
+    },
+
+    async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
+      return await githubStackStore.reconcile(repo, stackNumber);
+    },
+
+    async reconcileGithubStacks(repo: GitHubRepoRef): Promise<GitHubPrStack[]> {
+      return await githubStackStore.reconcileRepository(repo);
     },
 
     async ingestGithubWebhook(args: GitHubWebhookIngestArgs): Promise<GitHubWebhookIngestResult> {

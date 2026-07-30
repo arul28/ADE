@@ -193,6 +193,41 @@ export type PrReviewThread = {
   comments: PrReviewThreadComment[];
 };
 
+export type GitHubPrStackMembership = {
+  /** Global GitHub stack identifier. */
+  id: string;
+  /** Repository-scoped stack number shown by GitHub. */
+  number: number;
+  size: number;
+  /** One-based position, where 1 is closest to the stack base. */
+  position: number;
+  baseBranch: string;
+};
+
+export type GitHubPrStackEntry = {
+  githubPrNumber: number;
+  position: number;
+  state: "open" | "closed";
+  isDraft: boolean;
+  mergedAt: string | null;
+  headBranch: string;
+  headSha: string;
+};
+
+export type GitHubPrStack = {
+  id: string;
+  number: number;
+  nodeId: string | null;
+  repoOwner: string;
+  repoName: string;
+  baseBranch: string;
+  open: boolean;
+  createdAt: string;
+  syncedAt: string;
+  lastError: string | null;
+  entries: GitHubPrStackEntry[];
+};
+
 export type GitHubPrListItem = {
   id: string;
   scope: "repo" | "external";
@@ -220,6 +255,8 @@ export type GitHubPrListItem = {
   labels: PrLabel[];
   isBot: boolean;
   commentCount: number;
+  /** Additive for compatibility with older runtime snapshots. */
+  stack?: GitHubPrStackMembership | null;
 };
 
 export type GitHubPrSnapshot = {
@@ -228,6 +265,8 @@ export type GitHubPrSnapshot = {
   repoPullRequests: GitHubPrListItem[];
   externalPullRequests: GitHubPrListItem[];
   syncedAt: string;
+  /** Complete authoritative GitHub stack snapshots for this repository. */
+  stacks?: GitHubPrStack[];
   history?: {
     includeExternalClosed: boolean;
     pageLimit: number;

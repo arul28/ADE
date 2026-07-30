@@ -283,6 +283,7 @@ describe("webhook relay", () => {
       expect(init?.headers).toEqual(expect.objectContaining({
         authorization: `Bearer ${token}`,
         "user-agent": "ADE GitHub Webhook Relay",
+        "x-github-api-version": "2026-03-10",
       }));
       return new Response(JSON.stringify({ full_name: "owner/repo", permissions }), {
         status: 200,
