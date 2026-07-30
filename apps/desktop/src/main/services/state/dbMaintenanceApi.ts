@@ -8,6 +8,10 @@
 // ledger. Hoisted here so a policy change updates every enforcement site and
 // the Settings copy in lockstep.
 const DAY_MS = 24 * 60 * 60 * 1_000;
+/** Machine-local cron occurrence claims older than this are pruned at claim time. */
+export const AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_DAYS = 35;
+export const AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_MS =
+  AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_DAYS * DAY_MS;
 /** Automation ingress events older than this are pruned (write-time + doctor). */
 export const INGRESS_EVENT_RETENTION_MS = 7 * DAY_MS;
 /** Newest non-dispatched ingress rows kept per project after age pruning. */

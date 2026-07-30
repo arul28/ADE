@@ -6568,6 +6568,13 @@ export type AgentChatTurnSettledEvent = Readonly<{
   sessionSurface: AgentChatSurface;
 }>;
 
+type AgentChatAutomationService = {
+  list: () => any[];
+  triggerManually: (args: any) => Promise<any>;
+  listRuns: (args?: any) => any[];
+  cancelRunForDeletedChat: (args: { sessionId: string; runId?: string | null }) => void;
+};
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -6599,7 +6606,7 @@ export function createAgentChatService(args: {
     ReturnType<typeof createPtyService>,
     "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
   > | null;
-  getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
+  getAutomationService?: () => AgentChatAutomationService | null;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
@@ -39175,6 +39182,22 @@ export function createAgentChatService(args: {
     }
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    }
+
+    const automationRunId = managedSessions.get(trimmedSessionId)?.session.automationRunId
+      ?? (await getSessionSummary(trimmedSessionId))?.automationRunId
+      ?? null;
+    try {
+      getAutomationService?.()?.cancelRunForDeletedChat({
+        sessionId: trimmedSessionId,
+        runId: automationRunId,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.automation_run_cancel_before_delete_failed", {
+        sessionId: trimmedSessionId,
+        automationRunId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     await scheduledWorkReady;

@@ -17026,6 +17026,48 @@ describe("createAgentChatService", () => {
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
 
+    it("terminates an automation Codex provider and cancels its open automation run", async () => {
+      const processKillSpy = vi.spyOn(process, "kill").mockImplementation(() => true as any);
+      const cancelRunForDeletedChat = vi.fn();
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService } = createService({
+          getAutomationService: () => ({
+            list: () => [],
+            triggerManually: vi.fn(),
+            listRuns: () => [],
+            cancelRunForDeletedChat,
+          }),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          surface: "automation",
+          automationId: "release-ade",
+          automationRunId: "run-release",
+        });
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Run the release.",
+        }, { awaitDispatch: true });
+
+        await service.deleteSession({ sessionId: session.id });
+
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
+        expect(sessionService.get(session.id)).toBeNull();
+        expect(cancelRunForDeletedChat).toHaveBeenCalledWith({
+          sessionId: session.id,
+          runId: "run-release",
+        });
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGKILL");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("purges a running Codex chat even when app-server interrupt and archive requests hang", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service, sessionService } = createService({
