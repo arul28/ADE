@@ -3359,7 +3359,7 @@ function renderEvent(
     );
   }
 
-  /* ── Spawn-completion wake header (ADE woke this chat) ── */
+  /* ── Spawn-completion header ── */
   if (event.type === "spawn_wake_divider") {
     const summary = event.summary?.trim();
     return (
@@ -3368,7 +3368,7 @@ function renderEvent(
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
           <span className="inline-flex shrink-0 items-center gap-1.5">
             <Robot size={11} weight="duotone" className="text-violet-300/75" aria-hidden />
-            ADE woke this chat
+            Subagent returned
           </span>
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
         </div>

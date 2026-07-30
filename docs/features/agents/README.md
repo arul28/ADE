@@ -110,8 +110,11 @@ both accept `--parent`, `--no-parent`, and `--type subagent|peer|none`. Plain
 shell terminals do not record this lineage. For a chat child, `--type` sets
 its `AgentChatSpawnKind`, which is **cosmetic to capabilities**: the child is
 a normal agent with the same runtime, permissions, and tools regardless of
-type. It also selects the chat completion-report policy: `subagent` wakes the
-spawner, `peer` leaves a quiet note, and `none` (the default) reports nothing.
+type. It also selects the chat completion-report policy: `subagent` reports
+back to the spawner (steering an active Claude or Codex turn where supported,
+using the provider-normalized steer fallback for other active providers, and
+the normal message path when idle), `peer` leaves a quiet note, and `none`
+(the default) reports nothing.
 
 For a CLI child, the same parent/type fields are persisted in the tracked
 session's `resumeMetadata` and projected onto `TerminalSessionSummary` for
@@ -121,8 +124,8 @@ terminal ownership, and a later resume-command refresh preserves the lineage.
 The orchestrator's `spawnAgent` tool
 (`services/ai/tools/orchestrationTools.ts`) and the orchestration domain
 spawn path (`services/orchestration/orchestrationDomain.ts`) set the same
-field, defaulting to `spawnKind: "subagent"` so orchestration workers wake
-their lead. A `subagent` child is additionally handed
+field, defaulting to `spawnKind: "subagent"` so orchestration workers report
+back to their lead without polling. A `subagent` child is additionally handed
 `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and a self-report guidance
 line so it can optionally post its own summary through
 `chat.messageSession` on top of ADE's automatic report.
@@ -136,8 +139,9 @@ when a worker or validator reaches a terminal state the service enqueues a
 the lead, and the lead can also block on the `awaitAgent` tool. See
 [Tool Registration › Orchestration sessions](tool-registration.md#in-process-path).
 
-The runtime mechanics — the completion-report policy, the wake/notice
-delivery, and the navigation/pill/breadcrumb surfacing — live in
+The runtime mechanics — provider-native mid-turn completion steering, the
+idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
+surfacing — live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
 When the spawned work must carry the current lane's unmerged commits, spawn
 into a child lane instead of a fresh one — see

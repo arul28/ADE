@@ -28426,7 +28426,7 @@ export function createAgentChatService(args: {
           kind: "wake",
           text: `Your subagent "${childTitle}" finished — ${summary}`,
           metadata: { spawnCompletion },
-        }).catch(onCompletionDeliveryFailed);
+        }, { trustedSpawnCompletion: true }).catch(onCompletionDeliveryFailed);
       } else {
         emitChatEvent(parent, {
           type: "system_notice",
@@ -31246,9 +31246,11 @@ export function createAgentChatService(args: {
     cloudOverrides,
     allowActiveSession = false,
     allowContinuityRecovery = false,
+    allowPendingInput = false,
   }: AgentChatSendArgs & {
     allowActiveSession?: boolean;
     allowContinuityRecovery?: boolean;
+    allowPendingInput?: boolean;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
@@ -31267,7 +31269,7 @@ export function createAgentChatService(args: {
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
     const visibleText = rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
 
-    if (hasLivePendingInput(managed) && !metadata?.scheduledWake) {
+    if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
@@ -35102,7 +35104,10 @@ export function createAgentChatService(args: {
     return Date.now();
   };
 
-  const steer = async ({ sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const steerWithOptions = async (
+    { sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs,
+    options?: { allowPendingInput?: boolean },
+  ): Promise<AgentChatSteerResult> => {
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
     }
@@ -35119,7 +35124,7 @@ export function createAgentChatService(args: {
     if (dispatchMode && managed.session.provider !== "claude") {
       throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
     }
-    if (hasLivePendingInput(managed) && !metadata?.scheduledWake) {
+    if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
 
@@ -35134,6 +35139,7 @@ export function createAgentChatService(args: {
           attachments,
           contextAttachments,
           metadata,
+          allowPendingInput: options?.allowPendingInput,
         });
         if (!preparedSteer) {
           return { steerId, queued: false };
@@ -35179,6 +35185,7 @@ export function createAgentChatService(args: {
           attachments,
           contextAttachments,
           metadata,
+          allowPendingInput: options?.allowPendingInput,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -35234,6 +35241,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         metadata,
+        allowPendingInput: options?.allowPendingInput,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -35252,6 +35260,7 @@ export function createAgentChatService(args: {
           attachments: [],
           contextAttachments,
           metadata,
+          allowPendingInput: options?.allowPendingInput,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -35306,6 +35315,7 @@ export function createAgentChatService(args: {
         attachments: [],
         contextAttachments,
         metadata,
+        allowPendingInput: options?.allowPendingInput,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -35326,6 +35336,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         metadata,
+        allowPendingInput: options?.allowPendingInput,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -35420,6 +35431,7 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       metadata,
+      allowPendingInput: options?.allowPendingInput,
       reasoningEffort,
       executionMode,
       interactionMode,
@@ -35484,6 +35496,9 @@ export function createAgentChatService(args: {
     return { steerId, queued: false };
   };
 
+  const steer = async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> =>
+    await steerWithOptions(args);
+
   const normalizeMessageSessionKind = (
     kind: AgentChatMessageSessionArgs["kind"],
   ): AgentChatMessageSessionKind => {
@@ -35492,14 +35507,17 @@ export function createAgentChatService(args: {
     throw new Error(`Unsupported chat message kind: ${String(kind)}`);
   };
 
-  const messageSession = async ({
-    sessionId,
-    text,
-    kind,
-    attachments = [],
-    contextAttachments = [],
-    metadata,
-  }: AgentChatMessageSessionArgs): Promise<AgentChatMessageSessionResult> => {
+  const messageSession = async (
+    {
+      sessionId,
+      text,
+      kind,
+      attachments = [],
+      contextAttachments = [],
+      metadata,
+    }: AgentChatMessageSessionArgs,
+    options?: { trustedSpawnCompletion?: boolean },
+  ): Promise<AgentChatMessageSessionResult> => {
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -35510,21 +35528,33 @@ export function createAgentChatService(args: {
     const runtimeBusy = managed.runtime?.kind === "codex"
       ? managed.runtime.activeTurnId != null
       : managed.runtime?.busy === true;
+    const activeTarget = statusBefore === "active" || runtimeBusy;
+    // Scheduled wakes intentionally start fresh work at a turn boundary. A
+    // subagent completion is different: it is live context returning to the
+    // parent and should join the active turn wherever the provider supports
+    // that. Providers without inline steering still fall back to steer().
+    const isSpawnCompletion = normalizedKind === "wake"
+      && options?.trustedSpawnCompletion === true
+      && metadata?.spawnCompletion != null;
     const wakeNeedsQueue = normalizedKind === "wake"
-      && (statusBefore === "active" || runtimeBusy);
+      && !isSpawnCompletion
+      && activeTarget;
 
     const steerTarget =
       normalizedKind === "queue" ||
       ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
-        && statusBefore === "active");
+        && activeTarget);
     if (steerTarget) {
-      const result = await steer({
+      const result = await steerWithOptions({
         sessionId,
         text,
         attachments,
         contextAttachments,
         metadata,
-      });
+        ...(isSpawnCompletion && managed.session.provider === "claude"
+          ? { dispatchMode: "inline" as const }
+          : {}),
+      }, { allowPendingInput: isSpawnCompletion });
       if (result.reason === "queue_full") {
         throw new Error("The Claude steer queue is full; the message was not queued.");
       }
