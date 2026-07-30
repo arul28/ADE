@@ -365,8 +365,18 @@ export function useDraftMachineRouting({
       // machine in its own control and passes bare ids, so defaulting here
       // would silently drag the selection back to the bound machine. Keep
       // whatever the machine picker already chose.
-      const nextMachineId = machineIdFromAutoCreateLaneOptionId(nextLaneId)
-        ?? machineId;
+      const explicitMachineId = machineIdFromAutoCreateLaneOptionId(nextLaneId);
+      const machineIsAvailable = (candidate: string | null | undefined) =>
+        Boolean(candidate && machineOptions.some((option) => option.id === candidate));
+      const nextMachineId = machineIsAvailable(explicitMachineId)
+        ? explicitMachineId!
+        : machineIsAvailable(machineId)
+          ? machineId
+          : (
+              machineOptions.find((option) => option.isBound)?.id
+              ?? machineOptions[0]?.id
+              ?? boundMachineId
+            );
       chooseMachine(nextMachineId);
       const primary = primaryLaneForMachine(nextMachineId);
       if (primary) onLaneChange?.(primary.id);
@@ -384,8 +394,10 @@ export function useDraftMachineRouting({
     onLaneChange?.(actualLaneId);
   }, [
     chooseMachine,
+    boundMachineId,
     lanesByMachineId,
     machineId,
+    machineOptions,
     onLaneChange,
     primaryLaneForMachine,
     setDraftLaunchTargetId,

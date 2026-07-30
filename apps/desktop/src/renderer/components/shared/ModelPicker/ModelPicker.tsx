@@ -30,7 +30,7 @@ import {
 
 export type ModelPickerProps = {
   value: string;
-  onChange: (modelId: string) => void;
+  onChange: (modelId: string, options?: { fastMode: boolean }) => void;
   surfaceKey: string;
   compact?: boolean;
   disabled?: boolean;
@@ -284,8 +284,12 @@ export const ModelPicker = memo(function ModelPicker({
   );
 
   const handleSelect = useCallback(
-    (modelId: string) => {
-      onChange(modelId);
+    (modelId: string, options?: { fastMode: boolean }) => {
+      if (options) {
+        onChange(modelId, options);
+      } else {
+        onChange(modelId);
+      }
       setOpen(false);
     },
     [onChange],

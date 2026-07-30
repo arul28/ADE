@@ -1527,7 +1527,7 @@ export function AgentChatComposer({
   orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
   inputLockMessage?: string | null;
-  onModelChange: (modelId: string) => void;
+  onModelChange: (modelId: string, options?: { fastMode: boolean }) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
@@ -1615,7 +1615,11 @@ export function AgentChatComposer({
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
   onParallelRemoveModel?: (index: number) => void;
-  onParallelSlotModelChange?: (index: number, modelId: string) => void;
+  onParallelSlotModelChange?: (
+    index: number,
+    modelId: string,
+    options?: { fastMode: boolean },
+  ) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
   onParallelSlotFastModeChange?: (index: number, enabled: boolean) => void;
   parallelLaunchBusy?: boolean;
@@ -4616,7 +4620,8 @@ export function AgentChatComposer({
               <>
                 <ModelPicker
                   value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
-                  onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                  onChange={(next, options) =>
+                    onParallelSlotModelChange?.(parallelConfiguringIndex, next, options)}
                   surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
                   {...(availableModelIds ? { availableModelIds } : {})}
                   constrainToAvailableModelIds={constrainModelSelection}

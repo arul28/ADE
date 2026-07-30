@@ -126,7 +126,7 @@ export type ModelPickerContentProps = {
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, options?: { fastMode: boolean }) => void;
   onRequestClose: () => void;
   onProviderRailSelect?: (family: ProviderFamily) => void;
   /**
@@ -499,10 +499,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // a different model starts clean instead of inheriting the previous
       // model's bit. The fast chip re-enables it explicitly (see
       // `handleFastChipChange`).
-      if (fastMode && modelId !== value) onFastModeChange?.(false);
-      onSelect(modelId);
+      onSelect(modelId, modelId !== value && fastMode ? { fastMode: false } : undefined);
     },
-    [fastMode, onFastModeChange, onSelect, recordUsage, value],
+    [fastMode, onSelect, recordUsage, value],
   );
 
   const handleListKeyDown = useCallback(
@@ -571,10 +570,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         return;
       }
       recordUsage(modelId);
-      // Fast first: the host persists the model change with whatever fast bit it
-      // sees, so the intent has to land before the selection commits.
-      onFastModeChange?.(true);
-      onSelect(modelId);
+      // Model + service tier are one selection. Emitting a single change keeps
+      // controlled consumers from rebuilding two patches from the same render.
+      onSelect(modelId, { fastMode: true });
     },
     [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );

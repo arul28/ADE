@@ -288,7 +288,10 @@ export function SessionLaunchModelControls({
       ) : null}
       <ModelPicker
         value={config.modelId}
-        onChange={(modelId) => onChange({ modelId })}
+        onChange={(modelId, options) => onChange({
+          modelId,
+          ...(options ? { fastMode: options.fastMode } : {}),
+        })}
         surfaceKey={surfaceKey}
         compact
         triggerClassName={COMPOSER_MODEL_TRIGGER}

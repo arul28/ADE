@@ -1079,7 +1079,10 @@ export function CrossMachineHandoffModal({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <ModelPicker
                         value={modelId}
-                        onChange={onModelChange}
+                        onChange={(nextModelId, options) => {
+                          if (options) onFastModeChange?.(options.fastMode);
+                          onModelChange(nextModelId);
+                        }}
                         surfaceKey="cross-machine-handoff"
                         compact
                         {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}

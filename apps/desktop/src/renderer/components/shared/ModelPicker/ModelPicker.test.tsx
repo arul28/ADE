@@ -728,13 +728,9 @@ describe("ModelPicker", () => {
       .findByRole("button", { name: /Fast mode for/i });
     await user.click(otherChip);
 
-    expect(onChange).toHaveBeenCalledWith(FAST_GPT_ALT.id);
-    expect(onFastModeChange).toHaveBeenCalledTimes(1);
-    expect(onFastModeChange).toHaveBeenCalledWith(true);
-    // Fast intent has to land before the selection commits, because hosts
-    // persist the model change with whatever fast bit they can see.
-    expect(onFastModeChange.mock.invocationCallOrder[0])
-      .toBeLessThan(onChange.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(FAST_GPT_ALT.id, { fastMode: true });
+    expect(onFastModeChange).not.toHaveBeenCalled();
   });
 
   it("turns fast off again when the selected row's chip is clicked twice", async () => {
@@ -788,8 +784,9 @@ describe("ModelPicker", () => {
     expect(within(slowRow).queryByRole("button", { name: /Fast mode for/i })).toBeNull();
     await user.click(slowRow);
 
-    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id);
-    expect(onFastModeChange).toHaveBeenCalledWith(false);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id, { fastMode: false });
+    expect(onFastModeChange).not.toHaveBeenCalled();
   });
 
   it("renders a presentational lightning glyph on the trigger when fast mode is on", async () => {

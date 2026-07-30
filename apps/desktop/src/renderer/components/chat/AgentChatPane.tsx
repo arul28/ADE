@@ -11931,7 +11931,7 @@ export function AgentChatPane({
             }}
             orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
             orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
-            onModelChange={(nextModelId) => {
+            onModelChange={(nextModelId, options) => {
               const modelAllowed =
                 modelSelectionConstrained
                   ? effectiveAvailableModelIds.includes(nextModelId)
@@ -11949,6 +11949,9 @@ export function AgentChatPane({
               }
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+              }
+              if (options) {
+                setFastModeState(options.fastMode);
               }
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {
@@ -12250,7 +12253,7 @@ export function AgentChatPane({
                 return cur;
               });
             }}
-            onParallelSlotModelChange={(index, nextModelId) => {
+            onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
@@ -12267,6 +12270,7 @@ export function AgentChatPane({
               patchParallelSlot(index, {
                 modelId: nextModelId,
                 reasoningEffort: nextEffort,
+                ...(options ? { fastMode: options.fastMode } : {}),
                 executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
                   ? parallelModelSlots[index]!.executionMode
                   : (nextExecOpts[0]?.value ?? "focused"),

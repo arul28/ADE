@@ -1161,6 +1161,8 @@ function renderAutoCreateDraftPane(args?: {
   orchestratorEnabled?: boolean;
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
+  onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
+  initialDraftMachineId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
   projectBinding?: OpenProjectBinding;
@@ -1204,6 +1206,8 @@ function renderAutoCreateDraftPane(args?: {
                 orchestratorEnabled={args?.orchestratorEnabled}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
+                onDraftMachineChange={args?.onDraftMachineChange}
+                initialDraftMachineId={args?.initialDraftMachineId}
                 onSessionCreated={args?.onSessionCreated}
                 onLaunchCliSession={args?.onLaunchCliSession}
               />
@@ -5370,6 +5374,24 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+  });
+
+  it("recovers a bare Auto-create selection from an unavailable persisted machine", async () => {
+    installAdeMocks({ sessions: [] });
+    const onDraftMachineChange = vi.fn();
+    const onLaneChange = vi.fn();
+    renderAutoCreateDraftPane({
+      initialDraftMachineId: "disconnected-studio",
+      onDraftMachineChange,
+      onLaneChange,
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
+    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
+    expect(screen.queryByText(/selected machine is not currently available/i)).toBeNull();
   });
 
   it("auto-creates on This Mac from a remote-bound tab without rebinding the project", async () => {
