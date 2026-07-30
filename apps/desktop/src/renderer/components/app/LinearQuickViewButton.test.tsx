@@ -11,19 +11,19 @@ import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: ({
-    fastModeActive,
+    fastMode,
     fastModeSupported,
-    onFastModeToggle,
+    onFastModeChange,
   }: {
-    fastModeActive: boolean;
+    fastMode: boolean;
     fastModeSupported: boolean;
-    onFastModeToggle: (next: boolean) => void;
+    onFastModeChange: (next: boolean) => void;
   }) => fastModeSupported ? (
     <button
       type="button"
       aria-label="Fast mode"
-      aria-pressed={fastModeActive}
-      onClick={() => onFastModeToggle(!fastModeActive)}
+      aria-pressed={fastMode}
+      onClick={() => onFastModeChange(!fastMode)}
     >
       Fast
     </button>

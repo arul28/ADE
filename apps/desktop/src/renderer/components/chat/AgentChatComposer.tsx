@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -74,8 +74,6 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
-import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
-import { switchToThisMachineProject } from "./thisMachineProjectRoot";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import {
@@ -524,176 +522,6 @@ const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0
 // has given up its width.
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 
-function ComposerFastModeButton({
-  active,
-  disabled = false,
-  supported,
-  onToggle,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  supported: boolean;
-  onToggle?: (next: boolean) => void;
-}) {
-  if (!supported) return null;
-
-  return (
-    <button
-      type="button"
-      data-chat-composer-fast-toggle="true"
-      aria-label="Fast mode"
-      aria-pressed={active}
-      title={active ? "Fast mode on" : "Enable fast mode"}
-      disabled={disabled || !onToggle}
-      onClick={() => onToggle?.(!active)}
-      className={cn(
-        "ade-chat-composer-fast-toggle inline-flex h-6 shrink-0 items-center justify-center gap-0.5 rounded-md border px-1.5",
-        "font-sans text-[9px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-        active
-          ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-          : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
-      )}
-    >
-      <Lightning size={10} weight="fill" />
-      <span className="ade-chat-composer-fast-label">Fast</span>
-    </button>
-  );
-}
-
-/** One selectable machine in the composer's machine chip. */
-export type ComposerMachineOption = {
-  /** `"local"` for this Mac, otherwise the remote target id. */
-  id: string;
-  name: string;
-};
-
-import {
-  THIS_MACHINE_ID as COMPOSER_LOCAL_MACHINE_ID,
-  THIS_MACHINE_NAME as COMPOSER_LOCAL_MACHINE_NAME,
-} from "../../../shared/machineIdentity";
-export { COMPOSER_LOCAL_MACHINE_ID, COMPOSER_LOCAL_MACHINE_NAME };
-
-const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
-const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
-
-/**
- * States a fact when the chat already has a lane (the machine is settled and
- * cannot change), and becomes a picker while the lane is still "Auto-create
- * lane" (the machine is still a choice). Same slot and position either way —
- * only the affordance changes.
- */
-function ComposerMachineChip({
-  machineId,
-  machineName,
-  selectable,
-  options,
-  onChange,
-  disabled = false,
-}: {
-  machineId: string;
-  machineName: string;
-  selectable: boolean;
-  options: ComposerMachineOption[];
-  onChange?: (machineId: string) => void;
-  disabled?: boolean;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen]);
-
-  if (!machineName) return null;
-
-  if (!selectable) {
-    return (
-      <SmartTooltip
-        forceEnabled
-        content={{
-          label: machineName,
-          description: "This chat stays on the machine that owns its lane.",
-        }}
-      >
-        <span
-          data-chat-composer-machine-chip="readonly"
-          className={cn(
-            "inline-flex h-6 shrink-0 items-center gap-1 px-1",
-            "font-sans text-[9px] font-medium text-muted-fg/60",
-          )}
-          style={{ whiteSpace: "nowrap" }}
-        >
-          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
-          {machineName}
-        </span>
-      </SmartTooltip>
-    );
-  }
-
-  return (
-    <span className="relative inline-flex shrink-0">
-      <button
-        type="button"
-        data-chat-composer-machine-chip="picker"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        aria-label={`Choose machine, currently ${machineName}`}
-        disabled={disabled}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={() => setMenuOpen((current) => !current)}
-        className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1",
-          "font-sans text-[9px] font-medium text-muted-fg/70 transition-colors",
-          "hover:bg-amber-400/[0.08] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45",
-        )}
-        style={{ whiteSpace: "nowrap" }}
-      >
-        <DesktopTower size={11} weight="duotone" className="text-amber-400/90" aria-hidden />
-        {machineName}
-        <CaretDown size={8} weight="bold" aria-hidden />
-      </button>
-      {menuOpen ? (
-        <span
-          role="menu"
-          aria-label="Choose a machine"
-          onMouseDown={(event) => event.stopPropagation()}
-          className="absolute bottom-7 left-0 z-50 flex min-w-[10rem] flex-col rounded-lg border border-white/[0.08] bg-[var(--color-popup-bg)] p-1 shadow-2xl"
-        >
-          {options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onChange?.(option.id);
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left font-sans text-[10px] transition-colors",
-                option.id === machineId ? "text-fg" : "text-fg/65 hover:bg-white/[0.06]",
-              )}
-              style={{ whiteSpace: "nowrap" }}
-            >
-              <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
-              {option.name}
-              {option.id === machineId ? <Check size={10} weight="bold" className="ml-auto" aria-hidden /> : null}
-            </button>
-          ))}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
   "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
@@ -703,6 +531,318 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
 );
 
 const COMPOSER_COMPACT_MENU_WIDTH = 240;
+
+/**
+ * Idle-state Send, as one split control rather than two buttons.
+ *
+ * Background launch used to be a second filled circle immediately right of Send
+ * — two adjacent round buttons, both carrying an arrow, both meaning "go". It
+ * read as one control accidentally duplicated, and the extra circle overflowed
+ * the composer's padding and clipped against its rounded edge.
+ *
+ * This is deliberately the same shape as `ActiveTurnSendButton` above: one
+ * `rounded-full` body, the primary action on the left, a hairline divider, and
+ * a caret sharing the same fill. The composer now uses one send idiom whether a
+ * turn is running or not, and the caret cannot be mistaken for a second arrow.
+ */
+function ComposerIdleSendButton({
+  label,
+  description,
+  effect,
+  icon,
+  sendEnabled,
+  backgroundLabel,
+  backgroundEnabled,
+  backgroundBusy,
+  onSend,
+  onSendInBackground,
+}: {
+  label: string;
+  description: string;
+  effect?: string | undefined;
+  icon: React.ReactNode;
+  sendEnabled: boolean;
+  backgroundLabel: string;
+  backgroundEnabled: boolean;
+  backgroundBusy: boolean;
+  onSend: () => void;
+  onSendInBackground: () => void;
+}) {
+  const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
+
+  const rows = [
+    {
+      id: "send",
+      label,
+      detail: description,
+      icon: <ArrowUp size={13} weight="bold" />,
+      enabled: sendEnabled,
+      onSelect: onSend,
+    },
+    {
+      id: "background",
+      label: backgroundBusy ? "Launching…" : backgroundLabel,
+      detail: "Start this chat without leaving the new chat pane.",
+      icon: <RocketLaunch size={13} weight="fill" />,
+      enabled: backgroundEnabled,
+      onSelect: onSendInBackground,
+    },
+  ];
+
+  return (
+    <div className="relative inline-flex items-center">
+      <div className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+        <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
+          <button
+            type="button"
+            disabled={!sendEnabled}
+            onClick={onSend}
+            aria-label={label}
+            className={cn(
+              "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all active:scale-[0.98]",
+              sendEnabled
+                ? "bg-white/90 text-zinc-900 hover:bg-white"
+                : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
+            )}
+          >
+            {icon}
+          </button>
+        </SmartTooltip>
+        <SmartTooltip
+          forceEnabled
+          content={{
+            label: "Send options",
+            description: "Choose whether to open this chat or start it in the background.",
+          }}
+        >
+          <button
+            ref={caretRef}
+            type="button"
+            data-testid="composer-send-mode-button"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="Send options"
+            onClick={() => setMenuOpen((current) => !current)}
+            className={cn(
+              "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all active:scale-[0.98]",
+              sendEnabled || backgroundEnabled
+                ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
+                : "border-white/[0.06] bg-white/[0.06] text-muted-fg/20",
+            )}
+          >
+            <CaretDown
+              size={11}
+              weight="bold"
+              className={cn("transition-transform duration-150", menuOpen && "rotate-180")}
+            />
+          </button>
+        </SmartTooltip>
+      </div>
+      {menuOpen && caretRef.current
+        ? createPortal(
+            <div
+              data-idle-send-menu
+              role="menu"
+              aria-label="Send options"
+              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {rows.map((row, index) => (
+                <button
+                  key={row.id}
+                  type="button"
+                  role="menuitem"
+                  disabled={!row.enabled}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    row.onSelect();
+                  }}
+                  className={cn(
+                    "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
+                    index > 0 && "border-t border-white/[0.05]",
+                    row.enabled ? "hover:bg-white/[0.05]" : "cursor-not-allowed opacity-40",
+                  )}
+                >
+                  <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45">
+                    {row.icon}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
+                      {row.label}
+                    </span>
+                    <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                      {row.detail}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+/** One row in the composer's overflow menu. */
+export type ComposerOverflowItem = {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  /** Reflected as `aria-checked`; toggles read as on/off rather than commands. */
+  active?: boolean;
+  disabled?: boolean;
+  /** Count shown beside the label, and on the inline button when collapsed. */
+  badge?: number | undefined;
+  onSelect: () => void;
+};
+
+/**
+ * Secondary composer toggles, folded behind one control.
+ *
+ * These are real features, but they are opened rarely and each one was carrying
+ * its own bordered, tinted button in the toolbar — so the row spent most of its
+ * width on controls nobody was reaching for, and the send button had to compete
+ * with four other coloured affordances to read as the primary action. Behind a
+ * single glyph they cost one slot instead of four and keep their labels, which
+ * icon-only buttons never had.
+ *
+ * Items that would not have rendered before are simply not passed in; with none
+ * left the trigger itself disappears rather than opening an empty menu.
+ */
+function ComposerOverflowMenu({
+  items,
+  triggerRef,
+}: {
+  items: ComposerOverflowItem[];
+  /**
+   * Anchor for popovers owned by a row rather than by the menu (issue context
+   * opens its own portal). Those popovers position against a live element, and
+   * the row that opened them unmounts with the menu — so they anchor to the
+   * trigger, which is always mounted.
+   */
+  triggerRef?: React.MutableRefObject<HTMLButtonElement | null>;
+}) {
+  // The composer shell clips its overflow, so an inline-absolute menu is cut off
+  // at the prompt box edge and simply cannot be read. Every other composer
+  // popover portals to the body for this reason; this one now does too.
+  const { caretRef, menuOpen: open, setMenuOpen: setOpen } = useComposerSplitMenu("[data-composer-overflow-menu]");
+
+  if (items.length === 0) return null;
+
+  // A "⋯" that opens onto a single row is a menu pretending to be a button.
+  // Surfaces gate these entries independently, so how many survive is
+  // contextual — when only one does, show it directly instead.
+  const [only] = items;
+  if (items.length === 1 && only) {
+    return (
+      <SmartTooltip forceEnabled content={{ label: only.label, description: "" }}>
+        <button
+          ref={triggerRef}
+          type="button"
+          data-testid="composer-overflow-menu-button"
+          aria-label={only.label}
+          aria-pressed={only.active ?? false}
+          disabled={only.disabled}
+          onClick={only.onSelect}
+          className={cn(
+            "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
+            only.active ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+            only.disabled && "cursor-not-allowed opacity-40",
+          )}
+        >
+          {only.icon}
+          {only.badge ? (
+            <span className="absolute -right-1 -top-1 inline-flex min-w-[14px] items-center justify-center rounded-full border border-violet-200/30 bg-violet-500 px-1 font-mono text-[8px] leading-[14px] text-white">
+              {only.badge}
+            </span>
+          ) : null}
+        </button>
+      </SmartTooltip>
+    );
+  }
+
+  const activeCount = items.filter((item) => item.active).length;
+
+  return (
+    <div className="relative inline-flex">
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: "More controls",
+          description: "Orchestrator, parallel models, and the lane tool drawers.",
+        }}
+      >
+        <button
+          ref={(node) => {
+            caretRef.current = node;
+            if (triggerRef) triggerRef.current = node;
+          }}
+          type="button"
+          data-testid="composer-overflow-menu-button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="More composer controls"
+          onClick={() => setOpen((current) => !current)}
+          className={cn(
+            "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
+            open ? "bg-white/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-white/[0.05] hover:text-fg/60",
+          )}
+        >
+          <DotsThree size={16} weight="bold" />
+          {activeCount ? (
+            // Something in here is switched on; the collapsed trigger has to say
+            // so, or folding these away would hide active state.
+            <span className="absolute right-1 top-1 h-1 w-1 rounded-full bg-[var(--chat-accent)]" aria-hidden />
+          ) : null}
+        </button>
+      </SmartTooltip>
+      {open && caretRef.current
+        ? createPortal(
+            <div
+              data-composer-overflow-menu
+              role="menu"
+              aria-label="More composer controls"
+              className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+                {items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={Boolean(item.active)}
+                    disabled={item.disabled}
+                    onClick={() => {
+                      setOpen(false);
+                      item.onSelect();
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
+                      item.active ? "text-fg/90" : "text-fg/65",
+                      item.disabled ? "cursor-not-allowed opacity-40" : "hover:bg-white/[0.06] hover:text-fg/90",
+                    )}
+                  >
+                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
+                      {item.icon}
+                    </span>
+                    <span className="min-w-0 truncate">{item.label}</span>
+                    {item.badge ? (
+                      <span className="ml-auto shrink-0 rounded-full bg-violet-500/80 px-1.5 font-mono text-[9px] leading-[15px] text-white">
+                        {item.badge}
+                      </span>
+                    ) : item.active ? (
+                      <Check size={11} weight="bold" className="ml-auto shrink-0" aria-hidden />
+                    ) : null}
+                  </button>
+                ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
 
 
 
@@ -1317,12 +1457,6 @@ export function AgentChatComposer({
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
-  laneSelectionId = null,
-  machineSelectable,
-  machineId: machineIdOverride,
-  machineName: machineNameOverride,
-  machineOptions: machineOptionsOverride,
-  onMachineChange,
 }: {
   surfaceMode?: ChatSurfaceMode;
   layoutVariant?: "standard" | "grid-tile";
@@ -1515,23 +1649,6 @@ export function AgentChatComposer({
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
-  /**
-   * The lane the composer will launch into. When it is the synthetic
-   * "Auto-create lane" option the machine is still a choice, so the machine
-   * chip becomes a picker; any real lane id settles the machine and the chip
-   * degrades to a read-only statement of fact.
-   */
-  laneSelectionId?: string | null;
-  /** Explicitly controls the draft-only picker affordance. */
-  machineSelectable?: boolean;
-  /** Current machine id, used to mark the selected menu row. */
-  machineId?: string;
-  /** Overrides the machine name derived from the active project binding. */
-  machineName?: string;
-  /** Overrides the machine list derived from the open project tabs. */
-  machineOptions?: ComposerMachineOption[];
-  /** Overrides the default rebind-this-tab behaviour of the machine picker. */
-  onMachineChange?: (machineId: string) => void;
 }) {
   const promptStashRef = useRef<ComposerPromptStashHandle>(null);
   const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
@@ -1650,75 +1767,6 @@ export function AgentChatComposer({
     && launchPromptClipboardNoticeEnabled
     && !composerInputLocked
     && draft.trim().length > 0;
-
-  // ── Machine chip ─────────────────────────────────────────────────────────
-  // Machines are named absolutely in the Work tab: the tab's machine is a
-  // switchable dimension, so "remote" has no fixed referent here. Everything
-  // below reads renderer state that is already loaded — no extra IPC.
-  const projectBinding = useAppStore((s) => s.projectBinding);
-  // Stable empty fallbacks: surfaces that seed only part of the app store must
-  // not crash the machine chip.
-  const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs) ?? EMPTY_REMOTE_PROJECT_TABS;
-  const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots) ?? EMPTY_PROJECT_TAB_ROOTS;
-  const localProjectRootPath = useAppStore((s) => s.project?.rootPath ?? null);
-  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
-
-  const machineName = machineNameOverride
-    ?? (projectBinding?.kind === "remote" ? projectBinding.runtimeName : COMPOSER_LOCAL_MACHINE_NAME);
-  const machineId = machineIdOverride
-    ?? (projectBinding?.kind === "remote" ? projectBinding.targetId : COMPOSER_LOCAL_MACHINE_ID);
-  const machineOptions = useMemo<ComposerMachineOption[]>(() => {
-    if (machineOptionsOverride) return machineOptionsOverride;
-    const options: ComposerMachineOption[] = [
-      { id: COMPOSER_LOCAL_MACHINE_ID, name: COMPOSER_LOCAL_MACHINE_NAME },
-    ];
-    for (const tab of openRemoteProjectTabs) {
-      if (options.some((option) => option.id === tab.targetId)) continue;
-      options.push({ id: tab.targetId, name: tab.runtimeName });
-    }
-    return options;
-  }, [machineOptionsOverride, openRemoteProjectTabs]);
-  // Opt-in: an unknown lane selection is treated as settled, so the chip only
-  // claims to be a control when the host says the lane is still auto-create.
-  const machineChipSelectable = machineSelectable ?? isAutoCreateLaneOptionId(laneSelectionId);
-  const [machineSwitchError, setMachineSwitchError] = useState<string | null>(null);
-  const handleMachineChange = useCallback(
-    (machineId: string) => {
-      if (onMachineChange) {
-        onMachineChange(machineId);
-        return;
-      }
-      setMachineSwitchError(null);
-      // Default: the machine IS the tab binding, so choosing one rebinds this
-      // tab rather than opening a second one. Which means it must rebind to
-      // THIS repo's checkout on that machine — switching repositories behind
-      // the user's back is not a machine switch.
-      if (machineId === COMPOSER_LOCAL_MACHINE_ID) {
-        void switchToThisMachineProject({
-          projectBinding,
-          openProjectTabRoots,
-          localProjectRootPath,
-          switchProjectToPath,
-        }).then(setMachineSwitchError);
-        return;
-      }
-      const tab = openRemoteProjectTabs.find((entry) => entry.targetId === machineId);
-      if (!tab) return;
-      void switchRemoteProject(tab.targetId, tab.projectId).catch((reason: unknown) => {
-        setMachineSwitchError(reason instanceof Error ? reason.message : String(reason));
-      });
-    },
-    [
-      localProjectRootPath,
-      onMachineChange,
-      openProjectTabRoots,
-      openRemoteProjectTabs,
-      projectBinding,
-      switchProjectToPath,
-      switchRemoteProject,
-    ],
-  );
 
   // ── Voice dictation ──────────────────────────────────────────────────────
   const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
@@ -3995,21 +4043,6 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
-      {machineSwitchError ? (
-        <div
-          role="status"
-          className="mx-auto mb-1.5 flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-amber-300/80"
-        >
-          <span>{machineSwitchError}</span>
-          <button
-            type="button"
-            className="text-amber-200/60 underline decoration-amber-200/20 underline-offset-2 transition-colors hover:text-amber-100"
-            onClick={() => setMachineSwitchError(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      ) : null}
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -4594,6 +4627,9 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
+                  fastMode={fastModeActive}
+                  fastModeSupported={fastModeSupported}
+                  onFastModeChange={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
                 />
                 <ReasoningEffortPicker
                   modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
@@ -4602,12 +4638,6 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
-                />
-                <ComposerFastModeButton
-                  active={fastModeActive}
-                  disabled={parallelLaunchBusy}
-                  supported={fastModeSupported}
-                  onToggle={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
                 />
               </>
             ) : null}
@@ -4628,6 +4658,9 @@ export function AgentChatComposer({
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
+                  fastMode={fastModeActive}
+                  fastModeSupported={fastModeSupported}
+                  {...(onFastModeChange ? { onFastModeChange } : {})}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}
@@ -4637,23 +4670,7 @@ export function AgentChatComposer({
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                 />
-                <ComposerFastModeButton
-                  active={fastModeActive}
-                  disabled={modelSelectionLocked}
-                  supported={fastModeSupported}
-                  onToggle={onFastModeChange}
-                />
               </>
-            ) : null}
-            {!hideModelControls ? (
-              <ComposerMachineChip
-                machineId={machineId}
-                machineName={machineName}
-                selectable={machineChipSelectable}
-                options={machineOptions}
-                onChange={handleMachineChange}
-                disabled={busy || parallelLaunchBusy}
-              />
             ) : null}
           </div>
 
@@ -4703,106 +4720,7 @@ export function AgentChatComposer({
                 <Paperclip className="h-3 w-3" size={14} weight="bold" />
               </button>
             </SmartTooltip>
-            <SmartTooltip
-              forceEnabled
-              content={{
-                label: "Issue context",
-                description: canAttachIssueContext
-                  ? "Attach a Linear ticket as context for this chat. GitHub issue attachment is coming later."
-                  : composerInputLockMessage ?? "Resolve the pending request before adding issue context.",
-              }}
-            >
-              <button
-                type="button"
-                ref={issueContextButtonRef}
-                className={cn(
-                  "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60",
-                  issueContextMenuOpen && "bg-violet-500/[0.08] text-violet-200/80",
-                )}
-                disabled={!canAttachIssueContext}
-                onClick={() => {
-                  if (!canAttachIssueContext) return;
-                  setAttachmentPickerOpen(false);
-                  setIssueContextMenuOpen((open) => !open);
-                }}
-                aria-label="Attach issue context"
-                aria-haspopup="menu"
-                aria-expanded={issueContextMenuOpen}
-              >
-                <Bug className="h-3 w-3" size={14} weight={contextAttachmentCount ? "fill" : "regular"} />
-                {contextAttachmentCount ? (
-                  <span className="absolute -right-1 -top-1 inline-flex min-w-[14px] items-center justify-center rounded-full border border-violet-200/30 bg-violet-500 px-1 font-mono text-[8px] leading-[14px] text-white">
-                    {contextAttachmentCount}
-                  </span>
-                ) : null}
-              </button>
-            </SmartTooltip>
-
-            {showOrchestratorModeButton ? (
-              <SmartTooltip
-                forceEnabled
-                content={{
-                  label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
-                  description: orchestratorModeActive
-                    ? "Return this draft to a normal chat."
-                    : "Turn this draft into an orchestrator lead chat before sending.",
-                  effect: orchestratorModeActive ? "Click to turn it off." : undefined,
-                }}
-              >
-                <button
-                  type="button"
-                  data-testid="composer-orchestrator-mode-button"
-                  disabled={orchestratorModeButtonDisabled}
-                  onClick={() => {
-                    if (orchestratorModeButtonDisabled) return;
-                    if (orchestratorModeActive) {
-                      onStopOrchestratorChat?.();
-                      return;
-                    }
-                    onStartOrchestratorChat?.();
-                  }}
-                  className={cn(
-                    "relative inline-flex h-7 min-w-7 shrink-0 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-                    orchestratorModeActive
-                      ? "border-fuchsia-300/35 bg-fuchsia-400/[0.12] text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.18)]"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-fuchsia-300/22 hover:bg-fuchsia-400/[0.08] hover:text-fuchsia-100/80",
-                    orchestratorModeButtonDisabled ? "cursor-not-allowed opacity-45" : "",
-                  )}
-                  aria-label={orchestratorModeActive ? "Orchestrator mode active" : "Start orchestrator mode"}
-                  aria-pressed={orchestratorModeActive}
-                >
-                  <Strategy className="h-3 w-3" size={14} weight={orchestratorModeActive ? "fill" : "regular"} />
-                  <span className="hidden lg:inline">Orchestrator</span>
-                </button>
-              </SmartTooltip>
-            ) : null}
-
-            {showParallelChatToggle && !parallelChatMode ? (
-              <SmartTooltip
-                forceEnabled
-                content={{
-                  label: "Parallel models",
-                  description: "Send the same prompt and attachments to one child lane per model.",
-                  effect: "Opens parallel model setup for this draft.",
-                }}
-              >
-                <button
-                  type="button"
-                  disabled={turnActive || busy}
-                  onClick={() => onParallelChatModeChange?.(true)}
-                  className={cn(
-                    "relative inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-                    "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
-                    turnActive || busy ? "cursor-not-allowed opacity-40" : "",
-                  )}
-                  aria-label="Configure parallel models"
-                >
-                  <SquareSplitHorizontal className="h-3 w-3" size={14} weight="regular" />
-                </button>
-              </SmartTooltip>
-            ) : null}
-
-            {cursorCloudAvailable && (onOpenCloudLaunchMode || onOpenCloudBringToLocal) ? (
+                        {cursorCloudAvailable && (onOpenCloudLaunchMode || onOpenCloudBringToLocal) ? (
               <CursorCloudActionMenu
                 canLaunch={cursorCloudCanLaunch}
                 paneOpen={cursorCloudPaneOpen}
@@ -4815,60 +4733,73 @@ export function AgentChatComposer({
               />
             ) : null}
 
-            {showIosSimulatorToggle && onToggleIosSimulator ? (
-              <SmartTooltip
-                content={{
-                  label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
-                  description: "Boot, inspect, and capture the iOS simulator alongside this chat.",
-                  effect: iosSimulatorOpen ? "Hides the simulator drawer." : "Opens the simulator drawer for this lane.",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={onToggleIosSimulator}
-                  className={cn(
-                    "inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-                    iosSimulatorOpen
-                      ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
-                  )}
-                  aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
-                  aria-pressed={iosSimulatorOpen}
-                >
-                  <DeviceMobile className="h-3 w-3" size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />
-                </button>
-              </SmartTooltip>
-            ) : null}
-
-            {showAppControlToggle && onToggleAppControl ? (
-              <SmartTooltip
-                content={{
-                  label: appControlOpen ? "Close App Control" : "Open App Control",
-                  description: "Launch, inspect, and capture Electron app sessions alongside this chat.",
-                  effect: appControlOpen ? "Hides the App Control drawer." : "Opens App Control for this lane.",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={onToggleAppControl}
-                  className={cn(
-                    "inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-                    appControlOpen
-                      ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] hover:text-fg/60",
-                  )}
-                  aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
-                  aria-pressed={appControlOpen}
-                >
-                  <Desktop className="h-3 w-3" size={14} weight={appControlOpen ? "fill" : "regular"} />
-                  {appControlContextItems.length ? (
-                    <span className="absolute -right-1 -top-1 inline-flex min-w-[14px] items-center justify-center rounded-full border border-sky-200/30 bg-sky-500 px-1 font-mono text-[8px] leading-[14px] text-white">
-                      {appControlContextItems.length}
-                    </span>
-                  ) : null}
-                </button>
-              </SmartTooltip>
-            ) : null}
+            {/* Secondary toggles, folded behind one glyph. Each entry is still
+                gated by exactly the condition that used to gate its button, so
+                a control that would not have rendered does not become a row. */}
+            <ComposerOverflowMenu
+              triggerRef={issueContextButtonRef}
+              items={[
+                {
+                  id: "issue-context",
+                  label: "Issue context",
+                  icon: <Bug size={14} weight={contextAttachmentCount ? "fill" : "regular"} />,
+                  // Reads as "on" while issues are attached, so the collapsed
+                  // trigger's dot reports them without needing its own badge.
+                  active: contextAttachmentCount > 0,
+                  disabled: !canAttachIssueContext,
+                  badge: contextAttachmentCount || undefined,
+                  onSelect: () => {
+                    if (!canAttachIssueContext) return;
+                    setAttachmentPickerOpen(false);
+                    setIssueContextMenuOpen((open) => !open);
+                  },
+                },
+                ...(showOrchestratorModeButton
+                  ? [{
+                      id: "orchestrator",
+                      label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
+                      icon: <Strategy size={14} weight={orchestratorModeActive ? "fill" : "regular"} />,
+                      active: orchestratorModeActive,
+                      disabled: orchestratorModeButtonDisabled,
+                      onSelect: () => {
+                        if (orchestratorModeButtonDisabled) return;
+                        if (orchestratorModeActive) {
+                          onStopOrchestratorChat?.();
+                          return;
+                        }
+                        onStartOrchestratorChat?.();
+                      },
+                    }]
+                  : []),
+                ...(showParallelChatToggle && !parallelChatMode
+                  ? [{
+                      id: "parallel",
+                      label: "Parallel models",
+                      icon: <SquareSplitHorizontal size={14} weight="regular" />,
+                      disabled: turnActive || busy,
+                      onSelect: () => onParallelChatModeChange?.(true),
+                    }]
+                  : []),
+                ...(showIosSimulatorToggle && onToggleIosSimulator
+                  ? [{
+                      id: "ios-simulator",
+                      label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
+                      icon: <DeviceMobile size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />,
+                      active: iosSimulatorOpen,
+                      onSelect: onToggleIosSimulator,
+                    }]
+                  : []),
+                ...(showAppControlToggle && onToggleAppControl
+                  ? [{
+                      id: "app-control",
+                      label: appControlOpen ? "Close App Control" : "Open App Control",
+                      icon: <Desktop size={14} weight={appControlOpen ? "fill" : "regular"} />,
+                      active: appControlOpen,
+                      onSelect: onToggleAppControl,
+                    }]
+                  : []),
+              ]}
+            />
 
             {/* Voice dictation — paired just left of the send control. */}
             {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
@@ -4976,8 +4907,14 @@ export function AgentChatComposer({
                   : cloudMode
                     ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
                     : "Send this prompt to the selected model.";
-                return (
-                  <>
+                const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
+                const sendIcon = cloudMode
+                  ? <CloudArrowUp size={14} weight="bold" />
+                  : <ArrowUp size={14} weight="bold" />;
+
+                // Without a background option this is a plain circular Send.
+                if (!backgroundAvailable) {
+                  return (
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
                         type="button"
@@ -4991,30 +4928,25 @@ export function AgentChatComposer({
                         onClick={submitComposerDraft}
                         aria-label={label}
                       >
-                        {cloudMode
-                          ? <CloudArrowUp size={14} weight="bold" />
-                          : <ArrowUp size={14} weight="bold" />}
+                        {sendIcon}
                       </button>
                     </SmartTooltip>
-                    {onSubmitInBackground && !parallelChatMode && !cloudMode ? (
-                      <SmartTooltip forceEnabled content={{ label: backgroundLaunchActionLabel, description: "Start this chat without leaving the new chat pane." }}>
-                        <button
-                          type="button"
-                          className={cn(
-                            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-all active:scale-[0.97]",
-                            backgroundSendEnabled
-                              ? "border-emerald-300/25 bg-emerald-500/[0.12] text-emerald-100 hover:border-emerald-300/40 hover:bg-emerald-500/[0.18]"
-                              : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
-                          )}
-                          disabled={!backgroundSendEnabled}
-                          onClick={onSubmitInBackground}
-                          aria-label={backgroundLaunchBusy ? "Launching" : backgroundLaunchActionLabel}
-                        >
-                          <RocketLaunch size={14} weight="fill" />
-                        </button>
-                      </SmartTooltip>
-                    ) : null}
-                  </>
+                  );
+                }
+
+                return (
+                  <ComposerIdleSendButton
+                    label={label}
+                    description={description}
+                    effect={sendButtonTitle()}
+                    icon={sendIcon}
+                    sendEnabled={sendEnabled}
+                    backgroundLabel={backgroundLaunchActionLabel}
+                    backgroundEnabled={backgroundSendEnabled}
+                    backgroundBusy={backgroundLaunchBusy}
+                    onSend={submitComposerDraft}
+                    onSendInBackground={onSubmitInBackground!}
+                  />
                 );
               })()
             )}

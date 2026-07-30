@@ -42,8 +42,23 @@ export type ModelPickerProps = {
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   constrainToAvailableModelIds?: boolean;
+  /**
+   * Fast mode lives inside the picker (a per-row affordance plus a " Fast"
+   * suffix on the trigger) so every surface that mounts a ModelPicker gets it
+   * without building its own chip. Omitting `onFastModeChange` renders no fast
+   * affordance at all.
+   */
+  fastMode?: boolean;
+  onFastModeChange?: (next: boolean) => void;
+  /** @deprecated Older alias for {@link ModelPickerProps.fastMode}. */
   fastModeActive?: boolean;
+  /** @deprecated Older alias for {@link ModelPickerProps.onFastModeChange}. */
   onFastModeToggle?: (next: boolean) => void;
+  /**
+   * Overrides the descriptor-derived capability for the trigger suffix only —
+   * callers that resolve models outside the registry (batch launch) still know
+   * better than `modelSupportsFastMode` for the *selected* model.
+   */
   fastModeSupported?: boolean;
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
@@ -75,7 +90,9 @@ export const ModelPicker = memo(function ModelPicker({
   onOpenSignIn,
   onRuntimeCatalogRefreshed,
   constrainToAvailableModelIds = false,
-  fastModeActive = false,
+  fastMode,
+  onFastModeChange,
+  fastModeActive,
   onFastModeToggle,
   fastModeSupported,
   allowCliOnlyModels = false,
@@ -287,11 +304,13 @@ export const ModelPicker = memo(function ModelPicker({
     onOpenSignIn?.(family, authTypes);
   }, [onOpenSignIn]);
 
-  const triggerFastSupported =
-    typeof fastModeSupported === "boolean"
-      ? fastModeSupported
-      : modelSupportsFastMode(selectedModel);
-  const showFastToggle = triggerFastSupported && typeof onFastModeToggle === "function";
+  // Two modes, one bit. `onFastModeChange` means the picker owns fast mode
+  // (per-row affordance + trigger suffix); the deprecated `onFastModeToggle`
+  // keeps the old sibling chip alive for surfaces that have not migrated yet.
+  const fastModeOn = fastMode ?? fastModeActive ?? false;
+  const legacyFastChip = !onFastModeChange && typeof onFastModeToggle === "function";
+  const legacyFastSupported = legacyFastChip
+    && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
 
   return (
     <div className={cn("inline-flex items-center gap-1.5", className)}>
@@ -316,6 +335,8 @@ export const ModelPicker = memo(function ModelPicker({
             compact={compact}
             disabled={disabled}
             open={open}
+            fastMode={fastModeOn && !legacyFastChip}
+            {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
             className={triggerClassName}
           />
         </Popover.Trigger>
@@ -346,6 +367,8 @@ export const ModelPicker = memo(function ModelPicker({
                 allowCliOnlyModels={allowCliOnlyModels}
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
+                fastMode={fastModeOn}
+                {...(onFastModeChange ? { onFastModeChange } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />
@@ -353,9 +376,9 @@ export const ModelPicker = memo(function ModelPicker({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-      {showFastToggle ? (
-        <FastModeButton
-          active={fastModeActive}
+      {legacyFastSupported ? (
+        <LegacyFastModeButton
+          active={fastModeOn}
           disabled={disabled}
           compact={compact}
           onToggle={onFastModeToggle}
@@ -365,70 +388,8 @@ export const ModelPicker = memo(function ModelPicker({
   );
 });
 
-type TriggerProps = {
-  model: ModelDescriptor | undefined;
-  value: string;
-  compact: boolean;
-  disabled: boolean;
-  open: boolean;
-  className?: string;
-};
-
-const ModelPickerTrigger = memo(
-  forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
-    function ModelPickerTrigger(
-      { model, value, compact, disabled, open, className, ...rest },
-      ref,
-    ) {
-      const label = model?.displayName ?? (value.trim() || "Select model");
-      return (
-        <button
-          {...rest}
-          ref={ref}
-          type="button"
-          data-state={open ? "open" : "closed"}
-          disabled={disabled}
-          aria-label={`Select model (current: ${label})`}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          className={cn(
-            "inline-flex min-w-0 items-center gap-1.5 rounded-md border font-sans transition-colors duration-150",
-            compact
-              ? "h-6 px-1 text-[9px]"
-              : "h-8 px-2 text-[11px] sm:text-[12px]",
-            "border-white/[0.06] bg-white/[0.03] text-fg/80",
-            "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
-            open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
-            className,
-          )}
-        >
-          {model ? (
-            <ModelRowLogo
-              modelFamily={model.family}
-              cliCommand={model.cliCommand}
-              modelId={model.id}
-              providerModelId={model.providerModelId}
-              size={compact ? 11 : 13}
-              className="shrink-0"
-            />
-          ) : null}
-          <span className="min-w-0 truncate font-medium leading-none">{label}</span>
-          <CaretDown
-            size={compact ? 9 : 10}
-            weight="bold"
-            className={cn(
-              "shrink-0 text-muted-fg/60 transition-transform duration-150",
-              open && "rotate-180 text-fg/80",
-            )}
-          />
-        </button>
-      );
-    },
-  ),
-);
-
-const FastModeButton = memo(function FastModeButton({
+/** @deprecated Sibling chip for surfaces still on `onFastModeToggle`. */
+const LegacyFastModeButton = memo(function LegacyFastModeButton({
   active,
   disabled,
   compact,
@@ -463,3 +424,131 @@ const FastModeButton = memo(function FastModeButton({
     </button>
   );
 });
+
+/**
+ * Whether the trigger is showing a fast-mode selection — drives both the
+ * " Fast" suffix and the lightning glyph so the two can never disagree.
+ */
+export function modelPickerTriggerIsFast({
+  model,
+  fastMode = false,
+  fastModeSupported,
+}: {
+  model: ModelDescriptor | undefined;
+  fastMode?: boolean;
+  fastModeSupported?: boolean;
+}): boolean {
+  if (!model || !fastMode) return false;
+  return fastModeSupported ?? modelSupportsFastMode(model);
+}
+
+/**
+ * Trigger label for a picker. Kept pure (and glyph-free — the lightning is
+ * rendered separately and is presentational) so the " Fast" suffix rule stays
+ * testable without mounting the popover.
+ */
+export function composeModelPickerTriggerLabel({
+  model,
+  value,
+  fastMode = false,
+  fastModeSupported,
+}: {
+  model: ModelDescriptor | undefined;
+  value: string;
+  fastMode?: boolean;
+  fastModeSupported?: boolean;
+}): string {
+  const base = model?.displayName ?? (value.trim() || "Select model");
+  const fast = modelPickerTriggerIsFast({
+    model,
+    fastMode,
+    ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
+  });
+  return fast ? `${base} Fast` : base;
+}
+
+type TriggerProps = {
+  model: ModelDescriptor | undefined;
+  value: string;
+  compact: boolean;
+  disabled: boolean;
+  open: boolean;
+  fastMode: boolean;
+  fastModeSupported?: boolean;
+  className?: string;
+};
+
+const ModelPickerTrigger = memo(
+  forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
+    function ModelPickerTrigger(
+      { model, value, compact, disabled, open, fastMode, fastModeSupported, className, ...rest },
+      ref,
+    ) {
+      const label = composeModelPickerTriggerLabel({
+        model,
+        value,
+        fastMode,
+        ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
+      });
+      const showFastGlyph = modelPickerTriggerIsFast({
+        model,
+        fastMode,
+        ...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {}),
+      });
+      return (
+        <button
+          {...rest}
+          ref={ref}
+          type="button"
+          data-model-picker-trigger="true"
+          data-state={open ? "open" : "closed"}
+          disabled={disabled}
+          aria-label={`Select model (current: ${label})`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          className={cn(
+            "inline-flex min-w-0 items-center gap-1.5 rounded-md border font-sans transition-colors duration-150",
+            compact
+              ? "h-6 px-1 text-[9px]"
+              : "h-8 px-2 text-[11px] sm:text-[12px]",
+            "border-white/[0.06] bg-white/[0.03] text-fg/80",
+            "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+            open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            className,
+          )}
+        >
+          {model ? (
+            <ModelRowLogo
+              modelFamily={model.family}
+              cliCommand={model.cliCommand}
+              modelId={model.id}
+              providerModelId={model.providerModelId}
+              size={compact ? 11 : 13}
+              className="shrink-0"
+            />
+          ) : null}
+          {showFastGlyph ? (
+            // Presentational only — the accessible name already says "Fast".
+            <Lightning
+              size={compact ? 9 : 11}
+              weight="fill"
+              className="shrink-0 text-violet-300"
+              aria-hidden
+              data-model-picker-fast-glyph="true"
+            />
+          ) : null}
+          <span className="min-w-0 truncate font-medium leading-none">{label}</span>
+          <CaretDown
+            size={compact ? 9 : 10}
+            weight="bold"
+            className={cn(
+              "shrink-0 text-muted-fg/60 transition-transform duration-150",
+              open && "rotate-180 text-fg/80",
+            )}
+          />
+        </button>
+      );
+    },
+  ),
+);

@@ -1252,6 +1252,27 @@ async function clickEnabledModelOption(name: RegExp | string) {
   fireEvent.click(enabledOption!);
 }
 
+/**
+ * Background launch is a row on the send split now, not a sibling button.
+ * Opens the menu only when it is closed so repeated lookups inside one test do
+ * not toggle it shut.
+ */
+async function findBackgroundLaunchRow(container?: HTMLElement): Promise<HTMLButtonElement> {
+  // The caret belongs to the pane under test, but the menu it opens is
+  // portalled to document.body — so scoping the row lookup to `container` finds
+  // nothing. Scope only the trigger; always read the row off `screen`.
+  const triggerScope = container ? within(container) : screen;
+  if (!screen.queryByRole("menuitem", { name: /in background/i })) {
+    fireEvent.click(await triggerScope.findByRole("button", { name: "Send options" }));
+  }
+  return (await screen.findByRole("menuitem", { name: /in background/i })) as HTMLButtonElement;
+}
+
+/** The collapsed model trigger, which now carries the fast-mode suffix. */
+async function findModelTrigger(): Promise<HTMLElement> {
+  return await screen.findByRole("button", { name: /current: /i });
+}
+
 function sessionTabTitles(expectedTitles: string[]) {
   const tabs = screen.getAllByRole("button")
     .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
@@ -1446,7 +1467,7 @@ describe("AgentChatPane pane reserve", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
     expect(readLeftReserve(container)).toBe("0px");
   });
 });
@@ -2126,7 +2147,7 @@ describe("AgentChatPane submit recovery", () => {
       availableModelIdsOverride: ["anthropic/claude-sonnet-5"],
     });
 
-    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
     const includedModelLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
     fireEvent.pointerDown(trigger, { button: 0 });
@@ -2247,7 +2268,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
+    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
     expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
     expect(screen.getByRole("button", { name: "Codex permission mode" }).textContent).toContain("Full");
 
@@ -2311,9 +2332,9 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     const approvalButton = await screen.findByRole("button", { name: "Codex permission mode" });
-    await waitFor(() => {
+    await waitFor(async () => {
       expect(approvalButton.textContent).toContain("Full");
-      expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
+      expect((await findModelTrigger()).textContent).toMatch(/Fast/);
       expect(screen.getByLabelText("Reasoning effort").textContent).toContain("HI");
     });
 
@@ -3778,7 +3799,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Fast mode" }));
+    // Fast mode lives on the model row now, so reach it the same way every
+    // other model interaction in this suite does.
+    const modelTrigger = await findModelTrigger();
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: /Fast mode for/i }))[0]!);
+    fireEvent.keyDown(document, { key: "Escape" });
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -3890,8 +3918,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const fastModeButton = await screen.findByRole("button", { name: "Fast mode" });
-    expect(fastModeButton.getAttribute("aria-pressed")).toBe("false");
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
 
     sessions[0] = {
       ...session,
@@ -3910,8 +3937,8 @@ describe("AgentChatPane submit recovery", () => {
       },
     });
 
-    await waitFor(() => {
-      expect(fastModeButton.getAttribute("aria-pressed")).toBe("true");
+    await waitFor(async () => {
+      expect((await findModelTrigger()).textContent).toMatch(/Fast/);
       expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
     });
   });
@@ -4060,7 +4087,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.queryByText("Loading sessions")).toBeNull();
     });
-    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(window.ade.agentChat.models).not.toHaveBeenCalledWith(
       expect.objectContaining({ provider: "cursor" }),
@@ -4110,7 +4137,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
     await waitFor(() => {
       expect(window.ade.ai.getStatus).toHaveBeenCalled();
     });
@@ -5454,9 +5481,13 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+    // Machine and lane are separate shelf controls now, so routing an
+    // auto-create launch onto This Mac is two choices rather than one
+    // machine-qualified row inside the lane list.
+    fireEvent.click(await screen.findByRole("button", { name: /^Choose machine, currently/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /This Mac/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    const machineRows = await screen.findAllByText("Auto-create lane here");
-    fireEvent.click(machineRows.at(-1)!);
+    fireEvent.click(await screen.findByText("Auto-create lane"));
 
     expect(switchProjectToPath).not.toHaveBeenCalled();
     expect(switchRemoteProject).not.toHaveBeenCalled();
@@ -5626,7 +5657,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
 
     await waitFor(() => {
       expect(onSessionCreated).toHaveBeenCalledWith(
@@ -6076,13 +6107,13 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this and let me keep typing." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
 
-    await waitFor(() => {
+    await waitFor(async () => {
       expect(createLane).toHaveBeenCalled();
       expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-      expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((await findBackgroundLaunchRow()).disabled).toBe(true);
     });
     expect((textbox as HTMLTextAreaElement).disabled).toBe(false);
     expect((textbox as HTMLTextAreaElement).value).toBe("");
@@ -6090,7 +6121,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Next thought while it launches." } });
     expect((textbox as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((await findBackgroundLaunchRow()).disabled).toBe(false);
 
     resolveCreateLane();
     await waitFor(() => {
@@ -6129,7 +6160,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Keep this launch visible." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledTimes(1);
@@ -6232,7 +6263,7 @@ describe("AgentChatPane submit recovery", () => {
 
       const textbox = await screen.findByRole("textbox");
       fireEvent.change(textbox, { target: { value: "Launch in the background, then leave it hidden." } });
-      fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+      fireEvent.click(await findBackgroundLaunchRow());
 
       await waitFor(() => {
         expect(createLane).toHaveBeenCalledTimes(1);
@@ -6294,7 +6325,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Surface the failure after remount." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
@@ -6334,7 +6365,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch once even if clicked twice." } });
-    const launchButton = await screen.findByRole("button", { name: "Auto-create in background" });
+    const launchButton = await findBackgroundLaunchRow();
     await act(async () => {
       launchButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       launchButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -6420,7 +6451,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await within(paneOne).findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Only lane one should show this launch." } });
-    fireEvent.click(await within(paneOne).findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow(paneOne));
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledTimes(1);
@@ -6451,7 +6482,7 @@ describe("AgentChatPane submit recovery", () => {
     const textbox = await screen.findByRole("textbox");
     for (let index = 1; index <= 9; index += 1) {
       fireEvent.change(textbox, { target: { value: `Launch background chat ${index}.` } });
-      fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+      fireEvent.click(await findBackgroundLaunchRow());
       await waitFor(() => {
         expect(createLane).toHaveBeenCalledTimes(index);
       });
@@ -6490,14 +6521,14 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "First auto lane." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledTimes(1);
       expect((textbox as HTMLTextAreaElement).value).toBe("");
     });
 
     fireEvent.change(textbox, { target: { value: "Second auto lane." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledTimes(2);
       expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
@@ -6928,7 +6959,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect((await screen.findByRole("button", { name: /Fast mode/i })).getAttribute("aria-pressed")).toBe("true");
+    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Run Cursor in fast mode." } });
@@ -6995,7 +7026,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect((await screen.findByRole("button", { name: /Fast mode/i })).getAttribute("aria-pressed")).toBe("true");
+    expect((await findModelTrigger()).textContent).toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Run OpenCode in fast mode." } });
@@ -7060,7 +7091,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     await screen.findByRole("button", { name: /current: Claude Sonnet 5/i });
-    expect(screen.queryByRole("button", { name: /Fast mode/i })).toBeNull();
+    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Run Claude without stale fast mode." } });
@@ -7229,7 +7260,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this CLI session in the background." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
+    fireEvent.click(await findBackgroundLaunchRow());
 
     await waitFor(() => {
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -8070,7 +8101,8 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
-    fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Parallel models/i }));
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
@@ -8249,7 +8281,8 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
-    fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Parallel models/i }));
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
     fireEvent.click(await screen.findByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));

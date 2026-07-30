@@ -10,7 +10,6 @@ import {
   GitBranch,
   GitFork,
   HardDrives,
-  Lightning,
   LockKey,
   ShieldWarning,
   Warning,
@@ -1086,6 +1085,9 @@ export function CrossMachineHandoffModal({
                         {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
                         {...(mode === "fork" ? { filter: forkModelFilter } : {})}
                         {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                        fastMode={Boolean(fastMode)}
+                        fastModeSupported={destinationFastModeSupported}
+                        {...(onFastModeChange ? { onFastModeChange } : {})}
                       />
                       {onReasoningEffortChange ? (
                         <ReasoningEffortPicker
@@ -1094,20 +1096,6 @@ export function CrossMachineHandoffModal({
                           onChange={onReasoningEffortChange}
                           compact
                         />
-                      ) : null}
-                      {destinationFastModeSupported && onFastModeChange ? (
-                        <button
-                          type="button"
-                          aria-pressed={Boolean(fastMode)}
-                          onClick={() => onFastModeChange(!fastMode)}
-                          className={cn(
-                            PERMISSION_TRIGGER_CLASS,
-                            fastMode && "border-amber-300/30 bg-amber-400/[0.10] text-amber-100",
-                          )}
-                        >
-                          <Lightning size={10} weight="fill" />
-                          Fast
-                        </button>
                       ) : null}
                       {destinationPermissionPicker}
                     </div>

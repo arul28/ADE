@@ -1,11 +1,14 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaretUpDown, Check, MagnifyingGlass } from "@phosphor-icons/react";
+import { motion } from "motion/react";
+import { CaretUpDown, Check, DesktopTower, MagnifyingGlass } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LaneLogoMark, laneDisplayColor } from "./LaneChip";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
-import { COLORS, laneSurfaceTint } from "../lanes/laneDesignTokens";
+import { COLORS } from "../lanes/laneDesignTokens";
+import { cn } from "../ui/cn";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
 /**
  * Synthetic lane id for the draft-composer “auto-create lane” row.
@@ -93,10 +96,30 @@ const POPOVER_GAP = 4;
 const VIEWPORT_PAD = 10;
 const POPOVER_PREFERRED_MAX_HEIGHT = 320;
 const POPOVER_MIN_HEIGHT = 160;
+const POPOVER_MIN_WIDTH = 240;
+/** Matches the `.ade-lane-popover` stylesheet cap so the two can't disagree. */
+const POPOVER_MAX_WIDTH = 280;
 
 function resolveBranchLabel(ref: string | null | undefined): string | null {
   if (!ref) return null;
   return branchNameFromRef(ref) || null;
+}
+
+/**
+ * Row filter for the popover search box.
+ *
+ * Exported because it is the one piece of the combobox worth testing without a
+ * DOM: everything else about filtering is rendering. Callers may hand it either
+ * a short branch label or a full ref — a substring match covers both.
+ */
+export function laneMatchesSearch(
+  candidate: { name: string; branchLabel?: string | null },
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  if (candidate.name.toLowerCase().includes(needle)) return true;
+  return candidate.branchLabel?.toLowerCase().includes(needle) ?? false;
 }
 
 function laneListIcon(item: LaneListItem) {
@@ -120,12 +143,6 @@ function laneListItemFromLane(
   };
 }
 
-function matchesLaneSearch(item: LaneListItem, query: string): boolean {
-  if (!query) return true;
-  return item.name.toLowerCase().includes(query)
-    || (item.branchLabel?.toLowerCase().includes(query) ?? false);
-}
-
 /**
  * Flat list (today's shape) when there is at most one machine, grouped with a
  * header + its own auto-create row per machine when lanes span machines.
@@ -137,11 +154,10 @@ function buildLaneListEntries(input: {
   allLabel: string;
   search: string;
 }): LaneListEntry[] {
-  const query = input.search.trim().toLowerCase();
   const entries: LaneListEntry[] = [];
   let nextItemIndex = 0;
   const pushItem = (key: string, item: LaneListItem) => {
-    if (!matchesLaneSearch(item, query)) return false;
+    if (!laneMatchesSearch(item, input.search)) return false;
     entries.push({ kind: "item", key, index: nextItemIndex++, item });
     return true;
   };
@@ -189,6 +205,62 @@ function buildLaneListEntries(input: {
   return entries;
 }
 
+export type LanePopoverPlacement = {
+  left: number;
+  width: number;
+  maxHeight: number;
+  /** Exactly one of these is set; `bottom` anchors an upward-opening popover. */
+  top?: number;
+  bottom?: number;
+  openAbove: boolean;
+};
+
+/**
+ * Pure placement so the viewport-clamp invariant is testable without layout.
+ *
+ * The popover is `position: fixed`, so an unclamped anchor happily renders off
+ * the renderer edge. Both axes are clamped here, including the case where
+ * neither side of the trigger has room for the minimum useful height — there we
+ * abandon the anchor rather than overflow.
+ */
+export function computeLanePopoverPlacement(input: {
+  trigger: { top: number; bottom: number; left: number; width: number };
+  viewport: { width: number; height: number };
+}): LanePopoverPlacement {
+  const { trigger, viewport } = input;
+
+  const width = Math.min(
+    Math.min(POPOVER_MAX_WIDTH, Math.max(trigger.width, POPOVER_MIN_WIDTH)),
+    Math.max(0, viewport.width - VIEWPORT_PAD * 2),
+  );
+  const left = Math.max(
+    VIEWPORT_PAD,
+    Math.min(trigger.left, viewport.width - width - VIEWPORT_PAD),
+  );
+
+  const spaceBelow = viewport.height - trigger.bottom - VIEWPORT_PAD - POPOVER_GAP;
+  const spaceAbove = trigger.top - VIEWPORT_PAD - POPOVER_GAP;
+  const openAbove = spaceBelow < spaceAbove;
+  const available = Math.max(0, openAbove ? spaceAbove : spaceBelow);
+  const cap = Math.min(POPOVER_PREFERRED_MAX_HEIGHT, Math.max(0, viewport.height - VIEWPORT_PAD * 2));
+  const fitted = Math.min(cap, available);
+
+  if (fitted < Math.min(POPOVER_MIN_HEIGHT, cap)) {
+    // Neither side can host a usable list. Detach from the trigger and clamp to
+    // the viewport instead of letting the menu run off-screen.
+    const maxHeight = Math.min(cap, POPOVER_MIN_HEIGHT);
+    const top = Math.max(
+      VIEWPORT_PAD,
+      Math.min(trigger.bottom + POPOVER_GAP, viewport.height - maxHeight - VIEWPORT_PAD),
+    );
+    return { left, width, maxHeight, top, openAbove: false };
+  }
+
+  return openAbove
+    ? { left, width, maxHeight: fitted, bottom: viewport.height - trigger.top + POPOVER_GAP, openAbove }
+    : { left, width, maxHeight: fitted, top: trigger.bottom + POPOVER_GAP, openAbove };
+}
+
 type LaneComboboxProps = {
   lanes: LaneComboboxLane[];
   /**
@@ -228,9 +300,10 @@ export function LaneCombobox({
   const [search, setSearch] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = usePrefersReducedMotion();
 
   const selectedLane = useMemo(() => {
     const routed = machineLaneFromOptionId(value);
@@ -288,23 +361,21 @@ export function LaneCombobox({
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (
-        popoverRef.current &&
-        !popoverRef.current.contains(e.target as Node) &&
-        triggerRef.current &&
-        !triggerRef.current.contains(e.target as Node)
-      ) {
-        close();
-      }
+      const target = e.target as Node | null;
+      if (popoverRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      close();
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open, close]);
 
-  // Focus search on open and sync keyboard highlight to the current selection.
+  // Keep keyboard navigation active without auto-selecting the search field.
+  // Search should only acquire its highlighted border after the user clicks or
+  // tabs into it.
   useEffect(() => {
     if (!open) return;
-    requestAnimationFrame(() => searchInputRef.current?.focus());
+    requestAnimationFrame(() => popoverRef.current?.focus({ preventScroll: true }));
     const selectedIdx = items.findIndex((item) => item.id === value);
     setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
     // Only re-sync when the menu opens — search filtering keeps its own highlight reset.
@@ -350,39 +421,14 @@ export function LaneCombobox({
     }
   }, [open, highlightedIndex]);
 
-  // Position popover below trigger
-  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+  const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    const spaceBelow = viewportHeight - rect.bottom - VIEWPORT_PAD;
-    const spaceAbove = rect.top - VIEWPORT_PAD;
-    const openAbove = spaceBelow < spaceAbove;
-
-    const available = (openAbove ? spaceAbove : spaceBelow) - POPOVER_GAP;
-    const maxHeight = Math.max(
-      POPOVER_MIN_HEIGHT,
-      Math.min(POPOVER_PREFERRED_MAX_HEIGHT, available),
-    );
-
-    const width = Math.min(280, Math.max(rect.width, 260));
-    let left = rect.left;
-    if (left + width > viewportWidth - VIEWPORT_PAD) {
-      left = viewportWidth - width - VIEWPORT_PAD;
-    }
-    left = Math.max(VIEWPORT_PAD, left);
-
-    setPopoverStyle({
-      left,
-      width,
-      maxHeight,
-      ...(openAbove
-        ? { bottom: viewportHeight - rect.top + POPOVER_GAP }
-        : { top: rect.bottom + POPOVER_GAP }),
-    });
+    setPlacement(computeLanePopoverPlacement({
+      trigger: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    }));
   }, []);
   useEffect(() => {
     if (!open) return;
@@ -408,167 +454,101 @@ export function LaneCombobox({
     value === "all" || !selectedLane
       ? null
       : (customLaneColor ?? COLORS.accent);
-  const pillSurface = variant === "pill" && value !== "all" && selectedLane && customLaneColor
-    ? laneSurfaceTint(customLaneColor, "default")
-    : null;
-  const defaultVariantSurface = variant === "default" && value !== "all" && customLaneColor
-    ? laneSurfaceTint(customLaneColor, "soft")
-    : null;
 
-  const triggerStyle: React.CSSProperties =
-    variant === "pill"
-      ? {
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          minHeight: selectedBranchLabel ? 40 : 31,
-          padding: selectedBranchLabel
-            ? "5px 10px 5px 14px"
-            : "6px 10px 6px 14px",
-          borderRadius: 9999,
-          border: pillSurface?.text ? pillSurface.border : "1px solid rgba(255,255,255,0.08)",
-          background: pillSurface?.text
-            ? pillSurface.background
-            : "rgba(255,255,255,0.04)",
-          boxShadow: pillSurface?.text
-            ? `inset 0 0 0 1px color-mix(in srgb, ${pillSurface.text} 10%, transparent)`
-            : undefined,
-          color: pillSurface?.text ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.7)",
-          fontSize: 11,
-          fontWeight: 500,
-          cursor: "pointer",
-          minWidth: 0,
-          width: fullWidth ? "100%" : undefined,
-          // fullWidth means "fill the container" — don't cap it below the parent.
-          maxWidth: fullWidth ? undefined : 320,
-          transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
-        }
-      : {
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          ...(
-            selectedBranchLabel
-              ? {
-                  height: "auto" as const,
-                  minHeight: compact ? 32 : 40,
-                  padding: compact ? "3px 6px" : "4px 8px",
-                }
-              : {
-                  height: compact ? 24 : 28,
-                  padding: compact ? "0 6px" : "0 8px",
-                }
-          ),
-          borderRadius: 6,
-          border: defaultVariantSurface?.text
-            ? defaultVariantSurface.border
-            : "1px solid var(--work-pane-border)",
-          background: defaultVariantSurface?.text
-            ? defaultVariantSurface.background
-            : "rgba(255,255,255,0.02)",
-          boxShadow: defaultVariantSurface?.text
-            ? `inset 0 0 0 1px color-mix(in srgb, ${defaultVariantSurface.text} 8%, transparent)`
-            : undefined,
-          color: "var(--color-fg)",
-          fontSize: 11,
-          fontWeight: 400,
-          cursor: "pointer",
-          minWidth: 0,
-          width: fullWidth ? "100%" : undefined,
-          // fullWidth means "fill the container" — don't cap it below the parent.
-          maxWidth: fullWidth ? undefined : 200,
-          transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
-        };
+  const popoverStyle: React.CSSProperties = {
+    left: placement?.left ?? 0,
+    width: placement?.width ?? POPOVER_MIN_WIDTH,
+    maxHeight: placement?.maxHeight ?? POPOVER_PREFERRED_MAX_HEIGHT,
+    ...(placement?.bottom !== undefined
+      ? { bottom: placement.bottom }
+      : { top: placement?.top ?? 0 }),
+    // The stylesheet ships a CSS keyframe entrance for this class; framer owns
+    // the entrance now, and running both double-animates the open.
+    animation: "none",
+    transformOrigin: placement?.openAbove ? "bottom left" : "top left",
+  };
+
+  // Sits in composer shelves next to 24-28px ghost pills, so the trigger is a
+  // single line at that scale in both variants — never a two-line block.
+  const triggerClass = cn(
+    "ade-lane-trigger group inline-flex min-w-0 shrink items-center gap-1.5",
+    "border border-white/[0.07] bg-white/[0.03] text-[11px] font-normal text-fg/80",
+    "transition-colors duration-100 hover:border-white/[0.13] hover:bg-white/[0.06]",
+    "data-[open=true]:border-white/[0.16] data-[open=true]:bg-white/[0.07]",
+    variant === "pill" ? "rounded-full" : "rounded-md",
+    compact ? "h-7 px-2" : "h-[30px] px-2.5",
+    fullWidth
+      ? "w-full"
+      // fullWidth means "fill the container" — only the free-standing form caps.
+      : variant === "pill" ? "max-w-[320px]" : "max-w-[200px]",
+  );
 
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
-        className="ade-lane-trigger"
+        className={triggerClass}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
+        data-open={open ? "true" : "false"}
         onClick={() => setOpen(!open)}
-        style={triggerStyle}
       >
-        {displayColor ? (
-          <LaneLogoMark color={displayColor} size={11} />
-        ) : null}
+        {displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
+        <span className="min-w-0 shrink truncate">{displayLabel}</span>
         {selectedBranchLabel ? (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-              gap: 2,
-              minWidth: 0,
-              flex: 1,
-              lineHeight: 1.2,
-            }}
-          >
-            <span className="truncate" style={{ width: "100%" }}>
-              {displayLabel}
-            </span>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                minWidth: 0,
-                width: "100%",
-              }}
-            >
-              <BranchIcon
-                size={9}
-                weight="regular"
-                style={{
-                  color: "var(--color-muted-fg)",
-                  opacity: 0.55,
-                  flexShrink: 0,
-                }}
-              />
-              <span
-                className="truncate"
-                style={{
-                  fontSize: 10,
-                  color: "var(--color-muted-fg)",
-                  opacity: 0.92,
-                }}
-              >
-                {selectedBranchLabel}
-              </span>
-            </div>
-          </div>
-        ) : (
-          <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
-            {displayLabel}
+          // Shrink factor puts every pixel of squeeze on the branch first: the
+          // lane name is the label, the branch is only context.
+          <span className="flex min-w-0 shrink-[9999] items-center gap-1 overflow-hidden text-muted-fg/65">
+            <BranchIcon size={9} weight="regular" className="shrink-0" />
+            <span className="truncate">{selectedBranchLabel}</span>
           </span>
-        )}
+        ) : null}
         <CaretUpDown
           size={10}
           weight="bold"
-          style={{ color: "var(--color-muted-fg)", opacity: 0.6, flexShrink: 0 }}
+          className="ml-auto shrink-0 text-muted-fg/55 transition-transform duration-150 group-data-[open=true]:rotate-180"
         />
       </button>
 
+      {/*
+        No `AnimatePresence` / exit animation here on purpose: the popover lives
+        in a body portal, and a node that outlives `open` by an animation frame
+        leaks into whatever renders next (including other test cases). The
+        entrance spring is the part users actually see.
+      */}
       {open
         ? createPortal(
-            <div
+            <motion.div
               ref={popoverRef}
+              tabIndex={-1}
               className="ade-lane-popover ade-liquid-glass-menu"
               style={popoverStyle}
               onKeyDown={handleKeyDown}
+              // Height is content-driven under `maxHeight`, so `layout` is what
+              // makes filtering read as the list collapsing rather than snapping.
+              layout={reducedMotion ? false : "size"}
+              initial={reducedMotion ? false : { opacity: 0, scale: 0.96, y: placement?.openAbove ? 4 : -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={
+                reducedMotion
+                  ? { duration: 0 }
+                  : { type: "spring", stiffness: 520, damping: 34, mass: 0.7 }
+              }
             >
               <div className="ade-lane-popover-search-row">
                 <MagnifyingGlass
                   size={12}
                   weight="regular"
-                  style={{ color: "var(--color-muted-fg)", opacity: 0.5, flexShrink: 0 }}
+                  className="shrink-0 text-muted-fg/50"
                 />
                 <input
                   ref={searchInputRef}
                   className="ade-lane-popover-search"
+                  // Named so a bare `getByRole("textbox")` in a host surface can
+                  // still tell this apart from the surface's own input.
+                  aria-label="Search lanes"
                   placeholder="Search lanes..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -576,14 +556,7 @@ export function LaneCombobox({
               </div>
               <div ref={listRef} className="ade-lane-popover-list">
                 {items.length === 0 ? (
-                  <div
-                    style={{
-                      padding: "12px 8px",
-                      fontSize: 11,
-                      color: "var(--color-muted-fg)",
-                      textAlign: "center",
-                    }}
-                  >
+                  <div className="px-2 py-3 text-center text-[11px] text-muted-fg">
                     No lanes found
                   </div>
                 ) : (
@@ -593,119 +566,65 @@ export function LaneCombobox({
                         <div
                           key={entry.key}
                           role="presentation"
-                          style={{
-                            padding: "7px 8px 3px",
-                            fontSize: 9.5,
-                            fontWeight: 600,
-                            letterSpacing: "0.12em",
-                            textTransform: "uppercase",
-                            color: "var(--color-muted-fg)",
-                            opacity: 0.55,
-                          }}
+                          data-machine-header="true"
+                          className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[9.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/55 first:pt-1"
                         >
-                          {entry.label}
+                          <DesktopTower size={10} weight="duotone" className="shrink-0" />
+                          <span className="truncate">{entry.label}</span>
                         </div>
                       );
                     }
                     const item = entry.item;
-                    const currentIndex = entry.index;
                     const isSelected = item.id === value;
-                    const isAutoCreate = isAutoCreateLaneOptionId(item.id);
+                    const isHighlighted = entry.index === highlightedIndex;
 
-                    if (isAutoCreate) {
+                    if (isAutoCreateLaneOptionId(item.id)) {
                       return (
                         <button
                           key={entry.key}
                           type="button"
                           className="ade-lane-popover-item ade-lane-popover-item-featured"
                           data-selected={isSelected ? "true" : undefined}
-                          data-item-index={currentIndex}
+                          data-highlighted={isHighlighted ? "true" : undefined}
+                          data-item-index={entry.index}
                           onClick={() => selectItem(item.id)}
                         >
                           <span className="ade-orchestrator-rainbow-text">{item.name}</span>
                           {isSelected ? (
-                            <Check
-                              size={12}
-                              weight="bold"
-                              style={{
-                                color: "var(--color-accent)",
-                                flexShrink: 0,
-                              }}
-                            />
+                            <Check size={12} weight="bold" className="shrink-0 text-accent" />
                           ) : null}
                         </button>
                       );
                     }
 
-                    const titleRow = (
-                      <div
-                        style={{
-                          display: "flex",
-                          width: "100%",
-                          alignItems: "center",
-                          gap: 6,
-                          minWidth: 0,
-                        }}
-                      >
-                        {laneListIcon(item)}
-                        <span className="truncate" style={{ flex: 1, minWidth: 0 }}>
-                          {item.name}
-                        </span>
-                        {isSelected ? (
-                          <Check
-                            size={12}
-                            weight="bold"
-                            style={{
-                              color: "var(--color-accent)",
-                              flexShrink: 0,
-                            }}
-                          />
-                        ) : null}
-                      </div>
-                    );
                     return (
                       <button
                         key={entry.key}
                         type="button"
                         className="ade-lane-popover-item"
                         data-selected={isSelected ? "true" : undefined}
-                        data-item-index={currentIndex}
+                        data-highlighted={isHighlighted ? "true" : undefined}
+                        data-item-index={entry.index}
                         onClick={() => selectItem(item.id)}
-                        style={
-                          item.branchLabel
-                            ? {
-                                flexDirection: "column",
-                                alignItems: "stretch",
-                                gap: 0,
-                                paddingTop: 5,
-                                paddingBottom: 5,
-                              }
-                            : undefined
-                        }
                       >
+                        {laneListIcon(item)}
+                        <span className="min-w-0 shrink truncate">{item.name}</span>
                         {item.branchLabel ? (
-                          <>
-                            {titleRow}
-                            <div className="ade-lane-popover-branch-row">
-                              <BranchIcon
-                                size={10}
-                                weight="regular"
-                                style={{ color: "var(--color-muted-fg)", opacity: 0.6, flexShrink: 0 }}
-                              />
-                              <span className="truncate ade-lane-popover-branch-label">
-                                {item.branchLabel}
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          titleRow
-                        )}
+                          // Same priority rule as the trigger: branch gives way first.
+                          <span className="flex min-w-0 shrink-[9999] items-center gap-1 overflow-hidden text-[10px] text-muted-fg/60">
+                            <BranchIcon size={9} weight="regular" className="shrink-0" />
+                            <span className="truncate">{item.branchLabel}</span>
+                          </span>
+                        ) : null}
+                        {isSelected ? (
+                          <Check size={12} weight="bold" className="ml-auto shrink-0 text-accent" />
+                        ) : null}
                       </button>
                     );
                   })
                 )}
               </div>
-            </div>,
+            </motion.div>,
             document.body,
           )
         : null}

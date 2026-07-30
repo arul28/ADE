@@ -12,7 +12,7 @@ subagents, computer use). The pane derives all visible state from the
 | Path | Role |
 |---|---|
 | `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. It persists a per-session `ade.chat.lastViewed.v1:<sessionId>` timestamp in renderer `localStorage`; scheduled turns that fired since that timestamp produce a dismissible while-you-were-away strip above the composer, with the latest outcome preview and jump requests for up to three wake dividers. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Pending-steer Edit uses `cancelSteer({ requireQueued: true })`, then merges the queued text, file attachments, and context attachments into the captured composer draft; if the message already left the queue, the cancel fails and the draft is left unchanged. Draft launches are tracked through **root**-store-backed `DraftLaunchJob` state machines with multi-step progress (`creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`; auto-create names the lane deterministically up front and renames to the AI name in the background, so there is no blocking `naming-lane` phase); jobs live in the root store (not the per-project store) so an in-flight launch survives a remote project switch that tears down the originating project surface. The detached launch chain captures the originating `OpenProjectBinding`, passes it as a `pin` to branch/lane/chat/orchestration/PTY calls so a mid-launch project switch keeps targeting the originating runtime, pins rollback to that binding, and caps each step at 90 s (`withDraftLaunchTimeout`). The composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, failed jobs expose Restore in the job strip and matching error banner, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. It also owns the transcript-resilience rules described in [Transcript and turns](transcript-and-turns.md#history-snapshots-scroll-back-and-misses): `resolveChatHistoryMissAction` (a history miss never blanks a rendered transcript), `resolveSnapshotHistoryCursor` (`hasOlderHistory` is authoritative over `tailStartOffset`), the bounded silent retry ladder `OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2400]`, the `syncPendingBySession` flag that surfaces as `data-chat-sync-pending` + a 2 px catch-up hairline under the header (a fading static rule, never a continuous animation; the fade is `motion-safe:`), and a minimal static cold-chat skeleton (`data-chat-cold-skeleton`) so a chat with no cached view reads as loading rather than empty. `resolveRenderedChatSessionId` picks the session to paint from the incoming props rather than the effect-synced `selectedSessionId`, which otherwise paints the outgoing chat's transcript for one frame after the pane is pointed elsewhere. The module-level view cache holds 8 entries / 128 MB total (32 MB per session, matching the resident ceiling) and stores a reference to the array the pane already holds; a **detached** view — an older transcript prefix whose live tail was dropped to stay under the resident cap after paging back — is skipped rather than evicted, so a later restore can never render an old slice as if it were current. The active-turn recovery loop is a **stall detector**, not the transport: it re-reads the transcript on a jittered `ACTIVE_TURN_RECOVERY_INTERVAL_MS` (10 s) tick and skips entirely when the live subscription delivered anything inside that window. Subscription ownership is handed to `chatSessionRetention.ts` when the pane hides. Left/right floating-pane reserve is applied only while a selected session surface renders those panes; an empty draft never reserves a hidden PR or Chat Actions pane, so its hero composer remains centered. |
-| `apps/desktop/src/renderer/components/usage/ActivityModule.tsx` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open; the component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. |
+| `apps/desktop/src/renderer/components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open; the component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. `ActivityHeatmap` owns the responsive seven-row grid and viewport fitting, while `activityIntensity` provides the shared daily activity score, non-zero quartile buckets, and leading-inactive-day trimming used by the grid and summary counts. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
 | `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a full-history fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid); Cursor is brief-only. Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `forkSession()`. |
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
@@ -66,7 +66,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). |
 | `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
-| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. |
+| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the popover rows, where there is room. |
 | `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` | The blocked-action primitive: `BlockedActionReason` (id, title, detail, and the optional fix that clears it), `BlockedReasons` to render them inline, `describeBlockedReasons` for tooltip/a11y text, and `BlockedActionButton`, which takes the reasons themselves rather than a `disabled` boolean so a caller cannot disable a control without handing over the explanation. Exists because ADE keeps regrowing the same bug — a surface computes blockers, disables the primary button, and renders none of them. |
 
 Cross-machine Work drafts do not rebind the project tab. `AgentChatPane` freezes
@@ -108,6 +108,76 @@ would otherwise cover the centered chat column. That reservation belongs only
 to the selected-session branch that mounts those panes. The empty/draft branch
 uses a zero reserve even when the lane's persisted PR-pane preference is open,
 so a new-chat composer is centered rather than shifted for invisible chrome.
+
+### Empty draft surface
+
+The draft (new-chat) branch is three elements, not seven: the wordmark, the
+composer, and a **launch shelf** tucked under the composer, with the activity
+module below. There is no standing "Start a new conversation" caption — the
+wordmark already identifies the app, so the line was a band of vertical space
+spent restating what the user could see. Only a non-default mode still writes a
+line there (`isOrchestratorDraft` renders "Orchestrate a swarm of agents"),
+because that names something the surface does not otherwise show.
+
+The shelf holds everything that answers **where this runs**, as two adjacent
+dropdowns plus two labelled actions: `DraftMachinePicker`, then a `LaneCombobox`
+(mounted `compact`, so its 28px trigger matches the composer pills above it),
+then Shell and Import. The composer sits above it at `z-10`.
+
+Machine and lane are **separate controls on purpose**. Folding them into one
+list made that list carry two orthogonal choices: every lane row had to name its
+machine, and the list grew by machine count rather than staying the length of one
+machine's lanes. Choosing the machine first keeps the lane list flat, short, and
+scoped — `DraftMachinePicker` renders nothing below two machines, and
+`AgentChatPane` passes `draftShelfLanes` (bare lane ids for the selected machine)
+rather than the machine-qualified option ids the combined selector needed. This
+also retired the composer toolbar's machine chip, which only ever existed because
+machine had nowhere else to live.
+
+`handleMachineChange` in `useDraftMachineRouting.ts` re-points the lane to the
+target machine's primary **without touching `draftLaunchTargetId`**, so a draft
+sitting on "Auto-create lane" keeps that target and only its underlying machine
+moves — auto-create and primary are the two targets ADE guarantees on every
+machine running it, so neither needs the user to re-choose. A machine with no
+lanes at all falls back to `AUTO_CREATE_LANE_OPTION_ID` rather than erroring or
+leaving the picker blank.
+
+Shell and Import keep text labels. As icon-only buttons they were unreadable —
+that was a symptom of solving the wrong problem (compressing controls to fit a
+shelf that was simply too tall).
+
+`LaneCombobox` itself was reworked for this: a single-line trigger (lane dot,
+name, branch, caret) instead of a 40px two-line block, lane colour reduced to
+the dot so the control sits in the same neutral ghost family as its neighbours,
+and a search field. Branch text truncates before the lane name via flex shrink
+factors — the branch is context, the name is the label. Two invariants are pinned
+by tests: `fullWidth` emits no `max-w-*` and nothing inside establishes a
+min-content floor (the measured narrow-pane overflow this component regressed
+before), and `computeLanePopoverPlacement` clamps on both axes including the
+case where neither side fits. The popover has no exit animation on purpose — a
+body-portal node that outlives `open` by a frame leaks into whatever renders
+next, which is how its search field started colliding with unrelated
+`getByRole("textbox")` queries in the chat suites. Its machine-grouping support
+still exists for other callers; the shelf simply never triggers it.
+
+Its chrome is the `.ade-chat-launch-shelf` class in `renderer/index.css`. The
+shelf cancels both the parent stack's 12px gap and the composer's 12px wrapper
+margin, overlaps the painted composer by one pixel, and omits its top border.
+The composer's bottom edge is therefore the shared edge while the shelf
+supplies the continuing sides and lower corners; no background-colored seam
+sits between the two surfaces.
+
+**Keep the margin and padding in that CSS rule, not on the element.** They lived
+briefly as Tailwind arbitrary values carrying CSS variables
+(`-mt-[var(--chat-radius-shell)]`, `pt-[calc(var(--chat-radius-shell)+4px)]`) —
+exactly the kind of class that can fail to compile with no error. When the
+negative margin silently vanishes, the shelf detaches from the composer.
+Nothing in the type system or test suite catches that geometry.
+
+The nesting is also load-bearing: Shell and Import both act on whichever lane is
+selected in this shelf, so presenting them *inside* it encodes a dependency the
+earlier stacked layout inverted — lane selection used to sit below two buttons
+that could not work without it.
 
 ### Header
 
@@ -335,6 +405,10 @@ so a new-chat composer is centered rather than shifted for invisible chrome.
   progressive low-to-high gradient and the active tier keeps the existing
   pulse/colour treatment. A tier choice does **not** close the popover — the
   user can compare levels until clicking outside or pressing Escape.
+  The collapsed trigger uses the full tier label on normal-width composers
+  (for example, `Medium` rather than `MED`) and removes the nested label
+  outline because the trigger already supplies the interactive boundary.
+  Narrow/mobile layouts retain the abbreviated label to preserve space.
   GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
   is hidden for that family, and Ultra explains that it can delegate to
   multiple agents and use limits faster.
@@ -348,16 +422,78 @@ so a new-chat composer is centered rather than shifted for invisible chrome.
   text to the clipboard as a recovery path. The composer pill and top
   bar pill both observe the root-store dictation slice, so their timer
   and waveform stay in sync.
-- **Fast mode.** A yellow Lightning chip next to the model selector
-  toggles the legacy-named `codexFastMode` bit for the selected
-  session. It renders whenever the selected descriptor advertises
-  `serviceTiers: ["fast"]`, including dynamic Cursor SDK/CLI rows and
-  GPT-5.6 and older fast-capable Codex entries. Codex state flows into the next
-  `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor SDK
-  state flows through the discovered model-parameter selection, and
+- **Fast mode.** Toggles the legacy-named `codexFastMode` bit for the
+  selected session. Fast mode is a property of a *model*, so the toggle
+  lives on the model row inside the shared `ModelPicker` rather than as a
+  separate composer chip — every surface that mounts the picker gets it,
+  and the composer toolbar keeps one control where it used to spend two.
+  The row chip renders whenever that descriptor advertises
+  `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows, GPT-5.6, and
+  older fast-capable Codex entries) *and* the caller supplied
+  `onFastModeChange`. Fast is one bit per surface but it belongs to the
+  model it was enabled for, so a chip reads as on only on the *selected*
+  row (`fastModeOn={fastMode && isActive}`) — never on every fast-capable
+  row at once. Clicking the selected row's chip is a plain on/off toggle
+  that neither closes the picker nor re-fires selection; clicking a
+  non-selected row's chip means "use this model, fast" — one press
+  commits the model selection and turns fast on. A plain row click onto a
+  different model clears the previous model's fast bit rather than
+  inheriting it. The chip's states are rest (muted outline, outline
+  lightning) → hover (darker fill, still off) → press (`active:scale`,
+  suppressed under `prefers-reduced-motion`) → on (violet fill, filled
+  lightning). The collapsed trigger names the state rather than showing a
+  separate indicator — `composeModelPickerTriggerLabel()` in
+  `ModelPicker.tsx` renders "GPT-5.6 Terra Fast", with a filled lightning
+  glyph rendered before the model name (`aria-hidden`, so the accessible
+  name stays text-only). Codex state flows into
+  the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
+  SDK state flows through the discovered model-parameter selection, and
   Work CLI launches resolve fast Cursor rows to the matching `*-fast`
-  alias. The toggle is also exposed per-slot in parallel mode through
-  `onParallelSlotCodexFastModeChange`.
+  alias. Parallel mode passes the per-slot setter through the slot's own
+  picker (`onParallelSlotCodexFastModeChange`).
+
+  Surfaces not yet migrated (`ModelSelector`, `ReviewLaunchModelControls`,
+  `CtoSettingsPanel`, `ChatModelSelectionPendingCard`, `ProjectlessComposer`)
+  still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
+  which keeps rendering the old sibling chip. Migrating them is a prop
+  rename with nothing else to unwind.
+- **Overflow control.** Issue context, orchestrator mode, parallel models,
+  and the iOS Simulator / App Control drawer toggles are folded behind one
+  `⋯` trigger (`ComposerOverflowMenu`). Each entry is gated by exactly the
+  condition that used to gate its standalone button, so a control that
+  would not have rendered does not become a row, and with no entries left
+  the trigger disappears entirely.
+
+  How many entries survive is **contextual**, not fixed — a Work CLI draft
+  hides the lane tool drawers (`hideLaneToolDrawers`) and has no
+  orchestrator, so it can be left with one. A `⋯` that opens onto a single
+  row is a menu pretending to be a button, so at `items.length === 1` the
+  control renders that entry directly as an icon button instead. Callers
+  must therefore not assume either form; tests reach it through a helper
+  that accepts both.
+
+  Because folding hides active state, the collapsed trigger carries an
+  accent dot whenever any entry is on, rows report `aria-checked`, and an
+  entry may carry a `badge` count (issue context uses it for attached
+  issues) which surfaces on the inline button too. Rows that open their
+  own portal — issue context — position against the `triggerRef` rather
+  than against the row, because the row unmounts with the menu while the
+  trigger stays mounted.
+
+  The menu itself **portals to `document.body`** via
+  `composerSplitMenuPosition`, like every other composer popover. The
+  composer shell clips its overflow, so an inline-absolute menu is cut off
+  at the prompt-box edge and simply cannot be read.
+- **Send options.** Background launch is the second row on Send's caret,
+  and Send is a **split control**: one `rounded-full` body, the arrow on
+  the left, a hairline divider, a caret sharing the same fill. This is
+  deliberately the same shape as `ActiveTurnSendButton`, so the composer
+  uses one send idiom whether or not a turn is running. The earlier
+  arrangement — a second filled circle beside Send, also carrying an arrow
+  — read as one control accidentally duplicated and overflowed the
+  composer's padding, clipping against its rounded edge. The split renders
+  only when `onSubmitInBackground` is supplied and the surface is neither
+  parallel nor Cursor-Cloud mode; otherwise Send stays a plain circle.
 - **Attachments.** Allows the user to attach files and artifacts to
   the next turn.
 - **Permission controls.** Inline with the composer:
@@ -521,10 +657,10 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 
 | Module | Role |
 |---|---|
-| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast-mode chip, and the favorites/recents fan-out. |
+| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Surfaces that pass neither render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
 | `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Props include `hidePermissionRail` (forward-compat hook for orchestrated surfaces that suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), and `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list). When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid) may expand from the static registry even if the last discovered model-id list is incomplete. Estimated row height `MODEL_ROW_ESTIMATED_HEIGHT = 44`. |
 | `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
-| `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). |
+| `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). Also renders the muted Fast chip when the surface supplied `onFastModeChange` and `modelSupportsFastMode()` holds for that row's descriptor; toggling it changes neither the selection nor the popover's open state. |
 | `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
 | `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. |
 | `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |

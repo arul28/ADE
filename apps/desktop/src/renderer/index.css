@@ -2503,6 +2503,34 @@ button:active, [role="button"]:active {
   box-shadow: var(--shadow-card-hover);
 }
 
+/*
+ * Launch shelf beneath the new-chat composer.
+ *
+ * The parent stack contributes a 12px gap and the composer wrapper contributes
+ * another 12px bottom margin. Cancel both and overlap the painted composer by
+ * one pixel so there is no background-colored seam at any scale factor.
+ * The shelf has no top border: the composer's bottom edge is the shared edge,
+ * while the shelf supplies only the continuing sides and bottom.
+ *
+ * Keep this geometry in CSS rather than Tailwind arbitrary values carrying
+ * variables; those can disappear from the generated stylesheet silently.
+ */
+.ade-chat-launch-shelf {
+  position: relative;
+  margin-top: -25px;
+  padding: 5px 12px 8px;
+  border: 1px solid var(--chat-glass-border);
+  border-top: 0;
+  border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 42%, transparent) 100%
+    );
+  box-shadow: 0 14px 32px -18px rgb(0 0 0 / 75%);
+}
+
 .ade-liquid-glass {
   position: relative;
   isolation: isolate;
@@ -2552,6 +2580,15 @@ button:active, [role="button"]:active {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 18px 44px -30px rgba(0, 0, 0, 0.72);
+}
+
+/*
+ * The empty-state launch shelf sits immediately behind the composer. Its
+ * shared edge must stay visible; the normal downward composer shadow otherwise
+ * paints a black band over the shelf and looks exactly like layout spacing.
+ */
+.relative:has(+ .ade-chat-launch-shelf) [data-chat-composer-mode] {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 /* Rich composer chips are contentEditable="false", so browsers skip them when
@@ -3367,6 +3404,87 @@ button:active, [role="button"]:active {
 .ade-chat-composer-footer {
   container-type: inline-size;
   container-name: chat-composer;
+}
+
+/*
+ * Composer selectors share the composer surface instead of nesting individual
+ * bordered pills inside it. The popovers retain their normal menu chrome.
+ */
+.ade-chat-composer-footer :is(
+  [data-model-picker-trigger],
+  [data-reasoning-effort-picker-trigger],
+  .ade-chat-composer-permission-trigger
+) {
+  height: 28px;
+  font-size: 11px;
+  line-height: 1;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  padding-inline: 6px;
+}
+
+.ade-chat-composer-footer [data-reasoning-chip] {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ade-chat-composer-footer :is(
+  [data-model-picker-trigger],
+  [data-reasoning-effort-picker-trigger],
+  .ade-chat-composer-permission-trigger
+):hover:not(:disabled),
+.ade-chat-composer-footer :is(
+  [data-model-picker-trigger],
+  [data-reasoning-effort-picker-trigger],
+  .ade-chat-composer-permission-trigger
+)[data-state="open"] {
+  border-color: transparent;
+  background: rgb(255 255 255 / 5%);
+  box-shadow: none;
+}
+
+.ade-chat-composer-footer .ade-chat-composer-permission-trigger > span:first-child {
+  width: 13px;
+  height: 13px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ade-chat-composer-footer .ade-chat-composer-permission-trigger > span:first-child svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ade-chat-composer-footer .ade-chat-composer-permission-label {
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* The launch shelf is already the containing surface, so machine and lane are
+   inline selectors rather than pills nested inside another drawer. */
+.ade-chat-launch-shelf :is([data-draft-machine-picker], .ade-lane-trigger) {
+  font-size: 9px;
+  line-height: 1;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ade-chat-launch-shelf button[aria-label="Open shell in selected lane"],
+.ade-chat-launch-shelf button[aria-label="Import an external CLI session"] {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.ade-chat-launch-shelf :is([data-draft-machine-picker], .ade-lane-trigger):hover:not(:disabled),
+.ade-chat-launch-shelf :is([data-draft-machine-picker], .ade-lane-trigger)[data-open="true"],
+.ade-chat-launch-shelf [data-draft-machine-picker][aria-expanded="true"] {
+  border-color: transparent;
+  background: rgb(255 255 255 / 5%);
 }
 
 @container chat-composer (max-width: 560px) {

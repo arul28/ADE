@@ -406,7 +406,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
   if (tiers.length === 0) return null;
 
-  const label = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
+  const shortLabel = reasoningChipLabel(displayedEffort, useCodex56Labels) ?? "AUTO";
 
   return (
     <Popover.Root
@@ -421,7 +421,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     >
       <Popover.Trigger asChild>
         <ReasoningEffortTrigger
-          label={label}
+          label={activeLabel}
+          shortLabel={shortLabel}
           tone={activeTone}
           compact={compact}
           disabled={disabled}
@@ -552,6 +553,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
 type TriggerProps = {
   label: string;
+  shortLabel: string;
   tone: (typeof REASONING_TONE_STYLES)[ReasoningToneKey];
   compact: boolean;
   disabled: boolean;
@@ -562,7 +564,7 @@ type TriggerProps = {
 const ReasoningEffortTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ReasoningEffortTrigger(
-      { label, tone, compact, disabled, open, className, ...rest },
+      { label, shortLabel, tone, compact, disabled, open, className, ...rest },
       ref,
     ) {
       return (
@@ -591,12 +593,13 @@ const ReasoningEffortTrigger = memo(
           <span
             data-reasoning-chip="true"
             className={cn(
-              "shrink-0 rounded border px-1 font-semibold uppercase leading-none tracking-wide",
-              tone.chip,
-              compact ? "py-[1px] text-[8px]" : "py-[2px] text-[9px]",
+              "shrink-0 font-medium leading-none",
+              compact ? "text-[9px]" : "text-[11px] sm:text-[12px]",
             )}
+            style={{ color: tone.color }}
           >
-            {label}
+            <span className="hidden sm:inline">{label}</span>
+            <span className="sm:hidden">{shortLabel}</span>
           </span>
           <CaretDown
             size={compact ? 9 : 10}

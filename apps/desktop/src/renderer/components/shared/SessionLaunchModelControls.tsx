@@ -292,8 +292,8 @@ export function SessionLaunchModelControls({
         surfaceKey={surfaceKey}
         compact
         triggerClassName={COMPOSER_MODEL_TRIGGER}
-        fastModeActive={config.fastMode}
-        onFastModeToggle={(fastMode) => onChange({ fastMode })}
+        fastMode={config.fastMode}
+        onFastModeChange={(fastMode) => onChange({ fastMode })}
         fastModeSupported={batchLaunchSupportsFastMode(config.modelId)}
         disabled={disabled}
       />
