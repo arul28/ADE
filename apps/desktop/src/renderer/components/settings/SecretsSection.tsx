@@ -312,7 +312,7 @@ export function SecretsSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.5 }}>
-            Import reads a file from this Mac. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project.
+            Import reads a file from this computer. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project.
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button

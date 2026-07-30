@@ -3,6 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { modifierKeyLabel } from "../../../lib/platform";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import { editorTabId } from "./editorGroupsStore";
 import { EditorGroup, type EditorGroupProps } from "./EditorGroup";
@@ -26,6 +27,7 @@ vi.mock("./ViewerHost", () => {
 const writeText = vi.fn();
 const markSaved = vi.fn();
 const isDirty = vi.fn(() => true);
+const saveTitle = `Save (${modifierKeyLabel}+S)`;
 
 const registry = {
   getValue: vi.fn(() => "saved text"),
@@ -116,7 +118,7 @@ describe("EditorGroup", () => {
     render(<EditorGroup {...baseProps} />);
     expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
     expect(screen.getByTestId("viewer-button")).toBeTruthy();
-    expect(screen.getByTitle("Save (⌘S)")).toBeTruthy();
+    expect(screen.getByTitle(saveTitle)).toBeTruthy();
   });
 
   it("marks the visible fallback tab active when lane scope hides the stored active tab", () => {
@@ -181,7 +183,7 @@ describe("EditorGroup", () => {
     const onDirtyChange = vi.fn();
     render(<EditorGroup {...props} onDirtyChange={onDirtyChange} />);
 
-    expect(screen.getByTitle("Save (⌘S)")).toBeTruthy();
+    expect(screen.getByTitle(saveTitle)).toBeTruthy();
     fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
 
     await waitFor(() => {
@@ -204,7 +206,7 @@ describe("EditorGroup", () => {
   it("saves a csv tab through the toolbar Save button", async () => {
     const props = tabOfKind("csv", "data/rows.csv");
     render(<EditorGroup {...props} />);
-    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    fireEvent.click(screen.getByTitle(saveTitle));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith({
         workspaceId: "workspace-1",
@@ -220,7 +222,7 @@ describe("EditorGroup", () => {
     writeText.mockRejectedValueOnce(new Error("EACCES: permission denied"));
     render(<EditorGroup {...props} onError={onError} />);
 
-    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    fireEvent.click(screen.getByTitle(saveTitle));
     await waitFor(() => {
       expect(onError).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
     });
@@ -236,7 +238,7 @@ describe("EditorGroup", () => {
     render(<EditorGroup {...props} />);
 
     // The clean-model guard returns synchronously before any write is issued.
-    fireEvent.click(screen.getByTitle("Save (⌘S)"));
+    fireEvent.click(screen.getByTitle(saveTitle));
     expect(writeText).not.toHaveBeenCalled();
     expect(markSaved).not.toHaveBeenCalled();
   });
@@ -245,7 +247,7 @@ describe("EditorGroup", () => {
     for (const kind of ["binary", "image"] as const) {
       const props = tabOfKind(kind, kind === "binary" ? "blob.bin" : "logo.png");
       const { unmount } = render(<EditorGroup {...props} />);
-      expect(screen.queryByTitle("Save (⌘S)")).toBeNull();
+      expect(screen.queryByTitle(saveTitle)).toBeNull();
       fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
       expect(writeText).not.toHaveBeenCalled();
       unmount();

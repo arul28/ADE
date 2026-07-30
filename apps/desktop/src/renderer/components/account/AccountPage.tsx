@@ -385,7 +385,7 @@ export function SignInCard({
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: Your Macs — the account directory, this Mac pinned first.
+// Signed-in: Your computers — the account directory, this computer pinned first.
 // ---------------------------------------------------------------------------
 
 function YourMacsCard() {
@@ -415,7 +415,7 @@ function YourMacsCard() {
     }
   }, []);
 
-  // Identify this Mac once so it can be pinned and shielded from removal.
+  // Identify this computer once so it can be pinned and shielded from removal.
   useEffect(() => {
     let cancelled = false;
     const api = accountBridge();
@@ -453,7 +453,7 @@ function YourMacsCard() {
 
   const machines = useMemo(() => {
     const list = [...(result?.machines ?? [])];
-    // Pin this Mac first; keep directory order otherwise.
+    // Pin this computer first; keep directory order otherwise.
     return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
   }, [result?.machines, isThisMac]);
 
@@ -487,16 +487,16 @@ function YourMacsCard() {
   }, [openMenuKey]);
 
   let summary: string;
-  if (loading && !result) summary = "Checking your Macs…";
+  if (loading && !result) summary = "Checking your computers…";
   else if (result?.state === "ok") {
     summary =
       machines.length === 0
-        ? "No Macs connected yet"
+        ? "No computers connected yet"
         : `${onlineCount} online · ${machines.length} connected`;
   } else if (result?.state === "not_configured") {
     summary = "The account directory isn't set up yet";
   } else if (result?.state === "signed_out") {
-    summary = "Sign in to see your Macs";
+    summary = "Sign in to see your computers";
   } else {
     summary = "Can't reach the account directory";
   }
@@ -515,7 +515,7 @@ function YourMacsCard() {
       setPendingRemoval(null);
       await load();
     } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Couldn't remove that Mac from your account.");
+      setRemoveError(err instanceof Error ? err.message : "Couldn't remove that computer from your account.");
     } finally {
       setRemoving(false);
     }
@@ -542,7 +542,7 @@ function YourMacsCard() {
           </span>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              Your Macs
+              Your computers
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
           </div>
@@ -605,11 +605,11 @@ function YourMacsCard() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {accountMachineDisplayName(machine) ?? "Unnamed Mac"}
+                  {accountMachineDisplayName(machine) ?? "Unnamed computer"}
                 </span>
                 {thisMac ? (
                   <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                    This Mac
+                    This computer
                   </span>
                 ) : null}
                 <span style={{ flex: 1 }} />
@@ -631,7 +631,7 @@ function YourMacsCard() {
                 ) : (
                   <button
                     type="button"
-                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "this Mac"}`}
+                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "this computer"}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) =>
@@ -682,10 +682,10 @@ function YourMacsCard() {
         >
           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
             {webMode
-              ? "Use the machine menu above to switch Macs."
+              ? "Use the machine menu above to switch computers."
               : result.state === "not_configured"
-              ? "Your Macs still connect from Connections — the shared directory just isn't live yet."
-              : "Your Macs still connect from Connections while the directory reconnects."}
+              ? "Your computers still connect from Connections — the shared directory just isn't live yet."
+              : "Your computers still connect from Connections while the directory reconnects."}
           </span>
           {result.state === "unavailable" ? (
             <button
@@ -764,8 +764,8 @@ function YourMacsCard() {
 
       {pendingRemoval ? (
         <ConfirmSheet
-          title="Remove this Mac from your account?"
-          body={`${accountMachineDisplayName(pendingRemoval) ?? "This Mac"} will no longer connect through your account. You can add it back by signing in to ADE on that Mac.`}
+          title="Remove this computer from your account?"
+          body={`${accountMachineDisplayName(pendingRemoval) ?? "This computer"} will no longer connect through your account. You can add it back by signing in to ADE on that computer.`}
           confirmLabel="Remove"
           danger
           busy={removing}
@@ -801,7 +801,7 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
       >
         <Laptop size={16} weight="regular" color={COLORS.textSecondary} style={{ flexShrink: 0 }} />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this Mac</div>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this computer</div>
         </div>
         <button
           type="button"
@@ -822,7 +822,7 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
       {confirming ? (
         <ConfirmSheet
           title="Sign out of ADE?"
-          body="Signing out removes this Mac's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
+          body="Signing out removes this computer's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
           confirmLabel="Sign out"
           danger
           busy={signingOut}

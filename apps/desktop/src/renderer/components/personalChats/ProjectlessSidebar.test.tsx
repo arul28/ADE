@@ -9,10 +9,10 @@ afterEach(cleanup);
 function renderSidebar(overrides: Partial<Parameters<typeof ProjectlessSidebar>[0]> = {}) {
   const props: Parameters<typeof ProjectlessSidebar>[0] = {
     standalone: false,
-    machineLabel: "This Mac",
+    machineLabel: "This computer",
     machineId: "local",
     machineOptions: [
-      { id: "local", name: "This Mac" },
+      { id: "local", name: "This computer" },
       { id: "target-1", name: "MacBook Pro (97)" },
     ],
     onSelectMachine: vi.fn(),
@@ -50,7 +50,7 @@ describe("ProjectlessSidebar machine picker", () => {
     const props = renderSidebar();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Chats run on This Mac. Choose a machine." }),
+      screen.getByRole("button", { name: "Chats run on This computer. Choose a machine." }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ }));
 

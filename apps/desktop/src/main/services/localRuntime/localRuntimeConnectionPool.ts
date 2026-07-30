@@ -999,6 +999,7 @@ export class LocalRuntimeConnectionPool {
         env: buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -1139,6 +1140,7 @@ export class LocalRuntimeConnectionPool {
         },
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -2270,6 +2272,7 @@ export class LocalRuntimeConnectionPool {
       env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
+      windowsHide: true,
     });
     this.ownedRuntimeChild = child;
     const outputBase = {

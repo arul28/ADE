@@ -58,6 +58,7 @@ function runGhPrList(args: {
         cwd: args.worktreePath,
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       },
     );
     const finish = (value: string | null) => {

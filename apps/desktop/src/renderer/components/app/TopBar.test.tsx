@@ -25,7 +25,7 @@ const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
-  ThisMacCard: () => <div data-testid="this-mac-card">This Mac</div>,
+  ThisMacCard: () => <div data-testid="this-mac-card">This computer</div>,
   PhoneConnectionsTab: () => (
     <section data-testid="sync-devices-section" data-variant="phone">
       Phone connections
@@ -826,7 +826,7 @@ describe("TopBar", () => {
     // …and the machine it displaced must stay reachable, or the tab bar has
     // stranded a checkout the user cannot get back to.
     fireEvent.click(screen.getByLabelText("Machines for ADE"));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /This Mac/ }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /This computer/ }));
 
     expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith(
       "/Users/arul/ADE",
@@ -838,12 +838,12 @@ describe("TopBar", () => {
 
     const tab = await screen.findByTitle("/Users/arul/ADE");
     // A single-machine group spends no tab width naming the machine.
-    expect(tab.textContent).not.toContain("This Mac");
+    expect(tab.textContent).not.toContain("This computer");
 
     const caret = screen.getByLabelText("Machines for ADE");
     fireEvent.mouseDown(caret);
     fireEvent.click(caret);
-    expect(screen.getByRole("menuitemradio", { name: /This Mac/ })).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: /This computer/ })).toBeTruthy();
     const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
     expect(connectItem).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowUp" });
@@ -851,7 +851,7 @@ describe("TopBar", () => {
 
     fireEvent.mouseDown(caret);
     fireEvent.click(caret);
-    expect(screen.queryByRole("menuitemradio", { name: /This Mac/ })).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: /This computer/ })).toBeNull();
   });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {

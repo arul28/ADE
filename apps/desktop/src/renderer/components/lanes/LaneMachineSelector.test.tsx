@@ -21,7 +21,7 @@ function machine(overrides: Partial<LaneMachineOption> & { id: string; name: str
 }
 
 const machines: LaneMachineOption[] = [
-  machine({ id: THIS_MACHINE_ID, name: "This Mac", isBound: true, freeBytes: 412 * 1024 ** 3 }),
+  machine({ id: THIS_MACHINE_ID, name: "This computer", isBound: true, freeBytes: 412 * 1024 ** 3 }),
   machine({ id: "studio", name: "MacBook Pro (97)", freeBytes: 4 * 1024 ** 3 }),
 ];
 
@@ -36,7 +36,7 @@ describe("LaneMachineSelector", () => {
     );
 
     expect(screen.getByText("Create on")).toBeTruthy();
-    expect(screen.getByText("This Mac")).toBeTruthy();
+    expect(screen.getByText("This computer")).toBeTruthy();
     expect(screen.getByText("MacBook Pro (97)")).toBeTruthy();
     const group = screen.getByRole("radiogroup", { name: "Machine for this lane" });
     expect(group.textContent?.toLowerCase()).not.toContain("remote");

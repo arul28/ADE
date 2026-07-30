@@ -124,6 +124,7 @@ import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
 import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import {
@@ -131,7 +132,10 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
-import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
+import {
+  DEFAULT_SYNC_HOST_PORT,
+  SYNC_HOST_MAX_PORT,
+} from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
   takeAdeCodeRemoteArgs,
@@ -538,6 +542,7 @@ function maybeRunBuiltCliFallback(
       cwd: CLI_PACKAGE_ROOT,
       env: process.env,
       encoding: "utf8",
+      windowsHide: true,
     });
     if (buildResult.error || buildResult.status !== 0 || !isBuiltCliFresh()) {
       error.details.nextAction =
@@ -557,6 +562,7 @@ function maybeRunBuiltCliFallback(
       [SOURCE_FALLBACK_ENV]: "1",
     },
     encoding: "utf8",
+    windowsHide: true,
   });
   if (rerun.error) {
     error.details.nextAction =
@@ -1126,7 +1132,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
-    $ ade machines rename <machine-key> "Build Mac"
+    $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines connect <machine-key>
     $ ade machines connect <device-id> --project <project-id|name|path>
@@ -1196,7 +1202,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade desktop open
 
   Flags:
-    --app-name <name>       macOS app name to open. Defaults to ADE, ADE Beta,
+    --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
 `,
   github: `${ADE_BANNER}
@@ -2857,6 +2863,7 @@ function detectUnmergedLaneCreateNudge(
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   }),
 ): string | null {
   const cwd = args.cwd ?? process.cwd();
@@ -12589,6 +12596,7 @@ function findProjectRoots(startDir: string): {
     cwd: startDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   const gitRoot = git.status === 0 ? git.stdout.trim() : "";
   const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
@@ -12625,6 +12633,7 @@ function commandExists(command: string): boolean {
   const result = spawnSync(lookupCommand, [command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   return result.status === 0 && result.stdout.trim().length > 0;
 }
@@ -12763,6 +12772,7 @@ function runLocalCommand(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5000,
+    windowsHide: true,
   });
   return {
     ok: result.status === 0,
@@ -13685,12 +13695,14 @@ async function startHeadlessRpcSocketServer(args: {
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<(() => void) | null> {
   if (
-    isAdeRuntimeNamedPipePath(args.socketPath) ||
-    fs.existsSync(args.socketPath)
+    !isAdeRuntimeNamedPipePath(args.socketPath)
+    && fs.existsSync(args.socketPath)
   ) {
     return null;
   }
-  fs.mkdirSync(path.dirname(args.socketPath), { recursive: true, mode: 0o700 });
+  if (!isAdeRuntimeNamedPipePath(args.socketPath)) {
+    fs.mkdirSync(path.dirname(args.socketPath), { recursive: true, mode: 0o700 });
+  }
   const serverState = createHeadlessRpcServer(args.createHandler);
   const { server } = serverState;
 
@@ -13705,7 +13717,7 @@ async function startHeadlessRpcSocketServer(args: {
     };
     server.once("listening", handleListening);
     server.once("error", handleError);
-    server.listen(args.socketPath);
+    server.listen(localIpcListenOptions(args.socketPath));
   });
 
   if (!isAdeRuntimeNamedPipePath(args.socketPath)) {
@@ -14950,8 +14962,11 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
   return !socketPathOverride?.trim()
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
     && isPackagedElectronCliRuntime()
-    && !socketPath.startsWith("tcp://")
-    && !isAdeRuntimeNamedPipePath(socketPath)
+    && isServiceManagedMachineRuntimeSocket(socketPath);
+}
+
+function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
+  return !socketPath.startsWith("tcp://")
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
@@ -14960,9 +14975,7 @@ export function shouldBlockManualMachineRuntimeSpawn(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1"
-    && !socketPath.startsWith("tcp://")
-    && !isAdeRuntimeNamedPipePath(socketPath)
-    && !isEphemeralRuntimeSocketPath(socketPath);
+    && isServiceManagedMachineRuntimeSocket(socketPath);
 }
 
 function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
@@ -15083,6 +15096,7 @@ async function spawnMachineRuntimeDaemon(
       detached: true,
       stdio: "ignore",
       env,
+      windowsHide: true,
     });
     child.once("error", () => {});
     if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
@@ -15509,6 +15523,103 @@ async function runBrainCommand(
   );
 }
 
+export function resolveWindowsDesktopExecutable(args: {
+  appName: string;
+  env?: NodeJS.ProcessEnv;
+  execPath?: string;
+  entryPath?: string | null;
+}): string | null {
+  const env = args.env ?? process.env;
+  const execPath = args.execPath ?? process.execPath;
+  const entryPath = args.entryPath ?? process.argv[1] ?? null;
+  const requestedName = path.basename(args.appName.trim()) || "ADE";
+  const appBaseName = requestedName.toLowerCase().endsWith(".exe")
+    ? requestedName.slice(0, -4)
+    : requestedName;
+  const executableName = `${appBaseName}.exe`;
+  const execBaseName = path.basename(execPath);
+  const currentExecutableIsAde =
+    execBaseName.toLowerCase() === executableName.toLowerCase()
+    || /^ade(?: beta| alpha)?\.exe$/i.test(execBaseName);
+  const candidates: Array<string | null> = [
+    env.ADE_DESKTOP_APP_PATH?.trim() || null,
+    currentExecutableIsAde
+      ? execPath
+      : null,
+    entryPath
+      ? path.resolve(path.dirname(entryPath), "..", "..", executableName)
+      : null,
+    entryPath && executableName.toLowerCase() !== "ade.exe"
+      ? path.resolve(path.dirname(entryPath), "..", "..", "ADE.exe")
+      : null,
+    env.LOCALAPPDATA
+      ? path.join(env.LOCALAPPDATA, "Programs", appBaseName, executableName)
+      : null,
+    env.PROGRAMFILES
+      ? path.join(env.PROGRAMFILES, appBaseName, executableName)
+      : null,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  return null;
+}
+
+async function launchWindowsDesktopApp(
+  executablePath: string,
+  appName: string,
+): Promise<Record<string, unknown>> {
+  const env = { ...process.env };
+  // The installed CLI wrapper runs ADE.exe as Node. Carrying this flag into
+  // the child would launch another CLI process instead of the desktop UI.
+  delete env.ELECTRON_RUN_AS_NODE;
+  return await new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(executablePath, [], {
+        detached: true,
+        stdio: "ignore",
+        env,
+        windowsHide: true,
+      });
+    } catch (error) {
+      resolve({
+        ok: false,
+        platform: process.platform,
+        appName,
+        path: executablePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    let settled = false;
+    const finish = (result: Record<string, unknown>): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", (error) => finish({
+      ok: false,
+      platform: process.platform,
+      appName,
+      path: executablePath,
+      message: error.message,
+    }));
+    child.once("spawn", () => {
+      child.unref();
+      finish({
+        ok: true,
+        platform: process.platform,
+        appName,
+        path: executablePath,
+        message: `Opened ${appName}.`,
+      });
+    });
+  });
+}
+
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "open";
@@ -15534,12 +15645,26 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
     };
   }
 
+  if (process.platform === "win32") {
+    const executablePath = resolveWindowsDesktopExecutable({ appName });
+    if (!executablePath) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message:
+          `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
+      };
+    }
+    return await launchWindowsDesktopApp(executablePath, appName);
+  }
+
   return {
     ok: false,
     platform: process.platform,
     appName,
     message:
-      "Launching ADE desktop from the CLI is currently supported on macOS.",
+      "Launching ADE desktop from the CLI is currently supported on macOS and Windows.",
   };
 }
 
@@ -16177,7 +16302,12 @@ async function runServe(
       // brain out.
       const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
       brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
-      const listenerPort = await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      const listenerPort = await sharedSyncListener.ensureListening(
+        Array.from(
+          { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
+          (_, index) => DEFAULT_SYNC_HOST_PORT + index,
+        ),
+      );
       brainSyncHostLease.updatePort(listenerPort);
     } else if (activeScope && brainSyncHostLease) {
       // A scope took over hosting and holds its own lease; drop the
@@ -16253,7 +16383,7 @@ async function runServe(
       server.once("listening", handleListening);
       server.once("error", handleError);
       if (typeof target === "string") {
-        server.listen(target);
+        server.listen(localIpcListenOptions(target));
       } else {
         server.listen(target.port, target.host);
       }

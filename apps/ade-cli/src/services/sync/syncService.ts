@@ -1460,6 +1460,7 @@ export function createSyncService(args: SyncServiceArgs) {
         transferReadiness: options?.includeTransferReadiness === false
           ? (transferReadinessCache?.value ?? buildSkippedTransferReadiness())
           : await getTransferReadiness({ force: options?.forceTransferReadiness === true }),
+        crdtSyncAvailable,
         survivableStateText:
           crdtSyncAvailable
             ? "Paused and idle state will remain available on the new host."
@@ -1467,7 +1468,9 @@ export function createSyncService(args: SyncServiceArgs) {
         blockingStateText:
           crdtSyncAvailable
             ? "Live chats or terminals must stop first."
-            : "Install Windows cr-sqlite support before pairing or syncing devices.",
+            : process.platform === "win32"
+              ? "Phone sync is unavailable because crsqlite.dll could not be loaded. Reinstall ADE, then restart it before pairing a device."
+              : "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
       };
     },
 

@@ -656,7 +656,13 @@ banner):
   version clears the cache. On packaged launches with a
   recently installed update, the desktop refreshes the per-user runtime
   service so `ade serve` re-execs the updated bundled CLI and clients
-  do not fall back to an isolated build-mismatch runtime.
+  do not fall back to an isolated build-mismatch runtime. On Windows,
+  electron-builder generates the installed `app-update.yml` from the build's
+  GitHub publish authority; package smoke requires it to match
+  `ADE_RELEASE_REPOSITORY` (fork default `nsxdavid/ADE`). The NSIS handoff uses
+  the non-macOS 60-second quit deadline. Signed/public Windows release assets
+  remain behind the independent repository-variable gates described in
+  [desktop-auto-update.md](./desktop-auto-update.md#windows-update-path).
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the primary update control: a small badge in the app shell top bar. Shows
   "Checking for updates" / "Downloading vX.Y.Z (NN%)" / "Install update

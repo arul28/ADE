@@ -22,7 +22,7 @@ function machine(overrides: Partial<MachineBranchState> = {}): MachineBranchStat
 
 const current = machine({
   machineId: "machine-this",
-  machineName: "This Mac",
+  machineName: "This computer",
   headSha: "aaaaaaa",
   ahead: 1,
   behind: 0,
@@ -176,13 +176,13 @@ describe("toMachineBranchState", () => {
     expect(
       toMachineBranchState({
         machineId: "machine-this",
-        machineName: "This Mac",
+        machineName: "This computer",
         lane: { branchRef: "feature/x", status: { ahead: 2, behind: 1 } },
         headSha: "aaaaaaa",
       }),
     ).toEqual({
       machineId: "machine-this",
-      machineName: "This Mac",
+      machineName: "This computer",
       branchRef: "feature/x",
       headSha: "aaaaaaa",
       ahead: 2,
@@ -194,12 +194,12 @@ describe("toMachineBranchState", () => {
     expect(
       toMachineBranchState({
         machineId: "machine-this",
-        machineName: "This Mac",
+        machineName: "This computer",
         lane: { branchRef: "feature/x" },
       }),
     ).toEqual({
       machineId: "machine-this",
-      machineName: "This Mac",
+      machineName: "This computer",
       branchRef: "feature/x",
       headSha: null,
       ahead: 0,
@@ -268,7 +268,7 @@ describe("detectPushDivergence over real lane snapshots", () => {
       detectPushDivergence({
         current: toMachineBranchState({
           machineId: "this-mac",
-          machineName: "This Mac",
+          machineName: "This computer",
           lane: here.lane,
         }),
         others: [
@@ -297,7 +297,7 @@ describe("detectPushDivergence over real lane snapshots", () => {
       detectPushDivergence({
         current: toMachineBranchState({
           machineId: "this-mac",
-          machineName: "This Mac",
+          machineName: "This computer",
           lane: here.lane,
         }),
         others: [
@@ -315,7 +315,7 @@ describe("detectPushDivergence over real lane snapshots", () => {
     const here = laneSnapshot();
     const current = toMachineBranchState({
       machineId: "this-mac",
-      machineName: "This Mac",
+      machineName: "This computer",
       lane: here.lane,
     });
 

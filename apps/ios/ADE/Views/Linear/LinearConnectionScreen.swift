@@ -160,7 +160,7 @@ struct LinearConnectionScreen: View {
         }
 
         if !supportsReconnect && !supportsDisconnect {
-          Text("Update ADE on your Mac to manage Linear connections from your phone.")
+          Text("Update ADE on your computer to manage Linear connections from your phone.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -325,7 +325,7 @@ struct LinearConnectActions: View {
       }
 
       if !supportsOAuth && !supportsApiKey {
-        Text("Update ADE on your Mac to manage Linear connections from your phone.")
+        Text("Update ADE on your computer to manage Linear connections from your phone.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, alignment: .leading)

@@ -497,6 +497,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
+    windowsHide: true,
   });
   const pending = new Map<string, PendingRpc>();
   const bridge: CursorSdkBridge = {

@@ -72,9 +72,12 @@ describe("buildReleaseNotesUrl", () => {
 });
 
 describe("buildGithubReleaseUrl", () => {
-  it("points at the GitHub release tag and normalizes the version", () => {
-    expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
-    expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
+  it("points at this fork's GitHub release tag and normalizes the version", () => {
+    expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/nsxdavid/ADE/releases/tag/v1.2.18");
+    expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/nsxdavid/ADE/releases/tag/v1.2.18");
+    expect(buildGithubReleaseUrl("1.2.18", "acme/custom-ade")).toBe(
+      "https://github.com/acme/custom-ade/releases/tag/v1.2.18",
+    );
     expect(buildGithubReleaseUrl(" ")).toBeNull();
   });
 });
@@ -169,7 +172,7 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("configures the GitHub update feed explicitly", () => {
+  it("uses electron-builder app-update.yml as the packaged feed authority", () => {
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({
       logger: makeLogger(),
@@ -181,16 +184,12 @@ describe("createAutoUpdateService", () => {
       updater,
     });
 
-    expect(updater.setFeedURL).toHaveBeenCalledWith({
-      provider: "github",
-      owner: "arul28",
-      repo: "ADE",
-    });
+    expect(updater.setFeedURL).not.toHaveBeenCalled();
 
     service.dispose();
   });
 
-  it("ignores ADE_UPDATE_FEED_URL in packaged builds and uses the GitHub feed", () => {
+  it("ignores ADE_UPDATE_FEED_URL in packaged builds without replacing app-update.yml", () => {
     electronAppMock.isPackaged = true;
     process.env.ADE_UPDATE_FEED_URL = "https://attacker.example.com/feed";
     const updater = new FakeAutoUpdater();
@@ -204,14 +203,7 @@ describe("createAutoUpdateService", () => {
       updater,
     });
 
-    expect(updater.setFeedURL).toHaveBeenCalledWith({
-      provider: "github",
-      owner: "arul28",
-      repo: "ADE",
-    });
-    expect(updater.setFeedURL).not.toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "generic" }),
-    );
+    expect(updater.setFeedURL).not.toHaveBeenCalled();
 
     service.dispose();
   });
@@ -266,7 +258,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
-      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
+      githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.3",
     });
 
     expect(JSON.parse(fs.readFileSync(globalStatePath, "utf8"))).toEqual({
@@ -274,7 +266,7 @@ describe("createAutoUpdateService", () => {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
-        githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
+        githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.3",
       },
     });
     expectCacheEmpty(updaterCacheDir);
@@ -1730,7 +1722,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
-      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.4",
+      githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.4",
     });
     expectCacheEmpty(updaterCacheDir);
 

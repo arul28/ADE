@@ -18,7 +18,13 @@ App Control runs on the runtime that owns the project. The launch terminal, CDP 
   - input: `click`, `typeText`, `scroll`, `dispatchKey`
   - launch terminal passthrough: `readTerminal`, `writeTerminal`, `signalTerminal`
   - screencast frames stream out via the `onEvent` channel (`type: "frame"`)
-- `appControlLaunchCommand.ts` — pure shell-command helpers for detecting direct Electron launches, detecting package-manager script launches, rewriting package scripts to inject App Control debug flags, and preserving the `{ADE_APP_CONTROL_DEBUG_FLAGS}` opt-in path.
+- `appControlLaunchCommand.ts` — launch parsing and rewrite helpers for direct
+  Electron and package-manager script commands. On Windows, resolvable
+  `electron` / `npx electron` and package-script launches become structured
+  command/argv/env descriptors; shell fallbacks emit explicit PowerShell or
+  cmd syntax. POSIX retains the existing shell rewrite semantics. The literal
+  `{ADE_APP_CONTROL_DEBUG_FLAGS}` opt-in path remains available on every
+  platform.
 - `appControlService.test.ts` — service tests.
 - `appControlLaunchCommand.test.ts` — launch-command rewrite coverage.
 
@@ -108,10 +114,16 @@ The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells ag
 
 1. **Argument resolution.** `appKind` defaults to `"electron"`. `cwd` is normalized against the resolved `projectRoot` and rejected if it escapes the lane worktree (`ensureCwdInsideRoot`). `cdpPort` is allocated via `findFreePort()` when not supplied. `ADE_APP_CONTROL_CDP_PORT` and `ADE_APP_CONTROL_DEBUG_FLAGS` are computed and either:
    - substituted into a literal `{ADE_APP_CONTROL_DEBUG_FLAGS}` placeholder in the command, or
-   - injected when the command looks like a package script (`npm`/`pnpm`/`yarn`/`bun run dev`) by rewriting it to `--inspect`/`--remote-debugging-port` flags, or
+   - injected when the command looks like a package script (`npm`/`pnpm`/`yarn`/`bun run dev`) by resolving the package script and adding `--inspect`/`--remote-debugging-port` flags, or
    - appended directly when the command looks like a `npx electron`/`electron` invocation, or
    - exported via the spawned shell's environment for any other custom launcher (custom launchers are expected to forward one of those env vars to `--remote-debugging-port`).
-2. **Visible chat terminal.** Instead of spawning a hidden child process, the service runs the resolved command through the chat-owned PTY (`ptyService.create(...)` with `chatSessionId`). The user sees the stdout/stderr in the chat terminal drawer, and the App Control session records the resulting `terminalSessionId` + `terminalPtyId`.
+   On Windows, recognized direct/package commands are passed to `ptyService`
+   as a structured executable, argv, environment, and cwd. This avoids POSIX
+   `PATH=...:$PATH` syntax and preserves spaces, quotes, `%`, `$`, and `&`.
+   A command that genuinely needs a shell falls back to platform-specific
+   PowerShell or cmd quoting. Structured parsing is deliberately Windows-only;
+   macOS/Linux custom shell semantics are not reinterpreted.
+2. **Visible chat terminal.** Instead of spawning a hidden child process, the service runs the resolved command through the chat-owned PTY (`ptyService.create(...)` with `chatSessionId`). The user sees the stdout/stderr in the chat terminal drawer, and the App Control session records the resulting `terminalSessionId` + `terminalPtyId`. App Control's CDP provider is supported on Windows; OS-level computer use remains a separate macOS-only capability.
 3. **CDP discovery.** `listCdpTargets(port)` polls `http://127.0.0.1:<port>/json` every 500 ms. A health-check timer keeps polling at 2 s once a target is selected. `pickCdpTarget` prefers `page` > `webview` > anything with a non-`devtools://` URL.
 4. **Attach.** `CdpClient.connect(webSocketDebuggerUrl)` opens the long-lived WebSocket. The session transitions `starting` → `running` → `connected` and `cdpEndpoint` / `cdpTargetId` are filled in. `Page.startScreencast` is enabled lazily so the renderer panel can paint frames.
 5. **Health.** If the WebSocket drops, the session moves back to `running` (terminal still alive) or `failed` (terminal exited). `lastError` carries the last CDP failure for the renderer to display.

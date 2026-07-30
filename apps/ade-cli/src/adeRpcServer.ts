@@ -202,6 +202,7 @@ function resolveExecutableOnPath(command: string, env: NodeJS.ProcessEnv = proce
     encoding: "utf8",
     env,
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   if (result.status !== 0 || typeof result.stdout !== "string") return null;
   const first = result.stdout
@@ -3493,6 +3494,7 @@ async function runTool(args: {
     const result = spawnSync(command, commandArgs, {
       cwd: runtime.projectRoot,
       encoding: "utf8",
+      windowsHide: true,
       env: {
         ...process.env,
         ...(options?.env ?? {}),

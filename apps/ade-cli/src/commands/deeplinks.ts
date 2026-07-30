@@ -196,7 +196,11 @@ export function openUrlViaOs(url: string): { failed: boolean; message: string } 
     args = [url];
   }
   try {
-    const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
+    const r = spawnSync(cmd, args, {
+      stdio: "ignore",
+      timeout: 10_000,
+      windowsHide: true,
+    });
     if (r.error) return { failed: true, message: r.error.message };
     if (r.signal) return { failed: true, message: `${cmd} exited with signal ${r.signal}` };
     if (typeof r.status === "number" && r.status !== 0) {

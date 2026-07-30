@@ -84,7 +84,7 @@ public struct AttentionItem: Identifiable, Equatable {
         timestamp: Date,
         collection: AttentionCollection = .needsYou,
         machineId: String = "current-machine",
-        machineName: String = "Connected Mac",
+        machineName: String = "Connected computer",
         machineOnline: Bool = true,
         projectId: String = "current-project",
         projectName: String = "Current project",
@@ -201,7 +201,7 @@ public final class AttentionDrawerModel: ObservableObject {
         var recent: [AttentionItem] = []
         let generated = snapshot.generatedAt
         let machineId = Self.nonEmpty(snapshot.machineId) ?? "current-machine"
-        let machineName = Self.nonEmpty(snapshot.machineName) ?? "Connected Mac"
+        let machineName = Self.nonEmpty(snapshot.machineName) ?? "Connected computer"
         let projectId = Self.nonEmpty(snapshot.projectId) ?? "current-project"
         let projectName = Self.nonEmpty(snapshot.projectName) ?? "Current project"
         let machineOnline = snapshot.connection.lowercased() != "disconnected"

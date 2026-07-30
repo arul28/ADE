@@ -3560,6 +3560,7 @@ export function createConflictService({
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
+        windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       let stdout = "";

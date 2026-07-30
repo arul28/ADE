@@ -451,6 +451,7 @@ async function runCodexExec(args: {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    windowsHide: true,
   });
 
   let stderr = "";
@@ -534,6 +535,7 @@ async function runClaudeHeadless(args: {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    windowsHide: true,
   });
 
   let stdout = "";

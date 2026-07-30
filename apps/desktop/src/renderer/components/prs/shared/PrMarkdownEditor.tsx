@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { isMac } from "../../../lib/platform";
 import { PrMarkdown } from "./PrMarkdown";
 
 type EditorMode = "write" | "preview";
@@ -103,10 +104,12 @@ export function applyAction(textarea: HTMLTextAreaElement, action: ToolbarAction
   }
 }
 
+const shortcutModifier = isMac ? "⌘" : "Ctrl+";
+
 const TOOLBAR: Array<{ action: ToolbarAction; icon: typeof TextB; title: string }> = [
   { action: "heading", icon: TextHOne, title: "Heading" },
-  { action: "bold", icon: TextB, title: "Bold (⌘B)" },
-  { action: "italic", icon: TextItalic, title: "Italic (⌘I)" },
+  { action: "bold", icon: TextB, title: `Bold (${shortcutModifier}B)` },
+  { action: "italic", icon: TextItalic, title: `Italic (${shortcutModifier}I)` },
   { action: "quote", icon: Quotes, title: "Quote" },
   { action: "code", icon: Code, title: "Inline code" },
   { action: "codeblock", icon: CodeBlock, title: "Code block" },

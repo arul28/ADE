@@ -10,6 +10,9 @@ import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { useAppStore } from "./state/appStore";
 import { logRendererDebugEvent } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
+import { rendererPlatformAttribute } from "./lib/platform";
+
+document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 
 (function injectFontFaces() {
   const style = document.createElement("style");

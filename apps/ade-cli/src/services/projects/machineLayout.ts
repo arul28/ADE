@@ -1,4 +1,6 @@
 import os from "node:os";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 export type MachineAdeLayout = {
@@ -28,16 +30,89 @@ export function resolveMachineAdeDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(os.homedir(), ".ade");
 }
 
-function windowsPipePathForAdeDir(adeDir: string): string {
-  const homeName = path.basename(adeDir).replace(/[^a-zA-Z0-9_-]+/g, "-");
-  if (!homeName || homeName === "-ade") return "\\\\.\\pipe\\ade-runtime";
-  return `\\\\.\\pipe\\ade-runtime-${homeName.replace(/^-+/, "")}`;
+function windowsUserIdentity(env: NodeJS.ProcessEnv): string {
+  const sid = env.ADE_WINDOWS_USER_SID?.trim() || env.USER_SID?.trim();
+  if (sid) return `sid:${sid.toLowerCase()}`;
+  const username = env.USERNAME?.trim();
+  const domain = env.USERDOMAIN?.trim();
+  if (username) {
+    return `account:${domain ? `${domain}\\` : ""}${username}`.toLowerCase();
+  }
+  const profile = env.USERPROFILE?.trim();
+  if (profile) {
+    return `profile:${path.win32.resolve(profile).toLowerCase()}`;
+  }
+  const userInfo = os.userInfo();
+  return `fallback:${userInfo.username}\0${userInfo.homedir}`.toLowerCase();
 }
 
-function windowsDesktopBridgePipePathForAdeDir(adeDir: string): string {
-  const homeName = path.basename(adeDir).replace(/[^a-zA-Z0-9_-]+/g, "-");
-  if (!homeName || homeName === "-ade") return "\\\\.\\pipe\\ade-desktop-bridge";
-  return `\\\\.\\pipe\\ade-desktop-bridge-${homeName.replace(/^-+/, "")}`;
+function windowsChannelIdentity(adeDir: string, env: NodeJS.ProcessEnv): {
+  identity: string;
+  label: string;
+} {
+  const serviceName = env.ADE_RUNTIME_SERVICE_NAME?.trim().toLowerCase();
+  const explicitChannel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  const homeName = path.win32.basename(adeDir).toLowerCase();
+  const inferred = homeName === ".ade-alpha"
+    ? "alpha"
+    : homeName === ".ade-beta"
+      ? "beta"
+      : homeName === ".ade"
+        ? "stable"
+        : "custom";
+  const label = explicitChannel === "alpha" || explicitChannel === "beta"
+    ? explicitChannel
+    : explicitChannel === "stable"
+      ? "stable"
+      : serviceName?.endsWith(".alpha")
+        ? "alpha"
+        : serviceName?.endsWith(".beta")
+          ? "beta"
+          : serviceName === "com.ade.runtime"
+            ? "stable"
+            : inferred;
+  return {
+    identity: serviceName || explicitChannel || inferred,
+    label,
+  };
+}
+
+function canonicalWindowsPath(value: string): string {
+  const original = path.win32.resolve(value).replace(/\//g, "\\");
+  const missingParts: string[] = [];
+  let cursor = original;
+  for (;;) {
+    try {
+      return path.win32.join(fs.realpathSync.native(cursor), ...missingParts);
+    } catch {
+      const parent = path.win32.dirname(cursor);
+      if (parent === cursor) return original;
+      missingParts.unshift(path.win32.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function windowsPipeIdentity(
+  adeDir: string,
+  env: NodeJS.ProcessEnv,
+): { channelLabel: string; hash: string } {
+  const canonicalAdeDir = canonicalWindowsPath(adeDir);
+  const channel = windowsChannelIdentity(canonicalAdeDir, env);
+  const hash = createHash("sha256")
+    .update(`${canonicalAdeDir}\0${channel.identity}\0${windowsUserIdentity(env)}`)
+    .digest("hex")
+    .slice(0, 16);
+  return { channelLabel: channel.label, hash };
+}
+
+function windowsPipePath(
+  prefix: "ade-runtime" | "ade-desktop-bridge",
+  adeDir: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const identity = windowsPipeIdentity(adeDir, env);
+  return `\\\\.\\pipe\\${prefix}-${identity.channelLabel}-${identity.hash}`;
 }
 
 export function resolveMachineAdeLayout(
@@ -45,13 +120,14 @@ export function resolveMachineAdeLayout(
   platform: NodeJS.Platform = process.platform,
 ): MachineAdeLayout {
   const adeDir = resolveMachineAdeDir(env);
+  const pipeAdeDir = env.ADE_HOME?.trim() || adeDir;
   const secretsDir = path.join(adeDir, "secrets");
   const sockDir = path.join(adeDir, "sock");
   const socketPath = platform === "win32"
-    ? windowsPipePathForAdeDir(adeDir)
+    ? windowsPipePath("ade-runtime", pipeAdeDir, env)
     : path.join(sockDir, "ade.sock");
   const desktopBridgeSocketPath = platform === "win32"
-    ? windowsDesktopBridgePipePathForAdeDir(adeDir)
+    ? windowsPipePath("ade-desktop-bridge", pipeAdeDir, env)
     : path.join(sockDir, "desktop-bridge.sock");
   return {
     adeDir,

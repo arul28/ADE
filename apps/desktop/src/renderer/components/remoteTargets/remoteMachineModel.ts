@@ -210,7 +210,7 @@ export function machineMatchesSavedTarget(
 }
 
 // ---------------------------------------------------------------------------
-// Local "This Mac" route-publish health
+// Local "This computer" route-publish health
 // ---------------------------------------------------------------------------
 
 /** Publish-health slice the runtime status IPC exposes for this machine. */
@@ -228,7 +228,7 @@ export type PublishHealthDisplay =
 export const PUBLISH_FAILING_ALARM_MS = 2 * 60_000;
 
 /**
- * Non-publishing states: this Mac isn't advertising routes to the account
+ * Non-publishing states: this computer isn't advertising routes to the account
  * directory (sync off, not the host, signed out, …). There is nothing wrong to
  * surface, so these read as "none" rather than a failure.
  */

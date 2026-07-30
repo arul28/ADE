@@ -307,6 +307,7 @@ export function createTestService({
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      windowsHide: true,
     });
 
     const entry: ActiveRunEntry = {

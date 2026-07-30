@@ -416,12 +416,14 @@ class SupervisedPtyHost {
       ? spawn(workerCommand, [INTERNAL_PTY_HOST_WORKER_ARG], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           env: workerEnv,
+          windowsHide: true,
         })
       : fork(this.workerPath, [], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           execArgv: [],
           ...(workerNodePath ? { execPath: workerNodePath } : {}),
           env: workerEnv,
+          windowsHide: true,
         });
     const childState: HostChildState = {
       child,

@@ -110,6 +110,14 @@ export function isSyncHost(status: SyncRoleSnapshot): boolean {
   return status.runtimeRole === "host" || status.role === "brain";
 }
 
+function isCrdtSyncUnavailable(status: SyncRoleSnapshot): boolean {
+  if (status.crdtSyncAvailable !== undefined) {
+    return !status.crdtSyncAvailable;
+  }
+  // Compatibility with snapshots from runtimes that predate the typed field.
+  return /(?:crsqlite\.dll|CRDT database extension)/i.test(status.blockingStateText);
+}
+
 // ---------------------------------------------------------------------------
 // This-Mac card — persistent header block above the Connections tabs.
 // ---------------------------------------------------------------------------
@@ -203,7 +211,8 @@ export function ThisMacCard({
   }
 
   const host = isSyncHost(status);
-  const machineName = status.runtimeName?.trim() || status.localDevice.name || "This Mac";
+  const machineName = status.runtimeName?.trim() || status.localDevice.name || "This computer";
+  const crdtUnavailable = isCrdtSyncUnavailable(status);
   const acceptsConnections = acceptsConnectionsState(status, host);
   const routeLabels = reachableRouteLabels(status);
   const directorySummary = accountDirectorySummary(status, accountSignedIn);
@@ -243,7 +252,7 @@ export function ThisMacCard({
               {machineName}
             </span>
             <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-              This Mac
+              This computer
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
@@ -296,6 +305,22 @@ export function ThisMacCard({
         </span>
       </div>
 
+      {crdtUnavailable ? (
+        <div
+          role="alert"
+          style={{
+            ...helperTextStyle,
+            color: COLORS.warning,
+            border: `1px solid ${COLORS.warning}55`,
+            borderRadius: 8,
+            padding: "9px 10px",
+            background: `${COLORS.warning}12`,
+          }}
+        >
+          {status.blockingStateText}
+        </div>
+      ) : null}
+
       {(host && routeLabels.length > 0) || appInfo ? (
         <div style={{ display: "grid", gap: 3, paddingLeft: 16, marginTop: -6 }}>
           {host && routeLabels.length > 0 ? (
@@ -311,7 +336,7 @@ export function ThisMacCard({
         </div>
       ) : null}
 
-      {host ? (
+      {host && !crdtUnavailable ? (
         isRemoteBound ? (
           <PinManagerRemoteNote
             pin={status.pairingPin}
@@ -345,7 +370,10 @@ function acceptsConnectionsState(
   host: boolean,
 ): { ready: boolean; label: string } {
   if (!host) {
-    return { ready: false, label: "This Mac connects through your main Mac" };
+    return { ready: false, label: "This computer connects through your main ADE host" };
+  }
+  if (isCrdtSyncUnavailable(status)) {
+    return { ready: false, label: "Phone sync is unavailable" };
   }
   if (!status.pairingConnectInfo) {
     return { ready: false, label: "Starting up — connection details will appear shortly" };
@@ -409,7 +437,7 @@ function PinManager({
     <div style={{ ...panelStyle, gap: 10 }}>
       <div style={LABEL_STYLE}>Pairing code</div>
       <div style={{ ...helperTextStyle, marginTop: -2 }}>
-        New nearby devices enter this code the first time they connect to this Mac.
+        New nearby devices enter this code the first time they connect to this computer.
       </div>
       {!pinConfigured ? (
         <EmptyPinBlock
@@ -433,7 +461,7 @@ function PinManager({
 }
 
 // Read-only pairing-code state shown while this window is remote-bound. Pin
-// mutations still route to the bound machine, so we surface this Mac's current
+// mutations still route to the bound machine, so we surface this computer's current
 // code (read from the local snapshot) without offering controls that would
 // silently change the wrong machine.
 function PinManagerRemoteNote({
@@ -446,17 +474,17 @@ function PinManagerRemoteNote({
   boundMachineName: string | null;
 }) {
   const stateLine = !pinConfigured
-    ? "No pairing code set on this Mac yet."
+    ? "No pairing code set on this computer yet."
     : pin
-      ? `This Mac's pairing code is ${pin}.`
-      : "This Mac has a pairing code set.";
+      ? `This computer's pairing code is ${pin}.`
+      : "This computer has a pairing code set.";
   return (
     <div style={{ ...panelStyle, gap: 8 }}>
       <div style={LABEL_STYLE}>Pairing code</div>
       <div style={{ ...helperTextStyle, marginTop: -2 }}>{stateLine}</div>
       <div style={{ ...helperTextStyle, color: COLORS.textMuted }}>
         Pairing changes aren&rsquo;t available while this window is connected to{" "}
-        {boundMachineName ?? "another Mac"}.
+        {boundMachineName ?? "another computer"}.
       </div>
     </div>
   );
@@ -514,7 +542,7 @@ export function PhoneConnectionsTab({
         <ConnectNewPhone status={status} />
       ) : (
         <div style={helperTextStyle}>
-          Set up phones on the Mac that hosts your ADE projects.
+          Set up phones on the computer that hosts your ADE projects.
         </div>
       )}
     </div>
@@ -525,8 +553,8 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
   const pinReadout = status.pairingPin
     ? status.pairingPin
     : status.pairingPinConfigured
-      ? "Pairing code is set — see This Mac above"
-      : "Set a pairing code in This Mac above";
+      ? "Pairing code is set — see This computer above"
+      : "Set a pairing code in This computer above";
 
   return (
     <div style={cardStyle({ display: "grid", gap: 14 })}>
@@ -534,7 +562,7 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
         Connect a new phone
       </div>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.5 }}>
-        Sign in to ADE on your iPhone — this Mac appears automatically.
+        Sign in to ADE on your iPhone — this computer appears automatically.
       </div>
       {status.pairingConnectInfo ? (
         <div
@@ -553,7 +581,7 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
           />
           <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
             <div style={helperTextStyle}>
-              Or scan this code with your iPhone camera, then enter this Mac's pairing code.
+              Or scan this code with your iPhone camera, then enter this computer's pairing code.
             </div>
             <div style={{ ...panelStyle, gap: 4 }}>
               <span style={LABEL_STYLE}>Pairing code</span>
@@ -610,7 +638,7 @@ export function WebConnectionsTab({
         {accountSignedIn ? (
           <>
             <div style={helperTextStyle}>
-              Open the web client and sign in with your ADE account to reach this Mac.
+              Open the web client and sign in with your ADE account to reach this computer.
             </div>
             <button
               type="button"
@@ -624,7 +652,7 @@ export function WebConnectionsTab({
         ) : (
           <>
             <div style={helperTextStyle}>
-              Sign in to use the web client. Once you're signed in, this Mac appears in the browser
+              Sign in to use the web client. Once you're signed in, this computer appears in the browser
               automatically.
             </div>
             <button

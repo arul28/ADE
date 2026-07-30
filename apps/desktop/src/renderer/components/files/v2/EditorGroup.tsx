@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, CaretRight, Copy, FloppyDisk, PushPin, SplitHorizontal, X, XCircle } from "@phosphor-icons/react";
 import type { LaneSummary } from "../../../../shared/types";
+import { modifierKeyLabel, revealLabel } from "../../../lib/platform";
 import { getLaneAccent } from "../../lanes/laneColorPalette";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { getFileIcon } from "../filePresentation";
@@ -108,7 +109,7 @@ export function EditorGroup(props: EditorGroupProps) {
       { type: "item", label: "Copy Name", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(name) },
       {
         type: "item",
-        label: "Reveal in Finder",
+        label: revealLabel,
         icon: <ArrowSquareOut size={13} />,
         onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: ctx.rootPath, relativePath: tab.path, target: "finder" }).catch(() => {}),
         disabled: !ctx.canRevealInFinder,
@@ -227,7 +228,7 @@ export function EditorGroup(props: EditorGroupProps) {
               </div>
             ) : null}
             {viewerIsEditable(activeTab.viewerKind) ? (
-              <button type="button" onClick={saveActive} title="Save (⌘S)" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
+              <button type="button" onClick={saveActive} title={`Save (${modifierKeyLabel}+S)`} className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>
             ) : null}

@@ -20,6 +20,8 @@ import {
 
 type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
 
+const WINDOWS_DOWNLOAD_ENABLED = import.meta.env.VITE_ADE_WINDOWS_DOWNLOAD_ENABLED === "1";
+
 function detectPlatform(): PlatformHint {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
   // navigator.platform is deprecated; used only as an iPad-spoof fallback.
@@ -34,6 +36,7 @@ function detectPlatform(): PlatformHint {
 
 function downloadCtaForFeature(feature: MarketingFeature) {
   if (feature === MARKETING_FEATURES.DOWNLOAD_MAC) return MARKETING_CTA_LABELS.DOWNLOAD_MAC;
+  if (feature === MARKETING_FEATURES.DOWNLOAD_WINDOWS) return MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS;
   if (feature === MARKETING_FEATURES.DOWNLOAD_IOS) return MARKETING_CTA_LABELS.DOWNLOAD_IOS;
   return undefined;
 }
@@ -73,11 +76,17 @@ export function DownloadPage() {
         key: "windows" as const,
         title: "Windows",
         icon: <Monitor className="h-5 w-5" />,
-        note: "Installer builds are not published yet.",
-        hint: "Use the source build path for now.",
-        actionHref: LINKS.releases,
-        actionLabel: "Check releases",
-        analyticsFeature: MARKETING_FEATURES.VIEW_RELEASES,
+        note: WINDOWS_DOWNLOAD_ENABLED
+          ? "Windows 10 and 11 x64 installer from GitHub Releases."
+          : "Windows x64 preview builds are in release validation.",
+        hint: WINDOWS_DOWNLOAD_ENABLED
+          ? "The NSIS installer includes the app, ade CLI, ade code, and the background ADE brain."
+          : "Public download stays gated until a signed N → N+1 installed-update test passes.",
+        actionHref: WINDOWS_DOWNLOAD_ENABLED ? LINKS.releasesLatest : LINKS.releases,
+        actionLabel: WINDOWS_DOWNLOAD_ENABLED ? "Download for Windows" : "View Windows release status",
+        analyticsFeature: WINDOWS_DOWNLOAD_ENABLED
+          ? MARKETING_FEATURES.DOWNLOAD_WINDOWS
+          : MARKETING_FEATURES.VIEW_RELEASES,
       },
       {
         key: "linux" as const,
@@ -119,8 +128,8 @@ export function DownloadPage() {
         </Reveal>
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-            Get ADE for Mac from GitHub Releases, install the iOS companion from TestFlight, or build from source. The
-            computer install includes the app, ade CLI, ade code, and the background ADE brain.
+            Get ADE for macOS from GitHub Releases, follow Windows x64 release validation, install the iOS companion
+            from TestFlight, or build from source. Computer installs include the app, ade CLI, ade code, and ADE brain.
           </p>
         </Reveal>
 
@@ -129,6 +138,11 @@ export function DownloadPage() {
             <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE} size="lg" variant="primary" target="_blank" rel="noreferrer">
               Download for Mac <ArrowUpRight className="h-4 w-4" />
             </LinkButton>
+            {WINDOWS_DOWNLOAD_ENABLED ? (
+              <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_WINDOWS} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS} analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE} size="lg" variant="primary" target="_blank" rel="noreferrer">
+                Download for Windows <ArrowUpRight className="h-4 w-4" />
+              </LinkButton>
+            ) : null}
             <LinkButton to={LINKS.testflight} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_IOS} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} analyticsPosition={MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE} size="lg" variant="secondary" target="_blank" rel="noreferrer">
               Download for iOS <Smartphone className="h-4 w-4" />
             </LinkButton>
@@ -249,9 +263,9 @@ export function DownloadPage() {
             />
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
-                Official macOS releases are intended to be signed and notarized so ADE can open normally, keep using
-                in-app updates, and refresh the bundled brain after an update. Older beta artifacts may still need the
-                legacy Gatekeeper workaround.
+                Official macOS releases are signed and notarized. Windows pull-request previews may be unsigned and are
+                intended only for internal testing; public Windows download remains disabled until a signed installed
+                N → N+1 update, relaunch, and background-brain recovery pass on a clean VM.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Cloud features are optional. ADE is designed to keep the repo authoritative and treat hosted results as

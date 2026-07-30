@@ -82,6 +82,9 @@ describe("startSyncRemoteBridge", () => {
         connectionLabel: "local network (studio.local:8787)",
       })),
     });
+    if (process.platform === "win32") {
+      expect(bridge.socketUrl).toMatch(/^\\\\\.\\pipe\\ade-code-paired-/);
+    }
     const socket = bridge.socketUrl.startsWith("tcp://")
       ? net.connect(Number(new URL(bridge.socketUrl).port), "127.0.0.1")
       : net.connect(bridge.socketUrl);

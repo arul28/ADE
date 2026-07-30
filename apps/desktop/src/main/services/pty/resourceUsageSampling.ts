@@ -52,13 +52,19 @@ export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
 export type ProcessMetricSample = {
   rows: ProcessMetricRow[] | null;
   status: "ok" | "unavailable";
-  reason: "timeout" | "spawn-error" | "exit-code" | "oversized-output" | null;
+  reason:
+    | "timeout"
+    | "spawn-error"
+    | "exit-code"
+    | "oversized-output"
+    | "unsupported-platform"
+    | null;
   sampledAt: string;
   durationMs: number;
 };
 
 export type ProcessMetricRowsCollector = {
-  /** Coalesces callers onto a single in-flight `ps` child; never rejects. */
+  /** Coalesces callers onto a single in-flight process sample; never rejects. */
   collect(): Promise<ProcessMetricSample>;
   /** Kills any in-flight child. Subsequent collect() calls start fresh. */
   dispose(): void;
@@ -67,7 +73,10 @@ export type ProcessMetricRowsCollector = {
 type SpawnLike = (
   command: string,
   args: string[],
-  options: { stdio: ["ignore", "pipe", "ignore"] },
+  options: {
+    stdio: ["ignore", "pipe", "ignore"];
+    windowsHide: boolean;
+  },
 ) => {
   pid?: number;
   stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown } | null;
@@ -81,6 +90,7 @@ export type ProcessMetricRowsCollectorOptions = {
   timeoutMs?: number;
   maxStdoutBytes?: number;
   now?: () => number;
+  platform?: NodeJS.Platform;
 };
 
 export function createProcessMetricRowsCollector(
@@ -90,6 +100,7 @@ export function createProcessMetricRowsCollector(
   const timeoutMs = options.timeoutMs ?? PROCESS_SAMPLE_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? PROCESS_SAMPLE_MAX_STDOUT_BYTES;
   const now = options.now ?? Date.now;
+  const platform = options.platform ?? process.platform;
 
   let inFlight: Promise<ProcessMetricSample> | null = null;
   let activeChild: ReturnType<SpawnLike> | null = null;
@@ -97,6 +108,16 @@ export function createProcessMetricRowsCollector(
 
   const runSample = (): Promise<ProcessMetricSample> => new Promise((resolve) => {
     const startedAtMs = now();
+    if (platform === "win32") {
+      resolve({
+        rows: null,
+        status: "unavailable",
+        reason: "unsupported-platform",
+        sampledAt: new Date(startedAtMs).toISOString(),
+        durationMs: 0,
+      });
+      return;
+    }
     let settled = false;
     let stdoutBytes = 0;
     const chunks: string[] = [];
@@ -131,6 +152,7 @@ export function createProcessMetricRowsCollector(
     try {
       child = spawnImpl("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], {
         stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       });
     } catch {
       finish(null, "spawn-error");

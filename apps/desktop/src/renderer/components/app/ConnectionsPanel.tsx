@@ -299,8 +299,8 @@ export function ConnectionsPanel({
       confirmAsync({
         title: "Revoke access?",
         message: connected
-          ? `${name} will be disconnected and lose access to this Mac until it connects again.`
-          : `${name} will lose access to this Mac until it connects again.`,
+          ? `${name} will be disconnected and lose access to this computer until it connects again.`
+          : `${name} will lose access to this computer until it connects again.`,
         confirmLabel: "Revoke",
         danger: true,
       }),

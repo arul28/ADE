@@ -120,6 +120,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     env: sanitizeEnv(args.baseEnv ?? process.env),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
+    windowsHide: true,
   });
   const pending = new Map<string, PendingRpc>();
   const bridge: DroidSdkBridge = {

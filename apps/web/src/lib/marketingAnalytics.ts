@@ -24,6 +24,7 @@ export type MarketingScreen = (typeof MARKETING_SCREENS)[keyof typeof MARKETING_
 
 export const MARKETING_FEATURES = {
   DOWNLOAD_MAC: "download_mac",
+  DOWNLOAD_WINDOWS: "download_windows",
   DOWNLOAD_IOS: "download_ios",
   OPEN_WEB_CLIENT: "open_web_client",
   VIEW_DOCS: "view_docs",
@@ -56,6 +57,7 @@ export type MarketingFeature = (typeof MARKETING_FEATURES)[keyof typeof MARKETIN
 
 export const MARKETING_CTA_LABELS = {
   DOWNLOAD_MAC: "download_for_mac",
+  DOWNLOAD_WINDOWS: "download_for_windows",
   DOWNLOAD_IOS: "download_for_ios",
   GET_STARTED_FREE: "get_started_free",
   OPEN_WEB_CLIENT: "open_web_client",

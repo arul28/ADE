@@ -131,7 +131,7 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
     case "disk_full":
     case "insufficient_headroom":
       return {
-        headline: "ADE stopped because your Mac ran out of storage while project data was being saved.",
+        headline: "ADE stopped because your computer ran out of storage while project data was being saved.",
         body: "ADE found your project data, but it needs to finish a repair before this project can open.",
         canAutoRepair: true,
       };
@@ -149,7 +149,7 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
       };
     case "brain_not_installed":
       return {
-        headline: "ADE's background service isn't set up on this Mac.",
+        headline: "ADE's background service isn't set up on this computer.",
         body: "ADE can set it up now.",
         canAutoRepair: true,
       };
@@ -161,7 +161,7 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
       };
     case "socket_owned_by_other":
       return {
-        headline: "Another copy of ADE is already managing projects on this Mac.",
+        headline: "Another copy of ADE is already managing projects on this computer.",
         body: "Close other copies of ADE, then try again.",
         canAutoRepair: false,
       };
@@ -490,7 +490,7 @@ export class ProjectRecoveryService {
       return fail(
         "check_space",
         storage.free < GIB ? "disk_full" : "insufficient_headroom",
-        `Free up about ${humanGb(requiredSpace - storage.free)} on this Mac, then run repair again.`,
+        `Free up about ${humanGb(requiredSpace - storage.free)} on this computer, then run repair again.`,
         `Available ${storage.free} bytes; repair requires ${requiredSpace} bytes.`,
       );
     }
@@ -565,7 +565,7 @@ export class ProjectRecoveryService {
       const nextAction = classified === "migration_unknown_state"
         ? "ADE found data it doesn't recognize from an interrupted save. Contact support — nothing has been deleted."
         : classified === "disk_full" || classified === "insufficient_headroom"
-          ? "Free up more storage on this Mac, then run repair again."
+          ? "Free up more storage on this computer, then run repair again."
           : "Contact support with the technical details — nothing has been deleted.";
       return fail("resolve_migrations", failureCode, nextAction, errorMessage(error));
     }

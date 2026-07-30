@@ -33,6 +33,7 @@ import {
 } from "./attentionNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { supportsNativeNotch } from "../../lib/platform";
 
 const DESKTOP_FIRST_OPTIONS = [
   { value: 0, label: "Immediately" },
@@ -277,20 +278,22 @@ export function AttentionSettingsPopover() {
       }
       await api.putPreferences(ownerId, preferences);
       if (!isCurrentRequest()) return;
-      writeAttentionNotchEnabled(notchEnabled);
-      writeAttentionNotchPresentation(notchPresentation);
-      await window.ade?.attentionNotch?.updateSettings(
-        attentionNotchSettingsFromPreferences(preferences, notchEnabled, notchPresentation),
-      );
-      if (!isCurrentRequest()) return;
-      if (notchEnabled) {
-        const health = await window.ade?.attentionNotch?.getHealth?.();
-        if (
-          health
-          && health.state !== "running"
-          && health.state !== "starting"
-        ) {
-          throw new Error(`${health.title}. ${health.message}`);
+      if (supportsNativeNotch) {
+        writeAttentionNotchEnabled(notchEnabled);
+        writeAttentionNotchPresentation(notchPresentation);
+        await window.ade?.attentionNotch?.updateSettings(
+          attentionNotchSettingsFromPreferences(preferences, notchEnabled, notchPresentation),
+        );
+        if (!isCurrentRequest()) return;
+        if (notchEnabled) {
+          const health = await window.ade?.attentionNotch?.getHealth?.();
+          if (
+            health
+            && health.state !== "running"
+            && health.state !== "starting"
+          ) {
+            throw new Error(`${health.title}. ${health.message}`);
+          }
         }
       }
       setSaved(true);
@@ -348,7 +351,11 @@ export function AttentionSettingsPopover() {
                 </span>
                 <span>
                   <strong>Attention settings</strong>
-                  <small>Account delivery and this Mac’s notch</small>
+                  <small>
+                    {supportsNativeNotch
+                      ? "Account delivery and this computer’s notch"
+                      : "Account delivery preferences"}
+                  </small>
                 </span>
               </div>
               <span className="attention-settings-account-badge">Account</span>
@@ -363,14 +370,16 @@ export function AttentionSettingsPopover() {
               <>
                 <section>
                   <h3>Quick toggles</h3>
-                  <ToggleRow
-                    icon={Notches}
-                    label="ADE Notch"
-                    description="Ambient agent status at the top of this display."
-                    badge="This Mac"
-                    checked={notchEnabled}
-                    onChange={setNotchEnabled}
-                  />
+                  {supportsNativeNotch ? (
+                    <ToggleRow
+                      icon={Notches}
+                      label="ADE Notch"
+                      description="Ambient agent status at the top of this display."
+                      badge="This computer"
+                      checked={notchEnabled}
+                      onChange={setNotchEnabled}
+                    />
+                  ) : null}
                   <ToggleRow
                     icon={DeviceMobile}
                     label="Phone notifications"
@@ -423,7 +432,9 @@ export function AttentionSettingsPopover() {
               <span>
                 {saved
                   ? <><Check size={13} weight="bold" /> Saved</>
-                  : "Delivery syncs; notch choices stay on this Mac"}
+                  : supportsNativeNotch
+                    ? "Delivery syncs; notch choices stay on this computer"
+                    : "Delivery preferences sync across your devices"}
               </span>
               <button type="button" onClick={() => closePopover(true)}>Cancel</button>
               <button

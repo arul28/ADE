@@ -1,4 +1,4 @@
-const DEFAULT_REPO = "arul28/ADE";
+const DEFAULT_REPO = "nsxdavid/ADE";
 
 const repo =
   (import.meta.env.VITE_ADE_GITHUB_REPO as string | undefined) ?? DEFAULT_REPO;

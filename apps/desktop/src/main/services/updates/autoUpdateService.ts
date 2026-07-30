@@ -411,13 +411,10 @@ export function createAutoUpdateService({
     if (overrideFeedUrl) {
       updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
       logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });
-    } else {
-      updater.setFeedURL?.({
-        provider: "github",
-        owner: "arul28",
-        repo: "ADE",
-      });
     }
+    // Packaged builds intentionally keep electron-builder's generated
+    // app-update.yml as the sole update-feed authority. Calling setFeedURL here
+    // would silently replace build-time repository configuration.
   } catch (error) {
     logger.warn("autoUpdate.feed_config_failed", {
       message: formatErrorMessage(error),

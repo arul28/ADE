@@ -102,6 +102,27 @@ test("routes an annotated browser CTA once without duplicating its feature event
   assert.deepEqual(captured, ["cta:download_for_mac:home:hero"]);
 });
 
+test("routes the Windows download CTA through the allowlists", () => {
+  const captured: string[] = [];
+  const attributes = new Map([
+    ["data-ade-analytics-cta", MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS],
+    ["data-ade-analytics-position", MARKETING_CTA_POSITIONS.DOWNLOAD_PAGE],
+    ["data-ade-analytics-feature", MARKETING_FEATURES.DOWNLOAD_WINDOWS],
+  ]);
+  const annotatedTarget = {
+    closest(selector: string) {
+      return selector === "[data-ade-analytics-cta]" || selector === "[data-ade-analytics-feature]"
+        ? { getAttribute: (name: string) => attributes.get(name) ?? null }
+        : null;
+    },
+  };
+
+  assert.equal(routeMarketingAnalyticsClick(annotatedTarget, "/download", {
+    captureCta: (label, screen, position) => captured.push(`cta:${label}:${screen}:${position}`),
+    captureFeature: (feature, screen) => captured.push(`feature:${feature}:${screen}`),
+  }), "cta");
+  assert.deepEqual(captured, ["cta:download_for_windows:download:download_page"]);
+});
 test("manual payload contains only anonymous allowlisted properties", () => {
   const { analytics, payloads } = createHarness();
   assert.equal(analytics.captureFeature(MARKETING_FEATURES.DOWNLOAD_MAC, MARKETING_SCREENS.HOME), "sent");

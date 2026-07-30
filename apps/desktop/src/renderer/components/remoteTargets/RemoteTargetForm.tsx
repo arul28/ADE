@@ -137,7 +137,7 @@ export function RemoteTargetForm({
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Mac Studio"
+            placeholder="Development computer"
             style={fieldStyle}
             disabled={busy}
           />

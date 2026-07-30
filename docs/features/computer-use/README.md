@@ -7,6 +7,14 @@ ADE has two intentionally separate computer-use responsibilities:
 
 Execution does not imply proof. ADE never passively promotes every Computer Use tool result into a durable artifact.
 
+On Windows, the macOS Codex Computer Use client and native OS capture/control
+remain unavailable and report `blocked_by_capability`. This does not disable
+the platform-neutral surfaces: App Control can launch and drive developer-owned
+Electron apps through CDP, and proof-file ingestion continues to accept
+intentional screenshots, videos, traces, and logs. The renderer hides the
+macOS-native Attention Notch and iOS Simulator controls rather than presenting
+actions that cannot succeed.
+
 The previous proof control-plane model — policy modes (`off`/`auto`/`enabled`), readiness gates, per-phase evidence requirements, a passive proof observer — is gone. The proof side is now a thin broker backed by canonical artifact and owner-link tables; direct Codex execution is the provider-native MCP path described below.
 
 See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof capture` / `attach` / `list`) and the chat collection UI contract.

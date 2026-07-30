@@ -1,10 +1,13 @@
 import os from "node:os";
+import path from "node:path";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "./services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "./services/ai/codexExecutable";
+import { resolveDroidExecutable } from "./services/ai/droidExecutable";
 import { resolveOpenCodeBinary } from "./services/opencode/openCodeBinaryManager";
 import {
   classifyClaudeStartupFailure,
+  probeCrsqliteExtension,
   type ClaudeStartupProbeResult,
 } from "./packagedRuntimeSmokeShared";
 
@@ -124,10 +127,28 @@ async function probeClaudeStartup(): Promise<ClaudeStartupProbeResult> {
 async function main(): Promise<void> {
   const pty = await import("node-pty");
   const claude = await import("@anthropic-ai/claude-agent-sdk");
+  const cursor = await import("@cursor/sdk");
+  const droid = await import("@factory/droid-sdk");
   const claudeExecutable = resolveClaudeCodeExecutable();
   const codexExecutable = resolveCodexExecutable();
+  const droidExecutable = resolveDroidExecutable();
   const openCodeExecutable = resolveOpenCodeBinary();
+  const cursorNativePackageRoot = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    "node_modules",
+    "@cursor",
+    "sdk-win32-x64",
+  );
+  const cursorNativeRgPath = path.join(cursorNativePackageRoot, "bin", "rg.exe");
+  const cursorNativeSandboxPath = path.join(cursorNativePackageRoot, "bin", "cursorsandbox.exe");
   const ptyProbe = await probePty();
+  const crsqliteProbe = process.platform === "win32"
+    ? probeCrsqliteExtension(
+      path.resolve(__dirname, "..", "..", "vendor", "crsqlite", "win32-x64", "crsqlite.dll"),
+    )
+    : null;
   const claudeStartup = await probeClaudeStartup();
 
   process.stdout.write(JSON.stringify({
@@ -140,10 +161,17 @@ async function main(): Promise<void> {
     codexExecutable: typeof resolveCodexExecutable,
     codexExecutablePath: codexExecutable.path,
     codexExecutableSource: codexExecutable.source,
+    cursorSdkCreateAgentPlatform: typeof cursor.createAgentPlatform,
+    cursorNativeRgPath,
+    cursorNativeSandboxPath,
+    droidSdkCreateSession: typeof droid.createSession,
+    droidExecutablePath: droidExecutable.path,
+    droidExecutableSource: droidExecutable.source,
     openCodeExecutable: typeof resolveOpenCodeBinary,
     openCodeExecutablePath: openCodeExecutable.path,
     openCodeExecutableSource: openCodeExecutable.source,
     ptyProbe,
+    crsqliteProbe,
   }));
 }
 

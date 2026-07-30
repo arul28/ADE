@@ -103,6 +103,7 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_RUNTIME_ROOT",
   "ADE_RUNTIME_NODE_MODULES",
   "ADE_DEFAULT_ROLE",
+  "ADE_WINDOWS_USER_SID",
 ] as const;
 
 function runtimeEnvironment(): Record<string, string> | undefined {
@@ -342,14 +343,17 @@ export function shellQuote(value: string): string {
 }
 
 export function cmdQuote(value: string): string {
-  if (value.includes("\"")) {
-    throw new Error("Windows service command arguments cannot contain double quotes.");
-  }
   let quoted = "\"";
   let backslashes = 0;
   for (const char of value) {
     if (char === "\\") {
       backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat((backslashes * 2) + 1);
+      quoted += "\"";
+      backslashes = 0;
       continue;
     }
     quoted += "\\".repeat(backslashes);
@@ -393,6 +397,42 @@ export function renderCommand(command: AdeServiceCommand): string {
 
 export function renderWindowsCommand(command: AdeServiceCommand): string {
   return [command.command, ...command.args].map(cmdQuote).join(" ");
+}
+
+function powerShellSingleQuotedLiteral(value: string): string {
+  if (value.includes("\0")) {
+    throw new Error("Windows service command values cannot contain NUL bytes.");
+  }
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function renderWindowsServiceLauncher(command: AdeServiceCommand): string {
+  const environment = Object.entries(command.env ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const environmentLines = environment.map(([key, value]) => {
+    if (!key || key.includes("=") || key.includes("\0")) {
+      throw new Error(`Invalid Windows service environment variable name: ${JSON.stringify(key)}.`);
+    }
+    return `[System.Environment]::SetEnvironmentVariable(${powerShellSingleQuotedLiteral(key)}, ${powerShellSingleQuotedLiteral(value)}, 'Process')`;
+  });
+  const commandLine = command.args.map(cmdQuote).join(" ");
+
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    ...environmentLines,
+    "$startInfo = New-Object System.Diagnostics.ProcessStartInfo",
+    `$startInfo.FileName = ${powerShellSingleQuotedLiteral(command.command)}`,
+    `$startInfo.Arguments = ${powerShellSingleQuotedLiteral(commandLine)}`,
+    "$startInfo.UseShellExecute = $false",
+    "$startInfo.CreateNoWindow = $true",
+    "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
+    "$process = [System.Diagnostics.Process]::Start($startInfo)",
+    "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+    "$process.WaitForExit()",
+    "exit $process.ExitCode",
+    "",
+  ].join("\r\n");
 }
 
 function streamToText(value: string | Buffer | null | undefined): string {

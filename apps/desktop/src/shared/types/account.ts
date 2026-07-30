@@ -76,7 +76,7 @@ export type AdeAccountMachinesResult = {
   message: string | null;
 };
 
-/** Stable identities used to recognize this Mac in the account directory. */
+/** Stable identities used to recognize this computer in the account directory. */
 export type AdeAccountLocalMachineIdentity = {
   machineKey: string;
   deviceId: string;

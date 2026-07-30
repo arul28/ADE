@@ -757,7 +757,7 @@ describe("PersonalChatsPage", () => {
     await renderPage();
 
     const trigger = await screen.findByRole("button", {
-      name: "Chats run on This Mac. Choose a machine.",
+      name: "Chats run on This computer. Choose a machine.",
     });
     // "This machine" was ambiguous once a tab's machine became switchable.
     expect(document.body.textContent).not.toMatch(/this machine/i);
@@ -766,7 +766,7 @@ describe("PersonalChatsPage", () => {
     expect(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ })).toBeTruthy();
   });
 
-  it("names the bound machine when the window runs on another Mac", async () => {
+  it("names the bound machine when the window runs on another computer", async () => {
     storeState.projectBinding = {
       kind: "remote",
       key: "remote:target-1:project-1",

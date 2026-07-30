@@ -67,7 +67,7 @@
 		</dict>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ADE connects to your Mac on the local network to pair this device.</string>
+	<string>ADE connects to your computer on the local network to pair this device.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ade-sync._tcp</string>

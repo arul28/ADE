@@ -440,13 +440,13 @@ struct AccountAdoptionIdentityVerificationError: LocalizedError, Equatable {
   let machineName: String
 
   var errorDescription: String? {
-    "Couldn't verify that \(machineName)'s identity. Open ADE on that Mac and try again."
+    "Couldn't verify that \(machineName)'s identity. Open ADE on that computer and try again."
   }
 }
 
 /// A route this build cannot negotiate -- today, a host that named an adoption
 /// cipher this client does not implement. That is a version gap, not evidence
-/// the Mac is an impostor, so it fails only its own route: another route (or
+/// the computer is an impostor, so it fails only its own route: another route (or
 /// another host build) may negotiate fine, and the user needs "update", not a
 /// security warning. The unsupported cipher itself is still never used.
 struct AccountAdoptionRouteCompatibilityError: LocalizedError, Equatable {
@@ -959,9 +959,9 @@ enum SyncRelayAuthorizationRequirement: String, Equatable, Error, LocalizedError
   var errorDescription: String? {
     switch self {
     case .signInRequired:
-      return "Sign in to the same ADE account as this Mac to connect from another network. LAN and Tailscale still work without an account."
+      return "Sign in to the same ADE account as this computer to connect from another network. LAN and Tailscale still work without an account."
     case .sameAccountRequired:
-      return "This Mac's internet connection belongs to another ADE account. Sign in with the same account as the Mac, or connect over LAN or Tailscale."
+      return "This computer's internet connection belongs to another ADE account. Sign in with the same account as the computer, or connect over LAN or Tailscale."
     }
   }
 }
@@ -1609,8 +1609,8 @@ struct SyncProtocolVersionMismatchError: LocalizedError, Equatable {
 
   var errorDescription: String? {
     updateTarget == "host"
-      ? "Update ADE on your Mac. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
-      : "Update ADE on this iPhone. The Mac uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      ? "Update ADE on your computer. It uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
+      : "Update ADE on this iPhone. The computer uses sync protocol \(receivedVersion); this iPhone supports \(minSupportedVersion)-\(currentVersion)."
   }
 }
 
@@ -1626,8 +1626,8 @@ func syncProtocolMismatchMessage(_ payload: [String: Any]) -> String {
     versions = ""
   }
   return target == "host"
-    ? "Update ADE on your Mac to connect this iPhone.\(versions)"
-    : "Update ADE on this iPhone to connect to your Mac.\(versions)"
+    ? "Update ADE on your computer to connect this iPhone.\(versions)"
+    : "Update ADE on this iPhone to connect to your computer.\(versions)"
 }
 
 func syncProtocolVersionNumber(_ value: Any?) -> Int? {
@@ -2422,7 +2422,7 @@ enum SyncUserFacingError {
       return "This phone no longer has a saved address for this machine. Open Settings to rediscover it or pair again."
     }
     if lowered.contains("the host is offline") || lowered.contains("requires a live connection to the host") {
-      return "Can’t reach this Mac right now."
+      return "Can’t reach this computer right now."
     }
     if lowered.contains("the host returned incomplete") {
       return "The machine sent incomplete sync data. Retry the affected area or reconnect the machine."
@@ -3104,13 +3104,13 @@ func workStartShellSessionRequest(
 
 struct AccountPairingAuthorizationChangedError: LocalizedError, Equatable {
   var errorDescription: String? {
-    "Your ADE account changed while this Mac was connecting. Sign in, then try again."
+    "Your ADE account changed while this computer was connecting. Sign in, then try again."
   }
 }
 
 struct AccountPairingConnectionSupersededError: LocalizedError, Equatable {
   var errorDescription: String? {
-    "A newer Mac connection replaced this attempt."
+    "A newer computer connection replaced this attempt."
   }
 }
 
@@ -3297,13 +3297,13 @@ final class SyncService: ObservableObject {
     connectionState == .connected || connectionState == .syncing
   }
 
-  /// Human-facing name of the connected machine, or a neutral "your Mac"
+  /// Human-facing name of the connected machine, or a neutral "your computer"
   /// fallback. Shared by Linear connect/status copy (and available to other
   /// surfaces that otherwise re-derive the same fallback).
   var machineDisplayName: String {
     let trimmed = hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let trimmed, !trimmed.isEmpty { return trimmed }
-    return "your Mac"
+    return "your computer"
   }
   /// Whether this phone currently holds a Tailscale-assigned address on a
   /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
@@ -4453,7 +4453,7 @@ final class SyncService: ObservableObject {
     }
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [
-        NSLocalizedDescriptionKey: "Can’t reach this Mac right now."
+        NSLocalizedDescriptionKey: "Can’t reach this computer right now."
       ])
     }
   }
@@ -5986,7 +5986,7 @@ final class SyncService: ObservableObject {
         return preprocessed.payload
       case "account_challenge_error":
         let message = syncNonEmpty((preprocessed.payload as? [String: Any])?["message"] as? String)
-          ?? "That route could not verify the Mac's identity."
+          ?? "That route could not verify the computer's identity."
         throw NSError(
           domain: "ADE.AdoptChannel",
           code: 6,
@@ -6139,7 +6139,7 @@ final class SyncService: ObservableObject {
         "supportedAeads": AdoptChannelCrypto.supportedAeads.map(\.rawValue),
       ],
       timeoutNanoseconds: AdoptChannelCrypto.challengeTimeoutNanoseconds,
-      timeoutMessage: "That Mac did not answer the secure identity challenge.",
+      timeoutMessage: "That computer did not answer the secure identity challenge.",
       relayAccountOwnerId: nil
     )
     guard isCurrentCandidate() else {
@@ -6302,7 +6302,7 @@ final class SyncService: ObservableObject {
         "auth": auth,
       ],
       timeoutNanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds,
-      timeoutMessage: "That Mac did not finish account connection. Try again.",
+      timeoutMessage: "That computer did not finish account connection. Try again.",
       relayAccountOwnerId: owner
     )
     guard isCurrentCandidate() else {
@@ -6694,7 +6694,7 @@ final class SyncService: ObservableObject {
       // learning even though we are not redialling.
       if var existing = activeHostProfile {
         guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
-          lastError = "This saved Mac belongs to a different signed-in account."
+          lastError = "This saved computer belongs to a different signed-in account."
           connectionState = .error
           ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
           return false
@@ -6741,7 +6741,7 @@ final class SyncService: ObservableObject {
         && tokenForProfile(profile) != nil
     }) {
       guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
-        lastError = "This saved Mac belongs to a different signed-in account."
+        lastError = "This saved computer belongs to a different signed-in account."
         connectionState = .error
         ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
         return false
@@ -6795,9 +6795,9 @@ final class SyncService: ObservableObject {
     )
     guard !routes.isEmpty else {
       if signingPublicKey == nil {
-        lastError = "That Mac is not ready for account connection yet. Open ADE on the Mac and try again."
+        lastError = "That computer is not ready for account connection yet. Open ADE on the computer and try again."
       } else {
-        lastError = "That Mac did not advertise a secure account connection route. Open ADE on the Mac and try again."
+        lastError = "That computer did not advertise a secure account connection route. Open ADE on the computer and try again."
       }
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
@@ -6915,7 +6915,7 @@ final class SyncService: ObservableObject {
             throw NSError(
               domain: "ADE",
               code: 33,
-              userInfo: [NSLocalizedDescriptionKey: "This Mac would not hand back a connection for this iPhone. Open ADE on the Mac, remove this iPhone under Settings → Devices, then connect again."]
+              userInfo: [NSLocalizedDescriptionKey: "This computer would not hand back a connection for this iPhone. Open ADE on the computer, remove this iPhone under Settings → Devices, then connect again."]
             )
           }
 
@@ -7083,7 +7083,7 @@ final class SyncService: ObservableObject {
       // A blocked navigation used to abort with nothing on screen: the tap
       // simply did not work. Record it the same way a failed connect does so
       // the reason is available to whatever surface the user is looking at.
-      let message = "That Mac is not available in your ADE account."
+      let message = "That computer is not available in your ADE account."
       lastError = message
       lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
@@ -7101,7 +7101,7 @@ final class SyncService: ObservableObject {
       return true
     }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
-      let message = "Sign in again to open work from that Mac."
+      let message = "Sign in again to open work from that computer."
       lastError = message
       lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
@@ -7937,8 +7937,8 @@ final class SyncService: ObservableObject {
       }
       // Persist BEFORE the hello. The host may commit this secret while the
       // hello_ok that reports it is still in flight, and a drop right there
-      // used to leave the phone holding a secret the Mac had already retired --
-      // recoverable only by typing another PIN at the Mac. Saving first cannot
+      // used to leave the phone holding a secret the computer had already retired --
+      // recoverable only by typing another PIN at the computer. Saving first cannot
       // strand the phone the other way: a host that never commits keeps
       // accepting the previous secret, and this device reconnects within
       // seconds, far inside that window.
@@ -7973,7 +7973,7 @@ final class SyncService: ObservableObject {
           throw NSError(
             domain: "ADE",
             code: 36,
-            userInfo: [NSLocalizedDescriptionKey: "The Mac did not finish saving this pairing. Try again."]
+            userInfo: [NSLocalizedDescriptionKey: "The computer did not finish saving this pairing. Try again."]
           )
         }
       }
@@ -8893,7 +8893,7 @@ final class SyncService: ObservableObject {
   private func sessionLifecycleNotAppliedError(_ action: String) -> NSError {
     NSError(domain: "ADE", code: 28, userInfo: [
       NSLocalizedDescriptionKey:
-        "This Mac didn’t apply that change — the session may have already changed there.",
+        "This computer didn’t apply that change — the session may have already changed there.",
       "adeAction": action,
     ])
   }
@@ -10112,7 +10112,7 @@ final class SyncService: ObservableObject {
         self.terminalInputQueues[sessionId] = queue
         self.terminalInputTimeoutTasks[sessionId] = nil
         self.terminalStreamHandlers[sessionId]?(.inputFailure(
-          message: "The Mac did not confirm whether that terminal input was applied. It was not retried again."
+          message: "The computer did not confirm whether that terminal input was applied. It was not retried again."
         ))
         self.flushTerminalInputQueue(sessionId: sessionId)
       }
@@ -16580,7 +16580,7 @@ final class SyncService: ObservableObject {
     case "account_challenge_error":
       let challengeError = payload as? [String: Any]
       let message = syncNonEmpty(challengeError?["message"] as? String)
-        ?? "That route could not verify the Mac's identity."
+        ?? "That route could not verify the computer's identity."
       resolve(requestId: requestId, result: .failure(NSError(
         domain: "ADE.AdoptChannel",
         code: 6,
@@ -18002,7 +18002,7 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this Mac right now."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
@@ -18843,7 +18843,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil
   ) async throws -> Any {
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this Mac right now."])
+      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
@@ -19004,11 +19004,11 @@ extension SyncService {
     }
 
     if connectionState.isHostUnreachable || nsError.domain == NSURLErrorDomain {
-      return "Reconnect to your Mac and try again."
+      return "Reconnect to your computer and try again."
     }
 
     if nsError.domain == "ADE", nsError.code == 15 {
-      return "Reconnect to your Mac and try again."
+      return "Reconnect to your computer and try again."
     }
 
     switch kind {

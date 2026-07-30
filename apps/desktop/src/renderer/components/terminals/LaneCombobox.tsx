@@ -73,7 +73,7 @@ export type LaneComboboxLane = {
   machineId?: string | null;
 };
 
-/** A machine group header. Names are absolute ("This Mac", "MacBook Pro (97)"). */
+/** A machine group header. Names are absolute ("This computer", "MacBook Pro (97)"). */
 export type LaneComboboxMachine = {
   id: string;
   name: string;

@@ -50,6 +50,10 @@ import { captureAgentTurnSettledAnalytics } from "./services/analytics/agentTurn
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
+import {
+  ADE_WINDOWS_APP_USER_MODEL_ID,
+  windowChromeOptions,
+} from "./windowAppearance";
 import { openKvDb } from "./services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
 import { ensureAdeDirs } from "./services/state/projectState";
@@ -188,6 +192,7 @@ import {
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
@@ -618,9 +623,7 @@ async function createWindow(args: {
   const win = new BrowserWindow({
     ...defaultWindowBounds,
     icon,
-    // Hide the native title bar but keep macOS traffic lights.
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 12, y: 12 },
+    ...windowChromeOptions(process.platform),
     // Match renderer dark theme to avoid a flash on load.
     backgroundColor: "#0F0D14",
     webPreferences: {
@@ -906,6 +909,10 @@ protocol.registerSchemesAsPrivileged([
 // binding; they only listen for URLs explicitly delivered to that process.
 const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
 const deeplinkClaimAsDefault = app.isPackaged && deeplinkChannel === null;
+
+if (process.platform === "win32") {
+  app.setAppUserModelId(ADE_WINDOWS_APP_USER_MODEL_ID);
+}
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
@@ -4277,10 +4284,11 @@ app.whenReady().then(async () => {
           ? envSocketOverride
           : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
         : adePaths.socketPath;
+      const activeRpcSocketPath = rpcSocketPath;
 
-      if (!isAdeRuntimeNamedPipePath(rpcSocketPath)) {
+      if (!isAdeRuntimeNamedPipePath(activeRpcSocketPath)) {
         try {
-          fs.unlinkSync(rpcSocketPath);
+          fs.unlinkSync(activeRpcSocketPath);
         } catch {}
       }
 
@@ -4347,11 +4355,11 @@ app.whenReady().then(async () => {
           };
           server.once("listening", handleListening);
           server.once("error", handleError);
-          server.listen(rpcSocketPath);
+          server.listen(localIpcListenOptions(activeRpcSocketPath));
         }),
       );
       logger.warn("rpc.socket_server_started", {
-        socketPath: rpcSocketPath,
+        socketPath: activeRpcSocketPath,
         mode: "legacy_desktop",
       });
     } else {
