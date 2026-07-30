@@ -635,25 +635,34 @@ A handful have more logic:
   session/turn pair must still be the active stalled turn when handled.
 - **`lanes.suggestName`** — background lane naming for the mobile
   auto-create flow (desktop parity with
-  `agentChatService.suggestLaneNameFromPrompt`). Takes `{ prompt,
-  modelId, laneId, fallbackName? }`, calls the host's small naming model,
-  and returns `{ name }`. The handler is deliberately **not queueable**
+  `agentChatService.generateAutoLaneIdentity`). Takes `{ prompt,
+  modelId, laneId, fallbackName?, temporaryBranch?, attachments? }`, makes one
+  structured naming request for a readable lane title and a Git-safe branch
+  fragment, applies each identity independently on the host, and returns
+  `{ name, hostApplied }`. Image attachments reuse the existing bounded chat
+  attachment references as naming context; non-image attachments contribute
+  metadata only. The handler is deliberately **not queueable**
   so an offline phone fails fast and the client uses its own
   deterministic fallback instead of receiving a stale queued suggestion.
-  Naming honors the host `titleGenerationEnabled` setting and clamps the
-  result; a missing `agentChatService`, a thrown error, or an empty name
-  all fall back to the supplied `fallbackName` (or, when none was passed,
-  a prompt-derived `deriveDeterministicLaneNameFromPrompt`), so naming
-  can never block or fail lane creation. Each outcome logs a distinct
-  structured line (`sync.lanes_suggest_name_succeeded` /
-  `_kept_fallback` / `_empty_result` / `_service_unavailable` /
-  `_failed`, all carrying `laneId` / `modelId` and the resolved name)
-  so a lane that lands on its deterministic slug is diagnosable. The iOS callers
+  Naming honors the host `titleGenerationEnabled` setting. A configured naming
+  model wins; otherwise the launched model is tried first, then an authenticated
+  same-provider model where possible. Naming uses low/minimal reasoning rather
+  than inheriting the coding turn's reasoning level. iOS allows 45 seconds per
+  non-disconnecting request and at most one retry for plausibly transient
+  failures. Disabled naming, missing authentication, unsupported capability,
+  invalid structured output, and branch-safety rejection are not retried.
+  Missing services, invalid output, timeout, or provider failure retain
+  independently derived deterministic lane and branch values, so naming can
+  never block or fail lane creation. Structured logs carry the lane, temporary
+  branch, selected model, source, attempt count, mutation outcomes, and
+  skip/failure reason. The iOS callers
   (`WorkNewChatScreen` and the hub composer) create the lane instantly
-  with the deterministic name, then call `SyncService.suggestLaneName`
-  fire-and-forget after the session launch and apply a differing
-  suggestion via `lanes.rename` — desktop's background-rename pattern;
-  any throw keeps the deterministic name.
+  with the deterministic title on an exact `ade/<8 lowercase hex>` temporary
+  branch, then call `SyncService.suggestLaneName` fire-and-forget after the
+  session launch. When `hostApplied` is true they refresh lane state instead of
+  issuing a second rename; legacy hosts still return a title that mobile applies
+  through `lanes.rename`. A manual lane or branch change made while naming is in
+  flight wins, and any throw keeps the deterministic identity.
 - **`lanes.initEnv` / `lanes.applyTemplate`** — resolves the lane's
   overlay context (`resolveLaneOverlayContext`), merges overrides with
   the template's env init config, and invokes

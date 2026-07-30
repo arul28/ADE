@@ -580,7 +580,7 @@ export function AiFeaturesSection() {
             );
           })}
 
-          {/* Auto-name chats, CLI sessions, and lanes */}
+          {/* Auto-name chats, lanes, and branches */}
           <div
             className="ai-feature-row"
             style={{
@@ -619,7 +619,7 @@ export function AiFeaturesSection() {
                       color: chatAutoTitleEnabled ? COLORS.textPrimary : COLORS.textMuted,
                     }}
                   >
-                    Auto-name chats, CLI sessions, and lanes
+                    Auto-name chats, lanes, and branches
                   </div>
                   <div
                     style={{
@@ -632,7 +632,7 @@ export function AiFeaturesSection() {
                       wordBreak: "break-word",
                     }}
                   >
-                    Names come from the first prompt, with a deterministic fallback when the model is off or too slow
+                    Names come from the opening request. ADE uses the selected naming model, or the launched chat model by default, with deterministic names when it is unavailable or slow.
                   </div>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer" }}>
                     <input

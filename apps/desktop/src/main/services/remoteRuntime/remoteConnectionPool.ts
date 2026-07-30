@@ -120,6 +120,7 @@ export { isRemoteRuntimeConnectionError };
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["chat.suggestLaneNameFromPrompt", 120_000],
+  ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],

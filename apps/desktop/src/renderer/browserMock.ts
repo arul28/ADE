@@ -4923,6 +4923,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       create: resolvedArg({ id: "mock" }),
       suggestLaneName: resolvedArg("browser-mock-chat"),
+      generateAutoLaneIdentity: async (args: any = {}) => ({
+        laneTitle: String(args.fallbackName ?? "Browser Mock Chat"),
+        branchFragment: "browser-mock-chat",
+        source: "deterministic",
+        laneRenameOutcome: "skipped",
+        branchRenameOutcome: "skipped",
+        branchRef: String(args.temporaryBranch ?? ""),
+        reason: "browser_mock",
+      }),
       parallelLaunchState: {
         get: resolvedArg(null),
         set: resolvedArg(undefined),

@@ -168,6 +168,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       return result;
     },
     suggestLaneName: (args: unknown) => call("chat.suggestLaneName", args, ""),
+    generateAutoLaneIdentity: (args: unknown) => call("chat.generateAutoLaneIdentity", args, null, false),
     parallelLaunchState: {
       get: (args: unknown) => call("chat.getParallelLaunchState", args, null),
       set: async (args: unknown) => {

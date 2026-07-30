@@ -306,6 +306,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
+  AutoLaneIdentitySuggestion,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
@@ -454,6 +455,7 @@ import {
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
   GENERIC_LANE_FALLBACK_NAME,
   genericLaneFallbackName,
@@ -2907,15 +2909,33 @@ Return only the title text.
 - No emoji.
 - No trailing punctuation.`;
 
-const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `You name git worktree lanes for a software project.
-Return only the base name text (no model suffixes).
-- Use 2 to 5 words, lowercase except proper nouns if needed.
-- Slug-friendly: letters, numbers, spaces, and hyphens only (no slashes).
-- Describe the concrete task, feature, bug, UI control, or command from the user's message.
-- Prefer the thing being built or fixed over meta words like prompt, question, request, chat, or task.
-- Ignore conversational lead-ins like "correct me if I'm wrong" or "look into this".
-- If the user names a command and a UI control, include both (for example "claude auth login button", not "claude auth login prompt").
-- No quotes, no emoji, no trailing punctuation.`;
+const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Generate the stable identity for an automatically created software workspace.
+Return strict JSON only: {"laneTitle":"...","branchFragment":"..."}.
+laneTitle:
+- Natural readable user-facing title, 2 to 6 words, with spaces and natural title capitalization.
+- Preserve meaningful capitalization such as ADE, GitHub, iOS, macOS, Codex, OpenAI, and OAuth.
+- Describe the durable workstream, outcome, feature, bug, UI surface, or command.
+- Prefer meaningful nouns and product concepts over procedural wording.
+- Avoid prompt, question, request, conversation, chat, task, discuss, investigate, or look into unless genuinely part of a feature name.
+- Avoid generic leading verbs such as Fix, Update, Improve, Handle, or Work On when a specific noun phrase is available.
+- Do not repeat the user's sentence verbatim. No quotes, emoji, or trailing punctuation.
+branchFragment:
+- Describe the same workstream in 2 to 6 short specific words.
+- Lowercase ASCII and hyphen-separated. Do not include the ade/ prefix.
+- No spaces, quotes, refs/heads/, punctuation-heavy text, or leading/trailing separators.
+- Keep it concise and safe for GitHub, PR lists, terminals, and Git branch naming.
+Attached images are primary context for visual and UI requests.`;
+const LEGACY_LANE_NAME_SYSTEM_PROMPT = `Name a git worktree lane.
+Return only a short 2 to 5 word slug-friendly name with no slash, quotes, emoji, or trailing punctuation.`;
+const AUTO_LANE_IDENTITY_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    laneTitle: { type: "string" },
+    branchFragment: { type: "string" },
+  },
+  required: ["laneTitle", "branchFragment"],
+} as const;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "none", description: "No extra reasoning when supported by the runtime." },
   { effort: "minimal", description: "Minimal reasoning for fastest responses." },
@@ -4287,6 +4307,36 @@ function normalizeSuggestedLaneName(raw: string): string | null {
     .replace(/^-+|-+$/g, "");
 
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeSuggestedLaneTitle(raw: string): string | null {
+  const title = sanitizeAutoTitle(raw, 72);
+  if (!title) return null;
+  const words = title.split(/\s+/u).filter(Boolean);
+  if (words.length < 2 || words.length > 6 || /[-_/]{2,}/u.test(title)) return null;
+  return title;
+}
+
+function parseAutoLaneIdentity(raw: string): { laneTitle: string | null; branchFragment: string | null } | null {
+  try {
+    const parsed = JSON.parse(raw.trim()) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    if (Object.keys(record).some((key) => key !== "laneTitle" && key !== "branchFragment")) return null;
+    const branchRaw = typeof record.branchFragment === "string" ? record.branchFragment.trim() : "";
+    const branchWords = branchRaw.split("-").filter(Boolean);
+    const branchFragment = branchWords.length >= 2
+      && branchWords.length <= 6
+      && /^[a-z0-9]+(?:-[a-z0-9]+)+$/u.test(branchRaw)
+      ? normalizeSuggestedLaneName(branchRaw)
+      : null;
+    return {
+      laneTitle: typeof record.laneTitle === "string" ? normalizeSuggestedLaneTitle(record.laneTitle) : null,
+      branchFragment,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
@@ -7323,6 +7373,8 @@ export function createAgentChatService(args: {
     systemPrompt?: string;
     timeoutMs?: number;
     reasoningEffort?: string | null;
+    imagePaths?: string[];
+    jsonSchema?: unknown;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
   }) => {
     const config = resolveChatConfig();
@@ -7339,6 +7391,8 @@ export function createAgentChatService(args: {
       systemPrompt: args.systemPrompt,
       timeoutMs: args.timeoutMs,
       reasoningEffort,
+      imagePaths: args.imagePaths,
+      jsonSchema: args.jsonSchema,
       taskType: args.taskType,
     });
   };
@@ -10875,19 +10929,19 @@ export function createAgentChatService(args: {
     };
   };
 
-  const suggestLaneNameFromPrompt = async (args: AgentChatSuggestLaneNameArgs): Promise<string> => {
+  const generateAutoLaneIdentity = async (
+    args: AgentChatSuggestLaneNameArgs,
+  ): Promise<AutoLaneIdentitySuggestion> => {
     const prompt = String(args.prompt ?? "").trim();
     const requestedModelId = String(args.modelId ?? "").trim();
     const sourceLaneId = String(args.laneId ?? "").trim();
-    const explicitFallback = typeof args.fallbackName === "string"
-      ? normalizeSuggestedLaneName(args.fallbackName)
-      : null;
-    const promptFallback = fallbackLaneNameFromPrompt(prompt);
-    const fallback = () => uniquePromptFallbackLaneName(promptFallback, explicitFallback);
-
-    if (!prompt.length) {
-      return fallback();
-    }
+    const fallback = deriveDeterministicAutoLaneIdentity(prompt);
+    const expectedLaneName = String(args.fallbackName ?? fallback.laneTitle).trim() || fallback.laneTitle;
+    const temporaryBranch = String(args.temporaryBranch ?? "").trim();
+    let identity = fallback;
+    let source: "ai" | "deterministic" = "deterministic";
+    let selectedModelId = "";
+    let attemptCount = 0;
 
     let cwd = projectRoot;
     try {
@@ -10900,38 +10954,160 @@ export function createAgentChatService(args: {
     } catch {
       cwd = projectRoot;
     }
+    const imagePaths: string[] = [];
+    for (const attachment of (args.attachments ?? []).slice(0, 8)) {
+      if (attachment.type !== "image") continue;
+      try {
+        const root = path.isAbsolute(attachment.path) ? projectRoot : cwd;
+        const resolved = resolvePathWithinRoot(root, attachment.path, { allowMissing: false });
+        if (fs.statSync(resolved).size <= 20 * 1024 * 1024) imagePaths.push(resolved);
+      } catch {
+        // Attachment validation is independent: ignore unsafe/missing/oversize
+        // files instead of failing lane creation or naming.
+      }
+      if (imagePaths.length >= 4) break;
+    }
 
+    try {
+      if (prompt.length) {
+        const config = resolveChatConfig();
+        if (config.titleGenerationEnabled !== false) {
+          const auth = await detectAuth();
+          const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
+          const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
+          const primaryModelId = [
+            config.titleModelId,
+            requestedModelId,
+            DEFAULT_AUTO_TITLE_MODEL_ID,
+            availableModels[0]?.id,
+          ].find((candidate) => typeof candidate === "string" && availableIds.has(candidate.trim()))?.trim() ?? "";
+          const primaryDescriptor = getModelById(primaryModelId);
+          const primaryProvider = primaryDescriptor
+            ? resolveProviderGroupForModel(primaryDescriptor)
+            : null;
+          const sameProviderFallback = availableModels.find(
+            (descriptor) => descriptor.id !== primaryModelId
+              && primaryProvider !== null
+              && resolveProviderGroupForModel(descriptor) === primaryProvider,
+          )?.id;
+          const candidateModelIds = [
+            primaryModelId,
+            sameProviderFallback,
+            requestedModelId !== primaryModelId ? requestedModelId : "",
+            availableModels.find((descriptor) => descriptor.id !== primaryModelId)?.id,
+          ].reduce<string[]>((acc, candidate) => {
+            const modelId = typeof candidate === "string" ? candidate.trim() : "";
+            if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
+            return [...acc, modelId];
+          }, []).slice(0, 2);
+
+          for (const candidateModelId of candidateModelIds) {
+            const descriptor = getModelById(candidateModelId);
+            if (!descriptor) continue;
+            attemptCount += 1;
+            selectedModelId = descriptor.id;
+            try {
+              const result = await runSessionIntelligencePrompt({
+                cwd,
+                modelId: descriptor.id,
+                systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+                prompt: `Opening request:\n${prompt.slice(0, 2000)}`,
+                reasoningEffort: "low",
+                imagePaths,
+                jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
+                taskType: "session_title",
+              });
+              const parsed = parseAutoLaneIdentity(result.text);
+              if (!parsed) break;
+              if (!parsed.laneTitle && !parsed.branchFragment) break;
+              identity = {
+                laneTitle: parsed.laneTitle ?? fallback.laneTitle,
+                branchFragment: parsed.branchFragment ?? fallback.branchFragment,
+              };
+              source = "ai";
+              break;
+            } catch (error) {
+              logger.warn("agent_chat.suggest_lane_name_failed", {
+                laneId: sourceLaneId,
+                temporaryBranch,
+                modelId: candidateModelId,
+                requestedModelId,
+                attemptCount,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn("agent_chat.suggest_lane_name_unavailable", {
+        laneId: sourceLaneId,
+        temporaryBranch,
+        modelId: requestedModelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const mutation = typeof laneService.applyAutoLaneIdentity === "function"
+      ? await laneService.applyAutoLaneIdentity({
+        laneId: sourceLaneId,
+        expectedLaneName,
+        temporaryBranch,
+        laneTitle: identity.laneTitle,
+        branchFragment: identity.branchFragment,
+      })
+      : {
+        laneRenameOutcome: "skipped" as const,
+        branchRenameOutcome: "skipped" as const,
+        branchRef: temporaryBranch,
+        reason: "lane_identity_mutation_unavailable",
+      };
+    logger.info("agent_chat.auto_lane_identity_completed", {
+      laneId: sourceLaneId,
+      temporaryBranch,
+      selectedModelId,
+      source,
+      attemptCount,
+      laneRenameOutcome: mutation.laneRenameOutcome,
+      branchRenameOutcome: mutation.branchRenameOutcome,
+      reason: mutation.reason ?? null,
+    });
+    return { ...identity, source, ...mutation };
+  };
+
+  // Compatibility surface for chat/terminal title callers. Auto-created lanes
+  // use generateAutoLaneIdentity so their lane and branch come from one request.
+  const suggestLaneNameFromPrompt = async (args: AgentChatSuggestLaneNameArgs): Promise<string> => {
+    const prompt = String(args.prompt ?? "").trim();
+    const requestedModelId = String(args.modelId ?? "").trim();
+    const explicitFallback = typeof args.fallbackName === "string"
+      ? normalizeSuggestedLaneName(args.fallbackName)
+      : null;
+    const fallback = () => uniquePromptFallbackLaneName(fallbackLaneNameFromPrompt(prompt), explicitFallback);
+    if (!prompt.length) return fallback();
     try {
       const config = resolveChatConfig();
       if (config.titleGenerationEnabled === false) return fallback();
-
       const auth = await detectAuth();
       const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-      if (!availableModels.length) return fallback();
       const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
-      const candidateModelIds = [
+      const candidates = [
         config.titleModelId,
         requestedModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
-        "openai/gpt-5.4-mini",
-        "openai/gpt-5.2",
-        "openai/gpt-5.4",
         availableModels[0]?.id,
-      ].reduce<string[]>((acc, candidate) => {
-        const modelId = typeof candidate === "string" ? candidate.trim() : "";
-        if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
-        return [...acc, modelId];
-      }, []);
-
-      for (const candidateModelId of candidateModelIds) {
-        const descriptor = getModelById(candidateModelId);
-        if (!descriptor) continue;
+      ].filter((candidate, index, all): candidate is string =>
+        typeof candidate === "string"
+        && candidate.length > 0
+        && availableIds.has(candidate)
+        && all.indexOf(candidate) === index);
+      for (const modelId of candidates) {
         try {
           const result = await runSessionIntelligencePrompt({
-            cwd,
-            modelId: descriptor.id,
-            systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+            cwd: projectRoot,
+            modelId,
+            systemPrompt: LEGACY_LANE_NAME_SYSTEM_PROMPT,
             prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
             taskType: "session_title",
           });
@@ -10939,21 +11115,19 @@ export function createAgentChatService(args: {
           if (normalized) return normalized;
         } catch (error) {
           logger.warn("agent_chat.suggest_lane_name_failed", {
-            modelId: candidateModelId,
+            modelId,
             requestedModelId,
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
-
-      return fallback();
     } catch (error) {
       logger.warn("agent_chat.suggest_lane_name_unavailable", {
         modelId: requestedModelId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return fallback();
     }
+    return fallback();
   };
 
   const computeHeadShaBestEffort = async (laneId: string): Promise<string | null> => {
@@ -42288,6 +42462,7 @@ export function createAgentChatService(args: {
     importExternalChatSession,
     launchHeadless,
     suggestLaneNameFromPrompt,
+    generateAutoLaneIdentity,
     handoffSession,
     prepareCrossMachineHandoff,
     validateCrossMachineSource,

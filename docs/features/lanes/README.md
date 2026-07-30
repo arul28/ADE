@@ -187,13 +187,23 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   the host's small AI model using desktop's background-rename pattern
   (`startBackgroundLaneNaming` in `AgentChatPane`): `submit()` creates
   the lane instantly with the deterministic
-  `autoCreatedLaneName(opener:)`, launches the chat/CLI session, then
-  fires a fire-and-forget task that calls `SyncService.suggestLaneName`
+  `autoCreatedLaneName(opener:)` on an exact `ade/<8 lowercase hex>` temporary
+  branch, launches the chat/CLI session, then fires a fire-and-forget task that
+  generates one structured lane/branch identity.
+  The backend applies the readable lane title independently, then renames the
+  temporary branch only while the lane record, checked-out worktree branch,
+  upstream/remote state, and PR state still prove it is safe. Collisions receive
+  `-2`, `-3`, and later suffixes. A manual lane or branch rename wins over a late
+  result. Mobile calls the same host operation through `SyncService.suggestLaneName`
   (the non-queueable `lanes.suggestName` sync command →
-  `agentChatService.suggestLaneNameFromPrompt` on the host) and applies
-  the result via `lanes.rename` only when it differs from the
-  deterministic fallback. Naming never blocks or fails lane creation or
-  session launch — any failure / timeout / offline / host-disabled
+  `agentChatService.generateAutoLaneIdentity` on the host).
+  Deterministic fallback intentionally remains a bounded shared heuristic
+  (noise removal, a few durable-concept rules, and capped meaningful tokens);
+  broader semantic extraction is deferred so offline naming stays predictable
+  and reviewable. New hosts apply the identity and return `hostApplied`, after
+  which mobile refreshes lane state; the direct `lanes.rename` path remains only
+  for compatibility with older hosts. Naming never blocks or fails lane
+  creation or session launch — any failure / timeout / offline / host-disabled
   state simply keeps the deterministic name. The host command is
   deliberately not queueable so an offline phone fails fast to the
   deterministic name instead of queueing a stale suggestion. Covers

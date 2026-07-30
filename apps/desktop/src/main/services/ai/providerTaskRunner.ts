@@ -28,6 +28,7 @@ export type ProviderTaskRunnerArgs = {
   feature: string;
   sessionId?: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
+  imagePaths?: string[];
 };
 
 export type ProviderTaskRunnerResult = {
@@ -295,6 +296,9 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     const schemaPath = path.join(tmpDir, "schema.json");
     fs.writeFileSync(schemaPath, JSON.stringify(codexJsonSchema, null, 2), "utf8");
     cliArgs.push("--output-schema", schemaPath);
+  }
+  for (const imagePath of args.imagePaths ?? []) {
+    cliArgs.push("--image", imagePath);
   }
 
   cliArgs.push("-");

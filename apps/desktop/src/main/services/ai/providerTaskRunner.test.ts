@@ -180,6 +180,7 @@ describe("runProviderTask", () => {
         system: "Be concise.",
         feature: "unit-test",
         permissionMode: "edit",
+        imagePaths: ["/tmp/settings.png"],
         projectConfig: {} as any,
       });
 
@@ -189,6 +190,8 @@ describe("runProviderTask", () => {
       expect(command).toBe("C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd");
       expect(argv).toContain("exec");
       expect(argv).toContain("-");
+      expect(argv).toContain("--image");
+      expect(argv).toContain("/tmp/settings.png");
       expect(argv).not.toContain("Fix the Windows launcher.");
       expect(options).toMatchObject({
         stdio: ["pipe", "pipe", "pipe"],

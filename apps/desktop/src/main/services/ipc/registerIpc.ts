@@ -385,6 +385,8 @@ import type {
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSuggestLaneNameArgs,
+  AgentChatFileRef,
+  AutoLaneIdentitySuggestion,
   PromptStashCreateArgs,
   PromptStashDeleteArgs,
   PromptStashEntry,
@@ -6447,6 +6449,26 @@ export function registerIpc({
       ...(typeof record.fallbackName === "string" && record.fallbackName.trim().length
         ? { fallbackName: record.fallbackName.trim() }
         : {}),
+      ...(typeof record.temporaryBranch === "string" && record.temporaryBranch.trim().length
+        ? { temporaryBranch: record.temporaryBranch.trim() }
+        : {}),
+      ...(Array.isArray(record.attachments)
+        ? {
+            attachments: record.attachments.slice(0, 8).flatMap<AgentChatFileRef>((entry) => {
+              if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+              const attachment = entry as Record<string, unknown>;
+              const attachmentPath = typeof attachment.path === "string" ? attachment.path.trim() : "";
+              if (!attachmentPath) return [];
+              if (attachment.type === "image" || attachment.type === "file") {
+                return [{ type: attachment.type, path: attachmentPath }];
+              }
+              if (attachment.type === "image-url" && typeof attachment.url === "string") {
+                return [{ type: "image-url" as const, path: attachmentPath, url: attachment.url }];
+              }
+              return [];
+            }),
+          }
+        : {}),
     };
   };
 
@@ -7065,6 +7087,13 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
+  });
+  ipcMain.handle(IPC.agentChatGenerateAutoLaneIdentity, async (
+    _event,
+    arg: unknown,
+  ): Promise<AutoLaneIdentitySuggestion> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.generateAutoLaneIdentity(parseAgentChatSuggestLaneNameArgs(arg));
   });
 
   ipcMain.handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {

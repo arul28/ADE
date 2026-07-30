@@ -550,14 +550,14 @@ function installAdeMocks(options?: {
         }
         return buildCreatedSession("created-session", overrides);
       });
-  const createLane = vi.fn().mockResolvedValue({
+  const createLane = vi.fn().mockImplementation(async ({ name, branchName }: { name: string; branchName?: string }) => ({
     id: "lane-created",
-    name: "auto-created-lane",
+    name: name || "auto-created-lane",
     laneType: "worktree",
-    branchRef: "refs/heads/auto-created-lane",
+    branchRef: branchName || "refs/heads/auto-created-lane",
     worktreePath: "/tmp/project-under-test/auto-created-lane",
     parentLaneId: "lane-primary",
-  });
+  }));
   const suggestLaneName = vi.fn().mockResolvedValue("parallel-task");
   const renameLane = vi.fn().mockResolvedValue(undefined);
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
@@ -672,6 +672,14 @@ function installAdeMocks(options?: {
           }
         : {}),
       suggestLaneName,
+      generateAutoLaneIdentity: vi.fn().mockImplementation(async (args, pin) => ({
+        laneTitle: await suggestLaneName(args, pin),
+        branchFragment: "parallel-task",
+        source: "ai",
+        laneRenameOutcome: "renamed",
+        branchRenameOutcome: "renamed",
+        branchRef: "ade/parallel-task",
+      })),
       parallelLaunchState: {
         get: parallelLaunchStateGet,
         set: parallelLaunchStateSet,
@@ -5016,18 +5024,16 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-created",
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
-        fallbackName: "fix-auto-create-lane-routing",
+        fallbackName: "Fix Auto Create Lane Routing",
       }), LOCAL_PROJECT_BINDING);
-      // The lane is created instantly with the deterministic name; the AI name is
-      // applied in the background via lanes.rename.
-      expect(createLane).toHaveBeenCalledWith({
-        name: "fix-auto-create-lane-routing",
+      // The lane is created instantly with the deterministic name; the backend
+      // owns the guarded lane + branch identity mutation.
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Fix Auto Create Lane Routing",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
         baseBranch: "origin/main",
-      }, LOCAL_PROJECT_BINDING);
-      expect(renameLane).toHaveBeenCalledWith(
-        { laneId: "lane-created", name: "fix-auto-create-flow" },
-        LOCAL_PROJECT_BINDING,
-      );
+      }), LOCAL_PROJECT_BINDING);
+      expect(renameLane).not.toHaveBeenCalled();
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({ laneId: "lane-created" }),
         LOCAL_PROJECT_BINDING,
@@ -5076,9 +5082,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith({
-        name: "default-base-when-remote-refs",
-      }, LOCAL_PROJECT_BINDING);
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Default Base When Remote Refs",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
+      }), LOCAL_PROJECT_BINDING);
     });
   });
 
@@ -5125,10 +5132,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith({
-        name: "create-local-main-without-fetching",
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Create Local Main Without Fetching",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
         baseBranch: "main",
-      }, LOCAL_PROJECT_BINDING);
+      }), LOCAL_PROJECT_BINDING);
     });
     expect((window as any).ade.git.fetch).not.toHaveBeenCalled();
   });
@@ -5164,10 +5172,11 @@ describe("AgentChatPane submit recovery", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
       await waitFor(() => {
-        expect(createLane).toHaveBeenCalledWith({
-          name: "keep-going-even-naming-fails",
+        expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+          name: "Keep Going Even Naming Fails",
+          branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
           baseBranch: "origin/main",
-        }, LOCAL_PROJECT_BINDING);
+        }), LOCAL_PROJECT_BINDING);
         expect(create).toHaveBeenCalledWith(
           expect.objectContaining({ laneId: "lane-created" }),
           LOCAL_PROJECT_BINDING,
@@ -5181,7 +5190,7 @@ describe("AgentChatPane submit recovery", () => {
     }
   });
 
-  it("auto-create retries background lane naming once before keeping the deterministic name", async () => {
+  it("auto-create accepts a valid naming result without retrying", async () => {
     let attempts = 0;
     const { createLane, suggestLaneName, renameLane } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockImplementation(async () => {
@@ -5218,11 +5227,8 @@ describe("AgentChatPane submit recovery", () => {
     }, { timeout: 5000 });
 
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(renameLane).toHaveBeenCalledWith({
-        laneId: "lane-created",
-        name: "auto-create-lane-fix",
-      }, LOCAL_PROJECT_BINDING);
+      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(renameLane).not.toHaveBeenCalled();
     }, { timeout: 5000 });
   });
 
@@ -5478,7 +5484,7 @@ describe("AgentChatPane submit recovery", () => {
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
         {
           activate: false,
-          laneName: "auto-created-lane",
+          laneName: "Create Macbook",
           source: "draft-launch",
           runtimePin: localBinding,
         },
@@ -5838,10 +5844,11 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith({
-        name: "switch-projects-mid-launch",
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Switch Projects Mid Launch",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
         baseBranch: "origin/main",
-      }, binding);
+      }), binding);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }), binding);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
@@ -7181,10 +7188,11 @@ describe("AgentChatPane submit recovery", () => {
         prompt: "Launch a CLI agent on a new lane.",
         modelId: "openai/gpt-5.4",
       }), LOCAL_PROJECT_BINDING);
-      expect(createLane).toHaveBeenCalledWith({
-        name: "launch-cli-agent-new-lane",
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Launch Cli Agent New Lane",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
         baseBranch: "origin/main",
-      }, LOCAL_PROJECT_BINDING);
+      }), LOCAL_PROJECT_BINDING);
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         profile: "codex",
@@ -8088,14 +8096,14 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         prompt: "Fix the login bug",
         modelId: "openai/gpt-5.4",
-        fallbackName: "fix-login-bug",
+        fallbackName: "Fix Login Bug",
       }), launchBinding);
       expect(createChild).toHaveBeenCalledTimes(2);
     });
     // Child lanes are created instantly with the deterministic base name…
     expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
-      "fix-login-bug-codex-gpt-5-4",
-      "fix-login-bug-claude-sonnet-5",
+      "Fix Login Bug-codex-gpt-5-4",
+      "Fix Login Bug-claude-sonnet-5",
     ]);
     // …then renamed to the AI base name in the background.
     await waitFor(() => {

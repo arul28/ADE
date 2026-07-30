@@ -2256,6 +2256,20 @@ export type AgentChatSuggestLaneNameArgs = {
   modelId: string;
   /** Optional fallback used when model-backed naming is disabled or unavailable. */
   fallbackName?: string;
+  /** Exact temporary branch created for this automatic lane. */
+  temporaryBranch?: string;
+  /** Bounded first-message attachment metadata; image paths use existing chat materialization. */
+  attachments?: AgentChatFileRef[];
+};
+
+export type AutoLaneIdentitySuggestion = {
+  laneTitle: string;
+  branchFragment: string;
+  source: "ai" | "deterministic";
+  laneRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
+  branchRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
+  branchRef: string;
+  reason?: string;
 };
 
 export type AgentChatParallelLaunchStateStatus =

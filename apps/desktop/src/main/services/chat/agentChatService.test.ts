@@ -36673,6 +36673,132 @@ describe("suggestLaneNameFromPrompt", () => {
     });
     expect(result).toBe("parallel-task");
   });
+
+  it("generates one structured lane and branch identity with low reasoning", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({
+        laneTitle: "Naming Auto Created Lanes",
+        branchFragment: "naming-auto-created-lanes",
+      }),
+      inputTokens: 10,
+      outputTokens: 8,
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "Can we discuss how ADE names auto-created lanes?",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      fallbackName: "Naming Auto Created Lanes",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result).toMatchObject({
+      laneTitle: "Naming Auto Created Lanes",
+      branchFragment: "naming-auto-created-lanes",
+      source: "ai",
+    });
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      model: "openai/gpt-5.4",
+      reasoningEffort: "low",
+    }));
+  });
+
+  it("preserves a valid title when structured branch output is invalid", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Claude OAuth Login", branchFragment: "refs/heads/NOPE" }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "The Claude auth login button hangs after OAuth redirects.",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result.laneTitle).toBe("Claude OAuth Login");
+    expect(result.branchFragment).toBe("claude-auth-login-button");
+  });
+
+  it("treats fully invalid structured fields as deterministic fallback", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Fix", branchFragment: "refs/heads/NOPE" }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "The Claude auth login button hangs after OAuth redirects.",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result).toMatchObject({
+      laneTitle: "Claude Auth Login Button",
+      branchFragment: "claude-auth-login-button",
+      source: "deterministic",
+    });
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the configured naming model before the launched model", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService({ titleModelId: "openai/gpt-5.4-mini" });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Lane Naming", branchFragment: "lane-naming" }),
+    } as any);
+
+    await service.generateAutoLaneIdentity({
+      prompt: "Rename automatic lanes",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+    }));
+  });
+
+  it("passes bounded existing image attachments to capable naming providers", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const imagePath = path.join(tmpRoot, "settings.png");
+    fs.writeFileSync(imagePath, "png");
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Settings Panel Spacing", branchFragment: "settings-panel-spacing" }),
+    } as any);
+
+    await service.generateAutoLaneIdentity({
+      prompt: "Please fix this spacing",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+      attachments: [
+        { type: "image", path: imagePath },
+        { type: "file", path: path.join(tmpRoot, "large.zip") },
+      ],
+    });
+
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      imagePaths: [fs.realpathSync(imagePath)],
+    }));
+  });
 });
 
 describe("durable chat metadata and transcript continuity", () => {

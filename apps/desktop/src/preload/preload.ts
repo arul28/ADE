@@ -336,6 +336,7 @@ import type {
   AgentChatCodexSetGoalStatusArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
+  AutoLaneIdentitySuggestion,
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
@@ -6065,6 +6066,18 @@ contextBridge.exposeInMainWorld("ade", {
             "suggestLaneNameFromPrompt",
             { args },
             () => ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+          ),
+    generateAutoLaneIdentity: async (
+      args: AgentChatSuggestLaneNameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AutoLaneIdentitySuggestion> =>
+      pin
+        ? callPinnedRuntimeAction<AutoLaneIdentitySuggestion>(pin, "chat", "generateAutoLaneIdentity", { args })
+        : callProjectRuntimeActionOr(
+            "chat",
+            "generateAutoLaneIdentity",
+            { args },
+            () => ipcRenderer.invoke(IPC.agentChatGenerateAutoLaneIdentity, args),
           ),
     parallelLaunchState: {
       get: async (
