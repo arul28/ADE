@@ -1402,7 +1402,7 @@ describe("ptyService", () => {
       }
     });
 
-    it("does not send Codex initialInput into the update prompt", async () => {
+    it("preserves Codex initialInput after a readiness timeout without sending it into the update prompt", async () => {
       vi.useFakeTimers();
       try {
         const { service, mockPty, logger, sessionService } = createHarness();
@@ -1417,6 +1417,7 @@ describe("ptyService", () => {
           args: ["--no-alt-screen"],
           startupCommand: "codex --no-alt-screen",
           initialInput: "please keep going",
+          initialInputReadyTimeoutMs: 20_000,
         });
 
         mockPty._emitter.emit("data", [
@@ -1433,17 +1434,167 @@ describe("ptyService", () => {
           expect.objectContaining({ provider: "codex" }),
         );
         expect(logger.warn).toHaveBeenCalledWith(
-          "pty.initial_input_skipped_not_ready",
-          expect.objectContaining({ provider: "codex" }),
-        );
-        expect(logger.warn).toHaveBeenCalledWith(
-          "pty.initial_input_launch_failed",
-          expect.objectContaining({ toolType: "codex" }),
+          "pty.initial_input_retrying_not_ready",
+          expect.objectContaining({ provider: "codex", timeoutMs: 20_000 }),
         );
         expect(mockPty.kill).not.toHaveBeenCalled();
         expect(sessionService.end).not.toHaveBeenCalledWith(expect.objectContaining({
           status: "failed",
         }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("delivers preserved Codex initialInput when the composer appears after a readiness timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "ADE_INITIAL_PROMPT_RETRY_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        mockPty._emitter.emit("data", "Starting MCP servers (unityMCP)\n");
+        await vi.advanceTimersByTimeAsync(20_100);
+        expect(mockPty.write).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          "pty.initial_input_retrying_not_ready",
+          expect.objectContaining({ provider: "codex" }),
+        );
+
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\nMCP startup incomplete (failed: unityMCP)\n› ",
+        );
+        await vi.advanceTimersByTimeAsync(600);
+        await vi.advanceTimersByTimeAsync(25);
+        await vi.advanceTimersByTimeAsync(25);
+
+        expect(mockPty.write).toHaveBeenCalledWith(
+          "\x1b[200~ADE_INITIAL_PROMPT_RETRY_MARKER\x1b[201~",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels preserved Codex initialInput when the user takes control before late readiness", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "ADE_STALE_INITIAL_PROMPT",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        mockPty._emitter.emit("data", "Starting MCP servers (unityMCP)\n");
+        await vi.advanceTimersByTimeAsync(20_100);
+        service.write({ ptyId: created.ptyId, data: "user draft" });
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\nMCP startup incomplete (failed: unityMCP)\n› user draft",
+        );
+        await vi.advanceTimersByTimeAsync(700);
+
+        expect(mockPty.write).toHaveBeenCalledTimes(1);
+        expect(mockPty.write).toHaveBeenCalledWith("user draft");
+        expect(mockPty.write).not.toHaveBeenCalledWith(expect.stringContaining("ADE_STALE_INITIAL_PROMPT"));
+        expect(logger.info).toHaveBeenCalledWith(
+          "pty.initial_input_cancelled_user_takeover",
+          expect.objectContaining({ provider: "codex" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels Codex initialInput when the user takes control during the initial delay", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, logger } = createHarness();
+
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "ADE_DELAYED_STALE_PROMPT",
+          initialInputDelayMs: 750,
+        });
+
+        service.write({ ptyId: created.ptyId, data: "user draft" });
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\nMCP startup incomplete (failed: unityMCP)\n› user draft",
+        );
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        expect(mockPty.write).toHaveBeenCalledTimes(1);
+        expect(mockPty.write).toHaveBeenCalledWith("user draft");
+        expect(mockPty.write).not.toHaveBeenCalledWith(expect.stringContaining("ADE_DELAYED_STALE_PROMPT"));
+        expect(logger.info).toHaveBeenCalledWith(
+          "pty.initial_input_cancelled_user_takeover",
+          expect.objectContaining({ provider: "codex" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("accepts a stable Codex composer while unrelated PTY redraws continue after failed MCP startup", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "ADE_STABLE_COMPOSER_MARKER",
+        });
+
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\nMCP startup incomplete (failed: unityMCP)\n› ",
+        );
+        for (let elapsed = 0; elapsed < 700; elapsed += 100) {
+          mockPty._emitter.emit("data", `\x1b]0;Codex startup ${elapsed}\x07`);
+          await vi.advanceTimersByTimeAsync(100);
+        }
+        await vi.advanceTimersByTimeAsync(25);
+        await vi.advanceTimersByTimeAsync(25);
+
+        expect(mockPty.write).toHaveBeenCalledWith(
+          "\x1b[200~ADE_STABLE_COMPOSER_MARKER\x1b[201~",
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -1556,6 +1707,7 @@ describe("ptyService", () => {
           startupCommand: "codex --no-alt-screen",
           initialInput: "please keep going",
           awaitInitialInput: true,
+          initialInputReadyTimeoutMs: 20_000,
         }).then(
           () => null,
           (error: unknown) => error,
