@@ -362,13 +362,13 @@ export function createGithubStackStore(args: {
     }
     let request!: Promise<GitHubPrStack>;
     request = withRepoMutationLock(repo, async () => {
-      const { data } = await githubService.apiRequest<unknown>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}`,
-      });
-      return replace(repo, data);
-    })
-      .catch((error) => {
+      try {
+        const { data } = await githubService.apiRequest<unknown>({
+          method: "GET",
+          path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}`,
+        });
+        return replace(repo, data);
+      } catch (error) {
         db.run(
           `update github_pr_stacks
               set last_error = ?, synced_at = ?
@@ -379,7 +379,8 @@ export function createGithubStackStore(args: {
           [getErrorMessage(error), nowIso(), projectId, repo.owner, repo.name, stackNumber],
         );
         throw error;
-      })
+      }
+    })
       .finally(() => {
         if (reconcileInFlight.get(key) === request) reconcileInFlight.delete(key);
       });
@@ -394,8 +395,8 @@ export function createGithubStackStore(args: {
     let request!: Promise<GitHubPrStack[]>;
     request = withRepoMutationLock(repo, async () => {
       const rawStacks: unknown[] = [];
-      let page = 1;
-      while (true) {
+      const maxPages = 100;
+      for (let page = 1; page <= maxPages; page += 1) {
         const { data, linkHeader } = await githubService.apiRequest<unknown[]>({
           method: "GET",
           path: `/repos/${repo.owner}/${repo.name}/stacks`,
@@ -403,7 +404,9 @@ export function createGithubStackStore(args: {
         });
         rawStacks.push(...(Array.isArray(data) ? data : []));
         if (!githubService.parseNextLink(linkHeader ?? null)) break;
-        page += 1;
+        if (page === maxPages) {
+          throw new Error(`GitHub stack list exceeded the ${maxPages}-page safety limit.`);
+        }
       }
       const decodedStacks = rawStacks.map((rawStack) => decode(repo, rawStack));
       const seenPrNumbers = new Set<number>();

@@ -2140,6 +2140,43 @@ describe("prService.ingestGithubWebhook", () => {
     expect(db.run).toHaveBeenCalledWith("commit");
   });
 
+  it("keeps a webhook processed when both stack reconciliation reads fail", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 18 };
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn()
+        .mockRejectedValueOnce(new Error("Stack read timed out"))
+        .mockRejectedValueOnce(new Error("Repository stack list timed out")),
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-stack-read-failed",
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({ number: 90, stack: null }),
+      },
+    });
+
+    expect(result.processed).toBe(true);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("raw_payload_json = null"),
+      expect.arrayContaining(["processed"]),
+    );
+  });
+
   it("emits a PR update when an unmapped pull request changes its projection", async () => {
     const db = makeMockDb();
     const { service } = buildService({ db, laneService: makeLaneService([]) });
@@ -2513,6 +2550,80 @@ describe("prService.getStatus", () => {
       mergeabilityComputing: false,
       // `unstable` is mergeable even though REST said blocked/false.
       isMergeable: true,
+    }));
+  });
+
+  it("retries merge-state GraphQL without stack fields when the schema is unavailable", async () => {
+    const row = makePrRow({ id: "pr-mergebox-fallback", github_pr_number: 97 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const graphqlQueries: string[] = [];
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: unknown }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/97") {
+          return {
+            data: makeGitHubPull({
+              number: 97,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: false,
+              mergeable_state: "blocked",
+              head: { ref: "my-feature", sha: "head-97" },
+              base: { ref: "main", sha: "base-97" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-97/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-97/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/97/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-97...head-97") {
+          return { data: { behind_by: 0 } };
+        }
+        if (args.method === "POST" && args.path === "/graphql") {
+          const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+          graphqlQueries.push(query);
+          if (query.includes("stack { baseRefName }")) {
+            throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
+          }
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "CLEAN",
+                    reviewDecision: null,
+                    headRefOid: "head-97",
+                    baseRefName: "main",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-mergebox-fallback");
+
+    expect(graphqlQueries).toHaveLength(2);
+    expect(graphqlQueries[0]).toContain("stack { baseRefName }");
+    expect(graphqlQueries[1]).not.toContain("stack { baseRefName }");
+    expect(status).toEqual(expect.objectContaining({
+      mergeStateStatus: "clean",
+      isMergeable: true,
+      headSha: "head-97",
     }));
   });
 

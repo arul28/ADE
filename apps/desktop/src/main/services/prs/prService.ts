@@ -4771,39 +4771,52 @@ export function createPrService({
     canBypass: boolean;
     headSha: string | null;
   } | null> => {
-    const query = `query($owner:String!,$name:String!,$number:Int!){
+    type MergeStateGraphqlData = {
+      repository?: {
+        viewerPermission?: unknown;
+        pullRequest?: {
+          mergeable?: unknown;
+          mergeStateStatus?: unknown;
+          reviewDecision?: unknown;
+          headRefOid?: unknown;
+          baseRefName?: unknown;
+          baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+          stack?: { baseRefName?: unknown } | null;
+          latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
+        } | null;
+      } | null;
+    };
+    const query = (includeStack: boolean) => `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     viewerPermission
     pullRequest(number:$number){
       mergeable mergeStateStatus reviewDecision headRefOid baseRefName
       baseRef { branchProtectionRule { requiredApprovingReviewCount } }
-      stack { baseRefName }
+      ${includeStack ? "stack { baseRefName }" : ""}
       latestOpinionatedReviews(first:100){ nodes { state } }
     }
   }
 }`;
     try {
-      const data = await graphqlRequest<{
-        repository?: {
-          viewerPermission?: unknown;
-          pullRequest?: {
-            mergeable?: unknown;
-            mergeStateStatus?: unknown;
-            reviewDecision?: unknown;
-            headRefOid?: unknown;
-            baseRefName?: unknown;
-            baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
-            stack?: { baseRefName?: unknown } | null;
-            latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
-          } | null;
-        } | null;
-      }>(
-        query,
-        { owner: repo.owner, name: repo.name, number: prNumber },
-        // `mergeStateStatus` is part of GitHub's `merge-info-preview` schema
-        // preview and errors ("field requires preview header") without this Accept.
-        { accept: "application/vnd.github.merge-info-preview+json" },
-      );
+      let data: MergeStateGraphqlData;
+      try {
+        data = await graphqlRequest<MergeStateGraphqlData>(
+          query(true),
+          { owner: repo.owner, name: repo.name, number: prNumber },
+          { accept: "application/vnd.github.merge-info-preview+json" },
+        );
+      } catch (error) {
+        logger.warn("prs.computeStatus.stack_graphql_fallback", {
+          repo: `${repo.owner}/${repo.name}`,
+          prNumber,
+          error: getErrorMessage(error),
+        });
+        data = await graphqlRequest<MergeStateGraphqlData>(
+          query(false),
+          { owner: repo.owner, name: repo.name, number: prNumber },
+          { accept: "application/vnd.github.merge-info-preview+json" },
+        );
+      }
 
       const repository = data?.repository ?? null;
       const pull = repository?.pullRequest ?? null;
@@ -9282,11 +9295,22 @@ export function createPrService({
         if (stackNumber) {
           try {
             await githubStackStore.reconcile(repo, stackNumber);
-          } catch {
+          } catch (stackError) {
             // A dissolved stack returns 404 from the item endpoint. The
             // authoritative repository list distinguishes that from a
             // transient failure and removes stale local membership atomically.
-            await githubStackStore.reconcileRepository(repo);
+            await githubStackStore.reconcileRepository(repo).catch((repositoryError) => {
+              logger.warn("prs.github_webhook_stack_reconcile_failed", {
+                eventName,
+                deliveryId,
+                repoOwner: repo.owner,
+                repoName: repo.name,
+                githubPrNumber: projection.github_pr_number,
+                stackNumber,
+                stackError: getErrorMessage(stackError),
+                repositoryError: getErrorMessage(repositoryError),
+              });
+            });
           }
         }
         if (linkedPrIds.length === 0) {
