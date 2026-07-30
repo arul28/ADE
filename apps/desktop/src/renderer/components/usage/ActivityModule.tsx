@@ -294,8 +294,6 @@ function useMeasuredWidth(ref: React.RefObject<HTMLElement | null>): number {
   return width;
 }
 
-export { computeHeatmapLayout } from "./ActivityHeatmap";
-
 /** Muted, centered hint for a tab whose own series is empty while the module
  * has data on other tabs (so the global warm-empty state does not apply). */
 function TabEmptyHint({ message }: { message: string }) {
@@ -541,7 +539,7 @@ function TabRow({ tab, onTabChange }: { tab: ActivityTab; onTabChange: (tab: Act
             type="button"
             role="tab"
             aria-selected={active}
-            tabIndex={active ? 0 : -1}
+            tabIndex={0}
             onClick={() => onTabChange(value)}
             className={`rounded-[5px] px-1.5 py-[3px] text-[10px] font-medium transition-colors ${
               active ? "bg-white/[0.07] text-fg/90" : "text-muted-fg/70 hover:text-fg/75"

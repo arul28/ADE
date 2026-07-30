@@ -689,6 +689,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 // ring too; `outline-none` alone does not cover it.
                 "text-fg placeholder:text-muted-fg/45 outline-none focus:outline-none focus-visible:outline-none",
                 "shadow-none focus:shadow-none focus-visible:shadow-none focus:ring-0 focus-visible:ring-0",
+                "border-b border-transparent focus-visible:border-white/20",
               )}
             />
             <button

@@ -1139,9 +1139,10 @@ describe("AgentChatComposer", () => {
       onSubmitInBackground: vi.fn(),
     });
 
-    const send = screen.getByRole("button", { name: "Send" });
-    const caret = screen.getByRole("button", { name: "Send options" });
-    expect(send.parentElement?.parentElement).toBe(caret.parentElement?.parentElement);
+    const splitControl = document.querySelector("[data-composer-idle-send-control]");
+    expect(splitControl).toBeTruthy();
+    expect(within(splitControl as HTMLElement).getByRole("button", { name: "Send" })).toBeTruthy();
+    const caret = within(splitControl as HTMLElement).getByRole("button", { name: "Send options" });
 
     fireEvent.click(caret);
     expect(screen.getByRole("menuitem", { name: /Launch in background/ })).toBeTruthy();
@@ -1173,7 +1174,7 @@ describe("AgentChatComposer", () => {
       onFastModeChange: vi.fn(),
     });
 
-    expect(screen.getByRole("button", { name: /Select model/i }).textContent).toMatch(/Fast/);
+    expect(document.querySelector("[data-model-picker-trigger]")?.textContent).toMatch(/Fast/);
   });
 
   it("hides Codex fast mode for unsupported models", () => {
@@ -1196,7 +1197,7 @@ describe("AgentChatComposer", () => {
       hideModelControls: true,
     });
 
-    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(document.querySelector("[data-model-picker-trigger]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
@@ -1214,7 +1215,7 @@ describe("AgentChatComposer", () => {
       ],
     });
 
-    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(document.querySelector("[data-model-picker-trigger]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });

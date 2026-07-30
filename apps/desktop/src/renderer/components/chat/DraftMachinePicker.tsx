@@ -1,9 +1,13 @@
 import { CaretDown, Check, DesktopTower } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import {
+  computeLanePopoverPlacement,
+  type LanePopoverPlacement,
+} from "../terminals/LaneCombobox";
 
 export type DraftMachineOption = {
   id: string;
@@ -37,6 +41,27 @@ export function DraftMachinePicker({
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    setPlacement(computeLanePopoverPlacement({
+      trigger: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      width: { min: MENU_WIDTH, max: MENU_WIDTH },
+    }));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    window.addEventListener("scroll", updatePosition, true);
+    window.addEventListener("resize", updatePosition);
+    return () => {
+      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", updatePosition);
+    };
+  }, [open, updatePosition]);
 
   useEffect(() => {
     if (!open) return;
@@ -47,7 +72,10 @@ export function DraftMachinePicker({
       setOpen(false);
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     window.addEventListener("mousedown", handleDown);
     window.addEventListener("keydown", handleKey);
@@ -102,7 +130,6 @@ export function DraftMachinePicker({
       {open && triggerRef.current
         ? createPortal(
             (() => {
-              const rect = triggerRef.current.getBoundingClientRect();
               return (
                 <div
                   data-draft-machine-menu
@@ -110,9 +137,12 @@ export function DraftMachinePicker({
                   aria-label="Choose a machine"
                   className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={{
-                    width: MENU_WIDTH,
-                    left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - MENU_WIDTH - 8)),
-                    bottom: Math.max(8, window.innerHeight - rect.top + 6),
+                    width: placement?.width ?? MENU_WIDTH,
+                    left: placement?.left ?? 0,
+                    maxHeight: placement?.maxHeight,
+                    ...(placement?.bottom !== undefined
+                      ? { bottom: placement.bottom }
+                      : { top: placement?.top ?? 0 }),
                   }}
                 >
                   {machines.map((machine) => {
@@ -126,6 +156,7 @@ export function DraftMachinePicker({
                         onClick={() => {
                           setOpen(false);
                           if (!active) onChange(machine.id);
+                          triggerRef.current?.focus();
                         }}
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",

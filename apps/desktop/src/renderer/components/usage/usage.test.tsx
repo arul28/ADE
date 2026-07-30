@@ -16,9 +16,9 @@ import { HeaderUsageControl } from "./HeaderUsageControl";
 import {
   ActivityModule,
   WorkActivityModule,
-  computeHeatmapLayout,
   readActivityPersisted,
 } from "./ActivityModule";
+import { computeHeatmapLayout } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import { bucketActivityIntensity, trimLeadingInactiveDays } from "./activityIntensity";
@@ -54,7 +54,7 @@ function makeActivityDay(
     sessions: 0,
     interactions: 0,
     ...overrides,
-  } as AdeUsageDailyPoint;
+  };
 }
 
 function makeEmptySnapshot(): UsageSnapshot {
@@ -969,11 +969,9 @@ describe("usage components", () => {
     });
 
     it("clamps the heatmap window to the first active day", () => {
-      const daily = Array.from({ length: 20 }, (_, i) => ({
-        date: `2026-06-${String(i + 1).padStart(2, "0")}`,
-        inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0,
-        commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 0, interactions: 0,
-      }));
+      const daily = Array.from({ length: 20 }, (_, i) =>
+        makeActivityDay(`2026-06-${String(i + 1).padStart(2, "0")}`),
+      );
       // Active on the 16th and the 20th; the 17th-19th gap must survive.
       daily[15] = { ...daily[15]!, totalTokens: 1_500, sessions: 1, interactions: 2 };
       daily[19] = { ...daily[19]!, totalTokens: 900_000, sessions: 4, interactions: 30 };
@@ -1039,10 +1037,13 @@ describe("usage components", () => {
       const dailyFrom = (days: number) =>
         Array.from({ length: days }, (_, index) => {
           const date = new Date(Date.UTC(2024, 0, 1 + index)).toISOString().slice(0, 10);
-          return {
-            date, inputTokens: 100, outputTokens: 50, totalTokens: 150, cachedTokens: 0,
-            commits: 0, prs: 0, insertions: 0, deletions: 0, filesChanged: 0, sessions: 1, interactions: 1,
-          };
+          return makeActivityDay(date, {
+            inputTokens: 100,
+            outputTokens: 50,
+            totalTokens: 150,
+            sessions: 1,
+            interactions: 1,
+          });
         });
 
       try {
@@ -1222,7 +1223,7 @@ describe("activity heatmap intensity", () => {
     [[0, 0, 7, 0], [0, 0, 4, 0]],
     [[0, 0, 0], [0, 0, 0]],
     [[], []],
-  ])("handles flat, sparse, and empty distributions", (values, expected) => {
+  ])("maps $0 to $1", (values, expected) => {
     expect(bucketActivityIntensity(values)).toEqual(expected);
   });
 

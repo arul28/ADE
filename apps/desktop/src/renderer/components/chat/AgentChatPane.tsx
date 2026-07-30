@@ -3481,9 +3481,10 @@ export function AgentChatPane({
    * off. Reading the ref makes that path see the user's actual intent.
    */
   const fastModeRef = useRef(false);
-  useEffect(() => {
-    fastModeRef.current = fastMode;
-  }, [fastMode]);
+  const setFastModeState = useCallback((enabled: boolean) => {
+    fastModeRef.current = enabled;
+    setFastMode(enabled);
+  }, []);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
@@ -5265,7 +5266,7 @@ export function AgentChatPane({
       preferred: config.reasoningEffort,
       modelId: config.modelId,
     }));
-    setFastMode(modelSupportsFastMode(desc) && config.fastMode);
+    setFastModeState(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -5276,7 +5277,7 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [workDraftKind]);
+  }, [setFastModeState, workDraftKind]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -5297,7 +5298,7 @@ export function AgentChatPane({
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
-      setFastMode(false);
+      setFastModeState(false);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -5305,7 +5306,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
-    setFastMode(session.fastMode === true);
+    setFastModeState(session.fastMode === true);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
     setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
@@ -5326,7 +5327,13 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [applyLaunchConfigToComposer, draftLaunchConfigScopeKey, initialNativeControls, lastLaunchConfigStorageKeys]);
+  }, [
+    applyLaunchConfigToComposer,
+    draftLaunchConfigScopeKey,
+    initialNativeControls,
+    lastLaunchConfigStorageKeys,
+    setFastModeState,
+  ]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -10657,6 +10664,7 @@ export function AgentChatPane({
     refreshSessions,
     selectedSessionId,
     sessionMutationKind,
+    setFastModeState,
   ]);
 
   const handleFastModeChange = useCallback((enabled: boolean) => {
@@ -10667,8 +10675,7 @@ export function AgentChatPane({
     // Written synchronously, not left to the mirroring effect: the picker's
     // fast chip can enable fast mode and change the model in the same tick, and
     // the model-change persist reads this ref in that same tick.
-    fastModeRef.current = enabled;
-    setFastMode(enabled);
+    setFastModeState(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
 
@@ -10692,13 +10699,13 @@ export function AgentChatPane({
       const reconciled = updatedSession.fastMode === true;
       patchSessionSummary(targetSessionId, { fastMode: reconciled });
       if (selectedSessionIdRef.current === targetSessionId) {
-        setFastMode(reconciled);
+        setFastModeState(reconciled);
       }
       void refreshSessions().catch(() => {});
     }).catch((err) => {
       if (updateId === fastModeUpdateCounterRef.current
         && selectedSessionIdRef.current === targetSessionId) {
-        setFastMode(previousFastMode);
+        setFastModeState(previousFastMode);
         patchSessionSummary(targetSessionId, { fastMode: previousFastMode });
       }
       void refreshSessions().catch(() => {});
@@ -12969,7 +12976,7 @@ export function AgentChatPane({
 
                         {/* Inline composer for empty state (only when sim drawer closed) */}
                         {!appPanelOpen ? (
-                          <div className="relative z-10 w-full shrink-0">
+                          <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
                             {composerWithTypographyRoot}
                           </div>
                         ) : null}
@@ -13031,6 +13038,7 @@ export function AgentChatPane({
                                         type="button"
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                        data-draft-open-shell
                                         aria-label="Open shell in selected lane"
                                         onClick={() => void launchShellForDraftLane()}
                                       >
@@ -13052,6 +13060,7 @@ export function AgentChatPane({
                                         type="button"
                                         className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                                        data-draft-import-session
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
                                       >

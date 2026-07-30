@@ -294,6 +294,7 @@ export const ModelListRow = memo(function ModelListRow({
           {showFastChip ? (
             <button
               type="button"
+              tabIndex={-1}
               data-model-picker-fast-toggle="true"
               aria-label={`Fast mode for ${model.displayName}`}
               aria-pressed={fastModeOn}

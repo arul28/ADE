@@ -598,8 +598,8 @@ const ReasoningEffortTrigger = memo(
             )}
             style={{ color: tone.color }}
           >
-            <span className="hidden sm:inline">{label}</span>
-            <span className="sm:hidden">{shortLabel}</span>
+            <span className="hidden @sm:inline">{label}</span>
+            <span className="@sm:hidden">{shortLabel}</span>
           </span>
           <CaretDown
             size={compact ? 9 : 10}

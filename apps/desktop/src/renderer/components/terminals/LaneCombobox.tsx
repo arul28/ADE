@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "motion/react";
 import { CaretUpDown, Check, DesktopTower, MagnifyingGlass } from "@phosphor-icons/react";
@@ -226,11 +226,14 @@ export type LanePopoverPlacement = {
 export function computeLanePopoverPlacement(input: {
   trigger: { top: number; bottom: number; left: number; width: number };
   viewport: { width: number; height: number };
+  width?: { min: number; max: number };
 }): LanePopoverPlacement {
   const { trigger, viewport } = input;
+  const minWidth = input.width?.min ?? POPOVER_MIN_WIDTH;
+  const maxWidth = input.width?.max ?? POPOVER_MAX_WIDTH;
 
   const width = Math.min(
-    Math.min(POPOVER_MAX_WIDTH, Math.max(trigger.width, POPOVER_MIN_WIDTH)),
+    Math.min(maxWidth, Math.max(trigger.width, minWidth)),
     Math.max(0, viewport.width - VIEWPORT_PAD * 2),
   );
   const left = Math.max(
@@ -430,7 +433,7 @@ export function LaneCombobox({
       viewport: { width: window.innerWidth, height: window.innerHeight },
     }));
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     updatePosition();
     window.addEventListener("scroll", updatePosition, true);
@@ -523,6 +526,10 @@ export function LaneCombobox({
             <motion.div
               ref={popoverRef}
               tabIndex={-1}
+              role="listbox"
+              aria-activedescendant={
+                highlightedIndex >= 0 ? `ade-lane-option-${highlightedIndex}` : undefined
+              }
               className="ade-lane-popover ade-liquid-glass-menu"
               style={popoverStyle}
               onKeyDown={handleKeyDown}
@@ -582,7 +589,10 @@ export function LaneCombobox({
                       return (
                         <button
                           key={entry.key}
+                          id={`ade-lane-option-${entry.index}`}
                           type="button"
+                          role="option"
+                          aria-selected={isHighlighted}
                           className="ade-lane-popover-item ade-lane-popover-item-featured"
                           data-selected={isSelected ? "true" : undefined}
                           data-highlighted={isHighlighted ? "true" : undefined}
@@ -600,7 +610,10 @@ export function LaneCombobox({
                     return (
                       <button
                         key={entry.key}
+                        id={`ade-lane-option-${entry.index}`}
                         type="button"
+                        role="option"
+                        aria-selected={isHighlighted}
                         className="ade-lane-popover-item"
                         data-selected={isSelected ? "true" : undefined}
                         data-highlighted={isHighlighted ? "true" : undefined}

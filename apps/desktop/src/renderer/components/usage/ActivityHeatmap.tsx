@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { AdeUsageDailyPoint } from "../../../shared/types";
 import {
+  type ActivityLevel,
   bucketActivityIntensity,
   dayActivityScore,
   trimLeadingInactiveDays,
@@ -54,7 +55,7 @@ export function computeHeatmapLayout({
   };
 }
 
-type HeatmapCell = { point: AdeUsageDailyPoint; level: number };
+type HeatmapCell = { point: AdeUsageDailyPoint; level: ActivityLevel };
 
 export function useHeatmapCells(points: AdeUsageDailyPoint[]): HeatmapCell[] {
   return useMemo(() => {

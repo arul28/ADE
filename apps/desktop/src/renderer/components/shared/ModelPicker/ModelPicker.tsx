@@ -368,6 +368,7 @@ export const ModelPicker = memo(function ModelPicker({
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}
+                {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(onFastModeChange ? { onFastModeChange } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}

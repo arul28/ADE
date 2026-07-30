@@ -591,7 +591,7 @@ function ComposerIdleSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+      <div data-composer-idle-send-control className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
         <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
           <button
             type="button"
@@ -4629,7 +4629,12 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastModeSupported={fastModeSupported}
-                  onFastModeChange={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
+                  {...(onParallelSlotFastModeChange
+                    ? {
+                        onFastModeChange: (next: boolean) =>
+                          onParallelSlotFastModeChange(parallelConfiguringIndex, next),
+                      }
+                    : {})}
                 />
                 <ReasoningEffortPicker
                   modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}

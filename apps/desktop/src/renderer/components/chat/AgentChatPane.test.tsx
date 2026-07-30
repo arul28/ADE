@@ -1262,8 +1262,9 @@ async function findBackgroundLaunchRow(container?: HTMLElement): Promise<HTMLBut
   // portalled to document.body — so scoping the row lookup to `container` finds
   // nothing. Scope only the trigger; always read the row off `screen`.
   const triggerScope = container ? within(container) : screen;
-  if (!screen.queryByRole("menuitem", { name: /in background/i })) {
-    fireEvent.click(await triggerScope.findByRole("button", { name: "Send options" }));
+  const trigger = await triggerScope.findByRole("button", { name: "Send options" });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(trigger);
   }
   return (await screen.findByRole("menuitem", { name: /in background/i })) as HTMLButtonElement;
 }
@@ -2433,7 +2434,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /target-lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /target-lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch on the selected lane and model." } });
@@ -5032,7 +5033,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Fix auto create lane routing." } });
@@ -5096,7 +5097,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Use default base when remote refs are unknown." } });
@@ -5145,7 +5146,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create from local main without fetching." } });
@@ -5184,7 +5185,7 @@ describe("AgentChatPane submit recovery", () => {
       await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
       fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-      fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+      fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
       const textbox = await screen.findByRole("textbox");
       fireEvent.change(textbox, { target: { value: "Keep going even if naming fails." } });
@@ -5234,7 +5235,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Keep going even if naming fails." } });
@@ -5343,7 +5344,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onLaneChange });
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
@@ -5366,7 +5367,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
   });
@@ -5653,7 +5654,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this in the background." } });
@@ -5706,7 +5707,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This first send will fail." } });
@@ -5754,7 +5755,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Failed launch draft." } });
@@ -5797,7 +5798,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This session create will fail." } });
@@ -5843,7 +5844,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Switch projects mid-launch." } });
@@ -5921,7 +5922,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Roll back to the right project." } });
@@ -6103,17 +6104,18 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this and let me keep typing." } });
     fireEvent.click(await findBackgroundLaunchRow());
+    const backgroundLaunchRow = await findBackgroundLaunchRow();
 
-    await waitFor(async () => {
+    await waitFor(() => {
       expect(createLane).toHaveBeenCalled();
       expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-      expect((await findBackgroundLaunchRow()).disabled).toBe(true);
+      expect(backgroundLaunchRow.disabled).toBe(true);
     });
     expect((textbox as HTMLTextAreaElement).disabled).toBe(false);
     expect((textbox as HTMLTextAreaElement).value).toBe("");
@@ -6121,7 +6123,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Next thought while it launches." } });
     expect((textbox as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((await findBackgroundLaunchRow()).disabled).toBe(false);
+    expect(backgroundLaunchRow.disabled).toBe(false);
 
     resolveCreateLane();
     await waitFor(() => {
@@ -6156,7 +6158,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Keep this launch visible." } });
@@ -6259,7 +6261,7 @@ describe("AgentChatPane submit recovery", () => {
       await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
       fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-      fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+      fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
       const textbox = await screen.findByRole("textbox");
       fireEvent.change(textbox, { target: { value: "Launch in the background, then leave it hidden." } });
@@ -6321,7 +6323,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Surface the failure after remount." } });
@@ -6361,7 +6363,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch once even if clicked twice." } });
@@ -6447,7 +6449,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await within(paneOne).findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await within(paneOne).findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Only lane one should show this launch." } });
@@ -6477,7 +6479,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     for (let index = 1; index <= 9; index += 1) {
@@ -6517,7 +6519,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "First auto lane." } });
@@ -7200,7 +7202,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch a CLI agent on a new lane." } });
@@ -7256,7 +7258,7 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Launch this CLI session in the background." } });
