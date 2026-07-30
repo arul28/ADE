@@ -3,6 +3,16 @@ import os
 
 private let workAutoLaneNamingLog = Logger(subsystem: "com.ade.ios", category: "AutoLaneNaming")
 
+struct WorkAutoLaneNameSuggestion {
+  let name: String
+  let hostApplied: Bool
+}
+
+func workAutoLaneTemporaryBranch() -> String {
+  let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+  return "ade/\(hex.prefix(8))"
+}
+
 @MainActor
 protocol WorkAutoLaneNamingClient: AnyObject {
   func supportsRemoteAction(_ action: String) -> Bool
@@ -12,9 +22,11 @@ protocol WorkAutoLaneNamingClient: AnyObject {
     prompt: String,
     modelId: String,
     fallbackName: String,
+    temporaryBranch: String?,
+    attachments: [AgentChatFileRef],
     targetProjectId: String?,
     targetProjectRootPath: String?
-  ) async throws -> String
+  ) async throws -> WorkAutoLaneNameSuggestion
 
   func renameLane(
     _ laneId: String,
@@ -66,6 +78,20 @@ private func workUniqueRoots(_ roots: [String?]) -> [String] {
   }
 }
 
+private func workAutoLaneNamingErrorIsTransient(_ message: String) -> Bool {
+  let value = message.lowercased()
+  let permanentMarkers = [
+    "disabled", "not authenticated", "no authenticated", "unsupported",
+    "capability", "invalid structured", "invalid output", "manual",
+    "branch safety",
+  ]
+  if permanentMarkers.contains(where: { value.contains($0) }) {
+    return false
+  }
+  return ["timeout", "timed out", "temporar", "rate limit", "connection", "unavailable"]
+    .contains { value.contains($0) }
+}
+
 func workShellProjectScope(
   for lane: LaneSummary,
   projects: [MobileProjectSummary]
@@ -96,6 +122,8 @@ func workRunAutoLaneAiRename(
   opener: String,
   fallbackName: String,
   modelId: String,
+  temporaryBranch: String? = nil,
+  attachments: [AgentChatFileRef] = [],
   syncService: WorkAutoLaneNamingClient,
   surface: WorkAutoLaneNamingSurface,
   targetProjectId: String? = nil,
@@ -123,14 +151,26 @@ func workRunAutoLaneAiRename(
       workAutoLaneNamingLog.notice(
         "auto_lane_naming_suggest_attempt surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempt=\(attempt, privacy: .public)"
       )
-      let suggested = try await syncService.suggestLaneName(
+      let suggestion = try await syncService.suggestLaneName(
         laneId: laneId,
         prompt: opener,
         modelId: trimmedModelId,
         fallbackName: fallbackName,
+        temporaryBranch: temporaryBranch,
+        attachments: attachments,
         targetProjectId: targetProjectId,
         targetProjectRootPath: targetProjectRootPath
-      ).trimmingCharacters(in: .whitespacesAndNewlines)
+      )
+      let suggested = suggestion.name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+      if suggestion.hostApplied {
+        if let refreshLanes {
+          await refreshLanes()
+        }
+        return suggested.isEmpty || suggested == fallbackName
+          ? .keptFallback
+          : .renamed(suggested)
+      }
 
       guard !suggested.isEmpty, suggested != fallbackName else {
         workAutoLaneNamingLog.notice(
@@ -162,7 +202,7 @@ func workRunAutoLaneAiRename(
       }
     } catch {
       let message = error.localizedDescription
-      if attempt < attempts {
+      if attempt < attempts && workAutoLaneNamingErrorIsTransient(message) {
         workAutoLaneNamingLog.warning(
           "auto_lane_naming_suggest_retrying surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempt=\(attempt, privacy: .public) error=\(message, privacy: .public)"
         )
@@ -172,7 +212,7 @@ func workRunAutoLaneAiRename(
         continue
       }
       workAutoLaneNamingLog.error(
-        "auto_lane_naming_suggest_failed surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempts=\(attempts, privacy: .public) error=\(message, privacy: .public)"
+        "auto_lane_naming_suggest_failed surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempts=\(attempt, privacy: .public) error=\(message, privacy: .public)"
       )
       return .suggestFailed(message)
     }
@@ -368,11 +408,11 @@ func workAutoLaneGenericSuffix(date: Date = Date()) -> String {
 func workDeterministicAutoLaneName(from prompt: String, genericSuffix: String? = nil) -> String {
   let collapsed = workCleanPromptForNaming(prompt)
   guard !collapsed.isEmpty else {
-    return workGenericLaneFallback(genericSuffix: genericSuffix)
+    return "New Development Lane"
   }
   let priorityWords = workPriorityLaneNamingWords(cleanedPrompt: collapsed)
   if !priorityWords.isEmpty {
-    return priorityWords.joined(separator: "-")
+    return workReadableLaneTitle(words: priorityWords)
   }
   let tokens = workRegexMatches(
     in: collapsed.lowercased(),
@@ -387,9 +427,19 @@ func workDeterministicAutoLaneName(from prompt: String, genericSuffix: String? =
   let words = meaningfulWords.isEmpty ? fallbackWords : meaningfulWords
   let slug = workSlugify(words.joined(separator: "-"))
   if !slug.isEmpty {
-    return String(slug.prefix(48))
+    return workReadableLaneTitle(words: Array(slug.split(separator: "-").map(String.init).prefix(6)))
   }
-  return workGenericLaneFallback(genericSuffix: genericSuffix)
+  return "New Development Lane"
+}
+
+private func workReadableLaneTitle(words: [String]) -> String {
+  let preserved = [
+    "ade": "ADE", "github": "GitHub", "ios": "iOS", "macos": "macOS",
+    "codex": "Codex", "openai": "OpenAI", "oauth": "OAuth",
+  ]
+  return words.map { word in
+    preserved[word] ?? word.prefix(1).uppercased() + String(word.dropFirst())
+  }.joined(separator: " ")
 }
 
 private func workCleanPromptForNaming(_ prompt: String) -> String {
@@ -1048,20 +1098,24 @@ struct WorkNewChatScreen: View {
     let targetLaneForScope: LaneSummary?
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
+    var autoCreatedTemporaryBranch: String?
     if isAutoCreateLane {
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
       do {
         let laneName = autoCreatedLaneName(opener: opener)
+        let temporaryBranch = workAutoLaneTemporaryBranch()
         let lane = try await syncService.createLane(
           name: laneName,
-          description: opener.isEmpty ? "" : String(opener.prefix(280))
+          description: opener.isEmpty ? "" : String(opener.prefix(280)),
+          branchName: temporaryBranch
         )
         targetLaneId = lane.id
         targetLaneForScope = lane
         createdLaneId = lane.id
         autoCreatedFallbackName = laneName
+        autoCreatedTemporaryBranch = temporaryBranch
         await onRefreshLanes()
       } catch {
         ADEHaptics.error()
@@ -1083,6 +1137,7 @@ struct WorkNewChatScreen: View {
     autoCreateStatus = nil
     var createdChatSummary: AgentChatSessionSummary?
     var createdChatAttachments: [AgentChatFileRef] = []
+    var namingAttachmentRefs: [AgentChatFileRef] = []
 
     do {
       let attachmentRefs = try await workChatSaveInputAttachments(
@@ -1091,6 +1146,7 @@ struct WorkNewChatScreen: View {
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath
       )
+      namingAttachmentRefs = attachmentRefs
       if sessionMode == .cli {
         let cliProvider = workResolveCliProvider(for: modelId, provider: provider)
         let cliReasoningEffort = workCliSupportsReasoningSelection(provider: cliProvider) && !normalizedReasoning.isEmpty
@@ -1139,7 +1195,7 @@ struct WorkNewChatScreen: View {
           ))
         }
         if let createdLaneId, let autoCreatedFallbackName {
-          startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
+          startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: namingAttachmentRefs)
         }
         busy = false
         return true
@@ -1191,7 +1247,7 @@ struct WorkNewChatScreen: View {
         await onStarted(summary, opener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
-        startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
+        startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: namingAttachmentRefs)
       }
       busy = false
       return true
@@ -1205,7 +1261,9 @@ struct WorkNewChatScreen: View {
           startBackgroundLaneNaming(
             laneId: createdLaneId,
             opener: opener,
-            fallbackName: autoCreatedFallbackName
+            fallbackName: autoCreatedFallbackName,
+            temporaryBranch: autoCreatedTemporaryBranch,
+            attachments: namingAttachmentRefs
           )
         }
         busy = false
@@ -1244,7 +1302,9 @@ struct WorkNewChatScreen: View {
           startBackgroundLaneNaming(
             laneId: createdLaneId,
             opener: opener,
-            fallbackName: autoCreatedFallbackName
+            fallbackName: autoCreatedFallbackName,
+            temporaryBranch: autoCreatedTemporaryBranch,
+            attachments: namingAttachmentRefs
           )
         }
         busy = false
@@ -1271,7 +1331,13 @@ struct WorkNewChatScreen: View {
   /// with the deterministic fallback; then the host AI gets two chances to
   /// replace it, and every failure is logged with the lane id so mobile
   /// auto-naming cannot silently disappear again.
-  private func startBackgroundLaneNaming(laneId: String, opener: String, fallbackName: String) {
+  private func startBackgroundLaneNaming(
+    laneId: String,
+    opener: String,
+    fallbackName: String,
+    temporaryBranch: String?,
+    attachments: [AgentChatFileRef]
+  ) {
     let syncService = syncService
     let modelId = modelId
     let onRefreshLanes = onRefreshLanes
@@ -1281,6 +1347,8 @@ struct WorkNewChatScreen: View {
         opener: opener,
         fallbackName: fallbackName,
         modelId: modelId,
+        temporaryBranch: temporaryBranch,
+        attachments: attachments,
         syncService: syncService,
         surface: .workNewChat,
         refreshLanes: onRefreshLanes

@@ -177,6 +177,7 @@ export type ExecuteAiTaskArgs = {
   timeoutMs?: number;
   model?: string;
   reasoningEffort?: string;
+  imagePaths?: string[];
   permissionMode?: ExecutorOpts["permissions"]["mode"];
   oneShot?: boolean;
   sessionId?: string;
@@ -1458,6 +1459,7 @@ export function createAiIntegrationService(args: {
       feature: args.feature,
       sessionId: args.sessionId,
       projectConfig: projectConfigService.get().effective,
+      imagePaths: args.imagePaths,
     });
     const durationMs = Date.now() - start;
     const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;
@@ -1644,6 +1646,7 @@ export function createAiIntegrationService(args: {
     model?: string;
     jsonSchema?: unknown;
     reasoningEffort?: string | null;
+    imagePaths?: string[];
   }): Promise<ExecuteAiTaskResult> => {
     return await executeTask({
       feature: args.feature,
@@ -1655,6 +1658,7 @@ export function createAiIntegrationService(args: {
       model: args.model,
       ...(args.jsonSchema ? { jsonSchema: args.jsonSchema } : {}),
       ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+      ...(args.imagePaths?.length ? { imagePaths: args.imagePaths } : {}),
       permissionMode: "read-only",
       oneShot: true
     });
@@ -1992,6 +1996,7 @@ export function createAiIntegrationService(args: {
       timeoutMs?: number;
       model?: string;
       reasoningEffort?: string | null;
+      imagePaths?: string[];
     }): Promise<ExecuteAiTaskResult> {
       return await executeReadOnlyOneShotTask({
         feature: "pr_descriptions",
@@ -2028,6 +2033,7 @@ export function createAiIntegrationService(args: {
       timeoutMs?: number;
       model?: string;
       reasoningEffort?: string | null;
+      imagePaths?: string[];
       jsonSchema?: unknown;
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
@@ -2040,6 +2046,7 @@ export function createAiIntegrationService(args: {
         timeoutMs: args.timeoutMs,
         model: args.model,
         reasoningEffort: args.reasoningEffort,
+        imagePaths: args.imagePaths,
         jsonSchema: args.jsonSchema,
         systemPrompt: args.systemPrompt
       });

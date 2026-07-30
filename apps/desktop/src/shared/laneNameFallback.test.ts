@@ -2,10 +2,35 @@ import { describe, expect, it } from "vitest";
 
 import {
   cleanPromptForNaming,
+  deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
+  deriveDeterministicLaneTitleFromPrompt,
   genericLaneFallbackName,
   genericSuffixFromLaneFallbackName,
+  isAutoLaneTemporaryBranch,
 } from "./laneNameFallback";
+
+describe("automatic lane identity fallback", () => {
+  it("keeps the lane title readable and the branch fragment Git-friendly", () => {
+    expect(deriveDeterministicAutoLaneIdentity("Can we discuss how ADE names auto-created lanes?")).toEqual({
+      laneTitle: "Naming Auto Created Lanes",
+      branchFragment: "naming-auto-created-lanes",
+    });
+  });
+
+  it("preserves product capitalization in readable titles", () => {
+    expect(deriveDeterministicLaneTitleFromPrompt("The Claude auth login button hangs after OAuth redirects")).toBe(
+      "Claude Auth Login Button",
+    );
+  });
+
+  it("recognizes only exact automatic temporary branches", () => {
+    expect(isAutoLaneTemporaryBranch("ade/1a2b3c4d")).toBe(true);
+    expect(isAutoLaneTemporaryBranch("ade/naming-auto-created-lanes")).toBe(false);
+    expect(isAutoLaneTemporaryBranch("feature/1a2b3c4d")).toBe(false);
+    expect(isAutoLaneTemporaryBranch("ade/ABCDEF12")).toBe(false);
+  });
+});
 
 describe("lane name fallback", () => {
   it("derives compact task slugs from prompts", () => {

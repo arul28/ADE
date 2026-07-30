@@ -1320,6 +1320,8 @@ function parseSuggestLaneNameArgs(value: Record<string, unknown>): AgentChatSugg
     modelId: requireString(value.modelId, "lanes.suggestName requires modelId."),
     laneId: requireString(value.laneId, "lanes.suggestName requires laneId."),
     ...(asTrimmedString(value.fallbackName) ? { fallbackName: asTrimmedString(value.fallbackName)! } : {}),
+    ...(asTrimmedString(value.temporaryBranch) ? { temporaryBranch: asTrimmedString(value.temporaryBranch)! } : {}),
+    ...(parseAgentChatFileRefs(value.attachments) ? { attachments: parseAgentChatFileRefs(value.attachments)! } : {}),
   };
 }
 
@@ -3784,8 +3786,11 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       return { name };
     }
     try {
-      const name = await args.agentChatService.suggestLaneNameFromPrompt(parsed);
-      const trimmed = typeof name === "string" ? name.trim() : "";
+      const generated = typeof args.agentChatService.generateAutoLaneIdentity === "function"
+        ? await args.agentChatService.generateAutoLaneIdentity(parsed)
+        : { laneTitle: await args.agentChatService.suggestLaneNameFromPrompt(parsed) };
+      const hostApplied = "laneRenameOutcome" in generated;
+      const trimmed = generated.laneTitle.trim();
       if (!trimmed.length) {
         const fallbackName = fallback();
         args.logger.warn("sync.lanes_suggest_name_empty_result", {
@@ -3793,7 +3798,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
           modelId: parsed.modelId,
           fallbackName,
         });
-        return { name: fallbackName };
+        return { name: fallbackName, hostApplied };
       }
       if (trimmed === fallback()) {
         args.logger.info("sync.lanes_suggest_name_kept_fallback", {
@@ -3801,14 +3806,14 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
           modelId: parsed.modelId,
           fallbackName: trimmed,
         });
-        return { name: trimmed };
+        return { name: trimmed, hostApplied };
       }
       args.logger.info("sync.lanes_suggest_name_succeeded", {
         laneId: parsed.laneId,
         modelId: parsed.modelId,
         name: trimmed,
       });
-      return { name: trimmed };
+      return { name: trimmed, hostApplied };
     } catch (error) {
       const fallbackName = fallback();
       args.logger.warn("sync.lanes_suggest_name_failed", {

@@ -1,4 +1,6 @@
 export const GENERIC_LANE_FALLBACK_NAME = "parallel-task";
+export const GENERIC_LANE_FALLBACK_TITLE = "New Development Lane";
+export const AUTO_LANE_TEMP_BRANCH_RE = /^ade\/[0-9a-f]{8}$/u;
 
 export const LANE_FALLBACK_STOPWORDS = new Set([
   "a",
@@ -16,6 +18,7 @@ export const LANE_FALLBACK_STOPWORDS = new Set([
   "context",
   "could",
   "did",
+  "discuss",
   "do",
   "does",
   "for",
@@ -144,9 +147,54 @@ export function deriveDeterministicLaneNameFromPrompt(
   return slug.length ? slug.slice(0, 48) : genericLaneFallbackName(options.genericSuffix);
 }
 
+const PRESERVED_TITLE_WORDS = new Map([
+  ["ade", "ADE"],
+  ["github", "GitHub"],
+  ["ios", "iOS"],
+  ["macos", "macOS"],
+  ["codex", "Codex"],
+  ["openai", "OpenAI"],
+  ["oauth", "OAuth"],
+]);
+
+export function deriveDeterministicLaneTitleFromPrompt(prompt: string): string {
+  const fragment = deriveDeterministicLaneNameFromPrompt(prompt);
+  if (!fragment || fragment === GENERIC_LANE_FALLBACK_NAME || fragment.startsWith(`${GENERIC_LANE_FALLBACK_NAME}-`)) {
+    return GENERIC_LANE_FALLBACK_TITLE;
+  }
+  return fragment
+    .split("-")
+    .filter(Boolean)
+    .slice(0, 6)
+    .map((word) => PRESERVED_TITLE_WORDS.get(word) ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+export function deriveDeterministicAutoLaneIdentity(prompt: string): {
+  laneTitle: string;
+  branchFragment: string;
+} {
+  return {
+    laneTitle: deriveDeterministicLaneTitleFromPrompt(prompt),
+    branchFragment: deriveDeterministicLaneNameFromPrompt(prompt),
+  };
+}
+
+export function isAutoLaneTemporaryBranch(branchRef: string): boolean {
+  return AUTO_LANE_TEMP_BRANCH_RE.test(branchRef);
+}
+
 function priorityNamingWords(cleanedPrompt: string): string[] {
   const normalized = cleanedPrompt.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   if (!normalized) return [];
+  if (
+    /\b(?:name|names|naming)\b/u.test(normalized)
+    && /\bauto(?:matically)?\b/u.test(normalized)
+    && /\bcreated?\b/u.test(normalized)
+    && /\blanes?\b/u.test(normalized)
+  ) {
+    return ["naming", "auto", "created", "lanes"];
+  }
   const provider = [
     "claude",
     "codex",

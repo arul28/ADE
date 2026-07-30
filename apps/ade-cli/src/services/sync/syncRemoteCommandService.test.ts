@@ -2561,7 +2561,7 @@ describe("lanes.suggestName", () => {
       fallbackName: "fallback-auth-flow",
     }));
 
-    expect(result).toEqual({ name: "refactor-auth-flow" });
+    expect(result).toEqual({ name: "refactor-auth-flow", hostApplied: false });
     expect(suggestLaneNameFromPrompt).toHaveBeenCalledWith({
       laneId: "lane-1",
       prompt: "please refactor the auth flow",
@@ -2572,6 +2572,45 @@ describe("lanes.suggestName", () => {
       laneId: "lane-1",
       modelId: "anthropic/claude-haiku-4-5",
       name: "refactor-auth-flow",
+    });
+  });
+
+  it("forwards temporary branch and attachments to the combined host identity generator", async () => {
+    const generateAutoLaneIdentity = vi.fn().mockResolvedValue({
+      laneTitle: "Claude OAuth Login",
+      branchFragment: "claude-oauth-login",
+      source: "ai",
+      laneRenameOutcome: "renamed",
+      branchRenameOutcome: "renamed",
+      branchRef: "refs/heads/ade/claude-oauth-login",
+    });
+    const { service } = createService({ agentChatService: { generateAutoLaneIdentity } });
+
+    const result = await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "This login button hangs after OAuth redirects",
+      modelId: "anthropic/claude-haiku-4-5",
+      fallbackName: "Claude Auth Login",
+      temporaryBranch: "ade/1a2b3c4d",
+      attachments: [
+        { path: "/tmp/login.png", type: "image" },
+        { path: "/tmp/context.txt", type: "file" },
+        { path: "", type: "image" },
+        { path: "/tmp/ignored.bin", type: "unsupported" },
+      ],
+    }));
+
+    expect(result).toEqual({ name: "Claude OAuth Login", hostApplied: true });
+    expect(generateAutoLaneIdentity).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      prompt: "This login button hangs after OAuth redirects",
+      modelId: "anthropic/claude-haiku-4-5",
+      fallbackName: "Claude Auth Login",
+      temporaryBranch: "ade/1a2b3c4d",
+      attachments: [
+        { path: "/tmp/login.png", type: "image" },
+        { path: "/tmp/context.txt", type: "file" },
+      ],
     });
   });
 
@@ -2618,7 +2657,7 @@ describe("lanes.suggestName", () => {
       fallbackName: "build the dashboard",
     }));
 
-    expect(result).toEqual({ name: "build the dashboard" });
+    expect(result).toEqual({ name: "build the dashboard", hostApplied: false });
   });
 
   it("rejects when prompt is missing", async () => {

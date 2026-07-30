@@ -10309,7 +10309,10 @@ final class SyncService: ObservableObject {
     )
   }
 
-  private struct SuggestLaneNameResult: Decodable { let name: String }
+  private struct SuggestLaneNameResult: Decodable {
+    let name: String
+    let hostApplied: Bool?
+  }
 
   /// Asks the host's small naming model for a lane name (desktop parity with
   /// `agentChatService.suggestLaneNameFromPrompt`). The host honors its own
@@ -10320,7 +10323,7 @@ final class SyncService: ObservableObject {
   ///
   /// Callers run this fire-and-forget AFTER the lane is created with the
   /// deterministic name (desktop's `startBackgroundLaneNaming` pattern), so the
-  /// request is short (10s) and non-disconnecting: a slow/stuck host must not
+  /// request is bounded (45s) and non-disconnecting: a slow/stuck host must not
   /// strain the connection or trigger a probe/reconnect that could disrupt the
   /// chat/CLI session just started in the new lane.
   func suggestLaneName(
@@ -10328,26 +10331,39 @@ final class SyncService: ObservableObject {
     prompt: String,
     modelId: String,
     fallbackName: String,
+    temporaryBranch: String? = nil,
+    attachments: [AgentChatFileRef] = [],
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
-  ) async throws -> String {
-    let args: [String: Any] = [
+  ) async throws -> WorkAutoLaneNameSuggestion {
+    var args: [String: Any] = [
       "laneId": laneId,
       "prompt": prompt,
       "modelId": modelId,
       "fallbackName": fallbackName,
     ]
+    if let temporaryBranch, !temporaryBranch.isEmpty {
+      args["temporaryBranch"] = temporaryBranch
+    }
+    if !attachments.isEmpty {
+      args["attachments"] = attachments.prefix(8).map { attachment in
+        ["path": attachment.path, "type": attachment.type]
+      }
+    }
     let result = try await sendDecodableCommand(
       action: "lanes.suggestName",
       args: args,
       disconnectOnTimeout: false,
-      timeoutNanoseconds: 10_000_000_000,
+      timeoutNanoseconds: 45_000_000_000,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       as: SuggestLaneNameResult.self
     )
     let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? fallbackName : trimmed
+    return WorkAutoLaneNameSuggestion(
+      name: trimmed.isEmpty ? fallbackName : trimmed,
+      hostApplied: result.hostApplied == true
+    )
   }
 
   func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {

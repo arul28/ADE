@@ -816,12 +816,15 @@ struct HubInlineComposer: View {
     let targetLaneName: String
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
+    var autoCreatedTemporaryBranch: String?
     if isAutoCreateLane {
       let name = workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
+      let temporaryBranch = workAutoLaneTemporaryBranch()
       do {
         let lane = try await syncService.createLane(
           name: name,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
+          branchName: temporaryBranch,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath
         )
@@ -829,6 +832,7 @@ struct HubInlineComposer: View {
         targetLaneName = lane.name
         createdLaneId = lane.id
         autoCreatedFallbackName = name
+        autoCreatedTemporaryBranch = temporaryBranch
       } catch {
         ADEHaptics.error()
         errorMessage = error.localizedDescription
@@ -840,6 +844,7 @@ struct HubInlineComposer: View {
       targetLaneName = lanesForPickedProject.first(where: { $0.id == selectedLaneId })?.name ?? selectedLaneId
     }
     var createdChatAfterSessionCreation: HubCreatedChat?
+    var namingAttachmentRefs: [AgentChatFileRef] = []
 
     do {
       let isCli = sessionMode == .cli
@@ -849,6 +854,7 @@ struct HubInlineComposer: View {
         targetProjectId: targetProjectId,
         targetProjectRootPath: targetProjectRootPath
       )
+      namingAttachmentRefs = attachmentRefs
       let sessionId: String
       if isCli {
         let cliProvider = workResolveCliProvider(for: modelId, provider: provider)
@@ -936,6 +942,8 @@ struct HubInlineComposer: View {
           laneId: createdLaneId,
           opener: opener,
           fallbackName: autoCreatedFallbackName,
+          temporaryBranch: autoCreatedTemporaryBranch,
+          attachments: namingAttachmentRefs,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath
         )
@@ -952,6 +960,8 @@ struct HubInlineComposer: View {
             laneId: createdLaneId,
             opener: opener,
             fallbackName: autoCreatedFallbackName,
+            temporaryBranch: autoCreatedTemporaryBranch,
+            attachments: namingAttachmentRefs,
             targetProjectId: targetProjectId,
             targetProjectRootPath: targetProjectRootPath
           )
@@ -987,6 +997,8 @@ struct HubInlineComposer: View {
             laneId: createdLaneId,
             opener: opener,
             fallbackName: autoCreatedFallbackName,
+            temporaryBranch: autoCreatedTemporaryBranch,
+            attachments: namingAttachmentRefs,
             targetProjectId: targetProjectId,
             targetProjectRootPath: targetProjectRootPath
           )
@@ -1017,6 +1029,8 @@ struct HubInlineComposer: View {
     laneId: String,
     opener: String,
     fallbackName: String,
+    temporaryBranch: String?,
+    attachments: [AgentChatFileRef],
     targetProjectId: String?,
     targetProjectRootPath: String?
   ) {
@@ -1028,6 +1042,8 @@ struct HubInlineComposer: View {
         opener: opener,
         fallbackName: fallbackName,
         modelId: modelId,
+        temporaryBranch: temporaryBranch,
+        attachments: attachments,
         syncService: syncService,
         surface: .hubComposer,
         targetProjectId: targetProjectId,

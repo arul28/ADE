@@ -21,6 +21,7 @@ import {
   type AgentChatEventHistorySnapshot,
   type AgentChatContextAttachment,
   type AgentChatFileRef,
+  type AutoLaneIdentitySuggestion,
   type AgentChatInteractionMode,
   type AgentChatDispatchSteerMode,
   type AgentChatSteerResult,
@@ -77,7 +78,10 @@ import {
   mergeAgentChatLiveEvents,
 } from "../../../shared/chatHistoryMerge";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
-import { deriveDeterministicLaneNameFromPrompt } from "../../../shared/laneNameFallback";
+import {
+  deriveDeterministicLaneNameFromPrompt,
+  deriveDeterministicLaneTitleFromPrompt,
+} from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
   LOCAL_PROVIDER_LABELS,
@@ -856,7 +860,14 @@ function autoLaneGenericSuffix(date = new Date()): string {
 }
 
 function createDeterministicAutoLaneName(prompt: string, options: { genericSuffix?: string | null } = {}): string {
-  return deriveDeterministicLaneNameFromPrompt(prompt, options);
+  return deriveDeterministicLaneTitleFromPrompt(prompt)
+    || deriveDeterministicLaneNameFromPrompt(prompt, options);
+}
+
+function createTemporaryAutoLaneBranch(): string {
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  return `ade/${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export type AgentChatSessionCreatedOptions = {
@@ -8635,8 +8646,11 @@ export function AgentChatPane({
     prompt: string;
     modelId: string;
     fallbackName: string;
+    temporaryBranch?: string;
+    attachments?: AgentChatFileRef[];
     flagLaneIds: string[];
     pin?: OpenProjectBinding | null;
+    backendAppliesLaneTitle?: boolean;
     apply: (suggested: string) => Promise<void>;
   }) => {
     if (!args.flagLaneIds.length) return;
@@ -8647,36 +8661,38 @@ export function AgentChatPane({
         prompt: args.prompt,
         modelId: args.modelId,
         fallbackName: args.fallbackName,
+        ...(args.temporaryBranch ? { temporaryBranch: args.temporaryBranch } : {}),
+        ...(args.attachments?.length ? { attachments: args.attachments.slice(0, 8) } : {}),
       };
       const suggestLaneName = () => (args.pin
-        ? window.ade.agentChat.suggestLaneName(suggestArgs, args.pin)
-        : window.ade.agentChat.suggestLaneName(suggestArgs));
+        ? window.ade.agentChat.generateAutoLaneIdentity(suggestArgs, args.pin)
+        : window.ade.agentChat.generateAutoLaneIdentity(suggestArgs));
       const sleep = (ms: number) => new Promise<void>((resolve) => {
         window.setTimeout(resolve, ms);
       });
       const BACKGROUND_LANE_NAMING_ATTEMPTS = 2;
       const BACKGROUND_LANE_NAMING_RETRY_DELAY_MS = 750;
+      const isTransientNamingError = (error: unknown) =>
+        /timeout|timed out|temporar|rate limit|connection|unavailable|econnreset/i.test(
+          error instanceof Error ? error.message : String(error),
+        );
       try {
-        let suggested = "";
+        let suggestion: AutoLaneIdentitySuggestion | null = null;
         for (let attempt = 1; attempt <= BACKGROUND_LANE_NAMING_ATTEMPTS; attempt += 1) {
           try {
-            suggested = (await suggestLaneName()).trim();
+            suggestion = await suggestLaneName();
           } catch (error) {
-            if (attempt >= BACKGROUND_LANE_NAMING_ATTEMPTS) {
+            if (attempt >= BACKGROUND_LANE_NAMING_ATTEMPTS || !isTransientNamingError(error)) {
               throw error;
             }
             console.warn(`background lane naming attempt ${attempt} failed; retrying`, error);
             await sleep(BACKGROUND_LANE_NAMING_RETRY_DELAY_MS);
             continue;
           }
-          if (suggested && suggested !== args.fallbackName) {
-            break;
-          }
-          if (attempt < BACKGROUND_LANE_NAMING_ATTEMPTS) {
-            await sleep(BACKGROUND_LANE_NAMING_RETRY_DELAY_MS);
-          }
+          break;
         }
-        if (suggested && suggested !== args.fallbackName) {
+        const suggested = suggestion?.laneTitle.trim() ?? "";
+        if (suggested && suggested !== args.fallbackName && !args.backendAppliesLaneTitle) {
           await args.apply(suggested);
           if (canRefreshPinnedProject(args.pin)) {
             await refreshLanesStore().catch(() => undefined);
@@ -8696,11 +8712,14 @@ export function AgentChatPane({
     prompt: string;
     modelId: string;
     fallbackName: string;
+    temporaryBranch?: string;
+    attachments?: AgentChatFileRef[];
     pin?: OpenProjectBinding | null;
   }) => {
     runBackgroundLaneNaming({
       ...args,
       flagLaneIds: [args.laneId],
+      backendAppliesLaneTitle: true,
       apply: (suggested) => args.pin
         ? window.ade.lanes.rename({ laneId: args.laneId, name: suggested }, args.pin)
         : window.ade.lanes.rename({ laneId: args.laneId, name: suggested }),
@@ -8787,6 +8806,7 @@ export function AgentChatPane({
       assertActive?.();
       const createArgs = {
         name: laneName,
+        branchName: createTemporaryAutoLaneBranch(),
         ...(baseBranch ? { baseBranch } : {}),
       };
       const createdLane = pin
@@ -8818,6 +8838,8 @@ export function AgentChatPane({
           prompt: namingSeed,
           modelId: namingModelId,
           fallbackName: laneName,
+          temporaryBranch: createdLane.branchRef,
+          attachments: snapshot.attachments,
           pin,
         });
       }

@@ -768,6 +768,85 @@ describe("laneService createFromUnstaged", () => {
   });
 });
 
+describe("laneService automatic lane identity", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("serializes duplicate completions and renames the exact temporary branch once", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auto-lane-identity-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-auto-identity", repoRoot });
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Naming Auto Created Lanes",
+        "ade/1a2b3c4d",
+        "lane-child",
+      ]);
+      let releaseRename!: () => void;
+      const renameStarted = new Promise<void>((resolve) => {
+        vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+          if (args[0] === "branch" && args[1] === "--show-current") {
+            return { exitCode: 0, stdout: "ade/1a2b3c4d\n", stderr: "" };
+          }
+          if (args[0] === "rev-parse" && args.includes("@{upstream}")) {
+            return { exitCode: 1, stdout: "", stderr: "" };
+          }
+          if (args[0] === "remote" && args[1] === "get-url") {
+            return { exitCode: 2, stdout: "", stderr: "" };
+          }
+          if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
+          if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+          if (args[0] === "branch" && args[1] === "-m") {
+            resolve();
+            await new Promise<void>((done) => { releaseRename = done; });
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          throw new Error(`Unexpected git call: ${args.join(" ")}`);
+        });
+      });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-auto-identity",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const mutation = {
+        laneId: "lane-child",
+        expectedLaneName: "Naming Auto Created Lanes",
+        temporaryBranch: "ade/1a2b3c4d",
+        laneTitle: "Naming Auto Created Lanes",
+        branchFragment: "naming-auto-created-lanes",
+      };
+
+      const first = service.applyAutoLaneIdentity(mutation);
+      await renameStarted;
+      const duplicate = await service.applyAutoLaneIdentity(mutation);
+      releaseRename();
+      const completed = await first;
+
+      expect(duplicate).toMatchObject({
+        branchRenameOutcome: "skipped",
+        reason: "identity_mutation_in_flight",
+      });
+      expect(completed).toMatchObject({
+        branchRenameOutcome: "renamed",
+        branchRef: "ade/naming-auto-created-lanes",
+      });
+      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "branch" && args[1] === "-m")).toHaveLength(1);
+      expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+        branch_ref: "ade/naming-auto-created-lanes",
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("laneService create", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();

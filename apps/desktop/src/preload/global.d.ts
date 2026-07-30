@@ -117,6 +117,7 @@ import type {
   AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
+  AutoLaneIdentitySuggestion,
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
@@ -1597,6 +1598,10 @@ declare global {
           args: AgentChatSuggestLaneNameArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<string>;
+        generateAutoLaneIdentity: (
+          args: AgentChatSuggestLaneNameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutoLaneIdentitySuggestion>;
         parallelLaunchState: {
           get: (
             args: AgentChatParallelLaunchStateArgs,

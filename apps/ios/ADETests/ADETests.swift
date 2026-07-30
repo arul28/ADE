@@ -34,7 +34,7 @@ private final class DeferredAccountPairingHello<Value> {
 @MainActor
 private final class WorkAutoLaneNamingClientSpy: WorkAutoLaneNamingClient {
   enum SuggestResult {
-    case success(String)
+    case success(String, hostApplied: Bool = false)
     case failure(Error)
   }
 
@@ -43,6 +43,8 @@ private final class WorkAutoLaneNamingClientSpy: WorkAutoLaneNamingClient {
     let prompt: String
     let modelId: String
     let fallbackName: String
+    let temporaryBranch: String?
+    let attachments: [AgentChatFileRef]
     let targetProjectId: String?
     let targetProjectRootPath: String?
   }
@@ -69,21 +71,27 @@ private final class WorkAutoLaneNamingClientSpy: WorkAutoLaneNamingClient {
     prompt: String,
     modelId: String,
     fallbackName: String,
+    temporaryBranch: String?,
+    attachments: [AgentChatFileRef],
     targetProjectId: String?,
     targetProjectRootPath: String?
-  ) async throws -> String {
+  ) async throws -> WorkAutoLaneNameSuggestion {
     suggestCalls.append(SuggestCall(
       laneId: laneId,
       prompt: prompt,
       modelId: modelId,
       fallbackName: fallbackName,
+      temporaryBranch: temporaryBranch,
+      attachments: attachments,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath
     ))
-    guard !suggestResults.isEmpty else { return fallbackName }
+    guard !suggestResults.isEmpty else {
+      return WorkAutoLaneNameSuggestion(name: fallbackName, hostApplied: false)
+    }
     switch suggestResults.removeFirst() {
-    case .success(let value):
-      return value
+    case .success(let value, let hostApplied):
+      return WorkAutoLaneNameSuggestion(name: value, hostApplied: hostApplied)
     case .failure(let error):
       throw error
     }
@@ -12292,25 +12300,25 @@ final class ADETests: XCTestCase {
   func testWorkAutoLaneFallbackMatchesDesktopNamingRules() {
     XCTAssertEqual(
       workDeterministicAutoLaneName(from: "Can you please fix the login bug?"),
-      "fix-login-bug"
+      "Fix Login Bug"
     )
     XCTAssertEqual(
       workDeterministicAutoLaneName(
         from: "correct me if im wrong, but i though ade had a way to detect failed claude creds and present a button ro usmthin in the chat to run claude auth login in ade chat temrinal, use context skill, and look into this"
       ),
-      "claude-auth-login-button"
+      "Claude Auth Login Button"
     )
     XCTAssertEqual(
       workDeterministicAutoLaneName(from: "Debug the Claude OAuth token expiry bug"),
-      "debug-claude-oauth-token-expiry"
+      "Debug Claude OAuth Token Expiry"
     )
     XCTAssertEqual(
       workDeterministicAutoLaneName(from: "Take a look at https://github.com/org/repo/pull/5"),
-      "github-org-repo-pull"
+      "GitHub Org Repo Pull"
     )
     XCTAssertEqual(
       workDeterministicAutoLaneName(from: "!!!", genericSuffix: "20260610-142233"),
-      "parallel-task-20260610-142233"
+      "New Development Lane"
     )
   }
 
@@ -12319,13 +12327,21 @@ final class ADETests: XCTestCase {
       workDeterministicAutoLaneName(
         from: "Debug cursor SDK chat mobile sync issues. Look at the full login history, then follow the Claude MD guidance."
       ),
-      "debug-cursor-sdk-mobile-sync"
+      "Debug Cursor Sdk Mobile Sync"
     )
+  }
+
+  func testWorkAutoLaneTemporaryBranchUsesExactHostRecognizedFormat() {
+    let branch = workAutoLaneTemporaryBranch()
+    XCTAssertTrue(branch.hasPrefix("ade/"))
+    XCTAssertEqual(branch.count, 12)
+    XCTAssertNotNil(branch.range(of: #"^ade/[0-9a-f]{8}$"#, options: .regularExpression))
   }
 
   @MainActor
   func testWorkAutoLaneAiRenameRetriesAndRenamesWithTargetProjectScope() async {
     let client = WorkAutoLaneNamingClientSpy()
+    let image = AgentChatFileRef(path: "/project/.ade/attachments/settings.png", type: "image")
     client.suggestResults = [
       .failure(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "temporary"])),
       .success("debug-mobile-sync"),
@@ -12337,6 +12353,8 @@ final class ADETests: XCTestCase {
       opener: "Debug mobile sync issues",
       fallbackName: "debug-mobile-sync-issue",
       modelId: " anthropic/claude-fable-5 ",
+      temporaryBranch: "ade/12ab34cd",
+      attachments: [image],
       syncService: client,
       surface: .hubComposer,
       targetProjectId: "project-1",
@@ -12352,6 +12370,8 @@ final class ADETests: XCTestCase {
       prompt: "Debug mobile sync issues",
       modelId: "anthropic/claude-fable-5",
       fallbackName: "debug-mobile-sync-issue",
+      temporaryBranch: "ade/12ab34cd",
+      attachments: [image],
       targetProjectId: "project-1",
       targetProjectRootPath: "/tmp/project"
     ))
@@ -12364,6 +12384,60 @@ final class ADETests: XCTestCase {
       ),
     ])
     XCTAssertEqual(refreshCount, 1)
+  }
+
+  @MainActor
+  func testWorkAutoLaneAiRenameRefreshesHostAppliedFallbackWithoutClientRename() async {
+    let client = WorkAutoLaneNamingClientSpy()
+    client.suggestResults = [.success("Fallback Name", hostApplied: true)]
+    var refreshCount = 0
+
+    let outcome = await workRunAutoLaneAiRename(
+      laneId: "lane-1",
+      opener: "Fix this spacing",
+      fallbackName: "Fallback Name",
+      modelId: "m",
+      temporaryBranch: "ade/12ab34cd",
+      syncService: client,
+      surface: .workNewChat,
+      retryDelayNanoseconds: 0,
+      refreshLanes: { refreshCount += 1 }
+    )
+
+    XCTAssertEqual(outcome, .keptFallback)
+    XCTAssertEqual(client.suggestCalls.count, 1)
+    XCTAssertTrue(client.renameCalls.isEmpty)
+    XCTAssertEqual(refreshCount, 1)
+  }
+
+  @MainActor
+  func testWorkAutoLaneAiRenameDoesNotRetryPermanentCapabilityFailure() async {
+    let client = WorkAutoLaneNamingClientSpy()
+    client.suggestResults = [
+      .failure(NSError(
+        domain: "test",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Unsupported model capability is unavailable"]
+      )),
+      .success("Should Not Be Used"),
+    ]
+
+    let outcome = await workRunAutoLaneAiRename(
+      laneId: "lane-1",
+      opener: "Fix this spacing",
+      fallbackName: "Settings Panel Spacing",
+      modelId: "m",
+      syncService: client,
+      surface: .workNewChat,
+      retryDelayNanoseconds: 0
+    )
+
+    guard case .suggestFailed(let message) = outcome else {
+      return XCTFail("Expected permanent suggestion failure, got \(outcome)")
+    }
+    XCTAssertTrue(message.contains("Unsupported model capability"))
+    XCTAssertEqual(client.suggestCalls.count, 1)
+    XCTAssertTrue(client.renameCalls.isEmpty)
   }
 
   @MainActor

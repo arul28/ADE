@@ -239,6 +239,7 @@ export const IPC = {
   agentChatLaunch: "ade.agentChat.launch",
   agentChatLaunchCli: "ade.agentChat.launchCli",
   agentChatSuggestLaneName: "ade.agentChat.suggestLaneName",
+  agentChatGenerateAutoLaneIdentity: "ade.agentChat.generateAutoLaneIdentity",
   agentChatParallelLaunchStateGet: "ade.agentChat.parallelLaunchState.get",
   agentChatParallelLaunchStateSet: "ade.agentChat.parallelLaunchState.set",
   agentChatPromptStashesList: "ade.agentChat.promptStashes.list",

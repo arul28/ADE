@@ -39,6 +39,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["lane.archive", 120_000],
   ["lane.unarchive", 120_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
+  ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
   // provider dispatch of the first message; the 30s default fired a false
   // timeout while the daemon-side handoff kept running to a late "surprise"
