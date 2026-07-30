@@ -4,6 +4,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 
 export const DEFAULT_BRAIN_LOOP_WATCHDOG_MS = 30_000;
+export const DEFAULT_WINDOWS_BRAIN_LOOP_WATCHDOG_MS = 60_000;
 export const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = 1_000;
 export const BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS = 2_000;
 export const BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE = "event-loop-wedge.json";
@@ -90,9 +91,16 @@ export function evaluateBrainLoopWatchdog(args: {
   };
 }
 
-function parseWatchdogThresholdMs(raw: string | undefined): number {
+export function resolveBrainLoopWatchdogThresholdMs(
+  raw: string | undefined,
+  platform = process.platform,
+): number {
   const parsed = Number.parseInt(raw?.trim() ?? "", 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_BRAIN_LOOP_WATCHDOG_MS;
+  if (!Number.isFinite(parsed)) {
+    return platform === "win32"
+      ? DEFAULT_WINDOWS_BRAIN_LOOP_WATCHDOG_MS
+      : DEFAULT_BRAIN_LOOP_WATCHDOG_MS;
+  }
   return Math.max(BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS, parsed);
 }
 
@@ -329,7 +337,7 @@ export function startBrainLoopWatchdog(args: {
   if (env.ADE_DISABLE_LOOP_WATCHDOG === "1") return () => {};
   if (!args.forceInTests && (env.VITEST || env.NODE_ENV === "test")) return () => {};
 
-  const thresholdMs = parseWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
+  const thresholdMs = resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
   const reportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE);
   const reportSignal = "SIGUSR2";
   let reportEnabled = false;

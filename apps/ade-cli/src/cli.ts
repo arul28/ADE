@@ -15765,7 +15765,9 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
-  boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  if (process.platform === "darwin") {
+    boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  }
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
   if (startupBackoffMs > 0 && previousFailure) {

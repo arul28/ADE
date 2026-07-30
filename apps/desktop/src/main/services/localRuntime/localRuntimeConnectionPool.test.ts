@@ -922,6 +922,49 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("keeps a spawned runtime alive while a stale socket owner drains", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, { disableSync: true });
+    const client = { close: vi.fn() };
+    const connectClient = vi.fn()
+      .mockRejectedValueOnce(new Error("ADE service socket is still owned by runtime PID 111."))
+      .mockResolvedValueOnce(client);
+    const internals = pool as unknown as {
+      connectClient: typeof connectClient;
+      connectSpawnedRuntime: (
+        socketPath: string,
+        child: ChildProcess,
+      ) => Promise<typeof client>;
+    };
+    internals.connectClient = connectClient;
+    const child = {
+      pid: 222,
+      exitCode: null,
+      signalCode: null,
+    } as unknown as ChildProcess;
+
+    try {
+      await expect(internals.connectSpawnedRuntime("\\\\.\\pipe\\ade-runtime-test", child))
+        .resolves.toBe(client);
+      expect(connectClient).toHaveBeenCalledTimes(2);
+      expect(connectClient).toHaveBeenLastCalledWith(
+        "\\\\.\\pipe\\ade-runtime-test",
+        expect.objectContaining({
+          expectedPid: 222,
+          connectTimeoutMs: expect.any(Number),
+          initializeTimeoutMs: expect.any(Number),
+        }),
+      );
+    } finally {
+      pool.dispose();
+    }
+  });
+
   it("does not let a stale dropped connection clear an in-flight reconnect", () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
