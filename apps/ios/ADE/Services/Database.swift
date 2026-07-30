@@ -1479,6 +1479,16 @@ final class DatabaseService {
             sqlite3_bind_null(statement, 20)
           }
         }
+
+        _ = try execute("""
+          insert into pull_request_stack_snapshots(pr_id, stack_json)
+          values (?, ?)
+          on conflict(pr_id) do update set
+            stack_json = excluded.stack_json
+        """) { statement in
+          try bindText(pr.id, to: statement, index: 1)
+          try bindOptionalJson(pr.stack, to: statement, index: 2)
+        }
       }
 
       for snapshot in payload.snapshots {
@@ -1514,7 +1524,11 @@ final class DatabaseService {
       }
 
       try exec("commit")
-      notifyDidChange(touchedTables: ["pull_requests", "pull_request_snapshots"])
+      notifyDidChange(touchedTables: [
+        "pull_requests",
+        "pull_request_snapshots",
+        "pull_request_stack_snapshots",
+      ])
     } catch {
       try? exec("rollback")
       throw error
@@ -2263,12 +2277,14 @@ final class DatabaseService {
   private func fetchPullRequestsLocked() -> [PrSummary] {
     guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
-      select id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
+      select pr.id, pr.lane_id, pr.project_id, pr.repo_owner, pr.repo_name, pr.github_pr_number,
+             pr.github_url, pr.github_node_id,
              title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-             last_synced_at, created_at, updated_at, merged_at
-        from pull_requests
-       where project_id = ?
-       order by updated_at desc
+             last_synced_at, created_at, updated_at, merged_at, stack_snapshot.stack_json
+        from pull_requests pr
+        left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
+       where pr.project_id = ?
+       order by pr.updated_at desc
     """
     return query(sql, bind: { [self] statement in
       try self.bindText(projectId, to: statement, index: 1)
@@ -2293,7 +2309,11 @@ final class DatabaseService {
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
         updatedAt: stringValue(statement, index: 18) ?? "",
-        mergedAt: stringValue(statement, index: 19)
+        mergedAt: stringValue(statement, index: 19),
+        stack: decodeJson(
+          stringValue(statement, index: 20),
+          as: GitHubPrStackMembership.self
+        )
       )
     }
   }
@@ -2387,10 +2407,12 @@ final class DatabaseService {
              pr.last_synced_at,
              pr.created_at,
              pr.updated_at,
+             stack_snapshot.stack_json,
     \(prGroupSelect)
     \(integrationSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
+        left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
     \(prGroupJoins)
     \(integrationJoin)
     """
@@ -2429,14 +2451,14 @@ final class DatabaseService {
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
         updatedAt: stringValue(statement, index: 18) ?? "",
-        groupId: stringValue(statement, index: 19),
-        groupType: stringValue(statement, index: 20),
-        groupName: stringValue(statement, index: 21),
-        groupPosition: columnIsNull(statement, index: 22) ? nil : Int(sqlite3_column_int64(statement, 22)),
-        groupCount: Int(sqlite3_column_int64(statement, 23)),
-        workflowDisplayState: stringValue(statement, index: 24),
-        cleanupState: stringValue(statement, index: 25),
-        linkedWorkflowGroupId: stringValue(statement, index: 26)
+        groupId: stringValue(statement, index: 20),
+        groupType: stringValue(statement, index: 21),
+        groupName: stringValue(statement, index: 22),
+        groupPosition: columnIsNull(statement, index: 23) ? nil : Int(sqlite3_column_int64(statement, 23)),
+        groupCount: Int(sqlite3_column_int64(statement, 24)),
+        workflowDisplayState: stringValue(statement, index: 25),
+        cleanupState: stringValue(statement, index: 26),
+        linkedWorkflowGroupId: stringValue(statement, index: 27)
       )
 
       let adeKind: String?
@@ -2477,7 +2499,11 @@ final class DatabaseService {
         linkedGroupPosition: row.groupPosition,
         linkedGroupCount: row.groupCount,
         workflowDisplayState: row.workflowDisplayState,
-        cleanupState: row.cleanupState
+        cleanupState: row.cleanupState,
+        stack: decodeJson(
+          stringValue(statement, index: 19),
+          as: GitHubPrStackMembership.self
+        )
       )
     }
   }
@@ -3094,6 +3120,12 @@ final class DatabaseService {
     try exec("create index if not exists idx_pull_request_snapshots_updated_at on pull_request_snapshots(updated_at)")
     try ensureColumn(tableName: "pull_request_snapshots", columnName: "commits_json", definition: "text")
     try exec("""
+      create table if not exists pull_request_stack_snapshots (
+        pr_id text primary key,
+        stack_json text
+      )
+    """)
+    try exec("""
       create table if not exists pull_request_ai_summaries (
         pr_id text not null,
         head_sha text not null,
@@ -3203,6 +3235,7 @@ final class DatabaseService {
   private func deleteStalePullRequestRows(projectId: String, keeping prIds: [String]) throws {
     let childTables = [
       "pull_request_snapshots",
+      "pull_request_stack_snapshots",
       "pull_request_ai_summaries",
       "pr_group_members",
     ]

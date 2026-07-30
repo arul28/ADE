@@ -8724,6 +8724,73 @@ final class SyncService: ObservableObject {
     database.fetchPullRequestListItems(forLane: laneId)
   }
 
+  func fetchGitHubStacks(
+    repoOwner: String? = nil,
+    repoName: String? = nil,
+    refresh: Bool = false
+  ) async throws -> [GitHubPrStack] {
+    var args: [String: Any] = [:]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: refresh ? "prs.syncGithubStacks" : "prs.listGithubStacks",
+      args: args,
+      as: [GitHubPrStack].self
+    )
+  }
+
+  @discardableResult
+  func createGitHubStack(
+    pullRequests: [Int],
+    repoOwner: String? = nil,
+    repoName: String? = nil
+  ) async throws -> GitHubPrStack {
+    var args: [String: Any] = ["pullRequests": pullRequests]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: "prs.createGithubStack",
+      args: args,
+      as: GitHubPrStack.self
+    )
+  }
+
+  @discardableResult
+  func addPullRequestsToGitHubStack(
+    stackNumber: Int,
+    pullRequests: [Int],
+    repoOwner: String? = nil,
+    repoName: String? = nil
+  ) async throws -> GitHubPrStack {
+    var args: [String: Any] = [
+      "stackNumber": stackNumber,
+      "pullRequests": pullRequests,
+    ]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: "prs.addGithubStackPullRequests",
+      args: args,
+      as: GitHubPrStack.self
+    )
+  }
+
+  @discardableResult
+  func unstackGitHubStack(
+    stackNumber: Int,
+    repoOwner: String? = nil,
+    repoName: String? = nil
+  ) async throws -> GitHubPrStack? {
+    var args: [String: Any] = ["stackNumber": stackNumber]
+    if let repoOwner, !repoOwner.isEmpty { args["repoOwner"] = repoOwner }
+    if let repoName, !repoName.isEmpty { args["repoName"] = repoName }
+    return try await sendDecodableCommand(
+      action: "prs.unstackGithubStack",
+      args: args,
+      as: GitHubPrStack?.self
+    )
+  }
+
   func fetchPullRequestForLane(laneId: String) async throws -> PrSummary? {
     try await sendDecodableCommand(
       action: "prs.getForLane",
