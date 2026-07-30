@@ -11,6 +11,7 @@ import type {
   StorageLedgerEntry,
 } from "../../../shared/types/storage";
 import {
+  AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_DAYS,
   INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
@@ -33,6 +34,14 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     // 2,000 active-row cap is a sub-limit within it, not the table's max size.
     policy: { maxAgeDays: INGRESS_EVENT_RETENTION_DAYS, maxRows: INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT },
     enforcement: "both",
+  },
+  {
+    id: "db.automation_schedule_occurrences",
+    kind: "table",
+    description: "Machine-local cron occurrence claims used to elect one automation executor across concurrent runtimes.",
+    policyClass: "operational",
+    policy: { maxAgeDays: AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_DAYS },
+    enforcement: "write_time",
   },
   {
     id: "db.operations_crsql",

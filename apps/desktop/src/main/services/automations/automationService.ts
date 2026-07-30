@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -34,8 +34,13 @@ import type {
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
-import type { AdeDb, SqlValue } from "../state/kvDb";
 import {
+  ensureAutomationScheduleOccurrenceSchema,
+  type AdeDb,
+  type SqlValue,
+} from "../state/kvDb";
+import {
+  AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_MS,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
@@ -60,6 +65,38 @@ const execFileAsync = promisify(execFile);
 type CronTask = {
   stop: () => void;
 };
+
+type CronScheduler = {
+  validate: (expression: string) => boolean;
+  schedule: (
+    expression: string,
+    callback: (scheduledAt?: Date | string) => void,
+  ) => { stop: () => void };
+};
+
+function scheduledMinuteSlot(date: Date): string {
+  const slot = new Date(date);
+  slot.setUTCSeconds(0, 0);
+  return slot.toISOString();
+}
+
+function scheduleOccurrenceKey(args: {
+  projectId: string;
+  automationId: string;
+  triggerIndex: number;
+  cronExpression: string;
+  scheduledSlot: string;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      args.projectId,
+      args.automationId,
+      args.triggerIndex,
+      args.cronExpression,
+      args.scheduledSlot,
+    ]))
+    .digest("hex");
+}
 
 function firstEnvValue(keys: readonly string[]): string | null {
   for (const key of keys) {
@@ -1017,7 +1054,8 @@ export function createAutomationService({
   adeActionRegistry,
   linearIngressAvailable,
   githubPollingAvailable,
-  onEvent
+  onEvent,
+  cronScheduler = cron,
 }: {
   db: AdeDb;
   logger: Logger;
@@ -1040,6 +1078,8 @@ export function createAutomationService({
   linearIngressAvailable?: () => boolean;
   /** True when direct GitHub polling can resolve a configured repository. */
   githubPollingAvailable?: () => boolean;
+  /** Injectable only for deterministic scheduler tests. */
+  cronScheduler?: CronScheduler;
   onEvent?: (payload: {
     type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
     automationId?: string;
@@ -1245,6 +1285,8 @@ export function createAutomationService({
     for (const [column, sql] of runColumns) {
       if (!columnExists("automation_runs", column)) safeAlter(sql);
     }
+
+    ensureAutomationScheduleOccurrenceSchema(db);
 
     db.run(`
       create table if not exists automation_queue_items (
@@ -1794,6 +1836,120 @@ export function createAutomationService({
     db.run(`update automation_runs set ${clauses} where id = ? and project_id = ?`, [...values, runId, projectId]);
   };
 
+  const updateOpenRun = (runId: string, patch: Record<string, SqlValue>): void => {
+    const keys = Object.keys(patch);
+    if (!keys.length) return;
+    const values = keys.map((key) => patch[key] ?? null);
+    const clauses = keys.map((key) => `${key} = ?`).join(", ");
+    db.run(
+      `update automation_runs set ${clauses} where id = ? and project_id = ? and status in ('queued', 'running', 'paused')`,
+      [...values, runId, projectId],
+    );
+  };
+
+  const cancelRunForDeletedChat = (args: { sessionId: string; runId?: string | null }): void => {
+    const run = args.runId?.trim()
+      ? db.get<{ id: string; automation_id: string; status: string }>(
+          `
+            select id, automation_id, status
+            from automation_runs
+            where project_id = ? and id = ? and chat_session_id = ?
+            limit 1
+          `,
+          [projectId, args.runId.trim(), args.sessionId],
+        )
+      : db.get<{ id: string; automation_id: string; status: string }>(
+          `
+            select id, automation_id, status
+            from automation_runs
+            where project_id = ? and chat_session_id = ?
+            order by started_at desc
+            limit 1
+          `,
+          [projectId, args.sessionId],
+        );
+    if (!run || (run.status !== "queued" && run.status !== "running" && run.status !== "paused")) return;
+
+    const endedAt = nowIso();
+    db.run(
+      `
+        update automation_runs
+        set ended_at = ?, status = 'cancelled', queue_status = 'archived',
+            error_message = 'Automation chat was deleted.'
+        where project_id = ? and id = ? and status in ('queued', 'running', 'paused')
+      `,
+      [endedAt, projectId, run.id],
+    );
+    db.run(
+      `
+        update automation_action_results
+        set ended_at = ?, status = 'cancelled', error_message = 'Automation chat was deleted.'
+        where project_id = ? and run_id = ? and status = 'running'
+      `,
+      [endedAt, projectId, run.id],
+    );
+    emit({ type: "runs-updated", automationId: run.automation_id, runId: run.id });
+  };
+
+  const claimScheduledOccurrence = (args: {
+    rule: AutomationRule;
+    triggerIndex: number;
+    cronExpression: string;
+    firedAt: Date;
+  }): { occurrenceKey: string; scheduledSlot: string } | null => {
+    const scheduledSlot = scheduledMinuteSlot(args.firedAt);
+    const occurrenceKey = scheduleOccurrenceKey({
+      projectId,
+      automationId: args.rule.id,
+      triggerIndex: args.triggerIndex,
+      cronExpression: args.cronExpression,
+      scheduledSlot,
+    });
+    let transactionOpen = false;
+    try {
+      db.run("begin immediate");
+      transactionOpen = true;
+      db.run(
+        "delete from automation_schedule_occurrences where claimed_at < ?",
+        [new Date(args.firedAt.getTime() - AUTOMATION_SCHEDULE_OCCURRENCE_RETENTION_MS).toISOString()],
+      );
+      const existing = db.get<{ occurrence_key: string }>(
+        "select occurrence_key from automation_schedule_occurrences where occurrence_key = ? limit 1",
+        [occurrenceKey],
+      );
+      if (existing) {
+        db.run("commit");
+        transactionOpen = false;
+        return null;
+      }
+      db.run(
+        `
+          insert into automation_schedule_occurrences(
+            occurrence_key, project_id, automation_id, trigger_index,
+            cron_expression, scheduled_slot, claimed_at, run_id
+          ) values (?, ?, ?, ?, ?, ?, ?, null)
+        `,
+        [
+          occurrenceKey,
+          projectId,
+          args.rule.id,
+          args.triggerIndex,
+          args.cronExpression,
+          scheduledSlot,
+          args.firedAt.toISOString(),
+        ],
+      );
+      db.run("commit");
+      transactionOpen = false;
+      return { occurrenceKey, scheduledSlot };
+    } catch (error) {
+      if (transactionOpen) {
+        try { db.run("rollback"); } catch { /* best effort */ }
+      }
+      throw error;
+    }
+  };
+
   const insertAction = (runId: string, actionIndex: number, actionType: string): string => {
     const id = randomUUID();
     db.run(
@@ -1821,7 +1977,7 @@ export function createAutomationService({
       `
         update automation_action_results
         set ended_at = ?, status = ?, error_message = ?, output = ?
-        where id = ? and project_id = ?
+        where id = ? and project_id = ? and status = 'running'
       `,
       [nowIso(), args.status, args.errorMessage ?? null, args.output ?? null, args.id, projectId]
     );
@@ -2933,7 +3089,7 @@ export function createAutomationService({
         status: "succeeded",
         output: result.outputText || `Automation chat session ${session.id} completed.`,
       });
-      updateRun(run.id, {
+      updateOpenRun(run.id, {
         ended_at: nowIso(),
         status: "succeeded",
         queue_status: deriveQueueStatus({
@@ -2956,7 +3112,7 @@ export function createAutomationService({
         errorMessage: message,
         output: sessionId ? `Automation chat session ${sessionId} failed.` : null,
       });
-      updateRun(run.id, {
+      updateOpenRun(run.id, {
         ended_at: nowIso(),
         status: "failed",
         queue_status: deriveQueueStatus({
@@ -3319,15 +3475,53 @@ export function createAutomationService({
       rule.triggers.forEach((trigger, index) => {
         if (trigger.type !== "schedule") return;
         const cronExpr = (trigger.cron ?? "").trim();
-        if (!cronExpr || !cron.validate(cronExpr)) {
+        if (!cronExpr || !cronScheduler.validate(cronExpr)) {
           if (cronExpr) logger.warn("automations.schedule.invalid_cron", { automationId: rule.id, cron: cronExpr });
           return;
         }
         const key = `${rule.id}:${index}`;
         desired.add(key);
         if (scheduleTasks.has(key)) return;
-        const task = cron.schedule(cronExpr, () => {
-          void runRule(rule, { triggerType: "schedule", scheduledAt: nowIso(), reason: rule.id }).catch(() => {});
+        const task = cronScheduler.schedule(cronExpr, (scheduledAt) => {
+          const firedAt = scheduledAt instanceof Date && Number.isFinite(scheduledAt.getTime())
+            ? scheduledAt
+            : new Date();
+          let claim: ReturnType<typeof claimScheduledOccurrence>;
+          try {
+            claim = claimScheduledOccurrence({
+              rule,
+              triggerIndex: index,
+              cronExpression: cronExpr,
+              firedAt,
+            });
+          } catch (error) {
+            logger.warn("automations.schedule.claim_failed", {
+              automationId: rule.id,
+              triggerIndex: index,
+              cron: cronExpr,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          if (!claim) {
+            logger.info("automations.schedule.duplicate_suppressed", {
+              automationId: rule.id,
+              triggerIndex: index,
+              cron: cronExpr,
+              scheduledSlot: scheduledMinuteSlot(firedAt),
+            });
+            return;
+          }
+          void runRule(rule, {
+            triggerType: "schedule",
+            scheduledAt: claim.scheduledSlot,
+            reason: rule.id,
+          }).then((run) => {
+            db.run(
+              "update automation_schedule_occurrences set run_id = ? where occurrence_key = ?",
+              [run.id, claim.occurrenceKey],
+            );
+          }).catch(() => {});
         });
         scheduleTasks.set(key, { stop: () => task.stop() });
       });
@@ -3583,6 +3777,10 @@ export function createAutomationService({
 
     async runScheduledCleanupSweep(): Promise<void> {
       await sweepScheduledCleanups();
+    },
+
+    cancelRunForDeletedChat(args: { sessionId: string; runId?: string | null }): void {
+      cancelRunForDeletedChat(args);
     },
 
     async notifyLaneMerged(args: LaneMergedNotification): Promise<boolean> {

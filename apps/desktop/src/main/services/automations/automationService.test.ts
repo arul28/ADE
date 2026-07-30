@@ -12,6 +12,7 @@ import {
   resolveLaneNameTemplate,
   triggerMatches,
 } from "./automationService";
+import { openKvDb } from "../state/kvDb";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
 import {
@@ -658,6 +659,212 @@ function createLogger() {
 }
 
 describe("automationService integration", () => {
+  it("creates one run and chat for a scheduled occurrence shared by concurrent service instances", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-occurrence-"));
+    const dbPath = path.join(tempRoot, "ade.db");
+    const firstDb = await openKvDb(dbPath, createLogger());
+    const secondDb = await openKvDb(dbPath, createLogger());
+    firstDb.run(
+      `
+        insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+        values (?, ?, ?, ?, ?, ?)
+      `,
+      ["proj", "/tmp", "Test", "main", new Date().toISOString(), new Date().toISOString()],
+    );
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    const cronScheduler = {
+      validate: vi.fn(() => true),
+      schedule: vi.fn((_expression: string, callback: (scheduledAt?: Date | string) => void) => {
+        callbacks.push(callback);
+        return { stop: vi.fn() };
+      }),
+    };
+    const rule = normalizeRuntimeRule({
+      id: "release-ade",
+      name: "Release ADE",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
+      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Run the release.",
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:release-ade",
+      actions: [],
+    });
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        local: { automations: [rule] },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: vi.fn(async () => [{
+        id: "lane-primary",
+        name: "Main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      }]),
+      getLaneWorktreePath: vi.fn(() => "/tmp"),
+      getLaneBaseAndBranch: vi.fn(() => ({
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp",
+      })),
+    } as any;
+    const agentChatService = {
+      createSession: vi.fn(async (args: any) => ({
+        id: "release-chat",
+        laneId: args.laneId,
+      })),
+      runSessionTurn: vi.fn(async () => ({ outputText: "Release complete." })),
+    } as any;
+
+    const createService = (db: typeof firstDb) => createAutomationService({
+      db,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService,
+      projectConfigService,
+      agentChatService,
+      cronScheduler,
+    });
+    const first = createService(firstDb);
+    const second = createService(secondDb);
+    try {
+      expect(callbacks).toHaveLength(2);
+      const scheduledAt = new Date("2026-07-30T13:00:00.000Z");
+      await Promise.all(callbacks.map((callback) =>
+        Promise.resolve().then(() => callback(scheduledAt))));
+
+      await vi.waitFor(() => {
+        expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+        expect(firstDb.all(
+          "select id from automation_runs where automation_id = 'release-ade'",
+        )).toHaveLength(1);
+      });
+      expect(firstDb.all(
+        "select occurrence_key, trigger_index, cron_expression, scheduled_slot from automation_schedule_occurrences",
+      )).toEqual([
+        expect.objectContaining({
+          trigger_index: 0,
+          cron_expression: "0 9 * * 1-5",
+          scheduled_slot: scheduledAt.toISOString(),
+        }),
+      ]);
+    } finally {
+      first.dispose();
+      second.dispose();
+      firstDb.close();
+      secondDb.close();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves cancellation when a deleted automation chat rejects its active turn", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const callbacks: Array<(scheduledAt?: Date | string) => void> = [];
+    let rejectTurn!: (error: Error) => void;
+    const turn = new Promise<never>((_resolve, reject) => {
+      rejectTurn = reject;
+    });
+    const rule = normalizeRuntimeRule({
+      id: "delete-race",
+      name: "Delete race",
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "schedule", cron: "* * * * *" }],
+      trigger: { type: "schedule", cron: "* * * * *" },
+      execution: { kind: "agent-session", session: {} },
+      executor: { mode: "automation-bot" },
+      prompt: "Keep running.",
+      reviewProfile: "quick",
+      toolPalette: ["repo"],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only", createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" },
+      billingCode: "auto:delete-race",
+      actions: [],
+    });
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        list: vi.fn(async () => [{ id: "lane-primary", laneType: "primary" }]),
+        getLaneWorktreePath: vi.fn(() => "/tmp"),
+        getLaneBaseAndBranch: vi.fn(() => ({
+          baseRef: "main",
+          branchRef: "main",
+          worktreePath: "/tmp",
+        })),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          trust: { requiresSharedTrust: false },
+          local: { automations: [rule] },
+          effective: { automations: [rule], providerMode: "guest" },
+        }),
+      } as any,
+      agentChatService: {
+        createSession: vi.fn(async () => ({ id: "deleted-chat", laneId: "lane-primary" })),
+        runSessionTurn: vi.fn(() => turn),
+      } as any,
+      cronScheduler: {
+        validate: () => true,
+        schedule: (_expression, callback) => {
+          callbacks.push(callback);
+          return { stop: vi.fn() };
+        },
+      },
+    });
+
+    callbacks[0]!(new Date("2026-07-30T13:00:00.000Z"));
+    await vi.waitFor(() => {
+      expect(mapExecRows(raw.exec(
+        "select status from automation_runs where automation_id = 'delete-race'",
+      ))).toEqual([{ status: "running" }]);
+    });
+    const run = mapExecRows(raw.exec(
+      "select id from automation_runs where automation_id = 'delete-race'",
+    ))[0]!;
+
+    service.cancelRunForDeletedChat({
+      sessionId: "deleted-chat",
+      runId: String(run.id),
+    });
+    rejectTurn(new Error("Chat session was deleted."));
+
+    await vi.waitFor(() => {
+      expect(mapExecRows(raw.exec(
+        "select status, queue_status, error_message from automation_runs where automation_id = 'delete-race'",
+      ))).toEqual([{
+        status: "cancelled",
+        queue_status: "archived",
+        error_message: "Automation chat was deleted.",
+      }]);
+      expect(mapExecRows(raw.exec(
+        "select status, error_message from automation_action_results where run_id = ?",
+        [String(run.id)],
+      ))).toEqual([{
+        status: "cancelled",
+        error_message: "Automation chat was deleted.",
+      }]);
+    });
+    service.dispose();
+  });
+
   it("dispatches commit trigger and logs the run", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const logger = createLogger();

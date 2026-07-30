@@ -164,6 +164,26 @@ export type AdeDb = {
   close: () => void;
 };
 
+export function ensureAutomationScheduleOccurrenceSchema(
+  db: Pick<AdeDb, "run">,
+): void {
+  db.run(`
+    create table if not exists automation_schedule_occurrences (
+      occurrence_key text primary key,
+      project_id text not null,
+      automation_id text not null,
+      trigger_index integer not null,
+      cron_expression text not null,
+      scheduled_slot text not null,
+      claimed_at text not null,
+      run_id text
+    )
+  `);
+  db.run(
+    "create index if not exists idx_automation_schedule_occurrences_claimed on automation_schedule_occurrences(claimed_at)",
+  );
+}
+
 export function runQuickCheck(db: Pick<AdeDb, "all"> | DatabaseSyncType): { healthy: boolean; detail: string } {
   const rows = "all" in db
     ? db.all<Record<string, unknown>>("pragma quick_check")
@@ -737,6 +757,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Cross-process cron idempotency claims are machine-local. The primary key
+  // must stay unique so sibling runtimes can atomically elect one executor.
+  "automation_schedule_occurrences",
   // Deferred lane deletion is machine-local. Replicating a due cleanup could
   // delete a same-id lane on another machine that did not schedule it.
   "automation_scheduled_cleanups",
@@ -2665,6 +2688,8 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_automation_runs_project_started on automation_runs(project_id, started_at)");
   db.run("create index if not exists idx_automation_runs_project_automation on automation_runs(project_id, automation_id)");
+
+  ensureAutomationScheduleOccurrenceSchema(db);
 
   db.run(`
     create table if not exists automation_action_results (
