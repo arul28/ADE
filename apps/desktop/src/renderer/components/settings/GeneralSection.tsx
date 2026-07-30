@@ -1,5 +1,6 @@
 import React from "react";
 import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
+import { AutoUpdatesSection } from "./AutoUpdatesSection";
 import { DictationSection } from "./DictationSection";
 import { EnvironmentSection } from "./EnvironmentSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
@@ -26,6 +27,8 @@ export function GeneralSection() {
       <PrChatTranscriptsSection />
 
       <SessionLifecycleSection />
+
+      <AutoUpdatesSection />
 
       <ProductAnalyticsSection />
 

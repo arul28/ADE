@@ -134,7 +134,7 @@ running version as "Installed" and `latestKnownVersion` as "Latest", but swaps
 user sees the version they will get after the next restart rather than a stale
 "you're up to date".
 
-## Transactional install and the parked banner
+## Transactional install and exceptional recovery banners
 
 `quitAndInstall()` is transactional. Before flipping the snapshot to
 `installing` it re-runs `updater.checkForUpdates({ allowReady: true })` to
@@ -144,26 +144,50 @@ consent that aborts before the native updater can take over does not silently
 vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
 `AutoUpdateInstallAbortReason` — `refresh_failed`, `install_preflight_failed`,
 `prepare_failed`, `prepare_timeout`, or `handoff_failed`. The app-shell
-`AutoUpdateBanner` renders a parked state as "Update to vX didn't finish —
-Restart to retry" (a parked state wins over a plain `ready` state), and a plain
-`ready` state as "Running vCurrent · vNext is ready", each with a **Restart
-now** action wired to `updateQuitAndInstall()`. Banner dismissal is keyed on a
-stable signature so it reappears when a newer version stages or a fresh abort
-occurs, but stays hidden for an unchanged state.
+`AutoUpdateBanner` renders this exceptional state as "ADE update didn't finish
+— Restart to retry". It also renders "ADE update did not install — Restart to
+retry" when launch reconciliation proves that a requested install returned on
+the old version. Both provide a **Restart now** action wired to
+`updateQuitAndInstall()`. A normal downloaded `ready` update stays in the
+top-right `AutoUpdateControl` and does not duplicate that control with a wide
+banner. Banner dismissal is keyed on a stable failure signature so a fresh
+abort or failed attempt reappears while an unchanged state stays hidden.
 
-## Idle auto-apply
+## Automatic installation policy
 
-When auto-apply is enabled (packaged builds with auto-check on, unless
-`ADE_DISABLE_AUTO_UPDATE_APPLY=1`), a `ready` update is applied on its own once
-the machine is quiet. The service polls the runtime's
-`RuntimeActivitySummary` — `idle` is true only when there are no active agent
-turns and no active work sessions. After the runtime has been continuously idle
-for the idle grace period, the snapshot gets an `autoApplyPending: { deadlineAt }`
-countdown; the `AutoUpdateBanner` renders a "Updating to vX in Ns" toast that
-ticks down each second. Reaching the deadline while still `ready` and idle calls
-the same `quitAndInstall()` path and emits `ade_update_auto_applied`. Any
-renewed activity clears the pending countdown, and an explicit user **Cancel**
+Packaged builds keep checking for and downloading updates, but restarting to
+install them is manual by default. Settings > General exposes the machine-local
+`AutoUpdatePreferences` contract:
+
+- `automaticInstall: false` by default. A `ready` update waits for the user to
+  install it from the top-right control.
+- `onlyWhenIdle: true` by default. This nested setting is shown only after
+  automatic installation is enabled.
+
+With both options enabled, the service polls the runtime's
+`RuntimeActivitySummary`. `idle` is true only when there are no active agent
+turns and no active work sessions. After the runtime stays idle through the
+grace period, the snapshot gets an `autoApplyPending: { deadlineAt }`
+countdown. If `onlyWhenIdle` is disabled, a newly ready update starts the same
+countdown immediately without querying runtime activity.
+
+`AutoUpdateBanner` renders the countdown as an "ADE will update in Ns" toast
+that ticks once per second. Reaching the deadline while the policy is still
+enabled and any required idle condition still holds calls the transactional
+`quitAndInstall()` path and emits `ade_update_auto_applied`. Renewed activity
+clears an idle-only countdown. An explicit **Cancel**
 (`updateCancelAutoApply`) sets `autoApplySuppressedUntil` so another countdown
-is not started until that epoch passes. `installing` remains a sticky status
-throughout: the service ignores `update-not-available` / `checking-for-update` /
-`error` while a quitAndInstall is in flight.
+does not start until that epoch passes. Disabling automatic installation also
+clears a pending countdown. `ADE_DISABLE_AUTO_UPDATE_APPLY=1` is the
+process-level kill switch for all automatic installation.
+
+Changing either preference persists it to the Electron user-data
+`ade-state.json` and records one privacy-bounded `ade_feature_used` event at the
+update-service boundary. Only the coarse automatic/manual and
+idle-only/immediate choices are included, with a 24-hour deduplication window
+per combination; no paths, versions, session details, or activity counts leave
+the machine.
+
+`installing` remains a sticky status throughout: the service ignores
+`update-not-available` / `checking-for-update` / `error` while a
+`quitAndInstall` is in flight.

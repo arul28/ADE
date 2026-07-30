@@ -31,6 +31,7 @@ import type {
   LatestReleaseInfo,
   AppNavigationRequest,
   AppZoomCommand,
+  AutoUpdatePreferences,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -2607,6 +2608,8 @@ declare global {
       };
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
+      updateGetPreferences: () => Promise<AutoUpdatePreferences>;
+      updateSetPreferences: (preferences: AutoUpdatePreferences) => Promise<AutoUpdatePreferences>;
       updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
       updateQuitAndInstall: () => Promise<boolean>;
       updateCancelAutoApply: () => Promise<boolean>;

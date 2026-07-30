@@ -165,6 +165,9 @@ describe("AutoUpdateControl", () => {
 
     const chip = await screen.findByText("Update required");
     expect(chip).toBeTruthy();
+    expect(chip.closest("button")?.getAttribute("title")).toBe(
+      "ADE has an update. Update ADE before continuing. Check for ADE updates.",
+    );
 
     fireEvent.click(chip.closest("button")!);
 

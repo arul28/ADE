@@ -177,15 +177,33 @@ describe("productAnalyticsService", () => {
       event: "ade_update_auto_apply_cancelled",
       surface: "desktop",
     })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "updates",
+        action: "preferences_changed",
+        mode: "automatic",
+        outcome: "idle_only",
+        preference_payload: "private detail",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
 
     expect(harness.messages.map((message) => message.event)).toEqual([
       "ade_update_install_aborted",
       "ade_update_quit_escalated",
       "ade_update_auto_applied",
       "ade_update_auto_apply_cancelled",
+      "ade_feature_used",
     ]);
     expect(harness.messages[0]?.properties).toMatchObject({ reason: "prepare_failed" });
     expect(harness.messages[1]?.properties).toMatchObject({ blocked_ms: 10_000 });
+    expect(harness.messages[4]?.properties).toMatchObject({
+      feature: "updates",
+      action: "preferences_changed",
+      mode: "automatic",
+      outcome: "idle_only",
+    });
     expect(JSON.stringify(harness.messages)).not.toContain("private");
   });
 

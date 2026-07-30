@@ -64,6 +64,7 @@ import type {
   LatestReleaseInfo,
   AppNavigationRequest,
   AppZoomCommand,
+  AutoUpdatePreferences,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -9769,6 +9770,10 @@ contextBridge.exposeInMainWorld("ade", {
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
+  updateGetPreferences: (): Promise<AutoUpdatePreferences> =>
+    ipcRenderer.invoke(IPC.updateGetPreferences),
+  updateSetPreferences: (preferences: AutoUpdatePreferences): Promise<AutoUpdatePreferences> =>
+    ipcRenderer.invoke(IPC.updateSetPreferences, preferences),
   updateGetInstallImpact: (): Promise<UpdateInstallImpact> =>
     ipcRenderer.invoke(IPC.updateGetInstallImpact),
   updateQuitAndInstall: (): Promise<boolean> =>

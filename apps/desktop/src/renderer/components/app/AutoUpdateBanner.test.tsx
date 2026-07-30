@@ -52,10 +52,20 @@ describe("describeStalenessBanner", () => {
     expect(describeStalenessBanner(snapshot({ status: "idle" }))).toBeNull();
   });
 
-  it("flags a ready downloaded update", () => {
-    const banner = describeStalenessBanner(snapshot({ status: "ready", version: "1.2.35" }));
-    expect(banner?.kind).toBe("ready");
-    expect(banner?.version).toBe("1.2.35");
+  it("keeps a normally downloaded update in the top-right control only", () => {
+    expect(describeStalenessBanner(
+      snapshot({ status: "ready", version: "1.2.35" }),
+    )).toBeNull();
+  });
+
+  it("flags a ready update after a failed install attempt", () => {
+    const banner = describeStalenessBanner(snapshot({
+      status: "ready",
+      version: "1.2.35",
+      lastInstallFailed: { targetVersion: "1.2.35", attempt: 1 },
+    }));
+    expect(banner?.kind).toBe("failed");
+    expect(banner?.signature).toContain("1.2.35");
   });
 
   it("prefers the parked state over a ready status", () => {
@@ -95,23 +105,14 @@ describe("AutoUpdateBanner", () => {
     });
   });
 
-  it("shows the ready banner and restarts on demand", async () => {
+  it("does not show a wide banner for a normally ready update", async () => {
     const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
     render(<AutoUpdateBanner />);
 
-    expect(await screen.findByText(/Running 1\.2\.34 · 1\.2\.35 is ready/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /restart now/i }));
     await waitFor(() => {
-      expect(mock.updateQuitAndInstall).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("button", { name: /restart now/i })).toBeNull();
     });
-    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
-      event: "ade_update_prompted",
-      properties: {
-        from_version: "1.2.34",
-        to_version: "1.2.35",
-        user_action: "accepted",
-      },
-    }));
+    expect(mock.updateQuitAndInstall).not.toHaveBeenCalled();
   });
 
   it("shows the parked retry copy", async () => {
@@ -123,25 +124,33 @@ describe("AutoUpdateBanner", () => {
       }),
     );
     render(<AutoUpdateBanner />);
-    expect(await screen.findByText(/Update to 1\.2\.35 didn't finish — Restart to retry/)).toBeTruthy();
+    expect(await screen.findByText(/ADE update didn't finish — Restart to retry/)).toBeTruthy();
   });
 
   it("dismisses until the state changes", async () => {
-    const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    const mock = installAdeMock(snapshot({
+      status: "ready",
+      version: "1.2.35",
+      parked: { reason: "handoff_failed", at: 5 },
+    }));
     render(<AutoUpdateBanner />);
 
-    await screen.findByText(/1\.2\.35 is ready/);
+    await screen.findByText(/ADE update didn't finish/);
     fireEvent.click(screen.getByRole("button", { name: /dismiss update banner/i }));
     await waitFor(() => {
-      expect(screen.queryByText(/1\.2\.35 is ready/)).toBeNull();
+      expect(screen.queryByText(/ADE update didn't finish/)).toBeNull();
     });
     expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
       properties: expect.objectContaining({ user_action: "dismissed" }),
     }));
 
-    // A newer staged version has a different signature, so the banner returns.
-    mock.emit(snapshot({ status: "ready", version: "1.2.36" }));
-    expect(await screen.findByText(/1\.2\.36 is ready/)).toBeTruthy();
+    // A fresh abort has a different signature, so the banner returns.
+    mock.emit(snapshot({
+      status: "ready",
+      version: "1.2.35",
+      parked: { reason: "handoff_failed", at: 6 },
+    }));
+    expect(await screen.findByText(/ADE update didn't finish/)).toBeTruthy();
   });
 
   it("shows a countdown toast and cancels the auto-apply", async () => {
@@ -159,7 +168,7 @@ describe("AutoUpdateBanner", () => {
       </>,
     );
 
-    expect(await screen.findByText(/Updating to 1\.2\.35 in \d+s/)).toBeTruthy();
+    expect(await screen.findByText(/ADE will update in \d+s/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     await waitFor(() => {
       expect(mock.updateCancelAutoApply).toHaveBeenCalledTimes(1);
@@ -171,7 +180,7 @@ describe("AutoUpdateBanner", () => {
     // Clearing the pending state removes the toast.
     mock.emit(snapshot({ status: "ready", version: "1.2.35" }));
     await waitFor(() => {
-      expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
+      expect(screen.queryByText(/ADE will update/)).toBeNull();
     });
   });
 
@@ -200,14 +209,14 @@ describe("AutoUpdateBanner", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText(/Updating to 1\.2\.35 in \d+s/)).toBeTruthy();
+    expect(screen.getByText(/ADE will update in \d+s/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-    expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
+    expect(screen.queryByText(/ADE will update/)).toBeNull();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
+    expect(screen.queryByText(/ADE will update/)).toBeNull();
 
     mock.emit(snapshot({ status: "ready", version: "1.2.35" }));
     resolveCancel(true);

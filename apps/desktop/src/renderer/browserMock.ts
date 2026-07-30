@@ -35,8 +35,10 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
+  DEFAULT_AUTO_UPDATE_PREFERENCES,
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
+  type AutoUpdatePreferences,
   type AgentChatRecoverCodexTurnArgs,
   type AgentChatRecoverCodexTurnResult,
   type AgentChatRecoverTurnArgs,
@@ -6421,9 +6423,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       errorDetails: null,
       recentlyInstalled: null,
       parked: null,
+      lastInstallFailed: null,
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     }),
+    updateGetPreferences: resolved({ ...DEFAULT_AUTO_UPDATE_PREFERENCES }),
+    updateSetPreferences: async (
+      preferences: AutoUpdatePreferences,
+    ): Promise<AutoUpdatePreferences> => preferences,
     updateGetInstallImpact: resolved({ connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateCancelAutoApply: resolved(false),

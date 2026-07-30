@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AppWelcomeVideoState, OpenProjectBinding, RecentProjectRemoteRef, RecentlyInstalledUpdate } from "../../../shared/types";
+import type {
+  AppWelcomeVideoState,
+  AutoUpdatePreferences,
+  OpenProjectBinding,
+  RecentProjectRemoteRef,
+  RecentlyInstalledUpdate,
+} from "../../../shared/types";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 
@@ -59,6 +65,7 @@ export type GlobalState = {
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
   failedInstallAttempts?: FailedInstallAttempts;
+  autoUpdatePreferences?: AutoUpdatePreferences;
   welcomeVideo?: AppWelcomeVideoState;
 };
 

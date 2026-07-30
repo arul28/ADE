@@ -2,13 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
-import type {
-  AutoUpdateErrorDetails,
-  AutoUpdateErrorKind,
-  AutoUpdateInstallAbortReason,
-  AutoUpdatePhase,
-  AutoUpdateSnapshot,
-  RecentlyInstalledUpdate,
+import {
+  DEFAULT_AUTO_UPDATE_PREFERENCES,
+  type AutoUpdateErrorDetails,
+  type AutoUpdateErrorKind,
+  type AutoUpdateInstallAbortReason,
+  type AutoUpdatePhase,
+  type AutoUpdatePreferences,
+  type AutoUpdateSnapshot,
+  type RecentlyInstalledUpdate,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
@@ -51,7 +53,7 @@ const DEFAULT_AUTO_APPLY_IDLE_MS = 2 * 60_000;
 const DEFAULT_AUTO_APPLY_COUNTDOWN_MS = 10_000;
 const DEFAULT_AUTO_APPLY_SUPPRESSION_MS = 4 * 60 * 60_000;
 const DEFAULT_ACTIVITY_CHECK_MS = 5_000;
-
+const AUTO_UPDATE_PREFERENCE_ANALYTICS_DEDUPE_MS = 24 * 60 * 60_000;
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
   autoDownload: boolean;
@@ -140,6 +142,20 @@ type PreservedDownloadRetry = {
   version: string;
   releaseNotesUrl: string | null;
 };
+
+function normalizeAutoUpdatePreferences(value: unknown): AutoUpdatePreferences {
+  const candidate = value && typeof value === "object"
+    ? value as Partial<AutoUpdatePreferences>
+    : {};
+  return {
+    automaticInstall: typeof candidate.automaticInstall === "boolean"
+      ? candidate.automaticInstall
+      : DEFAULT_AUTO_UPDATE_PREFERENCES.automaticInstall,
+    onlyWhenIdle: typeof candidate.onlyWhenIdle === "boolean"
+      ? candidate.onlyWhenIdle
+      : DEFAULT_AUTO_UPDATE_PREFERENCES.onlyWhenIdle,
+  };
+}
 
 export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSnapshot {
   return {
@@ -441,6 +457,9 @@ export function createAutoUpdateService({
     });
   }
 
+  let autoUpdatePreferences = normalizeAutoUpdatePreferences(
+    initialState.state.autoUpdatePreferences,
+  );
   let snapshot: AutoUpdateSnapshot = {
     ...createEmptyAutoUpdateSnapshot(currentVersion),
     recentlyInstalled: initialState.recentlyInstalled,
@@ -469,7 +488,7 @@ export function createAutoUpdateService({
   let quitArmedAtMs: number | null = null;
   let nativeStagingCompleted = false;
   let detachNativeStagingListener: (() => void) | null = null;
-  let activityCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoApplyScheduleTimer: ReturnType<typeof setTimeout> | null = null;
   let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let idleSinceMs: number | null = null;
   let installQuitArmed = false;
@@ -494,7 +513,7 @@ export function createAutoUpdateService({
     snapshot = nextSnapshot;
     emit();
     if (snapshot.status === "ready" && previousStatus !== "ready") {
-      scheduleActivityCheck(0);
+      scheduleAutoApply(0);
     }
   }
 
@@ -528,10 +547,10 @@ export function createAutoUpdateService({
     autoApplyDeadlineTimer = null;
   }
 
-  function clearActivityCheck(): void {
-    if (!activityCheckTimer) return;
-    clearTimeout(activityCheckTimer);
-    activityCheckTimer = null;
+  function clearAutoApplySchedule(): void {
+    if (!autoApplyScheduleTimer) return;
+    clearTimeout(autoApplyScheduleTimer);
+    autoApplyScheduleTimer = null;
   }
 
   function rememberUpdateSize(info: UpdateInfo | null | undefined): void {
@@ -1021,7 +1040,7 @@ export function createAutoUpdateService({
   }
 
   function resetAutoApplyTracking(clearPending: boolean): void {
-    clearActivityCheck();
+    clearAutoApplySchedule();
     clearAutoApplyDeadline();
     idleSinceMs = null;
     if (clearPending && snapshot.autoApplyPending) {
@@ -1032,20 +1051,79 @@ export function createAutoUpdateService({
   function scheduleActivityCheck(delayMs: number): void {
     if (
       !autoApplyEnabled
+      || !autoUpdatePreferences.automaticInstall
+      || !autoUpdatePreferences.onlyWhenIdle
       || !getRuntimeActivitySummary
       || snapshot.status !== "ready"
       || quitAndInstallPromise != null
       || installQuitArmed
       || activityCheckInProgress
-      || activityCheckTimer
+      || autoApplyScheduleTimer
     ) {
       return;
     }
-    activityCheckTimer = setTimeout(() => {
-      activityCheckTimer = null;
+    autoApplyScheduleTimer = setTimeout(() => {
+      autoApplyScheduleTimer = null;
       void checkAutoApplyActivity();
     }, Math.max(0, delayMs));
-    activityCheckTimer.unref?.();
+    autoApplyScheduleTimer.unref?.();
+  }
+
+  function armAutoApplyCountdown(deadlineAt = nowMs() + autoApplyCountdownMs): void {
+    if (snapshot.autoApplyPending || autoApplyDeadlineTimer) return;
+    patchSnapshot({ autoApplyPending: { deadlineAt } });
+    autoApplyDeadlineTimer = setTimeout(() => {
+      autoApplyDeadlineTimer = null;
+      void applyAutoUpdateAtDeadline(deadlineAt);
+    }, autoApplyCountdownMs);
+    autoApplyDeadlineTimer.unref?.();
+  }
+
+  function scheduleAutomaticInstallCountdown(delayMs: number): void {
+    if (
+      !autoApplyEnabled
+      || !autoUpdatePreferences.automaticInstall
+      || autoUpdatePreferences.onlyWhenIdle
+      || snapshot.status !== "ready"
+      || quitAndInstallPromise != null
+      || installQuitArmed
+      || autoApplyScheduleTimer
+      || snapshot.autoApplyPending
+    ) {
+      return;
+    }
+    autoApplyScheduleTimer = setTimeout(() => {
+      autoApplyScheduleTimer = null;
+      if (
+        !autoApplyEnabled
+        || !autoUpdatePreferences.automaticInstall
+        || autoUpdatePreferences.onlyWhenIdle
+        || snapshot.status !== "ready"
+        || quitAndInstallPromise != null
+        || installQuitArmed
+      ) {
+        return;
+      }
+      const suppressedUntil = snapshot.autoApplySuppressedUntil;
+      const currentMs = nowMs();
+      if (suppressedUntil != null && suppressedUntil > currentMs) {
+        scheduleAutoApply(suppressedUntil - currentMs);
+        return;
+      }
+      if (suppressedUntil != null) {
+        patchSnapshot({ autoApplySuppressedUntil: null });
+      }
+      armAutoApplyCountdown();
+    }, Math.max(0, delayMs));
+    autoApplyScheduleTimer.unref?.();
+  }
+
+  function scheduleAutoApply(delayMs: number): void {
+    if (autoUpdatePreferences.onlyWhenIdle) {
+      scheduleActivityCheck(delayMs);
+      return;
+    }
+    scheduleAutomaticInstallCountdown(delayMs);
   }
 
   function clearPendingAutoApply(): void {
@@ -1056,7 +1134,8 @@ export function createAutoUpdateService({
 
   async function applyAutoUpdateAtDeadline(deadlineAt: number): Promise<void> {
     if (
-      !getRuntimeActivitySummary
+      !autoApplyEnabled
+      || !autoUpdatePreferences.automaticInstall
       || snapshot.status !== "ready"
       || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
       || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
@@ -1064,18 +1143,22 @@ export function createAutoUpdateService({
       return;
     }
     try {
-      const activity = await getRuntimeActivitySummary();
+      const activity = autoUpdatePreferences.onlyWhenIdle
+        ? await getRuntimeActivitySummary?.()
+        : { idle: true };
       if (
-        snapshot.status !== "ready"
+        !autoApplyEnabled
+        || !autoUpdatePreferences.automaticInstall
+        || snapshot.status !== "ready"
         || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
         || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
       ) {
         return;
       }
-      if (!activity.idle) {
+      if (!activity?.idle) {
         idleSinceMs = null;
         clearPendingAutoApply();
-        scheduleActivityCheck(activityCheckMs);
+        scheduleAutoApply(activityCheckMs);
         return;
       }
       patchSnapshot({ autoApplyPending: null });
@@ -1091,7 +1174,7 @@ export function createAutoUpdateService({
       logger.warn("autoUpdate.deadline_activity_check_failed", {
         message: formatErrorMessage(error),
       });
-      scheduleActivityCheck(activityCheckMs);
+      scheduleAutoApply(activityCheckMs);
     }
   }
 
@@ -1099,6 +1182,8 @@ export function createAutoUpdateService({
     if (
       activityCheckInProgress
       || !autoApplyEnabled
+      || !autoUpdatePreferences.automaticInstall
+      || !autoUpdatePreferences.onlyWhenIdle
       || !getRuntimeActivitySummary
       || snapshot.status !== "ready"
       || quitAndInstallPromise != null
@@ -1111,7 +1196,7 @@ export function createAutoUpdateService({
     if (suppressedUntil != null && suppressedUntil > currentMs) {
       idleSinceMs = null;
       clearPendingAutoApply();
-      scheduleActivityCheck(suppressedUntil - currentMs);
+      scheduleAutoApply(suppressedUntil - currentMs);
       return;
     }
     if (suppressedUntil != null) {
@@ -1121,7 +1206,16 @@ export function createAutoUpdateService({
     activityCheckInProgress = true;
     try {
       const activity = await getRuntimeActivitySummary();
-      if (snapshot.status !== "ready" || quitAndInstallPromise != null || installQuitArmed) return;
+      if (
+        !autoApplyEnabled
+        || !autoUpdatePreferences.automaticInstall
+        || !autoUpdatePreferences.onlyWhenIdle
+        || snapshot.status !== "ready"
+        || quitAndInstallPromise != null
+        || installQuitArmed
+      ) {
+        return;
+      }
       if (activityCheckFailed) {
         activityCheckFailed = false;
         logger.info("autoUpdate.activity_check_recovered");
@@ -1134,13 +1228,7 @@ export function createAutoUpdateService({
       const checkedAt = nowMs();
       idleSinceMs ??= checkedAt;
       if (snapshot.autoApplyPending || checkedAt - idleSinceMs < autoApplyIdleMs) return;
-      const deadlineAt = checkedAt + autoApplyCountdownMs;
-      patchSnapshot({ autoApplyPending: { deadlineAt } });
-      autoApplyDeadlineTimer = setTimeout(() => {
-        autoApplyDeadlineTimer = null;
-        void applyAutoUpdateAtDeadline(deadlineAt);
-      }, autoApplyCountdownMs);
-      autoApplyDeadlineTimer.unref?.();
+      armAutoApplyCountdown(checkedAt + autoApplyCountdownMs);
     } catch (error) {
       idleSinceMs = null;
       clearPendingAutoApply();
@@ -1152,7 +1240,7 @@ export function createAutoUpdateService({
       }
     } finally {
       activityCheckInProgress = false;
-      scheduleActivityCheck(activityCheckMs);
+      scheduleAutoApply(activityCheckMs);
     }
   }
 
@@ -1195,7 +1283,7 @@ export function createAutoUpdateService({
       autoApplyPending: null,
     });
     installReadySnapshot = null;
-    scheduleActivityCheck(0);
+    scheduleAutoApply(0);
     return false;
   }
 
@@ -1369,7 +1457,7 @@ export function createAutoUpdateService({
     };
     quitAndInstallPromise = run().finally(() => {
       quitAndInstallPromise = null;
-      if (snapshot.status === "ready") scheduleActivityCheck(0);
+      if (snapshot.status === "ready") scheduleAutoApply(0);
     });
     return quitAndInstallPromise;
   }
@@ -1381,6 +1469,37 @@ export function createAutoUpdateService({
     checkForUpdates,
     getSnapshot(): AutoUpdateSnapshot {
       return cloneSnapshot(snapshot);
+    },
+    getPreferences(): AutoUpdatePreferences {
+      return { ...autoUpdatePreferences };
+    },
+    setPreferences(next: unknown): AutoUpdatePreferences {
+      autoUpdatePreferences = normalizeAutoUpdatePreferences(next);
+      const currentState = readGlobalState(globalStatePath);
+      writeGlobalState(globalStatePath, {
+        ...currentState,
+        autoUpdatePreferences,
+      });
+      logger.info("autoUpdate.preferences_updated", autoUpdatePreferences);
+      productAnalyticsService?.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: {
+          feature: "updates",
+          action: "preferences_changed",
+          mode: autoUpdatePreferences.automaticInstall ? "automatic" : "manual",
+          outcome: autoUpdatePreferences.onlyWhenIdle ? "idle_only" : "immediate",
+        },
+        dedupeKey:
+          `update_preferences:${autoUpdatePreferences.automaticInstall}:`
+          + `${autoUpdatePreferences.onlyWhenIdle}`,
+        minimumIntervalMs: AUTO_UPDATE_PREFERENCE_ANALYTICS_DEDUPE_MS,
+      });
+      resetAutoApplyTracking(true);
+      if (autoUpdatePreferences.automaticInstall) {
+        scheduleAutoApply(0);
+      }
+      return { ...autoUpdatePreferences };
     },
     onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void) {
       listeners.add(cb);
@@ -1397,7 +1516,7 @@ export function createAutoUpdateService({
         event: "ade_update_auto_apply_cancelled",
         surface: "desktop",
       });
-      scheduleActivityCheck(autoApplySuppressionMs);
+      scheduleAutoApply(autoApplySuppressionMs);
       return true;
     },
     isInstallQuitArmed(): boolean {
@@ -1412,7 +1531,7 @@ export function createAutoUpdateService({
       if (startupTimer) clearTimeout(startupTimer);
       if (periodicTimer) clearInterval(periodicTimer);
       clearQuitDeadline();
-      clearActivityCheck();
+      clearAutoApplySchedule();
       clearAutoApplyDeadline();
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);

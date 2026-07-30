@@ -826,6 +826,8 @@ export const IPC = {
   feedbackOnUpdate: "ade.feedback.onUpdate",
   updateCheckForUpdates: "ade.update.checkForUpdates",
   updateGetState: "ade.update.getState",
+  updateGetPreferences: "ade.update.getPreferences",
+  updateSetPreferences: "ade.update.setPreferences",
   updateGetInstallImpact: "ade.update.getInstallImpact",
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateCancelAutoApply: "ade.update.cancelAutoApply",

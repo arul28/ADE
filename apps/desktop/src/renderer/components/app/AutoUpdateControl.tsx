@@ -9,6 +9,7 @@ import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
+const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
 type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
 
 function versionLabel(version: string | null): string {
@@ -23,16 +24,6 @@ function progressLabel(progressPercent: number | null): string | null {
 function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined): RuntimeVersionSkew | null {
   if (!value || value.state === "none") return null;
   return value;
-}
-
-function runtimeSkewTitle(skew: RuntimeVersionSkew): string {
-  if (skew.message?.trim()) return skew.message;
-  if (skew.state === "runtime_newer") {
-    const runtime = skew.runtimeVersion ? ` v${skew.runtimeVersion}` : "";
-    const app = skew.appVersion ? ` v${skew.appVersion}` : "";
-    return `The ADE brain${runtime} is newer than this desktop app${app}. Update ADE desktop before using this machine brain.`;
-  }
-  return "The ADE desktop app and ADE brain are out of sync.";
 }
 
 export function AutoUpdateControl() {
@@ -247,7 +238,7 @@ export function AutoUpdateControl() {
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           onClick={handleSkewUpdateCheck}
-          title={`${runtimeSkewTitle(runtimeSkew)} Check for ADE desktop updates.`}
+          title={`${RUNTIME_SKEW_TITLE} Check for ADE updates.`}
         >
           <WarningCircle size={12} weight="fill" />
           <span>Update required</span>

@@ -8,9 +8,11 @@ Two related but distinct flows:
   runtimes, GitHub, and Linear, and optionally attaching existing git
   worktrees as lanes. The first-run project setup page is a single dashboard
   of status cards rather than a blocking step-by-step wizard.
-- **Settings** — long-lived configuration organized by tab. Persists
-  to `.ade/ade.yaml` (shared) and `.ade/local.yaml` (local) through
-  `projectConfigService`.
+- **Settings** — long-lived configuration organized by tab. Project
+  configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
+  (local) through `projectConfigService`; machine-level desktop preferences
+  such as automatic update installation persist in the Electron user-data
+  `ade-state.json`.
 
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
@@ -25,6 +27,7 @@ directories. Onboarding writes to both.
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
 | Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
 | Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: tests, overlays, automations, lane templates, AI mode, providers, Linear sync. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
@@ -92,6 +95,9 @@ Shared types and IPC:
   templates, port allocation, proxy, OAuth, integrations, AI).
 - `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
   value, dotenv preview/import, and export request/result contracts.
+- `apps/desktop/src/shared/types/core.ts` — `AutoUpdatePreferences` and
+  `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`,
+  `onlyWhenIdle: true`) plus the renderer-visible update snapshot contract.
 - `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
   `GitHubAuthFailure`, and `GitHubRateLimitState`. The failure/quota fields are
   optional so a newer client can remain compatible with an older remote
@@ -108,6 +114,8 @@ Shared types and IPC:
   - `ade.ai.*` and settings-specific channels per integration
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
+  - `ade.update.getPreferences` / `ade.update.setPreferences` for the
+    machine-local automatic-install policy
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
   registrations.
 
@@ -115,7 +123,8 @@ Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
   `window.ade.projectConfig`, `window.ade.project`,
-  `window.ade.projectSecrets`, plus the integration-specific surfaces
+  `window.ade.projectSecrets`, `window.ade.updateGetPreferences`,
+  `window.ade.updateSetPreferences`, plus the integration-specific surfaces
   (`window.ade.github`, etc.).
 
 Renderer — onboarding:
@@ -207,13 +216,20 @@ Renderer — settings:
   not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — consolidated general preferences: GitHub and Linear connections,
-  privacy-bounded product analytics, voice input, launch-prompt clipboard, agent completion sound, PR
-  chat transcript gists, project `.ade` health, and environment
+  privacy-bounded product analytics, voice input, launch-prompt clipboard,
+  agent completion sound, automatic update installation, PR chat transcript
+  gists, project `.ade` health, and environment
   (About + compact `AdeCliSection`). Each block uses
   `SettingsSectionShell` for a branded header. Deep links:
   `#github-connection`, `#linear-connection`, `#voice-input`,
   `#chat-launch-clipboard`, `#agent-completion-sound`,
-  `#pr-chat-transcripts`.
+  `#auto-updates`, `#pr-chat-transcripts`.
+- `apps/desktop/src/renderer/components/settings/AutoUpdatesSection.tsx`
+  — Settings > General update policy. Automatic installation is off by
+  default, leaving installation under the top-right control. Enabling it
+  reveals the default-on **Wait until active work finishes** safety option,
+  which delays the restart countdown until no agent turn or work session is
+  active.
 - `apps/desktop/src/renderer/components/settings/ProductAnalyticsSection.tsx`
   — machine-wide desktop/runtime product-analytics status and durable opt-out.
   It shows the configured/effective state and installation daily ceiling but
@@ -548,7 +564,8 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
   — runtime diagnostics.
 
-Auto-update (top-bar control, not a settings tab):
+Auto-update (General preference, top-bar control, and exceptional recovery
+banner):
 
 - `apps/desktop/src/main/services/updates/autoUpdateService.ts` —
   electron-updater wrapper that owns the renderer-visible
@@ -585,12 +602,16 @@ Auto-update (top-bar control, not a settings tab):
   `hard_deadline` / `post_staging` reason, drains the log with
   `logger.flushSync()`, and force-quits. See
   [desktop-auto-update.md](./desktop-auto-update.md) for the numbers.
-  When the runtime reports `RuntimeActivitySummary.idle` (no active agent turns
-  or work sessions), a staged update is auto-applied after an idle grace period
-  plus a renderer-visible countdown (`autoApplyPending`); an explicit cancel
+  Installation remains manual by default even though packaged builds continue
+  checking and downloading in the background. The machine-local
+  `AutoUpdatePreferences` object enables automatic installation and chooses
+  whether it must wait for `RuntimeActivitySummary.idle` (no active agent turns
+  or work sessions). Idle-only mode waits through the idle grace period;
+  immediate mode starts the same renderer-visible countdown
+  (`autoApplyPending`) as soon as the update is ready. An explicit cancel
   suppresses the next countdown (`autoApplySuppressedUntil`), and
-  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` turns auto-apply off. On the next launch,
-  `reconcilePersistedUpdateState`
+  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` remains a process-level kill switch. On the
+  next launch, `reconcilePersistedUpdateState`
   matches the running version against `pendingInstallUpdate` using
   the same SemVer comparator (so `>=` target counts as installed,
   even if the running build is one ahead), populates
@@ -606,9 +627,9 @@ Auto-update (top-bar control, not a settings tab):
   service so `ade serve` re-execs the updated bundled CLI and clients
   do not fall back to an isolated build-mismatch runtime.
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
-  the small badge in the app shell top bar. Shows "Checking for
-  updates" / "Downloading vX.Y.Z (NN%)" / "Install update vX.Y.Z" /
-  "ADE will quit and reopen" depending on the snapshot. When
+  the primary update control: a small badge in the app shell top bar. Shows
+  "Checking for updates" / "Downloading vX.Y.Z (NN%)" / "Install update
+  vX.Y.Z" / "ADE will quit and reopen" depending on the snapshot. When
   `lastInstallFailed` names the staged version, the ready label reads "Retry
   install vX.Y.Z" and the tooltip says whether the download is still on the
   machine. Clicking the
@@ -632,14 +653,15 @@ Auto-update (top-bar control, not a settings tab):
   app-shell banner, and the About panel — consumes it so they never disagree
   about what is running versus what is staged.
 - `apps/desktop/src/renderer/components/app/AutoUpdateBanner.tsx` — the
-  app-shell staleness banner plus the idle-auto-apply countdown toast,
-  colocated so both read one snapshot subscription. Renders a `parked` state as
-  "Update to vX didn't finish — Restart to retry" (parked wins over a plain
-  `ready`) and a plain `ready` state as "Running vCurrent · vNext is ready",
-  each with a **Restart now** action; dismissal is keyed on a stable signature
-  so it reappears on a newer staged version or a fresh abort. The countdown
-  toast is driven off `autoApplyPending` with a **Cancel** action wired to
-  `updateCancelAutoApply()`.
+  exceptional app-shell recovery banner plus the automatic-install countdown
+  toast, colocated so both read one snapshot subscription. Renders a `parked` state as
+  "ADE update didn't finish — Restart to retry" and a failed handoff as "ADE
+  update did not install — Restart to retry", each with a **Restart now**
+  action. A normally staged `ready` update does not render the wide banner; it
+  remains available from the top-right control. Dismissal is keyed on a stable
+  failure signature so a fresh abort or failed attempt can reappear. The toast
+  reads "ADE will update in Ns", is driven off `autoApplyPending`, and has a
+  **Cancel** action wired to `updateCancelAutoApply()`.
 - `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
   app-shell notice shown once per distinct machine-brain event-loop recovery.
   It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()`,

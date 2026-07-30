@@ -206,6 +206,18 @@ export const AUTO_UPDATE_INSTALL_ABORT_REASONS = [
 export type AutoUpdateInstallAbortReason =
   (typeof AUTO_UPDATE_INSTALL_ABORT_REASONS)[number];
 
+export type AutoUpdatePreferences = {
+  /** Automatically restart ADE to install a downloaded update. */
+  automaticInstall: boolean;
+  /** Require all agent turns and work sessions to be idle before restarting. */
+  onlyWhenIdle: boolean;
+};
+
+export const DEFAULT_AUTO_UPDATE_PREFERENCES = {
+  automaticInstall: false,
+  onlyWhenIdle: true,
+} as const satisfies AutoUpdatePreferences;
+
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;
   currentVersion: string;
