@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.45] - 2026-07-30
+
+### Sessions and attention
+
+- Base attention and settlement on explicit provider lifecycle state instead of inferring it from incidental terminal or process signals.
+- Preserve settlement provenance through desktop, iOS, `ade code`, CLI, operator actions, and remote-session synchronization.
+- Align session cards, lifecycle controls, lane projections, and restored remote sessions on the same canonical state.
+- Stop settled push runs at the provider's next safe resting boundary and read live runtime state before settling.
+
+### Automations
+
+- Coordinate scheduled automation claims across concurrent runtimes so one occurrence creates one run.
+- Reuse persisted occurrence records through restart and retry paths instead of enqueueing duplicates.
+
+### Deployments
+
+- Apply pending Account Directory D1 migrations before deploying the production Worker.
+
 ## [1.2.44] - 2026-07-29
 
 ### Mobile connections
@@ -1222,7 +1240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.43...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.45...HEAD
+[1.2.45]: https://github.com/arul28/ADE/compare/v1.2.44...v1.2.45
 [1.2.44]: https://github.com/arul28/ADE/compare/v1.2.43...v1.2.44
 [1.2.43]: https://github.com/arul28/ADE/compare/v1.2.42...v1.2.43
 [1.2.42]: https://github.com/arul28/ADE/compare/v1.2.41...v1.2.42

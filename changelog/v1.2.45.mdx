@@ -1,0 +1,28 @@
+---
+title: "v1.2.45"
+description: "Release notes for ADE v1.2.45 - July 30, 2026"
+---
+
+v1.2.45 is a session-lifecycle and automation reliability release. ADE now bases attention and settlement on explicit provider state across every client, stops settled push work cleanly, and prevents concurrent runtimes from creating the same scheduled automation occurrence twice.
+
+---
+
+## Session state stays explicit
+
+- **Attention reflects real provider state.** Session projections no longer infer that a chat needs input from incidental terminal or process signals.
+- **Settlement keeps its provenance.** Desktop, iOS, `ade code`, the CLI, and remote sync preserve whether a session settled explicitly, through an operator action, or through the provider lifecycle.
+- **Every client agrees.** Session cards, lifecycle controls, lane projections, and remote-session hydration use the same canonical attention and settlement state.
+
+## Settled work actually stops
+
+- **Push runs end at a safe boundary.** A session that settles while work is active stops its push run once the provider reaches rest instead of continuing in the background.
+- **Live runtime state wins.** Settlement reads the current runtime state rather than acting on a stale projection.
+
+## Scheduled automations run once
+
+- **Concurrent runtimes cannot duplicate an occurrence.** Scheduled automation claims are coordinated through persisted ownership and idempotent occurrence records.
+- **Recovery remains safe.** Restart and retry paths reuse the claimed occurrence instead of enqueueing a second run.
+
+## Production deploys apply their schema first
+
+- **Account Directory migrations precede Worker deployment.** The production deploy path now applies pending D1 migrations before publishing code that depends on them.
