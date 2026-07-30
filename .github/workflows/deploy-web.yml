@@ -95,8 +95,8 @@ jobs:
         with:
           node-version: 22
       - run: cd apps/account-directory && npm ci
-      - name: Deploy production Worker
-        run: cd apps/account-directory && npx wrangler deploy --env production
+      - name: Apply D1 migrations and deploy production Worker
+        run: cd apps/account-directory && npm run deploy:production
       - name: Verify health
         run: curl -fsS https://ade-account-directory-production.arulsharma1028.workers.dev/health | grep -q '"ok":true'
 
