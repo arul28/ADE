@@ -178,10 +178,12 @@ export function sessionNeedsChatTabHighlight(args: {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionSource?: TerminalSessionSummary["attentionSource"];
   attentionRequestedAt?: string | null;
 }): boolean {
   if (!isChatToolType(args.toolType)) return false;
   if (args.pendingInputItemId) return true;
+  if (args.attentionSource === "provider_structured") return true;
   if (args.attentionRequestedAt) return true;
   return false;
 }

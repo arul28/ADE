@@ -102,6 +102,11 @@ describe("terminalAttention", () => {
         toolType: "codex-chat",
         pendingInputItemId: "approval-1",
       })).toBe(true);
+      expect(sessionNeedsChatTabHighlight({
+        runtimeState: "waiting-input",
+        toolType: "claude-chat",
+        attentionSource: "provider_structured",
+      })).toBe(true);
     });
   });
 

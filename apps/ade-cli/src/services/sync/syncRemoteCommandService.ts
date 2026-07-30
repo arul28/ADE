@@ -2238,34 +2238,7 @@ async function listRemoteWorkSessions(
     if (!isChatToolType(session.toolType) || session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
-    if (chat.awaitingInput) {
-      return {
-        ...session,
-        runtimeState: "waiting-input" as const,
-        chatIdleSinceAt: null,
-        pendingInputItemId: chat.pendingInputItemId ?? null,
-        attentionSource: "provider_structured" as const,
-      };
-    }
-    if (chat.status === "active") {
-      return {
-        ...session,
-        runtimeState: "running" as const,
-        chatIdleSinceAt: null,
-        pendingInputItemId: null,
-        attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
-      };
-    }
-    if (chat.status === "idle") {
-      return {
-        ...session,
-        runtimeState: "idle" as const,
-        chatIdleSinceAt: chat.idleSinceAt ?? null,
-        pendingInputItemId: null,
-        attentionSource: session.attentionSource === "provider_structured" ? null : session.attentionSource,
-      };
-    }
-    return session;
+    return projectChatOntoSession(session, chat);
   });
 }
 

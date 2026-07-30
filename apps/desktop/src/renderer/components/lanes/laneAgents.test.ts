@@ -111,6 +111,16 @@ describe("buildLaneAgents", () => {
     expect(agents[0]?.lastHint).toBeNull();
   });
 
+  it("marks provider-structured CLI attention as awaiting input", () => {
+    const agents = buildLaneAgents([], [cli({
+      id: "provider-waiting",
+      runtimeState: "waiting-input",
+      attentionSource: "provider_structured",
+    })]);
+    expect(agents[0]?.activity).toBe("awaiting-input");
+    expect(agents[0]?.lastHint).toBe("Awaiting your input");
+  });
+
   it("marks awaiting-input chats with a hint", () => {
     const agents = buildLaneAgents([chat({ sessionId: "c", awaitingInput: true })], []);
     expect(agents[0]?.activity).toBe("awaiting-input");
