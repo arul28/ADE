@@ -76,7 +76,9 @@ export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
       )}
     >
       <ChatCardRow
-        tone={event.state === "complete" ? "ok" : "running"}
+        // The plan itself is a static summary; only an in-progress task should
+        // use the running tone (and its spinner).
+        tone={event.state === "complete" ? "ok" : "neutral"}
         icon={ListChecks}
         align={event.explanation ? "top" : "center"}
         meta={steps.length ? `${steps.filter((s) => s.status === "completed").length}/${steps.length}` : null}
