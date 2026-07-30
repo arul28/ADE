@@ -8,13 +8,12 @@ import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 
 type StalenessBanner = {
-  /** "ready" = a downloaded update is waiting; "parked" = a consented install aborted. */
-  kind: "ready" | "parked";
-  version: string | null;
+  /** Exceptional install states that need a prominent recovery action. */
+  kind: "parked" | "failed";
   /**
    * Stable identity for this banner state. Dismissal is keyed on it so the
-   * banner reappears whenever the underlying state changes (new version staged,
-   * a fresh install abort) but stays hidden for an unchanged state.
+   * banner reappears for a fresh failed attempt but stays hidden for an
+   * unchanged state.
    */
   signature: string;
 };
@@ -28,22 +27,22 @@ export function describeStalenessBanner(snapshot: AutoUpdateSnapshot): Staleness
   if (snapshot.parked) {
     return {
       kind: "parked",
-      version: snapshot.version,
       signature: `parked:${snapshot.parked.reason}:${snapshot.parked.at}:${snapshot.version ?? ""}`,
     };
   }
-  if (snapshot.status === "ready") {
+  if (
+    snapshot.status === "ready"
+    && snapshot.lastInstallFailed
+    && snapshot.lastInstallFailed.targetVersion === snapshot.version
+  ) {
     return {
-      kind: "ready",
-      version: snapshot.version,
-      signature: `ready:${snapshot.version ?? ""}`,
+      kind: "failed",
+      signature:
+        `failed:${snapshot.lastInstallFailed.targetVersion}:`
+        + `${snapshot.lastInstallFailed.attempt}`,
     };
   }
   return null;
-}
-
-function versionText(version: string | null): string {
-  return version ? version : "the latest version";
 }
 
 /**
@@ -99,7 +98,6 @@ export function AutoUpdateBanner() {
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.
   const pending = snapshot.autoApplyPending;
-  const pendingVersion = snapshot.version;
   useEffect(() => {
     if (!pending) {
       dismissToast(AUTO_APPLY_TOAST_ID);
@@ -111,7 +109,7 @@ export function AutoUpdateBanner() {
       const secondsLeft = Math.max(0, Math.ceil((pending.deadlineAt - Date.now()) / 1000));
       showToast({
         id: AUTO_APPLY_TOAST_ID,
-        title: `Updating to ${versionText(pendingVersion)} in ${secondsLeft}s`,
+        title: `ADE will update in ${secondsLeft}s`,
         tone: "info",
         durationMs: 0,
         action: { label: "Cancel", onClick: handleCancelAutoApply },
@@ -122,7 +120,7 @@ export function AutoUpdateBanner() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [pending, pendingVersion, handleCancelAutoApply]);
+  }, [pending, handleCancelAutoApply]);
 
   // Tidy up the toast if this component unmounts mid-countdown.
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
@@ -134,8 +132,8 @@ export function AutoUpdateBanner() {
       <WarningCircle size={14} weight="fill" className="shrink-0" aria-hidden="true" />
       <span className="flex-1 min-w-0">
         {banner.kind === "parked"
-          ? `Update to ${versionText(banner.version)} didn't finish — Restart to retry`
-          : `Running ${snapshot.currentVersion} · ${versionText(banner.version)} is ready`}
+          ? "ADE update didn't finish — Restart to retry"
+          : "ADE update did not install — Restart to retry"}
       </span>
       <button
         type="button"

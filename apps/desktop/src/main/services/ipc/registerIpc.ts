@@ -4,6 +4,7 @@ import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
+import { DEFAULT_AUTO_UPDATE_PREFERENCES } from "../../../shared/types";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
@@ -596,6 +597,7 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudStreamRunResult,
+  AutoUpdatePreferences,
   UpdateInstallImpact,
   ExternalSessionListArgs,
   ExternalSessionImportArgs,
@@ -10507,6 +10509,19 @@ export function registerIpc({
   ipcMain.handle(IPC.updateGetState, () => {
     return getCtx().autoUpdateService?.getSnapshot() ?? createEmptyAutoUpdateSnapshot();
   });
+
+  ipcMain.handle(IPC.updateGetPreferences, (): AutoUpdatePreferences => {
+    return getCtx().autoUpdateService?.getPreferences()
+      ?? { ...DEFAULT_AUTO_UPDATE_PREFERENCES };
+  });
+
+  ipcMain.handle(
+    IPC.updateSetPreferences,
+    (_event, preferences: unknown): AutoUpdatePreferences => {
+      return getCtx().autoUpdateService?.setPreferences(preferences)
+        ?? { ...DEFAULT_AUTO_UPDATE_PREFERENCES };
+    },
+  );
 
   ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
     const provider = getCtx().updateInstallImpactProvider;

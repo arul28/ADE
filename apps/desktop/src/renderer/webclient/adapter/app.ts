@@ -1,9 +1,11 @@
-import type {
-  AppInfo,
-  AppResourceUsageSnapshot,
-  AppWelcomeVideoState,
-  ProjectInfo,
-  UpdateInstallImpact,
+import {
+  DEFAULT_AUTO_UPDATE_PREFERENCES,
+  type AppInfo,
+  type AppResourceUsageSnapshot,
+  type AppWelcomeVideoState,
+  type AutoUpdatePreferences,
+  type ProjectInfo,
+  type UpdateInstallImpact,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl } from "./infra/fileBlob";
@@ -220,6 +222,7 @@ export const webUpdateMethods = {
       errorDetails: null,
       recentlyInstalled: null,
       parked: null,
+      lastInstallFailed: null,
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     };
@@ -239,9 +242,16 @@ export const webUpdateMethods = {
       errorDetails: null,
       recentlyInstalled: null,
       parked: null,
+      lastInstallFailed: null,
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     };
+  },
+  async updateGetPreferences() {
+    return { ...DEFAULT_AUTO_UPDATE_PREFERENCES };
+  },
+  async updateSetPreferences(preferences: AutoUpdatePreferences) {
+    return preferences;
   },
   async updateGetInstallImpact(): Promise<UpdateInstallImpact> {
     return { connectedPhones: [] };

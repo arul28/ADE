@@ -162,6 +162,8 @@ export function createAdeWebAdapter(
     feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,
     updateGetState: webUpdateMethods.updateGetState,
+    updateGetPreferences: webUpdateMethods.updateGetPreferences,
+    updateSetPreferences: webUpdateMethods.updateSetPreferences,
     updateGetInstallImpact: webUpdateMethods.updateGetInstallImpact,
     updateQuitAndInstall: webUpdateMethods.updateQuitAndInstall,
     updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,

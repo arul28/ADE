@@ -93,6 +93,7 @@ const BOOLEAN_PROPERTIES = new Set([
 const ANALYTICS_ONLY_ACTIONS = new Set([
   "maintenance_run",
   "header_opened",
+  "preferences_changed",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -142,11 +143,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   feature: new Set([
     "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
-    "automations", "command_palette", "storage_doctor", "attention",
+    "automations", "command_palette", "storage_doctor", "attention", "updates",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
-    "partial", "failed",
+    "partial", "failed", "idle_only", "immediate",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "gemini", "local", "other"]),
   model_family: new Set([

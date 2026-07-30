@@ -135,6 +135,40 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("keeps automatic installation off by default", async () => {
+    vi.useFakeTimers();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      autoApplyIdleMs: 1_000,
+      autoApplyCountdownMs: 1_000,
+      getRuntimeActivitySummary: vi.fn(async () => ({ idle: true })),
+      updater,
+    });
+
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(service.getPreferences()).toEqual({
+      automaticInstall: false,
+      onlyWhenIdle: true,
+    });
+    expect(service.setPreferences({
+      automaticInstall: "yes",
+      onlyWhenIdle: 0,
+    })).toEqual({
+      automaticInstall: false,
+      onlyWhenIdle: true,
+    });
+    expect(service.getSnapshot().autoApplyPending).toBeNull();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it("configures the GitHub update feed explicitly", () => {
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({
@@ -1223,6 +1257,7 @@ describe("createAutoUpdateService", () => {
       productAnalyticsService: productAnalyticsService as never,
       updater,
     });
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
     updater.emit("update-downloaded", { version: "1.2.3" });
 
     await vi.advanceTimersByTimeAsync(2 * 60_000);
@@ -1244,6 +1279,98 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("starts a cancelable countdown without an idle wait when the safety option is off", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updater = new FakeAutoUpdater();
+    const logger = makeLogger();
+    const productAnalyticsService = { captureInternal: vi.fn() };
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir: makeUpdaterCacheDir(),
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      autoApplyCountdownMs: 10_000,
+      productAnalyticsService: productAnalyticsService as never,
+      updater,
+    });
+
+    expect(service.setPreferences({
+      automaticInstall: true,
+      onlyWhenIdle: false,
+    })).toEqual({
+      automaticInstall: true,
+      onlyWhenIdle: false,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(service.getSnapshot().autoApplyPending).toEqual({
+      deadlineAt: expect.any(Number),
+    });
+    expect(readState(globalStatePath)).toMatchObject({
+      autoUpdatePreferences: {
+        automaticInstall: true,
+        onlyWhenIdle: false,
+      },
+    });
+    expect(logger.info).toHaveBeenCalledWith("autoUpdate.preferences_updated", {
+      automaticInstall: true,
+      onlyWhenIdle: false,
+    });
+    expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "updates",
+        action: "preferences_changed",
+        mode: "automatic",
+        outcome: "immediate",
+      },
+      dedupeKey: "update_preferences:true:false",
+      minimumIntervalMs: 24 * 60 * 60_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    service.dispose();
+  });
+
+  it("cancels a pending automatic install when the preference is turned off", async () => {
+    vi.useFakeTimers();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      autoApplyCountdownMs: 10_000,
+      updater,
+    });
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: false });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.getSnapshot().autoApplyPending).not.toBeNull();
+
+    service.setPreferences({ automaticInstall: false, onlyWhenIdle: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(service.getPreferences()).toEqual({
+      automaticInstall: false,
+      onlyWhenIdle: true,
+    });
+    expect(service.getSnapshot().autoApplyPending).toBeNull();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it("rechecks activity at the deadline and rearms after newly active work becomes idle", async () => {
     vi.useFakeTimers();
     let idle = true;
@@ -1262,6 +1389,7 @@ describe("createAutoUpdateService", () => {
       getRuntimeActivitySummary,
       updater,
     });
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
     updater.emit("update-downloaded", { version: "1.2.3" });
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -1299,6 +1427,7 @@ describe("createAutoUpdateService", () => {
       getRuntimeActivitySummary: vi.fn(async () => ({ idle })),
       updater,
     });
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
     updater.emit("update-downloaded", { version: "1.2.3" });
 
     await vi.advanceTimersByTimeAsync(60_000);
@@ -1336,6 +1465,7 @@ describe("createAutoUpdateService", () => {
       productAnalyticsService: productAnalyticsService as never,
       updater,
     });
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
     updater.emit("update-downloaded", { version: "1.2.3" });
     await vi.advanceTimersByTimeAsync(2 * 60_000);
     const beforeCancel = Date.now();

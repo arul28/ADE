@@ -122,6 +122,62 @@ describe("preload Attention Notch bridge", () => {
   });
 });
 
+describe("preload update preferences bridge", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  it("routes preference reads and writes through their typed IPC channels", async () => {
+    const savedPreferences = {
+      automaticInstall: true,
+      onlyWhenIdle: false,
+    };
+    const invoke = vi.fn(async (channel: string, value?: unknown) => {
+      if (channel === IPC.updateGetPreferences) {
+        return { automaticInstall: false, onlyWhenIdle: true };
+      }
+      if (channel === IPC.updateSetPreferences) return value;
+      return undefined;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.updateGetPreferences()).resolves.toEqual({
+      automaticInstall: false,
+      onlyWhenIdle: true,
+    });
+    await expect(bridge.updateSetPreferences(savedPreferences)).resolves.toEqual(
+      savedPreferences,
+    );
+    expect(invoke).toHaveBeenCalledWith(IPC.updateGetPreferences);
+    expect(invoke).toHaveBeenCalledWith(
+      IPC.updateSetPreferences,
+      savedPreferences,
+    );
+  });
+});
+
 describe("preload OAuth bridge", () => {
   beforeEach(() => {
     vi.resetModules();
