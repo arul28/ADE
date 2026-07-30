@@ -410,7 +410,7 @@ ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
-ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # --type subagent|peer|none: cosmetic relationship + completion-report policy — subagent wakes the parent on completion, peer leaves a quiet note, none (default) is silent; a typed agent is still a full agent
+ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # --type subagent|peer|none: cosmetic relationship + completion-report policy — subagent completion context steers an active parent or wakes an idle parent, peer leaves a quiet note, none (default) is silent; a typed agent is still a full agent
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals; shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json

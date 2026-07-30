@@ -479,8 +479,8 @@ export type AgentChatUnprocessedMessageResolutionMetadata = {
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
-  /** Rides the `subagent` completion wake so the renderer can render the
-   * "ADE woke this chat" divider off a typed shape (mirrors `scheduledWake`). */
+  /** Rides a `subagent` completion delivery so the renderer can render its
+   * typed completion divider whether it steers an active turn or wakes an idle chat. */
   spawnCompletion?: AgentChatSpawnCompletion;
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;

@@ -1406,6 +1406,40 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("labels an inline subagent completion as returned context, not a wake", () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Your subagent finished.",
+          turnId: "turn-active",
+          deliveryState: "inline",
+          metadata: {
+            spawnCompletion: {
+              childSessionId: "child-subagent-1",
+              childTitle: "Review agent",
+              spawnKind: "subagent",
+              status: "completed",
+              summary: "Review complete.",
+            },
+          },
+        },
+      },
+    ], { sessionId: "parent-session" });
+
+    expect(screen.getByText("Subagent returned")).toBeTruthy();
+    expect(screen.queryByText("ADE woke this chat")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review complete.*open/i }));
+    const navEvent = dispatchSpy.mock.calls
+      .map(([evt]) => evt)
+      .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
+    expect(navEvent?.detail).toMatchObject({ sessionId: "child-subagent-1" });
+  });
+
   it("renders a spawn_completed peer notice as a quiet chip that navigates to the child", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     renderMessageList([

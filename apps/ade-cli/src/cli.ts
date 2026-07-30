@@ -1422,7 +1422,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --lane-name <name>     Explicit name for an auto-created lane.
     --base <branch>        Optional base branch for an auto-created lane.
     --type <subagent|peer|none>
-                           Cosmetic relationship + completion-report policy; a typed agent is a full agent. subagent = ADE wakes you when it finishes; peer = quiet note; none (default) = no report.
+                           Cosmetic relationship + completion-report policy; a typed agent is a full agent. subagent = completion context steers an active parent or wakes an idle parent; peer = quiet note; none (default) = no report.
     --provider <name>      claude | codex | cursor | droid | opencode. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
@@ -1455,7 +1455,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
-  --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent wakes the parent, peer leaves a quiet note, and none (default) sends no report.
+  --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent completion context steers an active parent or wakes an idle parent, peer leaves a quiet note, and none (default) sends no report.
 
   Spawn lineage: when run from a tracked agent shell (ADE_CHAT_SESSION_ID set),
   the new session links back to the spawning chat. In CLI mode, the terminal

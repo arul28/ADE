@@ -31157,7 +31157,7 @@ describe("createAgentChatService", () => {
       expect(streamCall).toBe(2);
     });
 
-    it("defers wake messages to the active Claude turn boundary", async () => {
+    it("defers scheduled Claude wakes but steers subagent completions inline", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -31238,25 +31238,33 @@ describe("createAgentChatService", () => {
       expect(queued?.event.metadata?.scheduledWake).toBeUndefined();
       expect(send.mock.calls.some(([payload]) => JSON.stringify(payload).includes("Check PR CI"))).toBe(false);
 
-      const childCompletion = await service.messageSession({
-        sessionId: session.id,
-        text: "Your subagent finished.",
-        kind: "wake",
-        metadata: {
-          spawnCompletion: {
-            childSessionId: "child-1",
-            childTitle: "Review agent",
-            spawnKind: "subagent",
-            status: "completed",
-            summary: "Review complete.",
+      const childCompletion = await service.messageSession(
+        {
+          sessionId: session.id,
+          text: "Your subagent finished.",
+          kind: "wake",
+          metadata: {
+            spawnCompletion: {
+              childSessionId: "child-1",
+              childTitle: "Review agent",
+              spawnKind: "subagent",
+              status: "completed",
+              summary: "Review complete.",
+            },
           },
         },
-      });
+        { trustedSpawnCompletion: true },
+      );
       expect(childCompletion).toMatchObject({
-        routedAction: "sendMessage",
-        delivery: "queued",
-        queued: true,
+        routedAction: "steer",
+        delivery: "delivered",
+        queued: false,
       });
+      expect(send.mock.calls.map(([payload]) => payload).find((payload) =>
+        typeof payload === "object"
+        && payload?.priority === "next"
+        && JSON.stringify(payload).includes("Your subagent finished.")
+      )).toBeDefined();
 
       finishActiveTurn();
       await activeTurn;
@@ -31270,7 +31278,7 @@ describe("createAgentChatService", () => {
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Check PR CI"));
     });
 
-    it("queues an active Codex wake and dispatches it as a new turn at the boundary", async () => {
+    it("defers scheduled Codex wakes but steers subagent completions into the active turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -31307,6 +31315,39 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
 
+      const childCompletion = await service.messageSession(
+        {
+          sessionId: session.id,
+          text: "Your subagent finished.",
+          kind: "wake",
+          metadata: {
+            spawnCompletion: {
+              childSessionId: "child-1",
+              childTitle: "Review agent",
+              spawnKind: "subagent",
+              status: "completed",
+              summary: "Review complete.",
+            },
+          },
+        },
+        { trustedSpawnCompletion: true },
+      );
+      expect(childCompletion).toMatchObject({
+        routedAction: "steer",
+        delivery: "delivered",
+        queued: false,
+      });
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "turn/steer",
+          params: expect.objectContaining({
+            input: expect.arrayContaining([
+              expect.objectContaining({ text: expect.stringContaining("Your subagent finished.") }),
+            ]),
+          }),
+        }),
+      ]));
+
       mockState.emitCodexPayload({
         method: "turn/completed",
         params: { turn: { id: "turn-1", status: "completed" } },
@@ -31321,7 +31362,7 @@ describe("createAgentChatService", () => {
           expect.objectContaining({ text: expect.stringContaining("Check PR CI after the current turn.") }),
         ]),
       }));
-      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/steer")).toHaveLength(1);
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           event: expect.objectContaining({

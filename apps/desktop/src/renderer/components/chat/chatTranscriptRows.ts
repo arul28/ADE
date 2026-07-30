@@ -227,10 +227,9 @@ export type ScheduledWakeDividerRenderEvent = {
 };
 
 /**
- * Header row rendered above a synthetic `wake` turn ADE delivered when a spawned
- * `subagent` finished (`user_message.metadata.spawnCompletion`). Mirrors the
- * scheduled-wake divider treatment; carries the child session id so the row's
- * `[open ›]` affordance navigates to the finished child.
+ * Header row rendered above a completion message delivered when a spawned
+ * `subagent` finished (`user_message.metadata.spawnCompletion`). Carries the
+ * child session id so the row's `[open ›]` affordance navigates to the child.
  * Row key: `spawn-wake:${childSessionId}:${turnId}`.
  */
 export type SpawnWakeDividerRenderEvent = {
@@ -1461,10 +1460,10 @@ export function appendCollapsedChatTranscriptEvent(
         },
       });
     }
-    // A spawned `subagent` that finished delivers a `wake` turn carrying a
-    // `spawnCompletion` metadata payload — render a distinct "ADE woke this chat"
-    // header above the synthetic turn. Read the typed slot; keep runtime guards
-    // since transcript payloads arrive off the wire.
+    // A spawned `subagent` that finished delivers a message carrying a
+    // `spawnCompletion` metadata payload — render a distinct completion header
+    // whether it steered the active turn or woke an idle chat. Read the typed
+    // slot; keep runtime guards since transcript payloads arrive off the wire.
     const completion = event.metadata?.spawnCompletion;
     if (completion) {
       const childSessionId = completion.childSessionId?.trim() ?? "";
