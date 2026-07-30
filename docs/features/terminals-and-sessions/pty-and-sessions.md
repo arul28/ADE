@@ -159,7 +159,9 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   rows). Flushed on PTY exit, on resize, and on every
   `terminal.preview` call.
 - initial input: `initialInputTimer` — deferred initial-input write for
-  callers that pass `args.initialInput` with an `initialInputDelayMs`
+  callers that pass `args.initialInput` with an `initialInputDelayMs`;
+  `userInputGeneration` advances on every user write so a deferred launch
+  prompt can be cancelled if the user takes control first
 - live session resync: `lastSessionResyncCheckAt` — last time the PTY
   entry re-synced its session row to keep the DB in step with the
   in-memory state
@@ -238,13 +240,19 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     the older pattern where callers embedded the prompt in the provider
     argv or typed it as a post-create PTY write. The timer is cleared
     on `closeEntry` / `dispose` and the callback bails out if the PTY
-    was disposed in the meantime. When `awaitInitialInput` is false, a
-    readiness/write failure is logged and the PTY is preserved; ADE no
-    longer kills or ends the session just because the first input could
-    not be delivered. When a caller explicitly sets `awaitInitialInput`,
-    readiness/write failure is treated as startup failure: the process
-    tree is terminated and the session is ended as `failed`. Returns
-    `{ ptyId, sessionId, pid }`.
+    was disposed in the meantime. Readiness requires the provider's visible
+    composer and 600 ms of stability. Codex gets a 60-second default readiness
+    deadline (other agent CLIs use 20 seconds), and a stable visible Codex
+    composer can satisfy the stability check even while unrelated terminal
+    title/redraw output continues after an MCP startup failure. If a
+    fire-and-forget Codex launch reaches that deadline, ADE preserves the
+    initial prompt and repeats the bounded readiness wait instead of dropping
+    it; the PTY remains open throughout. Any user write during the initial
+    delay or a retry cancels the preserved prompt so ADE cannot overwrite or
+    submit behind a user-authored draft. A caller that explicitly sets
+    `awaitInitialInput` retains fail-fast startup semantics: a readiness/write
+    failure terminates the process tree and ends the session as `failed`.
+    Returns `{ ptyId, sessionId, pid }`.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then

@@ -161,6 +161,7 @@ const AGENT_CLI_SUBMIT_DELAY_MS = 25;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
+const CODEX_CLI_READY_TIMEOUT_MS = 60_000;
 const AGENT_CLI_READY_POLL_MS = 100;
 const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
@@ -611,6 +612,8 @@ type PtyEntry = {
   processOutputData: ((data: string) => void) | null;
   /** Epoch ms of the last user write; shortens the data batch window. */
   lastUserInputAt: number;
+  /** Monotonic generation used to detect user takeover of deferred input. */
+  userInputGeneration: number;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   runtimeWindowTitleScanBuffer: string;
@@ -3778,21 +3781,37 @@ export function createPtyService({
     timeoutMs = AGENT_CLI_READY_TIMEOUT_MS,
   ): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
+    let stableReadyText = "";
+    let stableReadySince = 0;
     while (Date.now() < deadline) {
-      if (agentCliInputReadyNow(sessionId, provider)) return true;
-      if (!liveEntryBySessionId(sessionId)) return false;
+      const readiness = agentCliInputReadiness(sessionId, provider);
+      if (!readiness) return false;
+      if (readiness.readyNow) return true;
+      if (provider === "codex" && readiness.markerVisible) {
+        if (readiness.text === stableReadyText) {
+          if (stableReadySince > 0 && Date.now() - stableReadySince >= AGENT_CLI_READY_QUIET_MS) {
+            return true;
+          }
+        } else {
+          stableReadyText = readiness.text;
+          stableReadySince = Date.now();
+        }
+      } else {
+        stableReadyText = "";
+        stableReadySince = 0;
+      }
       await delay(AGENT_CLI_READY_POLL_MS);
     }
     logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider, timeoutMs });
     return false;
   };
 
-  const agentCliInputReadyNow = (
+  const agentCliInputReadiness = (
     sessionId: string,
     provider: TerminalResumeProvider,
-  ): boolean => {
+  ): { markerVisible: boolean; readyNow: boolean; text: string } | null => {
     const live = liveEntryBySessionId(sessionId);
-    if (!live || live[1].disposed) return false;
+    if (!live || live[1].disposed) return null;
     const entry = live[1];
     const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
     const visibleText = entry.terminalSnapshot
@@ -3803,8 +3822,19 @@ export function createPtyService({
     const readinessText = visibleText.trim().length > 0 ? visibleText : outputTail;
     const runtime = runtimeStates.get(sessionId);
     const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
-    return providerReadyMarkerVisible(provider, readinessText)
-      && quietForMs >= AGENT_CLI_READY_QUIET_MS;
+    const markerVisible = providerReadyMarkerVisible(provider, readinessText);
+    return {
+      markerVisible,
+      readyNow: markerVisible && quietForMs >= AGENT_CLI_READY_QUIET_MS,
+      text: readinessText,
+    };
+  };
+
+  const agentCliInputReadyNow = (
+    sessionId: string,
+    provider: TerminalResumeProvider,
+  ): boolean => {
+    return agentCliInputReadiness(sessionId, provider)?.readyNow ?? false;
   };
 
   const writeAgentCliInput = async (
@@ -4101,6 +4131,7 @@ export function createPtyService({
 
   const markPtyUserInput = (entry: PtyEntry): void => {
     entry.lastUserInputAt = Date.now();
+    entry.userInputGeneration += 1;
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       clearTrackedCliTurnStartMarkers(entry.sessionId);
       entry.attentionRequested = false;
@@ -4606,6 +4637,7 @@ export function createPtyService({
         pendingOutputHighSurrogate: "",
         processOutputData: null,
         lastUserInputAt: 0,
+        userInputGeneration: 0,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
@@ -4732,9 +4764,13 @@ export function createPtyService({
 
       if (requestedInitialInput.length > 0) {
         const normalizedInitialInput = requestedInitialInput.replace(/\r\n?/g, "\n");
+        const provider = providerFromTool(toolTypeHint);
+        const defaultInitialInputReadyTimeoutMs = provider === "codex"
+          ? CODEX_CLI_READY_TIMEOUT_MS
+          : AGENT_CLI_READY_TIMEOUT_MS;
         const requestedInitialInputReadyTimeoutMs = args.initialInputReadyTimeoutMs;
         const parsedInitialInputReadyTimeoutMs = Math.floor(
-          Number(requestedInitialInputReadyTimeoutMs ?? AGENT_CLI_READY_TIMEOUT_MS) || 0,
+          Number(requestedInitialInputReadyTimeoutMs ?? defaultInitialInputReadyTimeoutMs) || 0,
         );
         const initialInputReadyTimeoutMs = Math.max(
           AGENT_CLI_READY_TIMEOUT_MS,
@@ -4756,24 +4792,57 @@ export function createPtyService({
             maxTimeoutMs: 300_000,
           });
         }
+        const initialInputUserGeneration = entry.userInputGeneration;
         const writeInitialInput = async (): Promise<void> => {
           entry.initialInputTimer = null;
           if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
-          const provider = providerFromTool(toolTypeHint);
+          const userTookControl = (): boolean => entry.userInputGeneration !== initialInputUserGeneration;
           try {
             if (provider) {
-              const ready = await waitForAgentCliInputReady(sessionId, provider, initialInputReadyTimeoutMs);
-              if (!ready) {
-                logger.warn("pty.initial_input_skipped_not_ready", {
+              while (!await waitForAgentCliInputReady(sessionId, provider, initialInputReadyTimeoutMs)) {
+                if (entry.disposed || !liveEntryBySessionId(sessionId)) {
+                  throw new Error("Terminal session closed before initial input could be sent.");
+                }
+                if (userTookControl()) {
+                  logger.info("pty.initial_input_cancelled_user_takeover", {
+                    ptyId,
+                    sessionId,
+                    cwd,
+                    toolType: toolTypeHint,
+                    provider,
+                  });
+                  return;
+                }
+                if (args.awaitInitialInput || provider !== "codex") {
+                  logger.warn("pty.initial_input_skipped_not_ready", {
+                    ptyId,
+                    sessionId,
+                    cwd,
+                    toolType: toolTypeHint,
+                    provider,
+                  });
+                  throw new Error(`${provider} CLI did not become ready; initial input was not sent.`);
+                }
+                logger.warn("pty.initial_input_retrying_not_ready", {
+                  ptyId,
+                  sessionId,
+                  cwd,
+                  toolType: toolTypeHint,
+                  provider,
+                  timeoutMs: initialInputReadyTimeoutMs,
+                });
+              }
+              if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
+              if (userTookControl()) {
+                logger.info("pty.initial_input_cancelled_user_takeover", {
                   ptyId,
                   sessionId,
                   cwd,
                   toolType: toolTypeHint,
                   provider,
                 });
-                throw new Error(`${provider} CLI did not become ready; initial input was not sent.`);
+                return;
               }
-              if (entry.disposed) throw new Error("Terminal session closed before initial input could be sent.");
             }
             if (provider) {
               const submittedInitialInput = normalizedInitialInput.trim();
