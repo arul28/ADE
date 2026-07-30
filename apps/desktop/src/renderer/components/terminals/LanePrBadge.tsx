@@ -1,6 +1,7 @@
 import React from "react";
 import type { PrSummary } from "../../../shared/types";
 import { lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
+import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 /**
  * Compact PR status chip for a lane in the Work sidebar: state-coloured dot +
@@ -21,6 +22,9 @@ import { lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
 export function LanePrBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }) {
   const color = lanePrStateColor(pr.state);
   const label = lanePrStateLabel(pr.state);
+  const stackDescription = pr.stack
+    ? `, position ${pr.stack.position} of ${pr.stack.size} in GitHub Stack #${pr.stack.number}`
+    : "";
   const open = (event: React.SyntheticEvent) => {
     event.stopPropagation();
     onOpen();
@@ -37,11 +41,12 @@ export function LanePrBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void 
         }
       }}
       className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
-      title={`Pull request #${pr.githubPrNumber} · ${label}`}
-      aria-label={`Pull request #${pr.githubPrNumber}, ${label}`}
+      title={`Pull request #${pr.githubPrNumber} · ${label}${stackDescription}`}
+      aria-label={`Pull request #${pr.githubPrNumber}, ${label}${stackDescription}`}
     >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
       <span className="tabular-nums">#{pr.githubPrNumber}</span>
+      <GitHubStackBadge stack={pr.stack} compact bare />
       <span style={{ color }}>{label}</span>
     </span>
   );

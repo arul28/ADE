@@ -343,6 +343,8 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
+  AddGitHubPrStackPullRequestsArgs,
+  CreateGitHubPrStackArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
   SimulateIntegrationArgs,
@@ -388,6 +390,7 @@ import type {
   DismissIntegrationCleanupArgs,
   DraftPrDescriptionArgs,
   GitHubPrSnapshot,
+  GitHubPrStack,
   LandPrArgs,
   LandResult,
   UpdateBranchArgs,
@@ -395,6 +398,7 @@ import type {
   LandStackArgs,
   LandStackEnhancedArgs,
   LinkPrToLaneArgs,
+  ListGitHubPrStacksArgs,
   ListIntegrationWorkflowsArgs,
   PrActionRun,
   PrActivityEvent,
@@ -420,6 +424,7 @@ import type {
   PrStatus,
   PrSummary,
   PrWithConflicts,
+  UnstackGitHubPrStackArgs,
   PrDeployment,
   PrAiSummary,
   PostPrReviewCommentArgs,
@@ -2446,6 +2451,21 @@ declare global {
           includeExternalClosed?: boolean;
           historyPageLimit?: number;
         }) => Promise<GitHubPrSnapshot>;
+        listGitHubStacks: (
+          args?: ListGitHubPrStacksArgs,
+        ) => Promise<GitHubPrStack[]>;
+        syncGitHubStacks: (
+          args?: ListGitHubPrStacksArgs,
+        ) => Promise<GitHubPrStack[]>;
+        createGitHubStack: (
+          args: CreateGitHubPrStackArgs,
+        ) => Promise<GitHubPrStack>;
+        addGitHubStackPullRequests: (
+          args: AddGitHubPrStackPullRequestsArgs,
+        ) => Promise<GitHubPrStack>;
+        unstackGitHubStack: (
+          args: UnstackGitHubPrStackArgs,
+        ) => Promise<GitHubPrStack | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
         ) => Promise<IntegrationProposal[]>;

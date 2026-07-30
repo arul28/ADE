@@ -481,6 +481,8 @@ describe("prService.getForLane", () => {
     laneOrLanes: ReturnType<typeof makeFakeLane> | ReturnType<typeof makeFakeLane>[],
     rows: Array<ReturnType<typeof makePrRow>>,
     projectionRows: Array<ReturnType<typeof makeGithubProjectionRow>> = [],
+    stackRows: Array<Record<string, unknown>> = [],
+    stackEntryRows: Array<Record<string, unknown>> = [],
   ) {
     const lanes = Array.isArray(laneOrLanes) ? laneOrLanes : [laneOrLanes];
     const db = makeMockDb();
@@ -499,6 +501,12 @@ describe("prService.getForLane", () => {
     });
     db.all.mockImplementation((sql: string, params: unknown[] = []) => {
       const text = String(sql);
+      if (text.includes("from github_pr_stack_entries")) {
+        return stackEntryRows;
+      }
+      if (text.includes("from github_pr_stacks")) {
+        return stackRows;
+      }
       if (text.includes("from github_pr_projections")) {
         const mappedKeys = new Set(rows.map((row) => (
           `${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`
@@ -540,6 +548,70 @@ describe("prService.getForLane", () => {
         mergedAt: "2026-07-15T00:00:00Z",
       }),
     ]);
+  });
+
+  it("includes native GitHub stack membership in lane and list summaries", () => {
+    const lane = makeFakeLane({ branchRef: "refs/heads/stack-ui" });
+    const service = buildGetForLaneService(
+      lane,
+      [makePrRow({
+        lane_id: lane.id,
+        github_pr_number: 91,
+        head_branch: "stack-ui",
+      })],
+      [],
+      [{
+        project_id: "proj-1",
+        repo_owner: REPO.owner,
+        repo_name: REPO.name,
+        github_stack_number: 18,
+        github_stack_id: "5018",
+        github_node_id: "STACK_node18",
+        base_branch: "main",
+        is_open: 1,
+        created_at: "2026-07-30T10:00:00Z",
+        synced_at: "2026-07-30T10:01:00Z",
+        last_error: null,
+      }],
+      [
+        {
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_stack_number: 18,
+          github_pr_number: 90,
+          position: 1,
+          state: "open",
+          is_draft: 0,
+          merged_at: null,
+          head_branch: "stack-core",
+          head_sha: "sha-core",
+        },
+        {
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_stack_number: 18,
+          github_pr_number: 91,
+          position: 2,
+          state: "open",
+          is_draft: 0,
+          merged_at: null,
+          head_branch: "stack-ui",
+          head_sha: "sha-ui",
+        },
+      ],
+    );
+
+    const expectedStack = {
+      id: "5018",
+      number: 18,
+      size: 2,
+      position: 2,
+      baseBranch: "main",
+    };
+    expect(service.getForLane(lane.id)?.stack).toEqual(expectedStack);
+    expect(service.listAll()[0]?.stack).toEqual(expectedStack);
   });
 
   it("does not surface a PR for primary when primary is on its base branch", () => {

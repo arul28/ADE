@@ -21,6 +21,7 @@ import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -376,6 +377,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       >
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", prStateDot(linkedPr.state))} />
         <span>{label}</span>
+        <GitHubStackBadge stack={linkedPr.stack} compact bare />
         {checksIcon(linkedPr.checksStatus, linkedPr.state)}
         <CaretRight
           size={9}

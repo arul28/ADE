@@ -184,10 +184,13 @@ const layoutPr = {
   createdAt: "2026-01-01T00:00:00Z",
 } as unknown as PrWithConflicts;
 
-function renderRails(files: Array<{ filename: string; additions: number; deletions: number }> = []) {
+function renderRails(
+  files: Array<{ filename: string; additions: number; deletions: number }> = [],
+  pr: PrWithConflicts = layoutPr,
+) {
   return render(
     <PrDetailTimelineRails
-      pr={layoutPr}
+      pr={pr}
       detail={null}
       status={null}
       checks={[]}
@@ -251,5 +254,23 @@ describe("PrDetailTimelineRails — Overview B′ layout", () => {
     expect(screen.getByTestId("pr-detail-timeline-rails")).toBeTruthy();
     expect(screen.getByTestId("pr-detail-rail-separator-pr-overview-left-separator")).toBeTruthy();
     expect(screen.getByTestId("pr-detail-rail-separator-pr-overview-right-separator")).toBeTruthy();
+  });
+
+  it("replaces ADE merge controls with GitHub guidance for a stacked PR", () => {
+    renderRails([], {
+      ...layoutPr,
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      stack: {
+        id: "stack-18",
+        number: 18,
+        size: 3,
+        position: 2,
+        baseBranch: "main",
+      },
+    });
+
+    expect(screen.queryByTestId("pr-detail-merge-rail")).toBeNull();
+    expect(screen.getByText("GitHub Stack 2 of 3")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review and merge on GitHub" })).toBeTruthy();
   });
 });

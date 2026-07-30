@@ -164,6 +164,27 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     listSnapshots: (args?: unknown) => read("prs.listSnapshots", args, []),
     getGitHubSnapshot: (args?: unknown) => read("prs.getGitHubSnapshot", args, null),
+    listGitHubStacks: (args?: unknown) => read("prs.listGithubStacks", args, []),
+    syncGitHubStacks: async (args?: unknown) => {
+      const result = await call("prs.syncGithubStacks", args, [], false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    createGitHubStack: async (args: unknown) => {
+      const result = await call("prs.createGithubStack", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    addGitHubStackPullRequests: async (args: unknown) => {
+      const result = await call("prs.addGithubStackPullRequests", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    unstackGitHubStack: async (args: unknown) => {
+      const result = await call("prs.unstackGithubStack", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void) => events.on("prsEvent", listener as never),
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
