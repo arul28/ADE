@@ -261,6 +261,7 @@ describe("createSyncRemoteCommandService", () => {
       "prs.getComments",
       "prs.getFiles",
       "prs.getGitHubSnapshot",
+      "prs.listGithubStacks",
       "prs.getReviewThreads",
       "prs.getActionRuns",
       "prs.getActivity",
@@ -420,6 +421,41 @@ describe("createSyncRemoteCommandService", () => {
       revalidate: false,
       includeStateCounts: true,
     });
+  });
+
+  it("routes GitHub stack reads and mutations with typed repository arguments", async () => {
+    const listGithubStacks = vi.fn().mockReturnValue([]);
+    const createGithubStack = vi.fn().mockResolvedValue({ number: 12 });
+    const unstackGithubStack = vi.fn().mockResolvedValue(null);
+    const { service } = createService({
+      prService: {
+        listGithubStacks,
+        createGithubStack,
+        unstackGithubStack,
+      },
+    });
+
+    await service.execute(makePayload("prs.listGithubStacks", {
+      repoOwner: "arul28",
+      repoName: "ADE",
+    }));
+    await service.execute(makePayload("prs.createGithubStack", {
+      repoOwner: "arul28",
+      repoName: "ADE",
+      pullRequests: [964, 965],
+    }));
+    await service.execute(makePayload("prs.unstackGithubStack", {
+      stackNumber: 12,
+    }));
+
+    expect(listGithubStacks).toHaveBeenCalledWith({
+      repo: { owner: "arul28", name: "ADE" },
+    });
+    expect(createGithubStack).toHaveBeenCalledWith({
+      repo: { owner: "arul28", name: "ADE" },
+      pullRequests: [964, 965],
+    });
+    expect(unstackGithubStack).toHaveBeenCalledWith({ stackNumber: 12 });
   });
 
   it("serves unmapped PR detail through one coordinate-based mobile command", async () => {

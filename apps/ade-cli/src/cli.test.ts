@@ -6217,6 +6217,60 @@ describe("ADE CLI", () => {
     ])).toThrow("--history-page-limit must be a positive integer.");
   });
 
+  it("maps typed GitHub stack commands to PR actions", () => {
+    const create = buildCliPlan([
+      "prs",
+      "stacks",
+      "create",
+      "--owner",
+      "arul28",
+      "--repo",
+      "ADE",
+      "--pulls",
+      "964,965",
+    ]);
+    expect(create.kind).toBe("execute");
+    if (create.kind !== "execute") return;
+    expect(create.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "createGithubStack",
+        args: {
+          repoOwner: "arul28",
+          repoName: "ADE",
+          pullRequests: [964, 965],
+        },
+      },
+    });
+
+    const unstack = buildCliPlan([
+      "prs",
+      "stacks",
+      "unstack",
+      "--stack",
+      "12",
+    ]);
+    expect(unstack.kind).toBe("execute");
+    if (unstack.kind !== "execute") return;
+    expect(unstack.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "unstackGithubStack",
+        args: { stackNumber: 12 },
+      },
+    });
+
+    expect(() => buildCliPlan([
+      "prs",
+      "stacks",
+      "create",
+      "--pulls",
+      "964,nope",
+    ])).toThrow("--pulls must contain only positive pull request numbers.");
+  });
+
   it("maps discoverable git status, sync, and conflict helpers to existing actions", () => {
     const fullStatus = buildCliPlan([
       "git",

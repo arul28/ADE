@@ -465,6 +465,97 @@ export function createGithubStackStore(args: {
     });
   };
 
+  const normalizePullRequests = (
+    pullRequests: number[],
+    minimum: number,
+  ): number[] => {
+    const normalized = pullRequests.map((value) => Number(value));
+    if (
+      normalized.length < minimum
+      || normalized.length > 100
+      || normalized.some((value) => !Number.isInteger(value) || value <= 0)
+      || new Set(normalized).size !== normalized.length
+    ) {
+      throw new Error(
+        minimum === 2
+          ? "A GitHub stack requires 2 to 100 distinct pull request numbers."
+          : "Add 1 to 100 distinct pull request numbers to the stack.",
+      );
+    }
+    return normalized;
+  };
+
+  const create = async (
+    repo: GitHubRepoRef,
+    pullRequests: number[],
+  ): Promise<GitHubPrStack> => {
+    const normalized = normalizePullRequests(pullRequests, 2);
+    return await withRepoMutationLock(repo, async () => {
+      const { data } = await githubService.apiRequest<unknown>({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/stacks`,
+        body: { pull_requests: normalized },
+      });
+      return replace(repo, data);
+    });
+  };
+
+  const addPullRequests = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+    pullRequests: number[],
+  ): Promise<GitHubPrStack> => {
+    if (!Number.isInteger(stackNumber) || stackNumber <= 0) {
+      throw new Error("A positive GitHub stack number is required.");
+    }
+    const normalized = normalizePullRequests(pullRequests, 1);
+    return await withRepoMutationLock(repo, async () => {
+      const { data } = await githubService.apiRequest<unknown>({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}/add`,
+        body: { pull_requests: normalized },
+      });
+      return replace(repo, data);
+    });
+  };
+
+  const unstack = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+  ): Promise<GitHubPrStack | null> => {
+    if (!Number.isInteger(stackNumber) || stackNumber <= 0) {
+      throw new Error("A positive GitHub stack number is required.");
+    }
+    return await withRepoMutationLock(repo, async () => {
+      const { data, response } = await githubService.apiRequest<unknown>({
+        method: "POST",
+        path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}/unstack`,
+      });
+      if (response?.status !== 204) return replace(repo, data);
+      db.run("begin immediate");
+      try {
+        db.run(
+          `delete from github_pr_stacks
+            where project_id = ?
+              and lower(repo_owner) = lower(?)
+              and lower(repo_name) = lower(?)
+              and github_stack_number = ?`,
+          [projectId, repo.owner, repo.name, stackNumber],
+        );
+        db.run("commit");
+      } catch (error) {
+        try {
+          db.run("rollback");
+        } catch {
+          // Preserve the original persistence error.
+        }
+        throw error;
+      }
+      args.onSnapshotChanged();
+      return null;
+    });
+  };
+
   const knownStackNumberForPr = (
     repo: GitHubRepoRef,
     githubPrNumber: number,
@@ -483,6 +574,8 @@ export function createGithubStackStore(args: {
   };
 
   return {
+    addPullRequests,
+    create,
     knownStackNumberForPr,
     list,
     membershipsByPr,
@@ -490,5 +583,6 @@ export function createGithubStackStore(args: {
     reconcile,
     reconcileRepository,
     scheduleReconcile,
+    unstack,
   };
 }
