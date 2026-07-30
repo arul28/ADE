@@ -87,8 +87,12 @@ export function DraftMachinePicker({
 
   if (machines.length < 2) return null;
 
-  const selected = machines.find((machine) => machine.id === selectedMachineId) ?? machines[0];
-  if (!selected) return null;
+  const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
+  const displayed = selected ?? machines[0];
+  if (!displayed) return null;
+  const triggerLabel = selected
+    ? `Choose machine, currently ${selected.name}`
+    : `Choose machine, current machine unavailable; fallback ${displayed.name}`;
 
   return (
     <div className="relative inline-flex shrink-0">
@@ -105,7 +109,7 @@ export function DraftMachinePicker({
           data-draft-machine-picker
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={`Choose machine, currently ${selected.name}`}
+          aria-label={triggerLabel}
           disabled={disabled}
           onClick={() => setOpen((current) => !current)}
           className={cn(
@@ -118,7 +122,7 @@ export function DraftMachinePicker({
           )}
         >
           <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
-          <span className="min-w-0 truncate">{selected.name}</span>
+          <span className="min-w-0 truncate">{displayed.name}</span>
           <CaretDown
             size={9}
             weight="bold"
@@ -146,7 +150,7 @@ export function DraftMachinePicker({
                   }}
                 >
                   {machines.map((machine) => {
-                    const active = machine.id === selected.id;
+                    const active = machine.id === selectedMachineId;
                     return (
                       <button
                         key={machine.id}

@@ -681,6 +681,9 @@ describe("ModelPicker", () => {
 
     const chip = await within(await findModelRow(FAST_GPT.id))
       .findByRole("button", { name: /Fast mode for/i });
+    expect(chip.tabIndex).toBe(0);
+    chip.focus();
+    expect(document.activeElement).toBe(chip);
     expect(chip.getAttribute("aria-pressed")).toBe("true");
     fireEvent.keyDown(chip, { key: "Enter" });
     expect(onFastModeChange).toHaveBeenCalledWith(false);

@@ -11950,6 +11950,8 @@ export function AgentChatPane({
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
               }
+              const previousModelId = modelId;
+              const previousFastMode = fastModeRef.current;
               if (options) {
                 setFastModeState(options.fastMode);
               }
@@ -12023,6 +12025,8 @@ export function AgentChatPane({
                 }
                 void refreshSessions().catch(() => {});
               }).catch((err) => {
+                setModelId(previousModelId);
+                setFastModeState(previousFastMode);
                 void refreshSessions().catch(() => {});
                 setError(err instanceof Error ? err.message : String(err));
               }).finally(() => {
@@ -13013,7 +13017,7 @@ export function AgentChatPane({
                                   long instead of growing with machine count. */}
                               <DraftMachinePicker
                                 machines={laneMachineOptions}
-                                selectedMachineId={selectedDraftMachine?.id ?? boundLaneMachineId}
+                                selectedMachineId={selectedDraftMachine?.id ?? null}
                                 onChange={handleDraftMachineChange}
                                 disabled={shellLaunchBusy}
                               />

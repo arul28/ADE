@@ -4317,7 +4317,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the committed model visible when the backend rejects a switch", async () => {
-    const session = buildSession("session-1", { status: "idle" });
+    const session = buildSession("session-1", { status: "idle", fastMode: true });
     const updateSession = vi.fn().mockRejectedValue(new Error("switch failed"));
     const warmupModel = vi.fn().mockResolvedValue(undefined);
     installAdeMocks({
@@ -4334,6 +4334,7 @@ describe("AgentChatPane submit recovery", () => {
     const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
     expect(trigger.textContent ?? "").toContain(currentLabel);
+    expect(trigger.textContent ?? "").toContain("Fast");
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -4349,6 +4350,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     });
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain("Fast");
     expect(warmupModel).not.toHaveBeenCalled();
   });
 
@@ -5416,6 +5418,7 @@ describe("AgentChatPane submit recovery", () => {
     };
     const switchProjectToPath = vi.fn();
     const switchRemoteProject = vi.fn();
+    const onDraftMachineChange = vi.fn();
     const remoteLanes = [{
       // Primary lane ids are intentionally duplicated across machines. The
       // machine-qualified picker value must still route creation to This Mac.
@@ -5490,6 +5493,8 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({
       lanes: remoteLanes,
       onSessionCreated,
+      initialDraftMachineId: "disconnected-studio",
+      onDraftMachineChange,
       project: {
         rootPath: remoteBinding.rootPath,
         displayName: remoteBinding.displayName,
@@ -5507,7 +5512,14 @@ describe("AgentChatPane submit recovery", () => {
     // Machine and lane are separate shelf controls now, so routing an
     // auto-create launch onto This Mac is two choices rather than one
     // machine-qualified row inside the lane list.
-    fireEvent.click(await screen.findByRole("button", { name: /^Choose machine, currently/ }));
+    const unavailableTrigger = await screen.findByRole("button", {
+      name: /current machine unavailable; fallback Mac Studio/i,
+    });
+    fireEvent.click(unavailableTrigger);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
+    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
+
+    fireEvent.click(await screen.findByRole("button", { name: /currently Mac Studio/i }));
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /This Mac/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByText("Auto-create lane"));
