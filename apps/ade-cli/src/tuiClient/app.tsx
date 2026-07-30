@@ -8469,6 +8469,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             state: pr.state,
             checksPassed: pr.checksPassed,
             checksTotal: pr.checksTotal,
+            stack: pr.stack ?? null,
           };
         }
         setPrByLaneId(next);

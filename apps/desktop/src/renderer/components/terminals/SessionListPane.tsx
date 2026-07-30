@@ -1741,6 +1741,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
     const foreignRow = options?.foreignRow;
+    const sessionLane = foreignRow?.lane ?? laneById.get(session.laneId) ?? null;
+    const sessionPr = !foreignRow && sessionLane
+      ? selectPrimaryLanePr(sessionLane, prsByLaneId.get(session.laneId) ?? [])
+      : null;
     // A card on an unreachable machine is shown as last reported and every
     // action on it would fail, so it is inert and says which machine is gone.
     const disabledReason = foreignRow
@@ -1756,7 +1760,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       <SessionCard
         key={session.id}
         session={session}
-        lane={foreignRow?.lane ?? laneById.get(session.laneId) ?? null}
+        lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         parentSessionTitle={
           !foreignRow && session.orchestrationParentSessionId
@@ -1796,6 +1800,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         runtimePin={foreignRow?.binding}
         suppressMachineChip={options?.suppressMachineChip}
         deltaEnabled={!foreignRow}
+        githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
         disabledBusy={!foreignRow}
       />

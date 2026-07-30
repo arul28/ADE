@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
+  GitHubPrStackMembership,
   LaneSummary,
   OpenProjectBinding,
   PrSummary,
@@ -60,6 +61,7 @@ import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
+import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -299,6 +301,7 @@ export const SessionCard = React.memo(function SessionCard({
   disabledBusy = true,
   runtimePin = null,
   deltaEnabled = true,
+  githubStack = null,
   showLaneIdentity = false,
   lanePr = null,
   suppressMachineChip = false,
@@ -324,6 +327,8 @@ export const SessionCard = React.memo(function SessionCard({
   runtimePin?: OpenProjectBinding | null;
   /** Foreign cards skip the active-project delta cache. */
   deltaEnabled?: boolean;
+  /** Native GitHub stack context for chats running in this lane. */
+  githubStack?: GitHubPrStackMembership | null;
   /**
    * Lane has exactly one session, so no lane divider renders above it — the
    * card carries the lane identity instead.
@@ -500,6 +505,11 @@ export const SessionCard = React.memo(function SessionCard({
         className="shrink-0 text-muted-fg/55"
         aria-label="Pinned"
       />,
+    );
+  }
+  if (githubStack) {
+    whereParts.push(
+      <GitHubStackBadge key="github-stack" stack={githubStack} compact bare />,
     );
   }
   if (showLaneIdentity && lane) {
