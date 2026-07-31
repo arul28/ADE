@@ -118,7 +118,7 @@ describe("SessionCard orchestration identity", () => {
       />,
     );
 
-    const indicator = screen.getByLabelText("In the active grid");
+    const indicator = screen.getByRole("img", { name: "In the active grid" });
     const status = container.querySelector("[data-session-status-slot]");
     expect(indicator).toBeTruthy();
     expect(status).toBeTruthy();

@@ -821,6 +821,7 @@ export const SessionCard = React.memo(function SessionCard({
   const gridIndicator = gridBadge ? (
     <span
       data-testid="session-grid-indicator"
+      role="img"
       className={cn(
         "inline-flex shrink-0 items-center justify-center",
         gridBadge === "active" ? "text-violet-300" : "text-muted-fg/40",
