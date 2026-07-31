@@ -140,6 +140,7 @@ export function useDraftAttachmentTransfer(args: {
   } = args;
   const previousMachineRef = useRef<(typeof machine & { scopeKey: string }) | null>(null);
   const attachmentOwnerMachineIdRef = useRef<string | null>(null);
+  const lastTransferAttemptRef = useRef<string | null>(null);
   const transferSequenceRef = useRef(0);
   const [pending, setPending] = useState(false);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
@@ -155,13 +156,17 @@ export function useDraftAttachmentTransfer(args: {
     if (!enabled) {
       previousMachineRef.current = null;
       attachmentOwnerMachineIdRef.current = null;
+      lastTransferAttemptRef.current = null;
       transferSequenceRef.current += 1;
       setPending(false);
       setBlockedReason(null);
       return;
     }
     const currentMachine = { ...machine, scopeKey };
-    const previousMachine = previousMachineRef.current;
+    const hasMachineOwnedDraftContent = attachments.some(
+      (attachment) => attachment.type !== "image-url",
+    ) || visualContextCount > 0;
+    let previousMachine = previousMachineRef.current;
     if (!previousMachine || previousMachine.scopeKey !== currentMachine.scopeKey) {
       transferSequenceRef.current += 1;
       setPending(false);
@@ -169,16 +174,35 @@ export function useDraftAttachmentTransfer(args: {
       if (!scopeReady) {
         previousMachineRef.current = null;
         attachmentOwnerMachineIdRef.current = null;
-        attachmentOwnerBindingRef.current = null;
+        lastTransferAttemptRef.current = null;
         return;
       }
       previousMachineRef.current = currentMachine;
-      attachmentOwnerMachineIdRef.current = currentMachine.id;
-      attachmentOwnerBindingRef.current = currentMachine.binding;
+      if (hasMachineOwnedDraftContent) {
+        const ownerBinding = attachmentOwnerBindingRef.current;
+        attachmentOwnerMachineIdRef.current = ownerBinding?.kind === "remote"
+          ? ownerBinding.targetId
+          : ownerBinding?.key === currentMachine.binding?.key
+            ? currentMachine.id
+            : null;
+        if (ownerBinding?.key === currentMachine.binding?.key) return;
+        previousMachine = currentMachine;
+      } else {
+        attachmentOwnerMachineIdRef.current = currentMachine.id;
+        attachmentOwnerBindingRef.current = currentMachine.binding;
+        return;
+      }
+    }
+    // A binding can disappear transiently while a selected machine reconnects.
+    // Do not treat that as a machine transfer: partitioning below removes
+    // non-portable attachments and clears visual context.
+    if (!currentMachine.binding) {
+      lastTransferAttemptRef.current = null;
+      setPending(false);
       return;
     }
-    previousMachineRef.current = currentMachine;
-    if (!shouldTransferDraftAttachments({
+    const ownerBinding = attachmentOwnerBindingRef.current;
+    const machineChanged = shouldTransferDraftAttachments({
       machineId: previousMachine.id,
       bindingKey: previousMachine.binding?.key ?? null,
       scopeKey: previousMachine.scopeKey,
@@ -186,7 +210,18 @@ export function useDraftAttachmentTransfer(args: {
       machineId: currentMachine.id,
       bindingKey: currentMachine.binding?.key ?? null,
       scopeKey: currentMachine.scopeKey,
-    })) return;
+    });
+    const transferAttemptKey = [
+      currentMachine.scopeKey,
+      ownerBinding?.key ?? "unknown-owner",
+      currentMachine.binding.key,
+    ].join("\0");
+    const restoredContentNeedsTransfer = hasMachineOwnedDraftContent
+      && ownerBinding?.key !== currentMachine.binding.key
+      && lastTransferAttemptRef.current !== transferAttemptKey;
+    previousMachineRef.current = currentMachine;
+    if (!machineChanged && !restoredContentNeedsTransfer) return;
+    lastTransferAttemptRef.current = transferAttemptKey;
 
     const {
       portableAttachments,
@@ -214,13 +249,9 @@ export function useDraftAttachmentTransfer(args: {
       attachmentOwnerBindingRef.current = currentMachine.binding;
       return;
     }
-    const ownerMachineId = attachmentOwnerMachineIdRef.current ?? previousMachine.id;
-    const sourceBinding = attachmentOwnerBindingRef.current
+    const ownerMachineId = attachmentOwnerMachineIdRef.current;
+    const sourceBinding = ownerBinding
       ?? (ownerMachineId === previousMachine.id ? previousMachine.binding : null);
-    if (!currentMachine.binding) {
-      setPending(false);
-      return;
-    }
     if (!sourceBinding) {
       setPending(false);
       if (ownerMachineId === currentMachine.id) {

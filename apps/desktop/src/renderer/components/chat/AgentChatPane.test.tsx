@@ -6001,6 +6001,12 @@ describe("AgentChatPane submit recovery", () => {
       executionMode: "focused",
       controls: {},
       attachments: [{ path: "/tmp/project-under-test/spec.md", type: "file" }],
+      attachmentOwnerBinding: {
+        kind: "local",
+        key: "local:/tmp/project-under-test",
+        rootPath: "/tmp/project-under-test",
+        displayName: "project-under-test",
+      },
       contextAttachments: [],
       iosContextItems: [],
       appControlContextItems: [],
@@ -6020,6 +6026,15 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByDisplayValue("Persist this Work draft.")).toBeTruthy();
     expect(screen.getByText("spec.md")).toBeTruthy();
+    await waitFor(() => {
+      expect(JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+        projectRoot: "/tmp/project-under-test",
+        companionStateKey: "draft:lane-1",
+      }))!).attachmentOwnerBinding).toMatchObject({
+        kind: "local",
+        key: "local:/tmp/project-under-test",
+      });
+    });
   });
 
   it("hydrates persisted draft context without keeping screenshot data URLs in storage", async () => {

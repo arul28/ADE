@@ -93,13 +93,13 @@ describe("draft attachment transfer", () => {
       linkedAttachmentPaths: new Set(["/tmp/live-context.png"]),
       iosContextItems: [{
         metadata: { attachmentPath: "/tmp/ios-restored.png" },
-      } as IosElementContextItem],
+      } as unknown as IosElementContextItem],
       appControlContextItems: [{
         metadata: { attachmentPath: "/tmp/app-control-restored.png" },
-      } as AppControlContextItem],
+      } as unknown as AppControlContextItem],
       builtInBrowserContextItems: [{
         metadata: { attachmentPath: "/tmp/browser-restored.png" },
-      } as BuiltInBrowserContextItem],
+      } as unknown as BuiltInBrowserContextItem],
     });
 
     expect([...paths]).toEqual([
@@ -244,15 +244,15 @@ describe("draft attachment transfer", () => {
     expect(window.ade.agentChat.saveTempAttachment).not.toHaveBeenCalled();
   });
 
-  it("waits for the incoming project machine before owning its restored images", () => {
-    const remoteImage: AgentChatFileRef = {
-      path: `${remoteBinding.rootPath}/.ade/attachments/clipboard.png`,
+  it("transfers restored images from their persisted owner instead of the selected machine", async () => {
+    const imageAttachment: AgentChatFileRef = {
+      path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
       type: "image",
     };
     const attachmentOwnerBindingRef = { current: localBinding as OpenProjectBinding | null };
     const setAttachments = vi.fn();
 
-    const { rerender } = renderHook(
+    const { result, rerender } = renderHook(
       ({ machine, scopeKey, scopeReady, attachments }) => useDraftAttachmentTransfer({
         enabled: true,
         machine,
@@ -280,6 +280,120 @@ describe("draft attachment transfer", () => {
       },
     );
 
+    // Draft hydration restores the incoming scope's owner before routing
+    // catches up to that scope.
+    attachmentOwnerBindingRef.current = localBinding;
+    rerender({
+      machine: { id: "this-mac", name: "This Mac", binding: localBinding },
+      scopeKey: "remote-project:draft",
+      scopeReady: false,
+      attachments: [imageAttachment],
+    });
+    expect(attachmentOwnerBindingRef.current).toBe(localBinding);
+
+    rerender({
+      machine: {
+        id: remoteBinding.targetId,
+        name: remoteBinding.runtimeName,
+        binding: remoteBinding,
+      },
+      scopeKey: "remote-project:draft",
+      scopeReady: true,
+      attachments: [imageAttachment],
+    });
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.getImageDataUrl).toHaveBeenCalled();
+    });
+    await waitFor(() => expect(result.current.pending).toBe(false));
+    expect(window.ade.agentChat.getImageDataUrl).toHaveBeenCalledWith(
+      imageAttachment.path,
+      localBinding,
+    );
+    expect(window.ade.agentChat.saveTempAttachment).toHaveBeenCalledWith(
+      expect.any(Object),
+      remoteBinding,
+    );
+    expect(attachmentOwnerBindingRef.current).toBe(remoteBinding);
+  });
+
+  it("does not destructively partition a draft while its current binding is transiently absent", () => {
+    const imageAttachment: AgentChatFileRef = {
+      path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
+      type: "image",
+    };
+    const fileAttachment: AgentChatFileRef = {
+      path: `${localBinding.rootPath}/spec.md`,
+      type: "file",
+    };
+    const setAttachments = vi.fn();
+    const clearVisualContext = vi.fn();
+    const attachmentOwnerBindingRef = { current: localBinding as OpenProjectBinding | null };
+
+    const { rerender } = renderHook(
+      ({ binding }) => useDraftAttachmentTransfer({
+        enabled: true,
+        machine: { id: "this-mac", name: "This Mac", binding },
+        scopeKey: "project-a:draft",
+        scopeReady: true,
+        attachments: [imageAttachment, fileAttachment],
+        setAttachments,
+        attachmentOwnerBindingRef,
+        getLinkedVisualAttachmentPaths: () => new Set(),
+        visualContextCount: 1,
+        clearVisualContext,
+        setError: vi.fn(),
+      }),
+      { initialProps: { binding: localBinding as OpenProjectBinding | null } },
+    );
+
+    rerender({ binding: null });
+    rerender({ binding: localBinding });
+
+    expect(setAttachments).not.toHaveBeenCalled();
+    expect(clearVisualContext).not.toHaveBeenCalled();
+    expect(attachmentOwnerBindingRef.current).toBe(localBinding);
+  });
+
+  it("fails closed when a restored image has no durable owner", async () => {
+    const remoteImage: AgentChatFileRef = {
+      path: `${remoteBinding.rootPath}/.ade/attachments/clipboard.png`,
+      type: "image",
+    };
+    const attachmentOwnerBindingRef = { current: localBinding as OpenProjectBinding | null };
+    const setAttachments = vi.fn();
+
+    const { result, rerender } = renderHook(
+      ({ machine, scopeKey, scopeReady, attachments }) => useDraftAttachmentTransfer({
+        enabled: true,
+        machine,
+        scopeKey,
+        scopeReady,
+        attachments,
+        setAttachments,
+        attachmentOwnerBindingRef,
+        getLinkedVisualAttachmentPaths: () => new Set(),
+        visualContextCount: 0,
+        clearVisualContext: vi.fn(),
+        setError: vi.fn(),
+      }),
+      {
+        initialProps: {
+          machine: {
+            id: "this-mac",
+            name: "This Mac",
+            binding: localBinding as OpenProjectBinding,
+          },
+          scopeKey: "local-project:draft",
+          scopeReady: true,
+          attachments: [] as AgentChatFileRef[],
+        },
+      },
+    );
+
+    // The draft hydration effect runs before the transfer hook and restores
+    // the incoming scope's durable owner (null for this legacy snapshot).
+    attachmentOwnerBindingRef.current = null;
     rerender({
       machine: { id: "this-mac", name: "This Mac", binding: localBinding },
       scopeKey: "remote-project:draft",
@@ -299,19 +413,20 @@ describe("draft attachment transfer", () => {
       attachments: [remoteImage],
     });
 
-    expect(attachmentOwnerBindingRef.current).toBe(remoteBinding);
+    await waitFor(() => expect(result.current.blockedReason).toContain("source machine is disconnected"));
+    expect(attachmentOwnerBindingRef.current).toBeNull();
     expect(window.ade.agentChat.getImageDataUrl).not.toHaveBeenCalled();
     expect(window.ade.agentChat.saveTempAttachment).not.toHaveBeenCalled();
   });
 
-  it("does not carry a remote owner into a bound-local project draft", () => {
+  it("does not carry a remote owner into a bound-local project draft", async () => {
     const localImage: AgentChatFileRef = {
       path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
       type: "image",
     };
     const attachmentOwnerBindingRef = { current: remoteBinding as OpenProjectBinding | null };
 
-    const { rerender } = renderHook(
+    const { result, rerender } = renderHook(
       ({ machine, scopeKey, scopeReady, attachments }) => useDraftAttachmentTransfer({
         enabled: true,
         machine,
@@ -339,6 +454,9 @@ describe("draft attachment transfer", () => {
       },
     );
 
+    // The draft hydration effect runs before the transfer hook and restores
+    // the incoming scope's durable owner (null for this legacy snapshot).
+    attachmentOwnerBindingRef.current = null;
     rerender({
       machine: {
         id: remoteBinding.targetId,
@@ -358,7 +476,8 @@ describe("draft attachment transfer", () => {
       attachments: [localImage],
     });
 
-    expect(attachmentOwnerBindingRef.current).toBe(localBinding);
+    await waitFor(() => expect(result.current.blockedReason).toContain("source machine is disconnected"));
+    expect(attachmentOwnerBindingRef.current).toBeNull();
     expect(window.ade.agentChat.getImageDataUrl).not.toHaveBeenCalled();
   });
 });

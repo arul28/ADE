@@ -1435,6 +1435,7 @@ type ComposerDraftStorageSnapshot = {
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
+  attachmentOwnerBinding: OpenProjectBinding | null;
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
   appControlContextItems: AppControlContextItem[];
@@ -1442,6 +1443,33 @@ type ComposerDraftStorageSnapshot = {
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
+
+function normalizeComposerAttachmentOwnerBinding(value: unknown): OpenProjectBinding | null {
+  if (!isRecord(value)) return null;
+  const kind = value.kind;
+  const key = nonEmptyString(value.key);
+  const rootPath = nonEmptyString(value.rootPath);
+  const displayName = nonEmptyString(value.displayName);
+  if (!key || !rootPath || !displayName) return null;
+  const gitOriginUrl = nullableString(value.gitOriginUrl);
+  if (kind === "local") {
+    return { kind, key, rootPath, displayName, gitOriginUrl };
+  }
+  const targetId = nonEmptyString(value.targetId);
+  const runtimeName = nonEmptyString(value.runtimeName);
+  const projectId = nonEmptyString(value.projectId);
+  if (kind !== "remote" || !targetId || !runtimeName || !projectId) return null;
+  return {
+    kind,
+    key,
+    targetId,
+    runtimeName,
+    projectId,
+    rootPath,
+    displayName,
+    gitOriginUrl,
+  };
+}
 
 type ParallelModelRowState = NativeControlState & {
   modelId: string;
@@ -2680,6 +2708,9 @@ function normalizeStoredComposerDraft(
       defaults,
     ),
     attachments: normalizeComposerFileAttachments(value.attachments),
+    attachmentOwnerBinding: normalizeComposerAttachmentOwnerBinding(
+      value.attachmentOwnerBinding,
+    ),
     contextAttachments: normalizeComposerContextAttachments(value.contextAttachments),
     iosContextItems: normalizeComposerIosContextItems(value.iosContextItems),
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
@@ -7575,15 +7606,19 @@ export function AgentChatPane({
     }));
   }, [laneId, selectedSessionId, sessionProvider]);
 
-  const addAttachment = useCallback((attachment: AgentChatFileRef) => {
+  const claimDraftAttachmentOwner = useCallback(() => {
     if (!selectedSessionIdRef.current) {
       draftAttachmentOwnerBindingRef.current = draftExecutionBindingRef.current;
     }
+  }, []);
+
+  const addAttachment = useCallback((attachment: AgentChatFileRef) => {
+    claimDraftAttachmentOwner();
     setAttachments((prev) => {
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
-  }, []);
+  }, [claimDraftAttachmentOwner]);
 
   const saveContextScreenshot = useCallback(async (args: {
     dataUrl: string;
@@ -7618,6 +7653,7 @@ export function AgentChatPane({
   }, [addAttachment]);
 
   const addIosElementContext = useCallback(async (item: IosElementContextItem) => {
+    claimDraftAttachmentOwner();
     const nextSurface = iosContextSurface(item);
     const replacedAttachmentPaths = iosElementContextItems
       .filter((entry) => iosContextSurface(entry) !== nextSurface)
@@ -7657,9 +7693,10 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [iosElementContextItems, saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot]);
 
   const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
+    claimDraftAttachmentOwner();
     let attachmentPath = getAppControlContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
       const saved = await saveContextScreenshot({
@@ -7687,11 +7724,12 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, [saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, saveContextScreenshot]);
 
   const addBuiltInBrowserContext = useCallback(async (rawItem: unknown) => {
     const item = normalizeBuiltInBrowserContextItem(rawItem);
     if (!item) return;
+    claimDraftAttachmentOwner();
     let attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
       const saved = await saveContextScreenshot({
@@ -7721,7 +7759,7 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, [saveContextScreenshot, selectedSessionId]);
+  }, [claimDraftAttachmentOwner, saveContextScreenshot, selectedSessionId]);
 
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
@@ -8086,6 +8124,7 @@ export function AgentChatPane({
       }
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setDraft(saved.text);
+      draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
       setAttachments(saved.attachments);
       setContextAttachments(saved.contextAttachments);
       setIosElementContextItems(saved.iosContextItems);
@@ -8109,6 +8148,7 @@ export function AgentChatPane({
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setDraft(savedText);
+    draftAttachmentOwnerBindingRef.current = null;
     setAttachments([]);
     setContextAttachments([]);
     setIosElementContextItems([]);
@@ -8144,6 +8184,7 @@ export function AgentChatPane({
         cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
       },
       attachments,
+      attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
       contextAttachments,
       iosContextItems: iosElementContextItems,
       appControlContextItems,
@@ -12153,6 +12194,7 @@ export function AgentChatPane({
                   cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
                 },
                 attachments: [...attachments],
+                attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
                 contextAttachments: [...contextAttachments],
                 iosContextItems: [...iosElementContextItems],
                 appControlContextItems: [...appControlContextItems],
