@@ -8489,6 +8489,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       onGap: handleRuntimeEventGap,
     }, (event) => {
       const type = typeof event.payload.type === "string" ? event.payload.type : "";
+      if (type === "lane_lifecycle_event") {
+        const laneEvent = event.payload.event as { type?: unknown } | undefined;
+        if (laneEvent?.type === "lane-branch-updated") {
+          void refreshState({ hydrateHistory: false }).catch(() => undefined);
+        }
+        return;
+      }
       if (type !== "prs-updated" && type !== "pr-notification") return;
       void refreshPrsByLane();
       void refreshState({ hydrateHistory: false }).catch(() => undefined);

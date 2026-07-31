@@ -117,7 +117,7 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("avoid timezone arithmetic");
       expect(result).toContain("brain machine's local timezone");
       expect(result).toContain("verify it before ending the turn");
-      expect(result).toContain('ade chat note "running e2e shard 2/4"');
+      expect(result).toContain('ade chat note "testing desktop auth fallback"');
       expect(result).toContain('ade chat ask "<the exact question>"');
       // Agents cannot settle; the prompt says so instead of teaching a command.
       expect(result).toContain("You cannot settle or unsettle a session");
@@ -331,7 +331,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("unless the user explicitly says stop, pause, or only report status");
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
-    expect(result).toContain("Your ADE capabilities ship as Agent Skills");
+    expect(result).toContain("ADE capabilities ship as Agent Skills");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).toContain("ade-orchestrator");

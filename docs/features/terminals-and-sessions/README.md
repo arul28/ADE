@@ -146,8 +146,9 @@ and in tests.
   canonical bridge from `AgentChatSessionSummary` runtime truth to the
   `terminal_sessions` row used by Work, detail reads, ADE runtime actions,
   and lane snapshots.
-  It projects active/idle/waiting state, pending input, wake time, and
-  orchestration lineage. If chat hydration fails, a persisted resumable
+  It projects active/idle/waiting state, pending input, the live
+  `currentTurnStartedAt` timer anchor, wake time, and orchestration lineage.
+  If chat hydration fails, a persisted resumable
   `status = "running"` row falls back to quiet idle/waiting instead of
   presenting a false live/green agent.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
@@ -191,7 +192,8 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata` (including tracked CLI spawn lineage),
-  `PtyCreateArgs`, `SessionDeltaSummary`,
+  `PtyCreateArgs`, `SessionDeltaSummary`, and the optional
+  `currentTurnStartedAt` anchor used by active chat Working timers,
   offset-stamped `PtyDataEvent`,
   `PtySendToSessionArgs` / `PtySendToSessionResult` (the
   send-or-continue surface), `PtyResumeSessionArgs` /
@@ -297,7 +299,9 @@ Shared types and IPC:
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
   It maps shared presentation glyph ids to Phosphor icons, ticks active
-  Working/Planning elapsed time and idle scheduled-work countdowns, and
+  chat Working/Planning elapsed time from immutable `currentTurnStartedAt`,
+  falling back to last activity for legacy rows, keeps CLI/Stale elapsed time
+  on last activity, ticks idle scheduled-work countdowns, and
   replaces the status label with snooze plus binding-aware settle/un-settle
   controls while the row is hovered or keyboard-focused.
 - `apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx` —
@@ -679,7 +683,9 @@ Renderer surfaces:
   identity and PR navigation onto the card.
   After one second `SessionHoverCard` carries the lower-frequency metadata
   removed from the row (including clickable PR and parent-thread facts). The
-  title still warm-highlights when background AI naming lands, and
+  Lane labels on singleton rows and hover details show the shared animated
+  `Naming lane…` placeholder while background identity generation is active.
+  The title still warm-highlights when background AI naming lands, and
   `disabledReason` blocks selection, dragging, and the context menu during lane
   deletion. Selection/hover use the row background; non-prominent lifecycle
   states recede instead of spending lane-tinted card surfaces.
@@ -687,9 +693,13 @@ Renderer surfaces:
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
   imperative setter the draft-launch / parallel-launch flow toggles;
-  `useLaneNaming(laneId)` is the card-side subscription. Bridges the
-  draft-launch flow (which owns the naming lifecycle) to session cards in
-  a separate component tree.
+  `useLaneNaming(laneId)` is the label-side subscription. Bridges the
+  draft-launch flow (which owns the naming lifecycle) to singleton cards,
+  hover details, and grouped lane headers in a separate component tree.
+- `apps/desktop/src/renderer/components/terminals/LaneNamingLabel.tsx` —
+  shared reduced-motion-aware `Naming lane…` label with three animated dots;
+  callers supply the resolved naming state so visible and accessible labels
+  stay consistent.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
@@ -1261,10 +1271,14 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    turn streams, retains `settledAt`, and returns to Settled when it rests.
    `ade chat ask` clears settle, persists the blocking question and its
    `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
-   publishes a time-sensitive push; the next user turn clears it. Provider
+   publishes a time-sensitive push; the next accepted user message clears it,
+   including an active-turn steer. Agent-to-agent and orchestration steers do
+   not dismiss the user's pending question. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
-   only the status line.
+   only the status line. Status notes are normalized to 3–6 words and at most
+   72 characters at the session-service boundary so the sidebar remains
+   glanceable; blocking detail belongs in the separate `ade chat ask` question.
 
    Beyond the binary settle there is a tri-state **settle override**
    (`terminal_sessions.settle_override`). `"settled"` behaves like a declared

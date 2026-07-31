@@ -15,6 +15,7 @@ import {
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
 import { useAppStore } from "../../state/appStore";
+import { useLaneNaming } from "../../state/laneNamingStore";
 import {
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
@@ -25,6 +26,7 @@ import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
+import { LaneNamingLabel } from "./LaneNamingLabel";
 import { LaneCombobox } from "./LaneCombobox";
 import { CreateLaneDialogHost } from "../lanes/CreateLaneDialogHost";
 import {
@@ -395,6 +397,7 @@ function StickyGroupHeader({
   sectionId,
   icon,
   label,
+  namingLaneId,
   count,
   collapsed,
   onToggleCollapsed,
@@ -420,6 +423,8 @@ function StickyGroupHeader({
   sectionId: string;
   icon: React.ReactNode;
   label: string;
+  /** Local lane whose fallback identity should be masked while auto naming. */
+  namingLaneId?: string;
   count: number;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -486,6 +491,7 @@ function StickyGroupHeader({
   // a transformed ancestor sticks to the transformed box, so the header visibly
   // detaches from the top of the list mid-slide.
   const [sliding, setSliding] = useState(false);
+  const laneNaming = useLaneNaming(namingLaneId);
   if (count === 0) return null;
   const isLane = variant === "lane";
   const isQuietShelf = variant === "quiet-shelf";
@@ -498,7 +504,8 @@ function StickyGroupHeader({
   // flexible text nodes in one row competing for width, which is what pushed the
   // PR badge off the edge. Non-lane group headers keep their sub-label.
   const showBranchCluster = !isLane && branchText.length > 0;
-  const laneHeaderTitle = branchText ? `${label} · ${branchText}` : label;
+  const resolvedLabel = laneNaming ? "Naming lane…" : label;
+  const laneHeaderTitle = branchText ? `${resolvedLabel} · ${branchText}` : resolvedLabel;
   // `laneSurfaceTint` is now consulted for its TEXT channel only. The background,
   // border, and left-accent it also returns are deliberately unused here: surface
   // is reserved for interaction, so the lane accent moved onto the lane NAME.
@@ -509,7 +516,6 @@ function StickyGroupHeader({
   // the hidden item count into the label (`Settled (12)`, `Lane name (3)`),
   // expanded shows the bare label because the rows themselves are visible.
   const showInlineCount = collapsed;
-  const labelText = showInlineCount ? `${label} (${count})` : label;
   // The chevron is a second hit target for the SAME toggle, never decoration —
   // it looks like the control, so it has to behave like it. It cannot live
   // inside the label button: it sits at the far end of the trailing cluster,
@@ -612,7 +618,7 @@ function StickyGroupHeader({
           // two drag sources never nest.
           {...(busyLabel ? {} : isLane ? dragProps ?? {} : {})}
           {...(heading
-            ? { role: "heading" as const, "aria-level": 3, "aria-label": `${label} (${count})` }
+            ? { role: "heading" as const, "aria-level": 3, "aria-label": `${resolvedLabel} (${count})` }
             : {})}
         >
           <div className="relative flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-white/[0.03]">
@@ -630,9 +636,9 @@ function StickyGroupHeader({
               // announced.
               aria-expanded={!collapsed}
               {...(isQuietLane
-                ? { "aria-label": `${label} (${count} quiet)` }
+                ? { "aria-label": `${resolvedLabel} (${count} quiet)` }
                 : heading
-                  ? { "aria-label": `${label} (${count})` }
+                  ? { "aria-label": `${resolvedLabel} (${count})` }
                   : {})}
             >
               {icon}
@@ -652,7 +658,8 @@ function StickyGroupHeader({
                 style={laneLabelColor ? { color: laneLabelColor } : undefined}
                 title={laneHeaderTitle}
               >
-                {labelText}
+                <LaneNamingLabel laneName={label} naming={laneNaming} />
+                {showInlineCount ? ` (${count})` : null}
               </span>
               {/* Branch sits immediately right of the label and expands to fill
                   whatever space is free, truncating only when it runs out. */}
@@ -2201,6 +2208,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         sectionId={lane.id}
         icon={laneIcon}
         label={lane.name}
+        namingLaneId={lane.id}
         subLabel={branchNameFromRef(lane.branchRef)}
         variant="lane"
         count={total}

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import type {
   SyncRosterChat,
   SyncRosterChatStatus,
@@ -462,7 +463,7 @@ async function buildRosterProject(
       lastActivityAt,
       preview: truncatePreview(row.last_output_preview),
       settledAt: row.settled_at,
-      statusNote: row.status_note,
+      statusNote: normalizeSessionStatusNote(row.status_note),
       attentionRequestedAt: row.attention_requested_at,
       attentionMessage: row.attention_message,
       lastTurnFailedAt: row.last_turn_failed_at,

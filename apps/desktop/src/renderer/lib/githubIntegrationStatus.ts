@@ -4,6 +4,65 @@ import type {
   GitHubStatus,
 } from "../../shared/types";
 
+export type GithubCredentialPresentation = {
+  tokenTypeLabel: string;
+  permissionMode: "auth-failure" | "app" | "fine-grained" | "scopes";
+  permissionHeading: string;
+  hasInspectableScopes: boolean;
+  repoAccessLabel: string;
+};
+
+export function githubCredentialPresentation(
+  status: GitHubStatus | null,
+): GithubCredentialPresentation {
+  if (status?.authFailure) {
+    return {
+      tokenTypeLabel: githubTokenTypeLabel(status),
+      permissionMode: "auth-failure",
+      permissionHeading: "AUTHENTICATION CHECK",
+      hasInspectableScopes: false,
+      repoAccessLabel: githubRepoAccessLabel(status.repoAccessOk),
+    };
+  }
+  if (status?.authSource === "app") {
+    return {
+      tokenTypeLabel: "GitHub App user token",
+      permissionMode: "app",
+      permissionHeading: "APP PERMISSIONS",
+      hasInspectableScopes: false,
+      repoAccessLabel: githubRepoAccessLabel(status.repoAccessOk),
+    };
+  }
+
+  const fineGrained = status?.tokenType === "fine-grained";
+  const hasInspectableScopes = !fineGrained || (status?.scopes.length ?? 0) > 0;
+  return {
+    tokenTypeLabel: githubTokenTypeLabel(status),
+    permissionMode: fineGrained && !hasInspectableScopes ? "fine-grained" : "scopes",
+    permissionHeading: fineGrained && !hasInspectableScopes ? "TOKEN PERMISSIONS" : "DETECTED SCOPES",
+    hasInspectableScopes,
+    repoAccessLabel: githubRepoAccessLabel(status?.repoAccessOk),
+  };
+}
+
+function githubTokenTypeLabel(status: GitHubStatus | null): string {
+  return status?.tokenType === "classic"
+    ? "Classic PAT"
+    : status?.tokenType === "fine-grained"
+      ? "Fine-grained PAT"
+      : status?.tokenType === "oauth"
+        ? "OAuth token"
+        : status?.tokenType === "unknown"
+          ? "Unknown token"
+          : "N/A";
+}
+
+function githubRepoAccessLabel(repoAccessOk: boolean | null | undefined): string {
+  if (repoAccessOk === true) return "Repository metadata access verified";
+  if (repoAccessOk === false) return "Repository access unavailable";
+  return "Repository access not checked";
+}
+
 /**
  * Honest, two-axis derivation of ADE's GitHub App integration health.
  *
@@ -163,6 +222,13 @@ export function githubRepoIssueCopy(
     detail: "Install the app on this repo so PR status updates in real time, even when the project isn't focused.",
     action: "Install",
   };
+}
+
+export function isGithubRateLimitMessage(message: string | null | undefined): boolean {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  return normalized.includes("rate limit")
+    || normalized.includes("abuse detection")
+    || normalized.includes("temporarily blocked from content creation");
 }
 
 /**

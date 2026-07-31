@@ -35,6 +35,7 @@ import {
 } from "../shared/ModelPicker/runtimeCatalogCache";
 import {
   AgentChatPane,
+  activeTurnSessionSummaryPatch,
   buildParallelLaunchPrompt,
   cleanupChatActionsAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
@@ -158,6 +159,25 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     nextWakeAt: overrides.nextWakeAt ?? null,
   };
 }
+
+describe("activeTurnSessionSummaryPatch", () => {
+  it("anchors a new turn without resetting the anchor for later activity or steers", () => {
+    const startedAt = "2026-07-31T12:00:00.000Z";
+    expect(activeTurnSessionSummaryPatch(startedAt, true)).toMatchObject({
+      status: "active",
+      lastActivityAt: startedAt,
+      currentTurnStartedAt: startedAt,
+    });
+
+    const activityAt = "2026-07-31T12:00:05.000Z";
+    expect(activeTurnSessionSummaryPatch(activityAt, false)).toEqual({
+      status: "active",
+      idleSinceAt: null,
+      awaitingInput: false,
+      lastActivityAt: activityAt,
+    });
+  });
+});
 
 function buildPrSummary(overrides: Partial<PrSummary> = {}): PrSummary {
   return {
@@ -2849,6 +2869,57 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Ship the transcript cleanup.",
       }));
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+  });
+
+  it("restores the idle summary and composer after send dispatch fails", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      sendError: new Error("send failed"),
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+    getSummary.mockClear();
+    fireEvent.change(textbox, { target: { value: "Retry this idle turn." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
+    });
+  });
+
+  it("restores the backend summary and composer after steer dispatch fails", async () => {
+    const activeSession = buildSession("session-1", { status: "active" });
+    const idleSession = buildSession("session-1", {
+      status: "idle",
+      currentTurnStartedAt: null,
+    });
+    const { list, steer } = installAdeMocks({
+      sessions: [activeSession],
+      steerError: new Error("steer failed"),
+      transcript: buildStatusStartedTranscript(activeSession.sessionId),
+    });
+
+    renderTabbedPane(activeSession);
+
+    const textbox = await screen.findByRole("textbox");
+    await screen.findByLabelText("Agent working");
+    list.mockClear();
+    list.mockResolvedValue([idleSession]);
+    fireEvent.change(textbox, { target: { value: "Retry this active turn." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send steer message" }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalled();
+      expect(list).toHaveBeenCalled();
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this active turn.");
+      expect(screen.getByLabelText("Ready for next prompt")).toBeTruthy();
     });
   });
 

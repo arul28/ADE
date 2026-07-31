@@ -1219,6 +1219,19 @@ export function resolveUnchangedHistoryTurnActive(
   );
 }
 
+export function activeTurnSessionSummaryPatch(
+  timestamp: string,
+  startsNewTurn: boolean,
+): Partial<AgentChatSessionSummary> {
+  return {
+    status: "active",
+    idleSinceAt: null,
+    awaitingInput: false,
+    lastActivityAt: timestamp,
+    ...(startsNewTurn ? { currentTurnStartedAt: timestamp } : {}),
+  };
+}
+
 type AgentChatSessionViewCache = {
   events: AgentChatEventEnvelope[];
   turnActive: boolean;
@@ -7412,12 +7425,13 @@ export function AgentChatPane({
         if (isRemoteProject && envelope.event.type === "status") {
           remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
         }
-        patchSessionSummary(envelope.sessionId, {
-          status: "active",
-          idleSinceAt: null,
-          awaitingInput: false,
-          lastActivityAt: envelope.timestamp,
-        });
+        patchSessionSummary(
+          envelope.sessionId,
+          activeTurnSessionSummaryPatch(
+            envelope.timestamp,
+            envelope.event.type === "status",
+          ),
+        );
       }
 
       // User messages and lifecycle edges must flush immediately so the
@@ -8713,6 +8727,7 @@ export function AgentChatPane({
   // fallback on failure, so a no-op result is skipped), apply it via `apply`, then
   // always clear the flags. Naming never sits on the critical path — lanes are
   // created instantly with deterministic names and upgraded here in the background.
+  // When applySuggestion is omitted, the backend owns the identity mutation.
   const runBackgroundLaneNaming = useCallback((args: {
     laneId: string;
     prompt: string;
@@ -8722,8 +8737,7 @@ export function AgentChatPane({
     attachments?: AgentChatFileRef[];
     flagLaneIds: string[];
     pin?: OpenProjectBinding | null;
-    backendAppliesLaneTitle?: boolean;
-    apply: (suggested: string) => Promise<void>;
+    applySuggestion?: (suggested: string) => Promise<void>;
   }) => {
     if (!args.flagLaneIds.length) return;
     for (const id of args.flagLaneIds) setLaneNaming(id, true);
@@ -8764,11 +8778,14 @@ export function AgentChatPane({
           break;
         }
         const suggested = suggestion?.laneTitle.trim() ?? "";
-        if (suggested && suggested !== args.fallbackName && !args.backendAppliesLaneTitle) {
-          await args.apply(suggested);
-          if (canRefreshPinnedProject(args.pin)) {
-            await refreshLanesStore().catch(() => undefined);
-          }
+        const hasNewSuggestion = Boolean(suggested && suggested !== args.fallbackName);
+        if (hasNewSuggestion && args.applySuggestion) {
+          await args.applySuggestion(suggested);
+        }
+        // Refresh after a renderer-applied suggestion, or unconditionally when
+        // the backend owns both the lane title and branch identity mutation.
+        if ((!args.applySuggestion || hasNewSuggestion) && canRefreshPinnedProject(args.pin)) {
+          await refreshLanesStore().catch(() => undefined);
         }
       } catch (error) {
         console.warn("background lane naming failed; keeping deterministic name", error);
@@ -8791,10 +8808,6 @@ export function AgentChatPane({
     runBackgroundLaneNaming({
       ...args,
       flagLaneIds: [args.laneId],
-      backendAppliesLaneTitle: true,
-      apply: (suggested) => args.pin
-        ? window.ade.lanes.rename({ laneId: args.laneId, name: suggested }, args.pin)
-        : window.ade.lanes.rename({ laneId: args.laneId, name: suggested }),
     });
   }, [runBackgroundLaneNaming]);
 
@@ -8817,7 +8830,7 @@ export function AgentChatPane({
       fallbackName: args.fallbackBase,
       flagLaneIds: args.children.map((child) => child.laneId),
       pin: args.pin,
-      apply: async (suggested) => {
+      applySuggestion: async (suggested) => {
         for (const child of args.children) {
           const renameArgs = { laneId: child.laneId, name: `${suggested}-${child.suffix}` };
           const rename = args.pin
@@ -8899,11 +8912,6 @@ export function AgentChatPane({
         }
         throw abortError;
       }
-      if (canRefreshPinnedProject(pin)) {
-        await refreshLanesStore().catch((refreshError: unknown) => {
-          console.warn("draft launch lane refresh failed", refreshError);
-        });
-      }
       if (titleSettings?.enabled !== false) {
         startBackgroundLaneNaming({
           laneId: createdLane.id,
@@ -8913,6 +8921,11 @@ export function AgentChatPane({
           temporaryBranch: createdLane.branchRef,
           attachments: snapshot.attachments,
           pin,
+        });
+      }
+      if (canRefreshPinnedProject(pin)) {
+        await refreshLanesStore().catch((refreshError: unknown) => {
+          console.warn("draft launch lane refresh failed", refreshError);
         });
       }
       return {
@@ -10198,13 +10211,12 @@ export function AgentChatPane({
         setContextAttachments([]);
       }
 
-      touchSession(sessionId);
-      patchSessionSummary(sessionId, {
-        status: "active",
-        idleSinceAt: null,
-        awaitingInput: false,
-        lastActivityAt: new Date().toISOString(),
-      });
+      const submittedAt = new Date().toISOString();
+      touchSession(sessionId, submittedAt);
+      patchSessionSummary(
+        sessionId,
+        activeTurnSessionSummaryPatch(submittedAt, !turnActive),
+      );
 
       const steerMessage = async (): Promise<AgentChatSteerResult> => {
         return await window.ade.agentChat.steer({
@@ -10304,6 +10316,7 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
       setError(message);
+      await refreshSessions({ force: true }).catch(() => {});
       if (
         /ade chat could not authenticate/i.test(message)
         || /not authenticated/i.test(message)

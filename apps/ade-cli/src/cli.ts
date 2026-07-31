@@ -1216,6 +1216,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     - login keeps one connection open for the whole device flow because the
       device-auth session lives in runtime memory; do not split start and poll
       across separate invocations in headless mode.
+    - GitHub operations prefer an explicit environment token, then GitHub CLI,
+      and finally a stored PAT. The GitHub App remains read-only and is used
+      only for webhook-backed PR updates.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
@@ -1715,7 +1718,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
+    $ ade chat note "testing desktop auth fallback" # Update the Work status line (3–6 words, max 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a

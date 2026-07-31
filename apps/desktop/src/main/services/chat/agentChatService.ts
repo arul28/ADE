@@ -12413,6 +12413,9 @@ export function createAgentChatService(args: {
   };
 
   const setSessionActive = (managed: ManagedChatSession): void => {
+    if (managed.session.status !== "active") {
+      managed.session.currentTurnStartedAt = nowIso();
+    }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
   };
@@ -12422,6 +12425,7 @@ export function createAgentChatService(args: {
     options?: { idleSinceAt?: string | null },
   ): void => {
     managed.session.status = "idle";
+    managed.session.currentTurnStartedAt = null;
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -12464,6 +12468,7 @@ export function createAgentChatService(args: {
 
   const setSessionEnded = (managed: ManagedChatSession): void => {
     managed.session.status = "ended";
+    managed.session.currentTurnStartedAt = null;
     managed.session.idleSinceAt = null;
   };
 
@@ -21061,6 +21066,7 @@ export function createAgentChatService(args: {
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
@@ -21229,8 +21235,8 @@ export function createAgentChatService(args: {
       });
 
       await promptAccepted;
-      if (args.onDispatched) {
-        args.onDispatched();
+      if (args.onBackendDispatched) {
+        args.onBackendDispatched();
       }
 
       let stepNumber = 0;
@@ -34183,7 +34189,7 @@ export function createAgentChatService(args: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === "Droid session interrupted." || msg === "Droid session closed during setup.") {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -34244,7 +34250,7 @@ export function createAgentChatService(args: {
         managed.pendingReconstructionContext = null;
       }
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -34260,7 +34266,7 @@ export function createAgentChatService(args: {
 
       await ensureDroidSessionState(managed, runtime);
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -34500,7 +34506,8 @@ export function createAgentChatService(args: {
         metadata,
         laneDirectiveKey,
         providerSlashCommand,
-        onDispatched: onBackendDispatched ?? onDispatched,
+        onDispatched,
+        onBackendDispatched,
       });
       return;
     }
@@ -34932,8 +34939,7 @@ export function createAgentChatService(args: {
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
-      clearUserTurnMarkers();
-      return steer({
+      return steerUserMessage({
         sessionId: args.sessionId,
         text: args.text,
         displayText: args.displayText,
@@ -35130,7 +35136,10 @@ export function createAgentChatService(args: {
 
   const steerWithOptions = async (
     { sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs,
-    options?: { allowPendingInput?: boolean },
+    options?: {
+      allowPendingInput?: boolean;
+      onAcceptedDispatch?: () => void;
+    },
   ): Promise<AgentChatSteerResult> => {
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
@@ -35151,7 +35160,6 @@ export function createAgentChatService(args: {
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
-
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
@@ -35195,6 +35203,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35270,6 +35279,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35344,6 +35354,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35463,6 +35474,9 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
+    if (managed.session.provider === "opencode") {
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+    }
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
       if (runtime.busy || managed.session.status === "active") {
@@ -35522,6 +35536,46 @@ export function createAgentChatService(args: {
 
   const steer = async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> =>
     await steerWithOptions(args);
+
+  const steerUserMessage = async (
+    args: AgentChatSteerArgs,
+  ): Promise<AgentChatSteerResult> => {
+    const managed = ensureManagedSession(args.sessionId);
+    const routableMessage = args.text.trim().length > 0
+      || (args.attachments?.length ?? 0) > 0
+      || (args.contextAttachments?.length ?? 0) > 0;
+    const waitsForProviderDispatch =
+      (
+        managed.session.provider === "opencode"
+        || managed.session.provider === "cursor"
+        || managed.session.provider === "droid"
+      )
+      && !canRouteActiveSendToSteer(managed);
+    let markersCleared = false;
+    const clearAcceptedUserMarkers = (): void => {
+      if (
+        markersCleared
+        || !routableMessage
+        || args.metadata?.scheduledWake
+      ) {
+        return;
+      }
+      markersCleared = true;
+      sessionService.clearTurnStartMarkers(args.sessionId);
+    };
+    const result = await steerWithOptions(args, {
+      onAcceptedDispatch: clearAcceptedUserMarkers,
+    });
+    if (
+      routableMessage
+      && result.reason !== "queue_full"
+      && !args.metadata?.scheduledWake
+      && (!waitsForProviderDispatch || markersCleared)
+    ) {
+      clearAcceptedUserMarkers();
+    }
+    return result;
+  };
 
   const normalizeMessageSessionKind = (
     kind: AgentChatMessageSessionArgs["kind"],
@@ -37368,6 +37422,9 @@ export function createAgentChatService(args: {
         ? { importedFrom: liveSession?.importedFrom ?? persisted?.importedFrom }
         : {}),
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
+      currentTurnStartedAt: liveSession?.status === "active"
+        ? liveSession.currentTurnStartedAt ?? null
+        : null,
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,
@@ -42544,6 +42601,7 @@ export function createAgentChatService(args: {
     clearCodexGoal,
     runSessionTurn,
     steer,
+    steerUserMessage,
     cancelSteer,
     editSteer,
     dispatchSteer,

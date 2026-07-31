@@ -4,6 +4,8 @@ import {
   deriveGithubRepoConnectionState,
   describeGithubAuthFailure,
   describeGithubCliBanner,
+  githubCredentialPresentation,
+  isGithubRateLimitMessage,
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
 
@@ -157,5 +159,73 @@ describe("describeGithubCliBanner", () => {
 
     expect(copy?.detail).toContain("Open Settings for the exact error");
     expect(copy?.settingsDetail).toBe("GitHub returned an unexpected enterprise policy response.");
+  });
+});
+
+describe("githubCredentialPresentation", () => {
+  it("treats GitHub App authorization as installation permissions, not OAuth scopes", () => {
+    const presentation = githubCredentialPresentation(makeCliStatus({
+      authSource: "app",
+      tokenType: "oauth",
+      userLogin: "arul28",
+      repoAccessOk: true,
+      scopes: [],
+      connected: true,
+    }));
+
+    expect(presentation).toEqual({
+      tokenTypeLabel: "GitHub App user token",
+      permissionMode: "app",
+      permissionHeading: "APP PERMISSIONS",
+      hasInspectableScopes: false,
+      repoAccessLabel: "Repository metadata access verified",
+    });
+  });
+
+  it("keeps classic and fine-grained token permission displays distinct", () => {
+    expect(githubCredentialPresentation(makeCliStatus({
+      tokenType: "classic",
+      scopes: ["repo", "workflow"],
+    }))).toEqual({
+      tokenTypeLabel: "Classic PAT",
+      permissionMode: "scopes",
+      permissionHeading: "DETECTED SCOPES",
+      hasInspectableScopes: true,
+      repoAccessLabel: "Repository access not checked",
+    });
+    expect(githubCredentialPresentation(makeCliStatus({
+      tokenType: "fine-grained",
+      scopes: [],
+    }))).toEqual({
+      tokenTypeLabel: "Fine-grained PAT",
+      permissionMode: "fine-grained",
+      permissionHeading: "TOKEN PERMISSIONS",
+      hasInspectableScopes: false,
+      repoAccessLabel: "Repository access not checked",
+    });
+  });
+
+  it("makes authentication failure the single highest-priority permission mode", () => {
+    expect(githubCredentialPresentation(makeCliStatus({
+      authSource: "app",
+      authFailure: {
+        kind: "network",
+        message: "offline",
+        retryAt: null,
+      },
+    }))).toMatchObject({
+      permissionMode: "auth-failure",
+      permissionHeading: "AUTHENTICATION CHECK",
+      hasInspectableScopes: false,
+    });
+  });
+});
+
+describe("isGithubRateLimitMessage", () => {
+  it("recognizes primary and secondary GitHub throttling without treating ordinary errors as limits", () => {
+    expect(isGithubRateLimitMessage("API rate limit exceeded for user ID 123.")).toBe(true);
+    expect(isGithubRateLimitMessage("You have exceeded a secondary rate limit.")).toBe(true);
+    expect(isGithubRateLimitMessage("Bad credentials")).toBe(false);
+    expect(isGithubRateLimitMessage(null)).toBe(false);
   });
 });

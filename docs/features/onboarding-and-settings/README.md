@@ -75,9 +75,11 @@ Main process:
   `githubRateLimit.ts` — GitHub App, environment, PAT, and GitHub CLI
   credential discovery; `/user` and repository probes; structured
   auth-failure classification; and REST quota parsing. Explicit environment
-  tokens override all stored credentials for automation. Otherwise async REST
-  operations prefer the authorized ADE GitHub App, so the desktop and bundled
-  CLI do not require a second PAT or `gh` login. `GitHubStatus.authFailure`
+  tokens override all stored credentials for automation. Otherwise REST
+  operations prefer local GitHub CLI auth and then a stored PAT. The ADE GitHub
+  App remains a separate, read-only credential used only for webhook-backed
+  real-time PR updates.
+  `GitHubStatus.authFailure`
   distinguishes rate limiting,
   invalid credentials, network failures, and unknown validation errors so
   clients do not flatten every failed probe into missing permissions.
@@ -242,13 +244,21 @@ Renderer — settings:
   choice. See [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
-  auth, scope diagnostics,
-  permission guidance, structured validation failures, and the latest GitHub
-  REST quota. Embedded inside General. A rate-limited credential renders
-  **Rate limited**, the reset time/quota, and no auth command; only a missing,
-  invalid, or genuinely under-scoped credential shows login/refresh
-  instructions. Raw network/unknown validation errors stay in Settings rather
-  than the global banner. The shared
+  auth, credential-specific permission diagnostics, structured validation
+  failures, and the latest GitHub REST quota. Embedded inside General. Classic
+  PATs and CLI OAuth tokens show their detected scopes; fine-grained PATs show
+  repository-permission guidance; App user tokens show installation-backed
+  repository metadata access and never report missing classic `repo` /
+  `workflow` scopes, because GitHub Apps do not use those OAuth scopes. The App
+  panel also states that the App is intentionally read-only and separate from
+  operation credentials, and documents the environment → GitHub CLI → PAT
+  order. A rate-limited
+  credential renders **Rate limited**, the reset time/quota, and no auth
+  command; only a missing, invalid, or genuinely under-scoped credential shows
+  login/refresh instructions. The App-installation card also classifies relay
+  rate-limit responses as a concise cooldown state instead of displaying
+  GitHub's raw request-id / scraping-policy error. Raw network/unknown
+  validation errors stay in Settings rather than the global banner. The shared
   `renderer/lib/githubIntegrationStatus.ts` presentation helper keeps banner
   and Settings classification aligned. This section also hosts the
   `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".

@@ -7161,7 +7161,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.steer(arg);
+    return await ctx.agentChatService.steerUserMessage(arg);
   });
 
   ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
@@ -9898,7 +9898,7 @@ export function registerIpc({
     const ctx = ensurePrAiResolutionContext();
     const sessionDetail = ctx.sessionService.get(sessionId);
     if (sessionDetail?.status === "running") {
-      await ctx.agentChatService.steer({ sessionId, text });
+      await ctx.agentChatService.steerUserMessage({ sessionId, text });
       return;
     }
     await ctx.agentChatService.sendMessage({ sessionId, text });

@@ -3123,10 +3123,10 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("control plane for ADE state");
+      expect(opts?.systemPrompt?.append).toContain("CLI controls ADE state");
       expect(opts?.systemPrompt?.append).toContain("read the matching `ade-*` skill");
       expect(opts?.systemPrompt?.append).toContain("ade help <command>");
-      expect(opts?.systemPrompt?.append).toContain("clean up processes you start");
+      expect(opts?.systemPrompt?.append).toContain("clean up started processes");
       expect(opts?.systemPrompt?.append).toContain(
         `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
       );
@@ -3295,10 +3295,10 @@ describe("createAgentChatService", () => {
         .find((payload) => payload.includes("Inspect the repo and report the chat wiring."));
 
       expect(userTurnPayload).toContain("[ADE launch directive]");
-      expect(userTurnPayload).not.toContain("control plane for ADE state");
+      expect(userTurnPayload).not.toContain("CLI controls ADE state");
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("control plane for ADE state");
+      expect(opts?.systemPrompt?.append).toContain("CLI controls ADE state");
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
@@ -6886,13 +6886,13 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
       expect(firstUserContent).toContain("mutating commands only inside that worktree");
-      expect(firstUserContent).toContain("control plane for ADE state");
+      expect(firstUserContent).toContain("CLI controls ADE state");
       expect(firstUserContent).toContain("ade actions list --text");
       expect(firstUserContent).toContain(
         `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
       );
       expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).toContain("control plane for ADE state");
+      expect(secondUserContent).toContain("CLI controls ADE state");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
@@ -6951,7 +6951,7 @@ describe("createAgentChatService", () => {
       } | undefined;
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(turnParams?.collaborationMode?.settings?.developer_instructions).toBe("system prompt");
-      expect(textInput).not.toContain("control plane for ADE state");
+      expect(textInput).not.toContain("CLI controls ADE state");
       expect(textInput).not.toContain("ade actions list --text");
       expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
     });
@@ -11091,6 +11091,177 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "real user reply" });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["opencode", "", "opencode/anthropic/claude-sonnet-5"],
+      ["cursor", "composer-2", "cursor/composer-2"],
+      ["droid", "custom:claude-sonnet-5-thinking-32000", "droid/custom:claude-sonnet-5-thinking-32000"],
+    ] as const)(
+      "clears lifecycle markers when an idle %s user steer is dispatched",
+      async (provider, model, modelId) => {
+        let finishTurn = () => {};
+        const turnGate = new Promise<void>((resolve) => {
+          finishTurn = resolve;
+        });
+        if (provider === "opencode") {
+          vi.mocked(streamText).mockReturnValue({
+            fullStream: (async function* () {
+              yield { type: "text-delta", textDelta: "working" };
+              await turnGate;
+              yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+            })(),
+          } as any);
+        } else if (provider === "cursor") {
+          process.env.CURSOR_API_KEY = "cursor-test-key";
+          mockState.cursorSendPromptGate = turnGate;
+        } else {
+          mockState.droidPromptGate = turnGate;
+        }
+
+        const { service, sessionService } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider,
+          model,
+          modelId,
+        });
+        sessionService.clearTurnStartMarkers.mockClear();
+
+        let turnSettled = false;
+        const steerPromise = service.steerUserMessage({
+          sessionId: session.id,
+          text: "Continue from my answer.",
+        }).finally(() => {
+          turnSettled = true;
+        });
+
+        try {
+          if (provider === "cursor") {
+            await vi.waitFor(() => {
+              expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0);
+            });
+            mockState.cursorSdkPooled.bridge.onRunStarted({
+              agentId: "cursor-sdk-agent-1",
+              runId: "cursor-sdk-run-1",
+              modelSdkId: "composer-2",
+            }, { runtime: "local" });
+          } else if (provider === "droid") {
+            await vi.waitFor(() => {
+              expect(mockState.droidPromptCalls.length).toBeGreaterThan(0);
+            });
+            mockState.droidPooled.bridge.onEvent({
+              type: "assistant",
+              message: { content: [] },
+            });
+          }
+          await vi.waitFor(() => {
+            expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+          });
+          expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+          expect(turnSettled).toBe(false);
+        } finally {
+          finishTurn();
+        }
+        await expect(steerPromise).resolves.toMatchObject({ queued: false });
+      },
+    );
+
+    it("preserves lifecycle markers when an idle Cursor user steer is rejected before dispatch", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      vi.mocked(acquireCursorSdkConnection).mockRejectedValueOnce(
+        new Error("Cursor rejected the dispatch."),
+      );
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      sessionService.clearTurnStartMarkers.mockClear();
+
+      await expect(service.steerUserMessage({
+        sessionId: session.id,
+        text: "Continue from my answer.",
+      })).rejects.toThrow("Cursor rejected the dispatch.");
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
+    it("preserves lifecycle markers when an idle OpenCode prompt is rejected before dispatch", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      vi.mocked(streamText).mockReturnValueOnce({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start the reusable OpenCode runtime.",
+      });
+      const handle = await vi.mocked(startOpenCodeSession).mock.results.at(-1)!.value as {
+        client: {
+          session: {
+            promptAsync: ReturnType<typeof vi.fn>;
+          };
+        };
+      };
+      handle.client.session.promptAsync.mockRejectedValueOnce(
+        new Error("OpenCode rejected the prompt."),
+      );
+      sessionService.clearTurnStartMarkers.mockClear();
+
+      await expect(service.steerUserMessage({
+        sessionId: session.id,
+        text: "Continue from my answer.",
+      })).resolves.toMatchObject({ queued: false });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
+    it("preserves lifecycle markers when a Cursor user steer is rejected by a full queue", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      let finishTurn = () => {};
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      for (let index = 0; index < 10; index += 1) {
+        await expect(service.steer({
+          sessionId: session.id,
+          text: `Queued agent message ${index + 1}.`,
+        })).resolves.toMatchObject({ queued: true });
+      }
+      sessionService.clearTurnStartMarkers.mockClear();
+
+      try {
+        await expect(service.steerUserMessage({
+          sessionId: session.id,
+          text: "This message should be rejected.",
+        })).resolves.toMatchObject({
+          queued: false,
+          reason: "queue_full",
+        });
+        expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      } finally {
+        await service.interrupt({ sessionId: session.id });
+        finishTurn();
+      }
     });
 
     it("settles a still-open background task as stopped on interrupt (genuine teardown)", async () => {
@@ -25091,7 +25262,7 @@ describe("createAgentChatService", () => {
 
     it("tracks accepted Codex follow-ups until the app-server proves they were processed", async () => {
       const events: AgentChatEventEnvelope[] = [];
-      const { service } = createService({
+      const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
       const session = await service.createSession({
@@ -25101,13 +25272,43 @@ describe("createAgentChatService", () => {
       });
       await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
 
-      const first = await service.steer({ sessionId: session.id, text: "First follow-up." });
+      sessionService.clearTurnStartMarkers.mockClear();
+      const first = await service.steerUserMessage({
+        sessionId: session.id,
+        text: "First follow-up.",
+      });
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(events.some((event) =>
         event.event.type === "user_message"
         && event.event.steerId === first.steerId
         && event.event.deliveryState === "accepted"
         && event.event.processed === false
       )).toBe(true);
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      mockState.codexResponseOverrides.set("turn/steer", {
+        error: { code: -32603, message: "provider rejected steer" },
+      });
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "Rejected follow-up.",
+      }, {
+        routeActiveToSteer: true,
+      })).rejects.toThrow("provider rejected steer");
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      mockState.codexResponseOverrides.delete("turn/steer");
+
+      await service.steerUserMessage({
+        sessionId: session.id,
+        text: "   ",
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Agent-originated follow-up.",
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
 
       mockState.emitCodexPayload({
         method: "item/started",
@@ -25129,7 +25330,9 @@ describe("createAgentChatService", () => {
         )).toBe(true);
       });
 
+      sessionService.clearTurnStartMarkers.mockClear();
       const second = await service.steer({ sessionId: session.id, text: "Second follow-up." });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
       mockState.emitCodexPayload({
         method: "turn/aborted",
         params: { turnId: "turn-1" },

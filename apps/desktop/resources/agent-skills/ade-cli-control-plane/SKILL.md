@@ -174,7 +174,7 @@ background a raw CLI and then guess at its state:
 
 ### Session lifecycle: snooze, wake (settling is not yours)
 
-**You cannot settle a session.** `ade chat settle`, `ade chat unsettle`,
+**You cannot settle or unsettle a session.** `ade chat settle`, `ade chat unsettle`,
 `ade session settle`, and `ade session unsettle` were removed: whether work is
 actually finished is a subjective judgment, and a chat that settles itself
 disappears from the user's active list on your say-so. A row leaves the active
@@ -185,6 +185,48 @@ sessions. Running a removed command fails with that explanation.
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
 row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
+
+#### Work-row status protocol
+
+Treat the status line and hand-raise as separate signals:
+
+- **`ade chat note` explains the current state.** Write one concrete,
+  present-tense summary of **3–6 words and at most 72 characters**. ADE
+  truncates longer notes, so put the decisive state first and never write a
+  full sentence.
+  Good: `CI green; awaiting Codex review`
+  Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
+- **`ade chat ask` means work cannot continue without a user answer.** Ask the
+  exact question that unlocks the next action. Include the meaningful choices
+  and consequence when there is a tradeoff.
+- **When user input blocks progress, call `note` and then `ask`.** The note
+  preserves the operational context; the ask raises the Work row to **Needs
+  you**. A note alone never changes the canonical phase and an idle row can
+  otherwise appear **Done**.
+- **The next accepted user message clears the prior hand-raise.** While the
+  reply is being handled, the row should be **Working**, not **Needs you**. If
+  the reply resolves the blocker, continue normally. If it does not, leave an
+  updated note and call `ask` again with the exact information still missing
+  before ending the turn.
+- **Do not use `ask` for external waiting.** If CI, review, a build, or another
+  service is still running and no user action is required, leave a specific
+  note and either keep polling or snooze the session.
+- **Do not ask the user to classify a failure the agent can investigate.**
+  Diagnose and recover autonomously. Raise an ask only when recovery requires
+  new authority, unavailable credentials, or a product choice.
+
+| Situation | Required action | Example |
+|---|---|---|
+| Actively working | `note` when the phase materially changes | `Fixing live branch refresh` |
+| Waiting on external work | `note`, then poll or snooze | `PR #977 CI running` |
+| Blocked on user input | `note`, then `ask` | Note: `Waiting for migration choice` Ask: `Use the reversible in-place migration, or create a new store and copy records?` |
+| Recoverable error | `note`, investigate, continue | `Rerunning timed-out desktop shard` |
+| Unrecoverable error needing user action | `note`, then `ask` | Note: `Writable GitHub credential missing` Ask: `Authenticate gh, or should I use the stored PAT?` |
+| Delivered | final response plus `note` | `PR #977 merged; fixes shipped` |
+
+Before ending any non-delivered turn, ask: **Can useful work continue without
+the user?** If yes, continue or snooze—do not hand-raise. If no, ensure both a
+specific note and an exact ask were sent.
 
 Snooze is the lifecycle verb you *do* own. The typed family takes the session id
 as a positional, also accepts `--session`, and falls back to

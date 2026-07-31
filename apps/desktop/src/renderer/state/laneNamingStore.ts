@@ -3,11 +3,11 @@ import { createStore } from "zustand/vanilla";
 
 /**
  * Ephemeral, renderer-only signal: which lanes currently have an AI auto-naming
- * pass in flight. Auto-created lanes are given a deterministic name immediately
- * and the AI name is applied later via `lanes.rename`; while that background pass
- * runs, session cards show an "Auto-naming…" status in place of the last-output
- * line. This store is the bridge between the draft-launch flow (which owns the
- * naming lifecycle) and the cards (which live in a separate component tree).
+ * pass in flight. Auto-created lanes are given a deterministic fallback name
+ * immediately and the AI identity is applied later; while that background pass
+ * runs, lane labels mask the fallback with an animated "Naming lane…" state.
+ * This store bridges the draft-launch flow (which owns the naming lifecycle)
+ * and lane labels elsewhere in the renderer.
  */
 type LaneNamingState = {
   naming: Record<string, true>;

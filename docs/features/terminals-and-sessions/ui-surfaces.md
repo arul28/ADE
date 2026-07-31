@@ -248,22 +248,22 @@ The full card is one full-bleed row with three lines:
 1. **Where + status** — an adaptive identity slot on the left and
    `SessionStatusSlot` on the right. The identity slot can carry the owning
    machine, a pin, the lane identity for a singleton lane, spawned-chat
-   lineage, and a branch only when it differs from the lane's declared branch.
-   When none of those apply, session delta or last-activity time is the floor,
-   so the line never renders empty. A grouped lane owns machine identity and PR
-   state in its header; child rows do not repeat them. Lane identity always
-   uses the lane accent and `LaneIcon`; branch identity is always muted and
-   uses `BranchIcon`.
+   lineage, a branch only when it differs from the lane's declared branch, and
+   the lane PR for a singleton. When none of those apply, session delta or
+   last-activity time is the floor, so the line never renders empty. A grouped
+   lane owns machine identity and PR state in its header; child rows do not
+   repeat them. Lane identity always uses the lane accent and `LaneIcon`;
+   branch identity is always muted and uses `BranchIcon`.
 2. **Title + singleton PR** — `primarySessionLabel()` is the prominent,
    elastic element. When the card stands in for a one-session lane, the shared
    `LanePrBadge` sits at the right edge directly beneath the lifecycle status,
-   stays untruncated, and deep-links to the PR in ADE. When the card's lane is mid
-   background AI auto-naming (`useLaneNaming(lane.id)` from
-   `renderer/state/laneNamingStore.ts` is true), a title change gets a short
-   lane-accent highlight.
-3. **Preview + quiet metadata** — while auto-naming it shows
-   "Auto-naming lane underway…"; otherwise it shows
-   an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
+   stays untruncated, and deep-links to the PR in ADE. While the owning lane is
+   mid background AI naming, every visible lane-label position (singleton row,
+   hover detail, or grouped header) uses the shared animated `Naming lane…`
+   placeholder; the persisted deterministic fallback stays hidden unless
+   naming fails. A resolved title change gets a short lane-accent highlight.
+3. **Preview + quiet metadata** — preview content remains visible during lane
+   naming. It shows an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
    settled tier), then a sanitized `lastOutputPreview`, then
    `session.summary`, then `session.goal`. Output fallback is plain text (never
    linkified), capped at 120 characters, and strips ANSI/control sequences plus
@@ -280,7 +280,9 @@ tasks keep the row at **Working**, while an armed `nextWakeAt` reads neutral
 **Waiting** with a compact countdown. These contextual labels do not change the
 canonical lifecycle, filing bucket, filters, or attention count, and CLI output
 is never scraped to infer plan mode. Working/Planning elapsed time ticks from
-last activity; Waiting refreshes on a quiet 30-second cadence. On row hover or
+the active chat's immutable `currentTurnStartedAt`, so streamed activity cannot
+reset it; legacy chat rows without that anchor, plus CLI and Stale durations,
+use last activity. Waiting refreshes on a quiet 30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
 the context-appropriate Settle or Un-settle action. An open snooze menu pins the
 action slot visible. A row whose snooze ended early shows the shared Woke

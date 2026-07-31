@@ -3538,6 +3538,31 @@ button:active, [role="button"]:active {
   flex-shrink: 0;
 }
 
+@keyframes ade-lane-naming-dot {
+  0%, 20% { opacity: 0.2; }
+  50%, 100% { opacity: 1; }
+}
+
+.ade-lane-naming-dots > span {
+  animation: ade-lane-naming-dot 1.2s ease-in-out infinite;
+  animation-fill-mode: both;
+}
+
+.ade-lane-naming-dots > span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.ade-lane-naming-dots > span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-lane-naming-dots > span {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 /* Sidebar lane tabs: lane name wins over branch.
    The branch cluster carries `flex-shrink: 999`, so it still collapses first by
    three orders of magnitude — the lane name only gives up space once the branch

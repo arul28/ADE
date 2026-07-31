@@ -1221,6 +1221,7 @@ async function summarizeChatSessionForRemote(
     ...(session.capabilityMode ? { capabilityMode: session.capabilityMode } : {}),
     completion: session.completion ?? null,
     status: session.status,
+    currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
     startedAt: session.createdAt,
     endedAt: null,
@@ -1646,6 +1647,7 @@ function projectChatOntoSession(
 ) {
   const base = {
     ...session,
+    currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.orchestrationRunId
       ? {
           orchestrationRunId: chat.orchestrationRunId,
@@ -4421,7 +4423,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.")
       .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const result = await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .steerUserMessage(parseAgentChatSteerArgs(payload));
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {

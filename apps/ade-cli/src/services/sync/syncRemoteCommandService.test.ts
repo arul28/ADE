@@ -1302,16 +1302,16 @@ describe("createSyncRemoteCommandService", () => {
   });
 
   it("preserves Claude priority steering and guarded queue cancellation", async () => {
-    const steer = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: false });
+    const steerUserMessage = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: false });
     const cancelSteer = vi.fn().mockResolvedValue(undefined);
-    const { service } = createService({ agentChatService: { steer, cancelSteer } });
+    const { service } = createService({ agentChatService: { steerUserMessage, cancelSteer } });
 
     await expect(service.execute(makePayload("chat.steer", {
       sessionId: "chat-1",
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
     }))).resolves.toEqual({ ok: true, steerId: "steer-1", queued: false });
-    expect(steer).toHaveBeenCalledWith({
+    expect(steerUserMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
@@ -1801,6 +1801,7 @@ describe("createSyncRemoteCommandService", () => {
     const getSessionSummary = vi.fn().mockResolvedValue({
       sessionId: "session-1",
       status: "active",
+      currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
       awaitingInput: true,
       pendingInputItemId: "provider-question-1",
       orchestrationRunId: "run-1",
@@ -1830,6 +1831,7 @@ describe("createSyncRemoteCommandService", () => {
       chatIdleSinceAt: null,
       pendingInputItemId: "provider-question-1",
       attentionSource: "provider_structured",
+      currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",

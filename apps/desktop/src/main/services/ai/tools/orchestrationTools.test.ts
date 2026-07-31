@@ -317,6 +317,7 @@ describe("spawnAgent tool", () => {
   let setup: Setup;
   afterEach(async () => {
     if (setup) await cleanup(setup);
+    vi.useRealTimers();
   });
 
   it("rejects briefs missing required sections", async () => {
@@ -471,8 +472,10 @@ describe("spawnAgent tool", () => {
   });
 
   it("redelivers a backoff-deferred brief via a self-armed timer with no further mutation", async () => {
-    // Real service clock (no injected `now`) so the deferred-retry timer's
-    // wall-clock delay matches the service's dueness check.
+    // Keep the service clock and deferred-retry timer on the same deterministic
+    // clock. A real-time wait here is load-sensitive when the full CI shard is
+    // contending for the event loop.
+    vi.useFakeTimers();
     setup = await setupWithRun("lead");
     await approveRun(setup);
     // Fail the first delivery, then succeed on the timer-driven retry.
@@ -499,10 +502,11 @@ describe("spawnAgent tool", () => {
     expect(briefStatus()).toBe("pending");
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
 
-    // Deliberately issue NO further tool call / mutation. The timer armed by the
-    // deferred drain must retry on its own once the (500ms) backoff elapses.
+    // Deliberately issue NO further tool call / mutation. Advancing only time
+    // proves the deferred drain retries on its own once the backoff elapses.
+    await vi.advanceTimersByTimeAsync(500);
     await vi.waitFor(() => expect(briefStatus()).toBe("delivered"), {
-      timeout: 5000,
+      timeout: 1000,
       interval: 25,
     });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(2);
