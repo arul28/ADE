@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupLegacyAdeSkills } from "./legacySkillCleanupService";
 
 function writeSkill(root: string, name: string, body: string): void {
@@ -39,6 +39,7 @@ describe("cleanupLegacyAdeSkills", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -127,6 +128,68 @@ describe("cleanupLegacyAdeSkills", () => {
     expect(result.targetsCleaned).toEqual([target, target2]);
     expect(fs.existsSync(path.join(target, "ade-browser"))).toBe(false);
     expect(fs.existsSync(path.join(target2, "ade-browser"))).toBe(false);
+  });
+
+  it("preserves a skill whose removal fails and continues cleaning later skills and providers", () => {
+    writeSkill(bundled, "ade-app-control", "# app");
+    writeSkill(bundled, "ade-browser", "# browser");
+    const target2 = path.join(tmp, "home", ".agents", "skills");
+    for (const dir of [target, target2]) {
+      writeSkill(dir, "ade-app-control", "# app");
+      writeSkill(dir, "ade-browser", "# browser");
+      writeLegacyManifest(dir, ["ade-app-control", "ade-browser"]);
+    }
+    const failedSkill = path.join(target, "ade-app-control");
+    const originalRmSync = fs.rmSync.bind(fs);
+    vi.spyOn(fs, "rmSync").mockImplementation((pathToRemove, options) => {
+      if (pathToRemove === failedSkill) throw new Error("permission denied");
+      originalRmSync(pathToRemove, options);
+    });
+
+    const result = cleanupLegacyAdeSkills({
+      bundledRoot: bundled,
+      targetDirs: [target, target2],
+    });
+
+    expect(result.skillsPreserved).toEqual([failedSkill]);
+    expect(result.skillsRemoved).toEqual([
+      path.join(target, "ade-browser"),
+      path.join(target2, "ade-app-control"),
+      path.join(target2, "ade-browser"),
+    ]);
+    expect(result.targetsCleaned).toEqual([target2]);
+    expect(fs.existsSync(failedSkill)).toBe(true);
+    expect(fs.existsSync(path.join(target, ".ade-skills.json"))).toBe(true);
+    expect(fs.existsSync(path.join(target, "ade-browser"))).toBe(false);
+    expect(fs.existsSync(path.join(target2, "ade-app-control"))).toBe(false);
+  });
+
+  it("leaves a failed manifest uncleaned and continues cleaning later providers", () => {
+    writeSkill(bundled, "ade-browser", "# browser");
+    const target2 = path.join(tmp, "home", ".agents", "skills");
+    for (const dir of [target, target2]) {
+      writeSkill(dir, "ade-browser", "# browser");
+      writeLegacyManifest(dir, ["ade-browser"]);
+    }
+    const failedManifest = path.join(target, ".ade-skills.json");
+    const originalRmSync = fs.rmSync.bind(fs);
+    vi.spyOn(fs, "rmSync").mockImplementation((pathToRemove, options) => {
+      if (pathToRemove === failedManifest) throw new Error("permission denied");
+      originalRmSync(pathToRemove, options);
+    });
+
+    const result = cleanupLegacyAdeSkills({
+      bundledRoot: bundled,
+      targetDirs: [target, target2],
+    });
+
+    expect(result.skillsRemoved).toEqual([
+      path.join(target, "ade-browser"),
+      path.join(target2, "ade-browser"),
+    ]);
+    expect(result.targetsCleaned).toEqual([target2]);
+    expect(fs.existsSync(failedManifest)).toBe(true);
+    expect(fs.existsSync(path.join(target2, ".ade-skills.json"))).toBe(false);
   });
 
   it.each([

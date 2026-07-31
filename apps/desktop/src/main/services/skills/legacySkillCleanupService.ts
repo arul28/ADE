@@ -171,6 +171,17 @@ function directoryMatches(left: string, right: string): boolean {
   return leftHash != null && rightHash != null && leftHash === rightHash;
 }
 
+function removePath(target: string, options: fs.RmOptions): boolean {
+  try {
+    fs.rmSync(target, options);
+    return true;
+  } catch {
+    // A failed cleanup must not prevent other recorded skills or providers from
+    // being considered.
+    return false;
+  }
+}
+
 export function cleanupLegacyAdeSkills(opts: {
   bundledRoot: string;
   targetDirs?: string[];
@@ -196,19 +207,30 @@ export function cleanupLegacyAdeSkills(opts: {
       installed.length === manifest.names.length
       && installedHash != null
       && installedHash === manifest.hash;
+    let skillRemovalFailed = false;
 
     for (const installedSkill of installed) {
       const bundled = bundledByName.get(installedSkill.name);
       if (wholeLegacySetUnchanged || (bundled && directoryMatches(installedSkill.dir, bundled.dir))) {
-        fs.rmSync(installedSkill.dir, { recursive: true, force: true });
-        result.skillsRemoved.push(installedSkill.dir);
+        if (removePath(installedSkill.dir, { recursive: true, force: true })) {
+          result.skillsRemoved.push(installedSkill.dir);
+        } else {
+          result.skillsPreserved.push(installedSkill.dir);
+          skillRemovalFailed = true;
+        }
       } else {
         result.skillsPreserved.push(installedSkill.dir);
       }
     }
 
-    fs.rmSync(manifestPath, { force: true });
-    result.targetsCleaned.push(target);
+    // Keep the manifest when an eligible copy could not be removed so a later
+    // run can retry it. Intentionally preserved user-modified copies do not
+    // block retiring the manifest.
+    if (skillRemovalFailed) continue;
+
+    if (removePath(manifestPath, { force: true })) {
+      result.targetsCleaned.push(target);
+    }
   }
 
   return result;
