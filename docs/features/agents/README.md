@@ -67,7 +67,7 @@ Regular chat and tracked CLI agents can also narrate their lifecycle directly
 into the Work list:
 
 - `ade chat note "testing desktop auth fallback"` updates the row's quiet
-  status line, normalized to at most six words;
+  status line, normalized to 3–6 words and at most 72 characters;
   an empty note clears it.
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next

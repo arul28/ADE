@@ -646,6 +646,7 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
         authSource: "environment",
         connected: true,
+        patTokenStored: true,
         userLogin: "octocat",
       });
       expect(fetchImpl).toHaveBeenCalledWith(
@@ -671,8 +672,14 @@ describe("headlessLinearServices", () => {
 
   it("keeps the read-only GitHub App out of operational REST credential selection", async () => {
     const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    const previousGitHubToken = process.env.GITHUB_TOKEN;
+    const previousGhToken = process.env.GH_TOKEN;
     const previousFetch = globalThis.fetch;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-"));
+    delete process.env.ADE_GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
     const machineCredentialStore = new EncryptedFileCredentialStore();
     machineCredentialStore.setSync("github.token.v1", "ghp_stored_token");
     machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
@@ -723,16 +730,28 @@ describe("headlessLinearServices", () => {
       globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
+      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGitHubToken;
+      if (previousGhToken == null) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previousGhToken;
     }
   });
 
   it("keeps GitHub CLI auth ahead of GitHub App authorization for async REST calls", async () => {
     const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    const previousGitHubToken = process.env.GITHUB_TOKEN;
+    const previousGhToken = process.env.GH_TOKEN;
     const previousGhConfigDir = process.env.GH_CONFIG_DIR;
     const previousDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const previousFetch = globalThis.fetch;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-"));
     process.env.GH_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-gh-config-"));
+    delete process.env.ADE_GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     fs.writeFileSync(
       path.join(process.env.GH_CONFIG_DIR, "hosts.yml"),
@@ -773,7 +792,7 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
         authSource: "gh",
         connected: true,
-        patTokenStored: false,
+        patTokenStored: true,
         userLogin: "octocat",
       });
       expect(fetchImpl).toHaveBeenCalledWith(
@@ -788,10 +807,70 @@ describe("headlessLinearServices", () => {
       globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
+      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGitHubToken;
+      if (previousGhToken == null) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previousGhToken;
       if (previousGhConfigDir == null) delete process.env.GH_CONFIG_DIR;
       else process.env.GH_CONFIG_DIR = previousGhConfigDir;
       if (previousDisableGhAuthFallback == null) delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
       else process.env.ADE_DISABLE_GH_AUTH_FALLBACK = previousDisableGhAuthFallback;
+    }
+  });
+
+  it("preserves failed GitHub CLI diagnostics when a stored PAT is the fallback", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    const previousGitHubToken = process.env.GITHUB_TOKEN;
+    const previousGhToken = process.env.GH_TOKEN;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-pat-fallback-"));
+    delete process.env.ADE_GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.token.v1", "ghp_stored_token");
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    })) as unknown as typeof fetch;
+
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: null,
+          ghCliPath: "/usr/local/bin/gh",
+          ghAuthError: "not logged in to github.com",
+        }),
+      },
+    );
+    try {
+      expect(githubService.getTokenOrThrow()).toBe("ghp_stored_token");
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        authSource: "pat",
+        connected: true,
+        patTokenStored: true,
+        ghCliPath: "/usr/local/bin/gh",
+        ghAuthError: "not logged in to github.com",
+        userLogin: "octocat",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
+      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGitHubToken;
+      if (previousGhToken == null) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previousGhToken;
     }
   });
 

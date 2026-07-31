@@ -9898,7 +9898,7 @@ export function registerIpc({
     const ctx = ensurePrAiResolutionContext();
     const sessionDetail = ctx.sessionService.get(sessionId);
     if (sessionDetail?.status === "running") {
-      await ctx.agentChatService.steer({ sessionId, text });
+      await ctx.agentChatService.steerUserMessage({ sessionId, text });
       return;
     }
     await ctx.agentChatService.sendMessage({ sessionId, text });

@@ -191,8 +191,9 @@ row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
 Treat the status line and hand-raise as separate signals:
 
 - **`ade chat note` explains the current state.** Write one concrete,
-  present-tense summary of **3–6 words**. ADE truncates longer notes after the
-  sixth word, so put the decisive state first and never write a full sentence.
+  present-tense summary of **3–6 words and at most 72 characters**. ADE
+  truncates longer notes, so put the decisive state first and never write a
+  full sentence.
   Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` means work cannot continue without a user answer.** Ask the

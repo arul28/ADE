@@ -534,6 +534,10 @@ export function createHeadlessGitHubService(
     onStatusChanged?: (status: HeadlessGitHubStatus) => void;
     githubRelaySecretReader?: GitHubRelaySecretReader | null;
     getAccountAccessToken?: (() => Promise<string | null>) | null;
+    ghAuthTokenProvider?: (() => Pick<
+      HeadlessGitHubTokenLookup,
+      "token" | "ghCliPath" | "ghAuthError"
+    >) | null;
   } = {},
 ): HeadlessGitHubService {
   const credentialStore = new EncryptedFileCredentialStore();
@@ -575,10 +579,12 @@ export function createHeadlessGitHubService(
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
+    const patToken = readStoredPatToken();
+    const patTokenStored = Boolean(patToken);
     let ghFallback: HeadlessGitHubTokenLookup = {
       token: null,
       source: "none",
-      patTokenStored: false,
+      patTokenStored,
       ghCliPath: null,
       ghAuthError: null,
     };
@@ -586,20 +592,17 @@ export function createHeadlessGitHubService(
       environment: () => {
         const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
         return token
-          ? { token, source: "environment", patTokenStored: false, ghCliPath: null, ghAuthError: null }
+          ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
           : null;
       },
       gh: () => {
-        const gh = ghAuthToken();
-        ghFallback = { ...gh, source: "none", patTokenStored: false };
-        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+        const gh = options.ghAuthTokenProvider?.() ?? ghAuthToken();
+        ghFallback = { ...gh, source: "none", patTokenStored };
+        return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
       },
-      pat: () => {
-        const token = readStoredPatToken();
-        return token
-          ? { token, source: "pat", patTokenStored: true, ghCliPath: null, ghAuthError: null }
-          : null;
-      },
+      pat: () => patToken
+        ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
+        : null,
     }) ?? ghFallback;
   };
 
@@ -616,10 +619,12 @@ export function createHeadlessGitHubService(
   };
 
   const readTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
+    const patToken = await readStoredPatTokenAsync();
+    const patTokenStored = Boolean(patToken);
     let ghFallback: HeadlessGitHubTokenLookup = {
       token: null,
       source: "none",
-      patTokenStored: false,
+      patTokenStored,
       ghCliPath: null,
       ghAuthError: null,
     };
@@ -627,20 +632,17 @@ export function createHeadlessGitHubService(
       environment: () => {
         const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
         return token
-          ? { token, source: "environment", patTokenStored: false, ghCliPath: null, ghAuthError: null }
+          ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
           : null;
       },
       gh: async () => {
-        const gh = await ghAuthTokenAsync();
-        ghFallback = { ...gh, source: "none", patTokenStored: false };
-        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+        const gh = options.ghAuthTokenProvider?.() ?? await ghAuthTokenAsync();
+        ghFallback = { ...gh, source: "none", patTokenStored };
+        return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
       },
-      pat: async () => {
-        const token = await readStoredPatTokenAsync();
-        return token
-          ? { token, source: "pat", patTokenStored: true, ghCliPath: null, ghAuthError: null }
-          : null;
-      },
+      pat: () => patToken
+        ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
+        : null,
     }) ?? ghFallback;
   };
 

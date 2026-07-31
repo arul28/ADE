@@ -12,9 +12,12 @@ export function normalizeSessionStatusNote(value: unknown): string | null {
   const words = boundedInput.split(/\s+/);
   const wordSummary = words.slice(0, MAX_STATUS_NOTE_WORDS).join(" ");
   const characters = Array.from(wordSummary);
+  const wasTruncated =
+    words.length > MAX_STATUS_NOTE_WORDS
+    || characters.length > MAX_STATUS_NOTE_CHARACTERS;
 
-  if (characters.length > MAX_STATUS_NOTE_CHARACTERS) {
+  if (wasTruncated) {
     return `${characters.slice(0, MAX_STATUS_NOTE_CHARACTERS - 1).join("")}…`;
   }
-  return words.length > MAX_STATUS_NOTE_WORDS ? `${wordSummary}…` : wordSummary;
+  return wordSummary;
 }

@@ -331,7 +331,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("unless the user explicitly says stop, pause, or only report status");
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
-    expect(result).toContain("Your ADE capabilities ship as Agent Skills");
+    expect(result).toContain("ADE capabilities ship as Agent Skills");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).toContain("ade-orchestrator");

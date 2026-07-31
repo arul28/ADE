@@ -3044,4 +3044,89 @@ describe("registerIpc sync bridge", () => {
     expect(dispose).not.toHaveBeenCalled();
     expect(deleteSession).not.toHaveBeenCalled();
   });
+
+  it("routes running PR AI input through human steer semantics and keeps idle input on send", async () => {
+    vi.useFakeTimers();
+    let sessionStatus: "running" | "idle" = "running";
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const steer = vi.fn().mockResolvedValue(undefined);
+    const steerUserMessage = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true });
+    const interrupt = vi.fn().mockResolvedValue(undefined);
+    const finalizeResolverSession = vi.fn().mockResolvedValue(undefined);
+    const sessionId = "pr-ai-session-1";
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        project: { rootPath: process.cwd() },
+        agentChatService: {
+          createSession: vi.fn().mockResolvedValue({ id: sessionId }),
+          sendMessage,
+          steer,
+          steerUserMessage,
+          interrupt,
+        },
+        conflictService: {
+          prepareResolverSession: vi.fn().mockResolvedValue({
+            runId: "resolver-run-1",
+            status: "ready",
+            cwdLaneId: "lane-target",
+            integrationLaneId: null,
+            promptFilePath: path.resolve("package.json"),
+            contextGaps: [],
+          }),
+          attachResolverSession: vi.fn().mockResolvedValue(undefined),
+          finalizeResolverSession,
+        },
+        sessionService: {
+          get: vi.fn(() => ({
+            id: sessionId,
+            status: sessionStatus,
+            exitCode: null,
+          })),
+        },
+      }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.prsAiResolutionStart)?.(eventForSender(), {
+        context: {
+          sourceTab: "normal",
+          sourceLaneId: "lane-source",
+          targetLaneId: "lane-target",
+        },
+        model: "openai/gpt-5.4",
+      }),
+    ).resolves.toMatchObject({ sessionId, status: "started" });
+    sendMessage.mockClear();
+
+    await ipcHandlers.get(IPC.prsAiResolutionInput)?.(eventForSender(), {
+      sessionId,
+      text: "Keep the user's attention lifecycle.",
+    });
+    expect(steerUserMessage).toHaveBeenCalledWith({
+      sessionId,
+      text: "Keep the user's attention lifecycle.",
+    });
+    expect(steer).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    sessionStatus = "idle";
+    await ipcHandlers.get(IPC.prsAiResolutionInput)?.(eventForSender(), {
+      sessionId,
+      text: "Start the next resolver turn.",
+    });
+    expect(sendMessage).toHaveBeenCalledWith({
+      sessionId,
+      text: "Start the next resolver turn.",
+    });
+
+    await ipcHandlers.get(IPC.prsAiResolutionStop)?.(eventForSender(), { sessionId });
+    expect(interrupt).toHaveBeenCalledWith({ sessionId });
+    expect(finalizeResolverSession).toHaveBeenCalled();
+  });
 });

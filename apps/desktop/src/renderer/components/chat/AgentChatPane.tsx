@@ -10267,6 +10267,7 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
       setError(message);
+      await refreshSessions({ force: true }).catch(() => {});
       if (
         /ade chat could not authenticate/i.test(message)
         || /not authenticated/i.test(message)

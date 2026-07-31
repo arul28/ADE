@@ -2872,6 +2872,57 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("restores the idle summary and composer after send dispatch fails", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      sendError: new Error("send failed"),
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+    getSummary.mockClear();
+    fireEvent.change(textbox, { target: { value: "Retry this idle turn." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalled();
+      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
+    });
+  });
+
+  it("restores the backend summary and composer after steer dispatch fails", async () => {
+    const activeSession = buildSession("session-1", { status: "active" });
+    const idleSession = buildSession("session-1", {
+      status: "idle",
+      currentTurnStartedAt: null,
+    });
+    const { list, steer } = installAdeMocks({
+      sessions: [activeSession],
+      steerError: new Error("steer failed"),
+      transcript: buildStatusStartedTranscript(activeSession.sessionId),
+    });
+
+    renderTabbedPane(activeSession);
+
+    const textbox = await screen.findByRole("textbox");
+    await screen.findByLabelText("Agent working");
+    list.mockClear();
+    list.mockResolvedValue([idleSession]);
+    fireEvent.change(textbox, { target: { value: "Retry this active turn." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send steer message" }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalled();
+      expect(list).toHaveBeenCalled();
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this active turn.");
+      expect(screen.getByLabelText("Ready for next prompt")).toBeTruthy();
+    });
+  });
+
   it("shows an optimistic queued bubble immediately for Cursor-style sends", async () => {
     const session = buildSession("session-1", { status: "idle" });
     let resolveSend!: () => void;

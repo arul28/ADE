@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Show an animated `Naming lane…` placeholder while automatic lane identity is still resolving, reveal the deterministic fallback only on failure, refresh renamed branches live across Lanes, Git Actions, and session hover details, and keep sidebar Working durations anchored to each chat turn.
 - Prefer explicit environment and GitHub CLI credentials before a stored PAT, keep the GitHub App read-only and dedicated to real-time PR updates, avoid false classic OAuth scope errors for App authorization, and render App rate limits as a concise cooldown instead of a raw relay error.
 - Clear an explicit `Needs you` hand-raise when the user replies during an active turn, keep agent-to-agent steers from dismissing it, and give bundled agents concrete `note` / `ask` / snooze lifecycle rules so blocked idle chats do not appear Done.
-- Keep agent-authored Work status lines glanceable by normalizing them to six words while preserving full blocking questions in `ade chat ask`.
+- Keep agent-authored Work status lines glanceable by normalizing them to 3–6 words and at most 72 characters while preserving full blocking questions in `ade chat ask`.
 
 ## [1.2.46] - 2026-07-30
 
