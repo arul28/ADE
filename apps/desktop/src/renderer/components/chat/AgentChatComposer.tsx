@@ -69,7 +69,7 @@ import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
-import { hasPendingInputOptions } from "./pendingInput";
+import { AskQuestionComposer } from "./AskQuestionComposer";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
@@ -3886,7 +3886,19 @@ export function AgentChatComposer({
     onSendSteerNow?.();
   }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
-  const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
+  /**
+   * A question gate takes the composer over completely: the card replaces the
+   * textarea inside the same prompt-box frame, and the model / permission /
+   * effort row is hidden until it resolves. There is deliberately no second
+   * "answer the card above" banner — that banner sat on a composer
+   * `composerInputLocked` had already hard-locked, so the composer was dead
+   * and wearing a sign saying so.
+   */
+  const askQuestionRequest = pendingInput
+    && (pendingInput.kind === "question" || pendingInput.kind === "structured_question")
+    && pendingInput.questions.length > 0
+    ? pendingInput
+    : null;
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
   const selectedBuiltInBrowserContext = builtInBrowserContextItems.find((item) => item.id === selectedBuiltInBrowserContextId) ?? null;
@@ -4127,7 +4139,7 @@ export function AgentChatComposer({
           ? "border-0 bg-transparent shadow-none"
           : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
       )}
-      pendingBanner={pendingInput ? (
+      pendingBanner={pendingInput && !askQuestionRequest ? (
         pendingInput.kind === "plan_approval" ? (
           <ChatProposedPlanCard
             source={pendingInput.source}
@@ -4186,23 +4198,7 @@ export function AgentChatComposer({
                   <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
                 </div>
               </>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-[color:color-mix(in_srgb,var(--chat-accent)_66%,white_34%)]">
-                  {showPendingInputOptionsHint
-                    ? "Answer in the inline question card, or pick an option there."
-                    : "Answer in the inline question card, or decline."}
-                </span>
-                <button
-                  type="button"
-                  disabled={approvalResponding}
-                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
-                  onClick={() => onApproval("decline")}
-                >
-                  Decline
-                </button>
-              </div>
-            )}
+            ) : null}
           </div>
         )
       ) : undefined}
@@ -4525,7 +4521,7 @@ export function AgentChatComposer({
           ) : null}
         </>
       }
-      footer={
+      footer={askQuestionRequest ? undefined : (
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
@@ -5024,8 +5020,18 @@ export function AgentChatComposer({
           </div>
           </div>
         </div>
-      }
+      )}
     >
+      {askQuestionRequest ? (
+        <AskQuestionComposer
+          key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+          request={askQuestionRequest}
+          responding={approvalResponding ?? false}
+          onSubmit={(answers) => onApproval("accept", null, answers)}
+          onDecline={() => onApproval("decline")}
+        />
+      ) : (
+      <>
       {cursorCloudLaunchModeOpen && cursorCloudLaunchPanel ? (
         <div className="border-b border-violet-300/[0.10] bg-violet-500/[0.04] px-3 py-3">
           {cursorCloudLaunchPanel}
@@ -5280,6 +5286,8 @@ export function AgentChatComposer({
           ) : null}
         </div>
       </div>
+      </>
+      )}
       </ChatComposerShell>
       </BorderBeam>
     </>

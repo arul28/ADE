@@ -1416,10 +1416,16 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the inline question card, or decline.")).toBeTruthy();
+    // The card IS the composer now. A freeform-only question offers no
+    // ledger rows and the note field is the answer, not a qualifier.
+    expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.getByText("ADE asks")).toBeTruthy();
     expect(screen.queryByText("Input needed · ade")).toBeNull();
-    expect(screen.queryByText("Answer in the inline question card, or pick an option there.")).toBeNull();
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    expect((screen.getByTestId("ask-question-note-answer") as HTMLInputElement).placeholder).toBe("Your answer");
+    // The duplicate "answer the card above" banner is gone with the card it
+    // pointed at.
+    expect(screen.queryByText(/Answer in the inline question card/)).toBeNull();
   });
 
   it("locks the prompt box while a pending question is waiting", () => {
@@ -1444,16 +1450,23 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
-    expect(textbox.disabled).toBe(true);
-    expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
+    // The question card replaces the textarea inside the same frame rather
+    // than sitting above a disabled one, and the model / permission / effort
+    // row is hidden until it resolves.
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
     expect(screen.queryByLabelText("Send steer message")).toBeNull();
-    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByLabelText("Upload file from disk")).toBeNull();
+    // The composer's own Send is gone with the footer; the only Send on screen
+    // is the card's, and it is disabled until the question is answered.
+    expect(screen.getByTestId("ask-question-send")).toHaveProperty("disabled", true);
 
-    fireEvent.keyDown(textbox, { key: "Enter" });
-
+    // Nothing is dispatched until the user actually answers or declines.
     expect(props.onApproval).not.toHaveBeenCalled();
     expect(props.onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("ask-question-decline"));
+    expect(props.onApproval).toHaveBeenCalledWith("decline");
   });
 
   it("blocks send when the selected model is unavailable on a constrained surface", () => {
@@ -1511,10 +1524,13 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
+    expect(screen.getByTestId("ask-question-option-answer-question_flow")).toBeTruthy();
+    expect(screen.getByTestId("ask-question-option-answer-plan_updates")).toBeTruthy();
+    expect((screen.getByTestId("ask-question-note-answer") as HTMLInputElement).placeholder)
+      .toBe("Or send your own response instead");
   });
 
-  it("keeps the option hint when any pending question includes selectable options", () => {
+  it("renders each paged question's own options as the user advances", () => {
     renderComposer({
       pendingInput: {
         requestId: "req-2b",
@@ -1548,7 +1564,11 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the inline question card, or pick an option there.")).toBeTruthy();
+    // Page 1 is freeform-only; page 2 carries the options.
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    fireEvent.change(screen.getByTestId("ask-question-note-first"), { target: { value: "the composer" } });
+    fireEvent.click(screen.getByTestId("ask-question-send"));
+    expect(screen.getByTestId("ask-question-option-second-question_flow")).toBeTruthy();
   });
 
   it("uses decline wording for native Codex structured questions", () => {
