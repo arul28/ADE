@@ -92,6 +92,7 @@ export type PrLaneSummary = {
   state: "open" | "merged" | "closed";
   checksPassed: number;
   checksTotal: number;
+  stack?: GitHubPrStackMembership | null;
 };
 
 export type PrStatus = {

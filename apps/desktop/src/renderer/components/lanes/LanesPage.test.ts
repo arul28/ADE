@@ -545,6 +545,25 @@ describe("selectLaneTabPrTag", () => {
     });
   });
 
+  it("carries native stack position into the lane PR tag", () => {
+    const stack = {
+      id: "stack-18",
+      number: 18,
+      size: 3,
+      position: 2,
+      baseBranch: "main",
+    };
+
+    expect(selectLaneTabPrTag(
+      makeLane(),
+      [makePr({ stack })],
+      [makeGitHubPr({ stack })],
+    )).toMatchObject({
+      githubPrNumber: 224,
+      stack,
+    });
+  });
+
   it("prefers an ADE-mapped PR over an unlinked GitHub branch match", () => {
     const mappedPr = makePr({ id: "mapped-pr", state: "open" });
     const githubPr = makeGitHubPr({ id: "github-pr", state: "open" });

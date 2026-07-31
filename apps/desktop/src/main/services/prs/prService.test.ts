@@ -550,7 +550,7 @@ describe("prService.getForLane", () => {
     ]);
   });
 
-  it("includes native GitHub stack membership in lane and list summaries", () => {
+  it("includes native GitHub stack membership in lane and list summaries", async () => {
     const lane = makeFakeLane({ branchRef: "refs/heads/stack-ui" });
     const service = buildGetForLaneService(
       lane,
@@ -612,6 +612,13 @@ describe("prService.getForLane", () => {
     };
     expect(service.getForLane(lane.id)?.stack).toEqual(expectedStack);
     expect(service.listAll()[0]?.stack).toEqual(expectedStack);
+    await expect(service.listPrsByLane()).resolves.toEqual([
+      expect.objectContaining({
+        laneId: lane.id,
+        number: 91,
+        stack: expectedStack,
+      }),
+    ]);
   });
 
   it("does not surface a PR for primary when primary is on its base branch", () => {
@@ -849,6 +856,7 @@ describe("prService.getForLane", () => {
         state: pr.state === "draft" ? "open" : pr.state,
         checksPassed: 0,
         checksTotal: 0,
+        stack: pr.stack ?? null,
       }));
 
     await expect(service.listPrsByLane()).resolves.toEqual(perLane);

@@ -12,6 +12,7 @@ import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import type { TuiChatSessionSummary } from "../adeApi";
+import type { GitHubPrStackMembership } from "../../../../desktop/src/shared/types/prs";
 import { useHoveredHitId } from "../hitTestRegistry";
 import {
   computeDrawerLayout,
@@ -37,6 +38,7 @@ export type DrawerPrSummary = {
   state: "open" | "closed" | "merged";
   checksPassed: number;
   checksTotal: number;
+  stack?: GitHubPrStackMembership | null;
 };
 
 /** Derive a wireframe-bucket status for a lane from its data + active session. */
@@ -669,7 +671,8 @@ function LaneCard({
 }
 
 function formatPrPillText(pr: DrawerPrSummary): string {
-  return `[#${pr.number} ·${pr.checksPassed}/${pr.checksTotal}]`;
+  const stack = pr.stack ? ` ≋${pr.stack.position}/${pr.stack.size}` : "";
+  return `[#${pr.number}${stack} ·${pr.checksPassed}/${pr.checksTotal}]`;
 }
 
 function PrPill({ pr }: { pr: DrawerPrSummary }) {
@@ -678,6 +681,13 @@ function PrPill({ pr }: { pr: DrawerPrSummary }) {
     <Text>
       <Text color={theme.color.violet}>[#</Text>
       <Text color={theme.color.t1}>{pr.number}</Text>
+      {pr.stack ? (
+        <>
+          <Text color={theme.color.t3}> </Text>
+          <Text color={theme.color.violet}>≋</Text>
+          <Text color={theme.color.t1}>{pr.stack.position}/{pr.stack.size}</Text>
+        </>
+      ) : null}
       <Text color={theme.color.t3}> ·</Text>
       <Text color={checksColor}>{pr.checksPassed}</Text>
       <Text color={theme.color.t3}>/{pr.checksTotal}</Text>

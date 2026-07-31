@@ -2008,6 +2008,7 @@ export function createPrService({
       state,
       checksPassed: checks.filter((check) => check.status === "completed" && check.conclusion === "success").length,
       checksTotal: checks.length,
+      stack: pr.stack ?? null,
     };
   };
 
@@ -10535,10 +10536,13 @@ export function createPrService({
         }))
         .filter((candidate): candidate is LanePrDisplayCandidate => candidate != null);
       const checksByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot.checks] as const));
-      return candidates.map(({ summary, mappedRow }) => summaryToLanePrSummary(
-        summary,
-        mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
-      ));
+      return candidates.map(({ summary, mappedRow }) => {
+        const enriched = withGithubStackMembership(summary) ?? summary;
+        return summaryToLanePrSummary(
+          enriched,
+          mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
+        );
+      });
     },
 
     /**

@@ -1,6 +1,7 @@
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type {
   GitHubPrListItem,
+  GitHubPrStackMembership,
   LaneListSnapshot,
   LaneSummary,
   PrChecksStatus,
@@ -45,6 +46,7 @@ export type LaneTabPrTag = {
   updatedAt?: string;
   labels?: PrLabel[];
   author?: string | null;
+  stack?: GitHubPrStackMembership | null;
 };
 
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
@@ -290,6 +292,7 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
     mergeConflicts: pr.mergeConflicts,
     behindBaseBy: pr.behindBaseBy,
     updatedAt: pr.updatedAt,
+    stack: pr.stack ?? null,
   };
 }
 
@@ -308,6 +311,7 @@ function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): Lan
     updatedAt: pr.updatedAt,
     labels: pr.labels,
     author: pr.author,
+    stack: pr.stack ?? null,
   };
 }
 
@@ -332,6 +336,7 @@ function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null):
     updatedAt: base.updatedAt ?? secondary.updatedAt,
     labels: base.labels ?? secondary.labels,
     author: base.author ?? secondary.author,
+    stack: base.stack ?? secondary.stack ?? null,
   };
 }
 
