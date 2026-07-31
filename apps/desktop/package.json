@@ -54,7 +54,7 @@
     "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
     "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
     "test:chat-model-runtime-audit": "node ./scripts/audit-chat-model-runtime.mjs --mode=dry-run --max-per-provider=2",
-    "test:win:release-contract": "node --test ./scripts/windows-release-contract.test.mjs",
+    "test:win:release-contract": "node --test ./scripts/windows-release-contract.test.mjs ./scripts/windows-authenticode.test.mjs ./scripts/windows-uninstall-cleanup.test.mjs",
     "ade:dev": "npm --prefix ../ade-cli run dev -- --project-root ../..",
     "ade:build": "npm --prefix ../ade-cli run build",
     "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
@@ -337,6 +337,10 @@
       "artifactName": "${productName}-${version}-win-${arch}.${ext}",
       "extraResources": [
         {
+          "from": "scripts/windows-uninstall-cleanup.ps1",
+          "to": "ade-cli/windows-uninstall-cleanup.ps1"
+        },
+        {
           "from": "resources/runtime",
           "to": "runtime",
           "filter": [
@@ -347,6 +351,9 @@
           ]
         }
       ]
+    },
+    "nsis": {
+      "include": "build/installer.nsh"
     },
     "mac": {
       "target": [

@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -115,13 +115,15 @@ export async function acquireDroidSdkConnection(args: {
 }
 
 async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkConnection>[0]): Promise<DroidSdkPooled> {
+  // fork() forwards its options to spawn(), which supports windowsHide, but
+  // the installed @types/node ForkOptions declaration omits that property.
   const child = fork(resolveWorkerPath(), [], {
     cwd: args.workspacePath,
     env: sanitizeEnv(args.baseEnv ?? process.env),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,
-  });
+  } as ForkOptions & { windowsHide: boolean });
   const pending = new Map<string, PendingRpc>();
   const bridge: DroidSdkBridge = {
     onEvent: null,

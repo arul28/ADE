@@ -63,6 +63,8 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
   assert.match(windowsRelease, /WINDOWS_CSC_LINK/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
+  assert.match(windowsRelease, /ADE_POSTHOG_PROJECT_TOKEN:\s*\$\{\{ secrets\.ADE_POSTHOG_PROJECT_TOKEN \}\}/);
+  assert.match(windowsRelease, /ADE_POSTHOG_HOST:\s*\$\{\{ secrets\.ADE_POSTHOG_HOST \}\}/);
   assert.match(
     fs.readFileSync(path.join(desktopRoot, "scripts", "validate-win-artifacts.mjs"), "utf8"),
     /installerIdentity\.thumbprint !== appIdentity\.thumbprint/,
@@ -85,6 +87,7 @@ test("signed packaging stops before electron-builder when credentials are absent
 
 test("Windows release assets are validated and published as one release set", () => {
   const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const verify = jobBlock(releaseWorkflow, "verify", "build-mac-release");
   const workflowHeader = releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n"));
   assert.match(workflowHeader, /contents: read/);
   assert.doesNotMatch(workflowHeader, /contents: write/);
@@ -92,7 +95,8 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /- build-win-release/);
   assert.match(publish, /permissions:\s*\n\s+actions: read\s*\n\s+contents: write/);
   assert.match(publish, /name: ade-win-release-/);
-  assert.match(publish, /needs\.build-win-release\.result == 'success' \|\| needs\.build-win-release\.result == 'skipped'/);
+  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
+  assert.match(verify, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1/);
   assert.match(publish, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
   assert.match(publish, /BUILD_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED \}\}/);
   assert.match(publish, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
@@ -103,6 +107,24 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /--json isDraft/);
   assert.match(publish, /Refusing to overwrite published assets/);
   assert.match(publish, /if \[ "\$is_draft" != "true" \]; then/);
+});
+
+test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
+  assert.equal(pkg.build.nsis.include, "build/installer.nsh");
+  assert.ok(
+    pkg.build.win.extraResources.some((entry) => entry.to === "ade-cli/windows-uninstall-cleanup.ps1"),
+    "Windows package must carry the uninstall cleanup script",
+  );
+  const nsis = fs.readFileSync(path.join(desktopRoot, "build", "installer.nsh"), "utf8");
+  const cleanup = fs.readFileSync(
+    path.join(desktopRoot, "scripts", "windows-uninstall-cleanup.ps1"),
+    "utf8",
+  );
+  assert.match(nsis, /!macro customUnInstall/);
+  assert.match(nsis, /windows-uninstall-cleanup\.ps1/);
+  assert.match(nsis, /Abort/);
+  assert.match(cleanup, /serve" "--uninstall-service/);
+  assert.match(cleanup, /SetEnvironmentVariable\("Path"/);
 });
 
 test("release preflight validates the exact approved commit", () => {

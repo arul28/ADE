@@ -46,7 +46,9 @@ working branch:
   sidecar. Required `win-unpacked` package smoke validates the CLI/TUI,
   ConPTY, bundled Claude/Codex/OpenCode binaries, Cursor native helpers,
   Cursor/Droid SDK entry points, update authority, and a real `crsqlite.dll`
-  CRR mutation. Installing the generated NSIS package remains a separate
+  CRR mutation. The NSIS uninstaller stops and removes the Windows background
+  service, then removes only the terminal shim and user `PATH` entry owned by
+  that installation. Installing the generated NSIS package remains a separate
   external gate.
 - Required pull-request CI now builds an unsigned NSIS preview on
   `windows-latest`. Production Windows build and public release are separately
@@ -113,11 +115,11 @@ before calling Windows a first-class remote-brain/operations platform.
 
 | Area | Current state | Required work |
 | --- | --- | --- |
-| Electron/NSIS packaging | Required unsigned PR package job and signed release path are implemented | Clean-VM installer proof |
+| Electron/NSIS packaging | Required unsigned PR package job, owned-integration uninstall cleanup, and signed release path are implemented | Clean-VM installer proof |
 | Native dependencies | `win-unpacked` smoke loads ConPTY/provider payloads and performs a real `crsqlite.dll` CRR mutation | Repeat from an installed signed build |
 | Projects, lanes, Git, files | Windows-aware paths, Git, and junction code exist | Clean-VM functional testing |
 | Terminal/PTY | Structured Windows launch/resume, runtime-host materialization, and taskkill cleanup are implemented | Installed provider/ConPTY matrix |
-| Background brain | Per-user/channel Scheduled Task launcher is implemented | Logoff/reboot/update/uninstall proof |
+| Background brain | Per-user/channel Scheduled Task launcher and NSIS uninstall cleanup are implemented | Logoff/reboot/update/uninstall proof |
 | Updater | Fork authority and fail-closed signing/publication gates are implemented | Validate automatic updating after two signed Windows releases exist |
 | Windows developer loop | Per-user runtime pipe, successful-build-gated Electron launch, hidden background probes, and owned-runtime cleanup are implemented and host-tested | Repeat from a clean clone |
 | Sync/iPhone pairing | Intended to work | CRR roundtrip and firewall testing |

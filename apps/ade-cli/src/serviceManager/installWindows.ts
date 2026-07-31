@@ -349,9 +349,16 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
   try {
     fs.rmSync(launcherPath, { force: true });
-  } catch {
-    // The scheduled task is already gone. A stale inert launcher can be
-    // replaced or removed by the next install/uninstall attempt.
+  } catch (error) {
+    return {
+      ok: false,
+      serviceName,
+      action: "uninstall",
+      path: launcherPath,
+      message: `ADE service scheduled task was removed, but its launcher could not be deleted: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
   }
   return {
     ok: true,

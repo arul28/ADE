@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
+import { createAuthenticodeProbe } from "./windows-authenticode.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
@@ -252,6 +253,8 @@ function validatePreflight() {
   requireFile("build/icon.ico", "Windows app icon");
   requireFile("scripts/ade-cli-windows-wrapper.cmd", "Windows ADE CLI wrapper");
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
+  requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
+  requireFile("build/installer.nsh", "Windows NSIS customization");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -576,6 +579,7 @@ async function validatePackagedRuntime(appDir) {
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
+  const uninstallCleanupPath = path.join(resourcesPath, "ade-cli", "windows-uninstall-cleanup.ps1");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
@@ -589,6 +593,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(appExe, "packaged Windows app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(uninstallCleanupPath, "packaged Windows uninstall cleanup script");
   for (const resource of bundledAdeCliFiles) {
     await assertPathExists(
       path.join(resourcesPath, resource.to),
@@ -775,24 +780,12 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
     fail(`Cannot verify Authenticode signature for ${description} on ${process.platform}; run signed Windows validation on Windows.`);
   }
 
-  const script = [
-    "$sig = Get-AuthenticodeSignature -LiteralPath $args[0]",
-    "[pscustomobject]@{",
-    "  Status = [string]$sig.Status;",
-    "  StatusMessage = [string]$sig.StatusMessage;",
-    "  Subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { $null };",
-    "  Thumbprint = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Thumbprint } else { $null };",
-    "  TimestampSubject = if ($sig.TimeStamperCertificate) { [string]$sig.TimeStamperCertificate.Subject } else { $null }",
-    "} | ConvertTo-Json -Compress",
-  ].join("\n");
-  const { stdout } = await runCommand("powershell.exe", [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-    filePath,
-  ]);
+  // powershell.exe joins every token after -Command into the command text.
+  // Passing filePath as a trailing argv value therefore turns it into source
+  // code instead of $args[0]. Carry it in the child environment so paths with
+  // spaces and PowerShell metacharacters remain data.
+  const probe = createAuthenticodeProbe(filePath);
+  const { stdout } = await runCommand(probe.command, probe.args, { env: probe.env });
 
   let payload;
   try {

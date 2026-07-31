@@ -434,7 +434,7 @@ jobs:
           merge-multiple: true
 
       - name: Validate Windows release contract
-        run: node --test apps/desktop/scripts/windows-release-contract.test.mjs
+        run: npm --prefix apps/desktop run test:win:release-contract
 
       - name: Build and smoke unsigned Windows preview
         env:

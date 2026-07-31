@@ -68,6 +68,16 @@ jobs:
 
           echo "ci-pass succeeded for $TARGET_REF: $url"
 
+      - name: Validate Windows release configuration
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+        run: |
+          if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$BUILD_WINDOWS" != "1" ]; then
+            echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1."
+            exit 1
+          fi
+
   build-mac-release:
     needs:
       - verify
@@ -313,6 +323,8 @@ jobs:
           ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
           ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD }}
           ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
@@ -470,7 +482,10 @@ jobs:
         && inputs.publish
         && needs.build-runtime-binaries.result == 'success'
         && needs.build-mac-release.result == 'success'
-        && (needs.build-win-release.result == 'success' || needs.build-win-release.result == 'skipped')
+        && (
+          vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
+          || needs.build-win-release.result == 'success'
+        )
       }}
     needs:
       - build-runtime-binaries

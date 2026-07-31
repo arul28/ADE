@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -485,6 +485,8 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
 
+  // fork() forwards its options to spawn(), which supports windowsHide, but
+  // the installed @types/node ForkOptions declaration omits that property.
   const child = fork(workerPath, [], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
@@ -498,7 +500,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,
-  });
+  } as ForkOptions & { windowsHide: boolean });
   const pending = new Map<string, PendingRpc>();
   const bridge: CursorSdkBridge = {
     onEvent: null,

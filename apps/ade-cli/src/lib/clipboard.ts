@@ -13,7 +13,7 @@ export type CopyToClipboardOptions = {
    * Test seam: override the spawn function. The override must return the
    * same shape as `spawnSync` (status + error). Defaults to `spawnSync`.
    */
-  spawn?: (cmd: string, args: string[], options: { input: string }) => {
+  spawn?: (cmd: string, args: string[], options: { input: string; windowsHide?: boolean }) => {
     error?: Error;
     status?: number | null;
   };

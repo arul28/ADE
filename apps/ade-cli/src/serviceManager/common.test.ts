@@ -1420,6 +1420,30 @@ describe("Windows scheduled task helpers", () => {
     ]);
   });
 
+  it("fails uninstall when the scheduled task launcher cannot be removed", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+    ]);
+    const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
+
+    const result = uninstallWindowsService({
+      launcherPath,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      serviceName,
+      action: "uninstall",
+      path: launcherPath,
+    });
+    expect(result.message).toContain("launcher could not be deleted");
+  });
+
   it("queries Task Scheduler state through PowerShell instead of localized schtasks labels", () => {
     const calls: Array<{
       command: string;

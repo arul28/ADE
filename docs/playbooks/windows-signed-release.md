@@ -237,6 +237,7 @@ WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later.
 - [Package scripts](../../apps/desktop/package.json)
 - [Windows packaging script](../../apps/desktop/scripts/run-electron-builder.mjs)
 - [Windows release-file checker](../../apps/desktop/scripts/validate-win-artifacts.mjs)
+- [Windows uninstall cleanup](../../apps/desktop/scripts/windows-uninstall-cleanup.ps1)
 - [Non-publishing workflow](../../.github/workflows/prepare-release.yml)
 - [Tag-triggered release workflow](../../.github/workflows/release.yml)
 - [Shared release jobs](../../.github/workflows/release-core.yml)
