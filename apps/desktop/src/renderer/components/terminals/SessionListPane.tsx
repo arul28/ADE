@@ -650,7 +650,7 @@ function StickyGroupHeader({
                 className={cn(
                   "min-w-0 shrink truncate leading-tight",
                   isLane
-                    ? "ade-lane-group-header-lane ade-lane-branch-inline-lane text-[12px] font-medium text-fg/85"
+                    ? "ade-lane-group-header-lane ade-lane-branch-inline-lane text-[12px] font-semibold text-fg/85"
                     // A quiet shelf ignores the shelf tone on purpose: colour is
                     // the lane divider's channel, and the whole reason Snoozed
                     // stopped being blue is that a coloured folding label with a
