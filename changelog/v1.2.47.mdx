@@ -1,0 +1,28 @@
+---
+title: "v1.2.47"
+description: "Release notes for ADE v1.2.47 - July 31, 2026"
+---
+
+v1.2.47 gives the hosted web client a persistent workspace for every connected machine, keeps image attachments with the machine that owns them, and makes Work status more truthful from lane naming through planning, waiting, and background tasks.
+
+---
+
+## Multi-machine Work is persistent
+
+- **A workspace for every machine.** The hosted web client keeps an independent project and session workspace for each connected machine, so switching machines no longer resets the active work.
+- **Machine routing survives change.** Project refreshes, machine reconnects, and session updates preserve the selected destination instead of silently rebinding the workspace.
+- **Attachments stay with their owner.** Draft images and other machine-local attachments persist across machine switches while remaining bound to the authorized source machine.
+
+## Work state is easier to trust
+
+- **Planning is visible.** Active plan-mode turns now say `Planning`, and background work appears only after the foreground turn becomes idle.
+- **Scheduled wakes are explicit.** Idle chats with an armed wake show a neutral `Waiting` duration without changing their canonical lifecycle or attention state.
+- **Lane identity updates live.** New lanes show `Naming lane…` while automatic naming resolves, then refresh the branch and lane label across Work, Lanes, Git Actions, and hover details.
+- **Context stays scannable.** Grid membership, single-session PR badges, turn-anchored durations, and concise status notes remain visible in compact session rows.
+
+## Agent and GitHub reliability
+
+- **Bundled skills are session-scoped.** ADE exposes its packaged skills through each agent runtime without copying them into personal global skill folders, and removes only unchanged legacy managed copies.
+- **GitHub credentials are predictable.** ADE prefers explicit environment and GitHub CLI credentials before stored tokens, keeps the GitHub App dedicated to real-time read paths, and renders rate limits as a concrete cooldown.
+- **Attention clears at the right time.** A user reply clears an explicit hand-raise, while agent-to-agent steering leaves it intact.
+- **Stale prompt errors stay quiet.** Prompt-stash refresh failures from a local project that is no longer authorized no longer surface as misleading runtime errors.

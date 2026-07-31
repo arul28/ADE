@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Work and reliability
+## [1.2.47] - 2026-07-31
+
+### Multi-machine Work
+
+- Give each connected machine a persistent hosted-web workspace with independent project and session routing.
+- Preserve the selected destination through project refreshes, machine reconnects, and session updates.
+- Keep draft images and other machine-local attachments across machine switches while retaining source-machine ownership and authorization.
+
+### Work state and lane identity
 
 - Show an animated `Naming lane…` placeholder while automatic lane identity is still resolving, reveal the deterministic fallback only on failure, refresh renamed branches live across Lanes, Git Actions, and session hover details, and keep sidebar Working durations anchored to each chat turn.
+- Show `Planning` for active plan-mode turns, compact `Working` only for background tasks after foreground work becomes idle, and neutral `Waiting` durations for scheduled wakes.
+- Restore grid-membership indicators and single-session PR badges in compact session rows.
+- Suppress stale prompt-stash errors only when their captured local project is no longer authorized.
+
+### Agent and GitHub reliability
+
+- Scope packaged ADE skills to each supported agent session, preserve user-modified legacy copies, and expose `ade skill list/show` as the universal fallback.
 - Prefer explicit environment and GitHub CLI credentials before a stored PAT, keep the GitHub App read-only and dedicated to real-time PR updates, avoid false classic OAuth scope errors for App authorization, and render App rate limits as a concise cooldown instead of a raw relay error.
 - Clear an explicit `Needs you` hand-raise when the user replies during an active turn, keep agent-to-agent steers from dismissing it, and give bundled agents concrete `note` / `ask` / snooze lifecycle rules so blocked idle chats do not appear Done.
 - Keep agent-authored Work status lines glanceable by normalizing them to 3–6 words and at most 72 characters while preserving full blocking questions in `ade chat ask`.
@@ -1265,7 +1280,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.46...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.47...HEAD
+[1.2.47]: https://github.com/arul28/ADE/compare/v1.2.46...v1.2.47
 [1.2.46]: https://github.com/arul28/ADE/compare/v1.2.45...v1.2.46
 [1.2.45]: https://github.com/arul28/ADE/compare/v1.2.44...v1.2.45
 [1.2.44]: https://github.com/arul28/ADE/compare/v1.2.43...v1.2.44
