@@ -211,15 +211,11 @@ export function useDraftMachineRouting({
   }, [boundMachineId, onDraftMachineChange]);
 
   useEffect(() => {
-    const requestedMachineId = initialDraftMachineId?.trim();
-    if (
-      requestedMachineId
-      && requestedMachineId !== machineId
-      && machineOptions.some((option) => option.id === requestedMachineId)
-    ) {
-      setMachineId(requestedMachineId);
-    }
-  }, [initialDraftMachineId, machineId, machineOptions]);
+    const desiredMachineId = initialDraftMachineId?.trim() || boundMachineId;
+    setMachineId((currentMachineId) =>
+      currentMachineId === desiredMachineId ? currentMachineId : desiredMachineId,
+    );
+  }, [boundMachineId, initialDraftMachineId]);
 
   useEffect(() => {
     if (machineOptions.some((option) => option.id === machineId)) return;
@@ -408,6 +404,9 @@ export function useDraftMachineRouting({
     selectorMachines,
     selectorLanes,
     boundMachineId,
+    selectedMachineId: machineId,
+    selectionReconciled:
+      machineId === (initialDraftMachineId?.trim() || boundMachineId),
     executionLanes,
     executionBinding,
     selectedMachine,

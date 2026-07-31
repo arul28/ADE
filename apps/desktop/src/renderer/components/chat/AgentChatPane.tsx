@@ -227,6 +227,7 @@ import {
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
 import { DraftMachinePicker } from "./DraftMachinePicker";
+import { useDraftAttachmentTransfer } from "./draftAttachmentTransfer";
 import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
@@ -3546,6 +3547,7 @@ export function AgentChatPane({
       : null,
   );
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const draftAttachmentOwnerBindingRef = useRef<OpenProjectBinding | null>(null);
   const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -7571,6 +7573,9 @@ export function AgentChatPane({
   }, [laneId, selectedSessionId, sessionProvider]);
 
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
+    if (!selectedSessionIdRef.current) {
+      draftAttachmentOwnerBindingRef.current = draftExecutionBindingRef.current;
+    }
     setAttachments((prev) => {
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
@@ -10780,6 +10785,8 @@ export function AgentChatPane({
     machineOptions: laneMachineOptions,
     selectorLanes: draftLaneSelectorLanes,
     boundMachineId: boundLaneMachineId,
+    selectedMachineId: selectedDraftMachineId,
+    selectionReconciled: draftMachineSelectionReconciled,
     executionLanes: draftExecutionLanes,
     executionBinding: draftExecutionBinding,
     selectedMachine: selectedDraftMachine,
@@ -10818,9 +10825,57 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
-  const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftExecutionBinding
-    ? "Reconnect the selected machine project or choose another machine before attaching files."
-    : null;
+  const draftAttachmentMachine = useMemo(() => ({
+    id: selectedDraftMachineId,
+    name: selectedDraftMachine?.name ?? (
+      selectedDraftMachineId === boundLaneMachineId ? "This Mac" : selectedDraftMachineId
+    ),
+    binding: draftExecutionBinding,
+  }), [
+    boundLaneMachineId,
+    draftExecutionBinding,
+    selectedDraftMachineId,
+    selectedDraftMachine?.name,
+  ]);
+  const getLinkedDraftVisualAttachmentPaths = useCallback(() => new Set([
+    ...linkedIosAttachmentPathsRef.current,
+    ...linkedAppControlAttachmentPathsRef.current,
+    ...linkedBuiltInBrowserAttachmentPathsRef.current,
+  ]), []);
+  const clearDraftVisualContext = useCallback(() => {
+    setIosElementContextItems([]);
+    setAppControlContextItems([]);
+    setBuiltInBrowserContextItems([]);
+    linkedIosAttachmentPathsRef.current.clear();
+    linkedAppControlAttachmentPathsRef.current.clear();
+    linkedBuiltInBrowserAttachmentPathsRef.current.clear();
+  }, []);
+  const {
+    pending: draftAttachmentTransferPending,
+    blockedReason: draftAttachmentTransferBlockedReason,
+  } = useDraftAttachmentTransfer({
+    enabled: showDraftLaunchControls,
+    machine: draftAttachmentMachine,
+    scopeKey: composerDraftStorageKeyValue,
+    scopeReady: draftMachineSelectionReconciled,
+    attachments,
+    setAttachments,
+    attachmentOwnerBindingRef: draftAttachmentOwnerBindingRef,
+    getLinkedVisualAttachmentPaths: getLinkedDraftVisualAttachmentPaths,
+    visualContextCount:
+      iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length,
+    clearVisualContext: clearDraftVisualContext,
+    setError,
+  });
+  const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftMachineSelectionReconciled
+    ? "Restoring this project's selected machine."
+    : showDraftLaunchControls && !draftExecutionBinding
+      ? "Reconnect the selected machine project or choose another machine before attaching files."
+      : draftAttachmentTransferPending
+        ? "Moving attached images to the selected machine."
+        : draftAttachmentTransferBlockedReason;
   const auxiliaryToolDisabledReason = !activeComposerRuntimeBinding
     ? "Reconnect the selected machine project before using this tool."
     : !projectBinding || activeComposerRuntimeBinding.key !== projectBinding.key
@@ -10830,48 +10885,6 @@ export function AgentChatPane({
             : "This Mac"
         } before using this tool. Chat and attachments remain pinned to that machine.`
       : null;
-
-  const previousDraftMachineRef = useRef<{ id: string; name: string } | null>(null);
-  useEffect(() => {
-    if (!showDraftLaunchControls) {
-      previousDraftMachineRef.current = null;
-      return;
-    }
-    const currentMachine = {
-      id: selectedDraftMachine?.id ?? boundLaneMachineId,
-      name: selectedDraftMachine?.name ?? "This Mac",
-    };
-    const previousMachine = previousDraftMachineRef.current;
-    previousDraftMachineRef.current = currentMachine;
-    if (!previousMachine || previousMachine.id === currentMachine.id) return;
-
-    const removedCount =
-      attachments.length
-      + iosElementContextItems.length
-      + appControlContextItems.length
-      + builtInBrowserContextItems.length;
-    if (removedCount === 0) return;
-    setAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-    linkedIosAttachmentPathsRef.current.clear();
-    linkedAppControlAttachmentPathsRef.current.clear();
-    linkedBuiltInBrowserAttachmentPathsRef.current.clear();
-    setError(
-      `Removed ${removedCount} machine-owned attachment${removedCount === 1 ? "" : "s"} from ${previousMachine.name}. `
-      + `Attach them again on ${currentMachine.name}.`,
-    );
-  }, [
-    appControlContextItems.length,
-    attachments.length,
-    boundLaneMachineId,
-    builtInBrowserContextItems.length,
-    iosElementContextItems.length,
-    selectedDraftMachine?.id,
-    selectedDraftMachine?.name,
-    showDraftLaunchControls,
-  ]);
 
   useEffect(() => {
     if (!showDraftLaunchControls || !isTileActive) return;
@@ -11882,7 +11895,14 @@ export function AgentChatPane({
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
-            busy={busy || projectTransitionBlocksChat || chatSelectionTransitioning}
+            busy={
+              busy
+              || projectTransitionBlocksChat
+              || chatSelectionTransitioning
+              || !draftMachineSelectionReconciled
+              || draftAttachmentTransferPending
+              || Boolean(draftAttachmentTransferBlockedReason)
+            }
             sessionProvider={sessionProvider}
             interactionMode={interactionMode}
             claudePermissionMode={claudePermissionMode}
