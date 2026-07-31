@@ -123,7 +123,7 @@ uses to act on ADE itself:
 
 | Tool family | Purpose |
 |---|---|
-| `spawnChat` | Spawn a new chat session in a specified lane with an explicit model, reasoning effort, and initial prompt. |
+| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, and initial prompt. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its own lane is the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
 | `interruptChat`, `handoffChat` | Mid-session control over other chat sessions. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |

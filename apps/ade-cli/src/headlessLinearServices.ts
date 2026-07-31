@@ -145,6 +145,8 @@ type HeadlessLinearServices = {
     getSessionSummary: (
       sessionId: string,
     ) => Promise<Record<string, unknown> | null>;
+    /** Mirrors the desktop chat service so `cto_state.getAttention` resolves headlessly. */
+    getCtoAttention: () => Promise<{ awaitingInput: boolean; since: string | null }>;
     getChatTranscript: (args: {
       sessionId: string;
       limit?: number;
@@ -1928,6 +1930,15 @@ function createHeadlessAgentChatService(
     },
     async getSessionSummary(sessionId: string) {
       return sessions.get(sessionId.trim()) ?? null;
+    },
+    async getCtoAttention() {
+      // The `cto_state.getAttention` action calls this unconditionally
+      // (`runtime.agentChatService?.getCtoAttention()` only guards a null
+      // service, not a missing method), so the headless runtime must answer or
+      // `ade actions run cto_state.getAttention` throws a TypeError. Headless
+      // sessions never block on user input — there is no turn loop to block —
+      // so "not waiting" is the truthful answer, not a placeholder.
+      return { awaitingInput: false, since: null };
     },
     async getChatTranscript({
       sessionId,

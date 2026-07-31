@@ -16810,6 +16810,23 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(viaTimestamp.isComplete)
   }
 
+  func testCtoSetupCompletionPreservesHostOnboardingMarkers() {
+    // The host records non-user steps here (e.g. "intro", meaning the CTO's
+    // opening turn was already sent) and updateIdentity replaces the whole
+    // object, so completing setup from iOS must not drop them.
+    XCTAssertEqual(
+      CtoOnboardingState.stepsCompletingSetup(existing: ["intro"]),
+      ["intro", "identity"]
+    )
+    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: nil), ["identity"])
+    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: []), ["identity"])
+    // Idempotent: re-saving setup must not duplicate the required step.
+    XCTAssertEqual(
+      CtoOnboardingState.stepsCompletingSetup(existing: ["identity", "intro"]),
+      ["identity", "intro"]
+    )
+  }
+
   func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
     func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
       CtoIdentity(

@@ -155,6 +155,7 @@ import type {
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
+  CtoAttentionState,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearOAuthClientArgs,
@@ -9753,6 +9754,10 @@ contextBridge.exposeInMainWorld("ade", {
     runProjectScan: async (): Promise<CtoRunProjectScanResult> =>
       callProjectRuntimeActionOr("cto_state", "runProjectScan", {}, () =>
         ipcRenderer.invoke(IPC.ctoRunProjectScan),
+      ),
+    getAttention: async (): Promise<CtoAttentionState> =>
+      callProjectRuntimeActionOr("cto_state", "getAttention", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),

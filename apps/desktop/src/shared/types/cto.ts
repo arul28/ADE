@@ -290,3 +290,17 @@ export type CtoSearchMemoryResult = {
   query: string;
   rows: CtoMemorySearchRow[];
 };
+
+/* ── Attention ── */
+
+/**
+ * Whether the CTO thread is blocked on the user. The CTO chat is deliberately
+ * hidden from every lane/session roster, so it cannot borrow the Work tab's
+ * attention dot — this is the one signal that keeps a hidden thread from going
+ * silent when it asks a question.
+ */
+export type CtoAttentionState = {
+  awaitingInput: boolean;
+  /** When the thread started waiting; null when it is not waiting. Tooltip copy. */
+  since: string | null;
+};

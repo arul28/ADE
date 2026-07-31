@@ -286,6 +286,7 @@ import type {
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
+  CtoAttentionState,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
@@ -2601,6 +2602,7 @@ declare global {
           args: CtoGetLinearOAuthSessionArgs,
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
+        getAttention: () => Promise<CtoAttentionState>;
       };
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;

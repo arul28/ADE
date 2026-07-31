@@ -533,6 +533,7 @@ import type {
   SyncPeerDeviceType,
   SyncRoleSnapshot,
   SyncTransferReadiness,
+  CtoAttentionState,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -10263,6 +10264,20 @@ export function registerIpc({
       throw new Error("CTO state service is not available.");
     }
     return ctx.ctoStateService.getSnapshot(arg.recentLimit ?? 20);
+  });
+
+  /**
+   * Read-only: is the CTO thread blocked on the user? The CTO chat is hidden
+   * from every session roster, so it never reaches the Work attention dot or
+   * the dock badge. This is a pure read — it must not call ensureIdentitySession,
+   * which would materialize a primary lane and a chat session as a side effect
+   * of rendering a badge.
+   */
+  ipcMain.handle(IPC.ctoGetAttention, async (): Promise<CtoAttentionState> => {
+    const service = getCtx().agentChatService;
+    return service
+      ? await service.getCtoAttention()
+      : { awaitingInput: false, since: null };
   });
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {

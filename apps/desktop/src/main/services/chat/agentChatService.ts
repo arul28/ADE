@@ -330,6 +330,7 @@ import type {
   ComputerUseBackendStatus,
   TerminalSessionStatus,
   TerminalToolType,
+  CtoAttentionState,
   CtoCapabilityMode,
   LaneLinearIssue,
   SessionLinearIssueLink,
@@ -412,6 +413,7 @@ import type { ExecutableTool } from "../ai/tools/executableTool";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
+import { CTO_INTRO_ONBOARDING_STEP, CTO_INTRO_PROMPT } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
@@ -8203,6 +8205,37 @@ export function createAgentChatService(args: {
     trackSubagentEventInMap(map, event, nowIso());
   };
 
+  /**
+   * Where CTO-launched work runs. An explicit lane wins; otherwise the work
+   * gets a *fresh* lane. It deliberately never falls back to the CTO's own
+   * lane: that lane is the project's primary lane, so the old fallback landed
+   * every spawned agent on the primary worktree. If lane creation fails we let
+   * the error surface (spawnChat reports it) rather than quietly re-targeting
+   * primary, which is the failure mode this exists to prevent.
+   */
+  const resolveCtoExecutionLane: CtoOperatorToolDeps["resolveExecutionLane"] = async ({
+    requestedLaneId,
+    purpose,
+    freshLaneName,
+    freshLaneDescription,
+  }) => {
+    const explicit = requestedLaneId?.trim();
+    if (explicit) return explicit;
+    const name = freshLaneName?.trim() || purpose?.trim() || "CTO work";
+    const lane = await laneService.create({
+      name,
+      ...(freshLaneDescription?.trim()
+        ? { description: freshLaneDescription.trim() }
+        : {}),
+    });
+    logger.info("agent_chat.cto_execution_lane_created", {
+      laneId: lane.id,
+      name,
+      purpose: purpose ?? null,
+    });
+    return lane.id;
+  };
+
   const previewSessionToolNames = ({
     laneId,
     sessionProfile,
@@ -8243,7 +8276,7 @@ export function createAgentChatService(args: {
         defaultLaneId: laneId,
         defaultModelId: null,
         defaultReasoningEffort: null,
-        resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || laneId,
+        resolveExecutionLane: resolveCtoExecutionLane,
         laneService,
         prService: prService ?? null,
         fileService: fileService ?? null,
@@ -38067,6 +38100,94 @@ export function createAgentChatService(args: {
     return disposed;
   };
 
+  /** Sessions whose intro send is in flight, so a racing ensureSession cannot double-send. */
+  const ctoIntroInFlight = new Set<string>();
+
+  /**
+   * Seeds the opening turn for a freshly created CTO thread so first-run users
+   * do not land on a blank screen. Only fires for a *new* session: a reused
+   * thread already has content, so there is nothing to fill.
+   *
+   * The completion flag is persisted only after the send succeeds — if the
+   * provider is unauthenticated on first run the thread stays empty and the
+   * next session creation retries rather than silently burning the one shot.
+   */
+  const seedCtoIntroTurn = async (sessionId: string): Promise<void> => {
+    if (!ctoStateService) return;
+    if (ctoIntroInFlight.has(sessionId)) return;
+    ctoIntroInFlight.add(sessionId);
+    try {
+      // Inside the try: this runs on a `void`-called path, so a KV read throw
+      // here would surface as an unhandled rejection in the main process.
+      const onboarding = ctoStateService.getOnboardingState();
+      if (onboarding.completedSteps.includes(CTO_INTRO_ONBOARDING_STEP)) return;
+      // awaitDispatch so a first-run dispatch failure (unauthenticated provider,
+      // no model configured) lands in the catch below instead of escaping as an
+      // unhandled rejection from a fire-and-forget turn.
+      await sendMessage({ sessionId, text: CTO_INTRO_PROMPT }, { awaitDispatch: true });
+      ctoStateService.completeOnboardingStep(CTO_INTRO_ONBOARDING_STEP);
+      logger.info("agent_chat.cto_intro_seeded", { sessionId });
+    } catch (error) {
+      logger.warn("agent_chat.cto_intro_seed_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      ctoIntroInFlight.delete(sessionId);
+    }
+  };
+
+  /**
+   * Identity sessions for a key, newest activity first. Single source of truth
+   * for "which session is the CTO thread" — `ensureIdentitySession` and the
+   * attention probe must not answer that question differently.
+   */
+  const listIdentitySessions = async (
+    identityKey: AgentChatIdentityKey,
+  ): Promise<AgentChatSessionSummary[]> => {
+    const existing = await listSessions(undefined, { includeIdentity: true });
+    return existing
+      .filter((entry) => entry.identityKey === identityKey)
+      .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
+  };
+
+  /**
+   * Is the CTO thread blocked on the user?
+   *
+   * Canonical because the CTO chat is hidden from every session roster: it never
+   * reaches `terminalAttention`, so this is the only thing standing between a
+   * hidden thread and a silently unanswered question. Both transports (plain IPC
+   * and the daemon action domain) delegate here so they cannot drift.
+   *
+   * Strictly read-only. It must never call `ensureIdentitySession` — that would
+   * materialize a primary lane and a chat session as a side effect of drawing a
+   * badge.
+   *
+   * The predicate deliberately does not reuse `canonicalStatusBucket`: its
+   * "awaiting-input" bucket folds in `idle` and `ready`, which would light the
+   * badge whenever the CTO is merely sitting there. It covers the chat-level
+   * waiters plus an explicit hand-raise on the backing session row (`ade chat
+   * ask`), which is a separate signal from `awaitingInput`.
+   */
+  const getCtoAttention = async (): Promise<CtoAttentionState> => {
+    const idle: CtoAttentionState = { awaitingInput: false, since: null };
+    try {
+      const cto = (await listIdentitySessions("cto"))[0];
+      if (!cto) return idle;
+      const handRaisedAt = sessionService.get(cto.sessionId)?.attentionRequestedAt ?? null;
+      const awaitingInput = Boolean(cto.awaitingInput || cto.pendingInputItemId || handRaisedAt);
+      if (!awaitingInput) return idle;
+      return { awaitingInput: true, since: handRaisedAt ?? cto.lastActivityAt ?? null };
+    } catch (error) {
+      // A probe failure must not break the caller; the renderer keeps its last
+      // known state rather than falsely clearing a pending question.
+      logger.warn("agent_chat.cto_attention_probe_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return idle;
+    }
+  };
+
   const ensureIdentitySession = async (args: {
     identityKey: AgentChatIdentityKey;
     laneId: string;
@@ -38086,10 +38207,7 @@ export function createAgentChatService(args: {
       requestedLaneId,
       canonicalLaneId,
     );
-    const existing = await listSessions(undefined, { includeIdentity: true });
-    const identitySessions = existing
-      .filter((entry) => entry.identityKey === args.identityKey)
-      .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt));
+    const identitySessions = await listIdentitySessions(args.identityKey);
 
     const canonicalExisting = args.reuseExisting === false
       ? null
@@ -38222,6 +38340,12 @@ export function createAgentChatService(args: {
     refreshReconstructionContext(managed);
     await refreshHeadShaStartForManagedExecutionLane(managed);
     persistChatState(managed);
+    // Only a brand-new CTO thread is blank, so this is the one place the
+    // opening turn belongs. Fire-and-forget: session creation must not block on
+    // a model round-trip, and a failed intro is logged, not fatal.
+    if (args.identityKey === "cto") {
+      void seedCtoIntroTurn(managed.session.id).catch(() => {});
+    }
     return managed.session;
   };
 
@@ -42627,6 +42751,7 @@ export function createAgentChatService(args: {
     getChatEventHistory,
     getChatEventHistoryPage,
     ensureIdentitySession,
+    getCtoAttention,
     approveToolUse,
     respondToInput,
     dismissPendingInputForSettlement,

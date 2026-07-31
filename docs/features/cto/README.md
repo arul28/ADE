@@ -10,7 +10,7 @@ The whole surface is built around one contract: the CTO is a daily chat you can 
 
 - `ctoStateService.ts` — identity (name, personality, work style, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, personality overlays, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch; `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim.
 - `ctoMemoryService.ts` — the smart-memory file store under `.ade/cto/`. Reads/writes `MEMORY.md` and `thread-state.md` (atomic writes), appends per-turn lines to `daily/<YYYY-MM-DD>.md`, exposes `searchMemory(query)` (bounded, file-based, most-recent-first), `getSnapshot()`, and `buildMemoryContextSections()` (the capped copies used for injection). No new database or vector dependency.
-- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool manifest injected into the prompt. It is generated directly from `createCtoOperatorTools()` so registered tools and prompt documentation stay aligned.
+- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool manifest injected into the prompt. It is generated directly from `createCtoOperatorTools()` so registered tools and prompt documentation stay aligned; its operating rules are what keep CTO-launched work off the CTO's own lane. Also owns `CTO_INTRO_PROMPT` and `CTO_INTRO_ONBOARDING_STEP` — the opening turn and the once-only marker described in [The opening turn](#the-opening-turn).
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssueState`, `updateIssueAssignee`, `createComment`, `addIssueLabel` / `removeIssueLabel`.
 - `linearIssueTracker.ts` / `issueTracker.ts` — issue cache, change detection, and the `getQuickView` / `searchIssues` / `fetchIssueComments` read shims plus the `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` write surface renderer surfaces call through.
 - `linearGraphQLInput.ts` — GraphQL input builders shared by the client and tracker.
@@ -37,7 +37,15 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`) with label, description, and `systemOverlay`.
 - `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone.
 - `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface registered for the CTO session, including the memory tools `saveMemory`, `searchMemory`, and `readMemory` and the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools).
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind, the memory flush hooks, and the reconstruction-context injection (all detailed below).
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind (`listIdentitySessions` / `ensureIdentitySession`), the memory flush hooks, the reconstruction-context injection, `seedCtoIntroTurn` (the opening turn), `resolveCtoExecutionLane` (where CTO-launched work runs), and the canonical `getCtoAttention` probe (all detailed below).
+- `apps/desktop/src/shared/types/cto.ts` — `CtoAttentionState` (`{ awaitingInput, since }`), the shape both attention transports return.
+
+### Attention surfaces (renderer)
+
+- `apps/desktop/src/renderer/hooks/useCtoAttention.ts` — the probe loop behind the CTO tab dot. Mounted once in `AppShell.tsx`.
+- `apps/desktop/src/renderer/state/appStore.ts` — `ctoAttention` + `setCtoAttention`, reset to idle on every project switch/close alongside `terminalAttention`.
+- `apps/desktop/src/renderer/components/app/TabNav.tsx` — renders the warning dot on the `/cto` tab with a "waiting since" tooltip.
+- `apps/desktop/src/renderer/hooks/useAppWideSessionAttention.ts` — folds `ctoAttention.awaitingInput` into the dock badge count while remaining the only writer of `setDockBadgeCount`.
 
 ### iOS companion (`apps/ios/ADE/Views/Cto/`)
 
@@ -103,6 +111,30 @@ The guarantee is that a deterministic flush always runs before anything can be l
 
 `AgentChatIdentityKey` is just `"cto"`. `ensureIdentitySession` reuses the newest CTO session regardless of which lane it was last active on: if nothing lives on the canonical lane but a CTO session exists elsewhere, it reuses that session and rebinds it to the canonical lane instead of forking a parallel thread. There is only ever one CTO thread per project.
 
+### Hidden from rosters, but never silent
+
+The CTO thread is pinned to the project's **primary lane** (it needs a lane for its cwd), but it is filtered out of every session roster so it never reads as a chat you started: `agentChatService.listSessions` drops identity sessions unless `includeIdentity` is set, and `chatSessionProjection.projectChatSummariesOntoSessions` plus `laneListSnapshotService` drop the backing terminal row before the Work tab, Lanes tab, workspace graph, and TopBar ever see it. `sessions:get` still resolves the id, so deeplinks and `CtoPage` keep working. Universal search deliberately *does* index the thread — it is your own conversation, and it should be findable in ⌘K.
+
+Hiding the row removes it from `terminalAttention`, which is what the Work dot and the dock badge summarize. A hidden thread that asks a question would otherwise surface nowhere, so attention gets its own path:
+
+- `agentChatService.getCtoAttention()` is the single implementation. Both transports — `IPC.ctoGetAttention` (plain IPC) and the `cto_state.getAttention` action (daemon-routed) — delegate to it, so a remote runtime and a local one cannot derive "needs you" differently. It returns `CtoAttentionState`, just `{ awaitingInput, since }`; `since` is the tooltip timestamp and is `null` while idle.
+- It is **read-only**. It resolves the thread through the same `listIdentitySessions` helper `ensureIdentitySession` uses, but never calls `ensureIdentitySession` itself: rendering a badge must not materialize a primary lane and a chat session as a side effect. The predicate is `awaitingInput || pendingInputItemId || attentionRequestedAt` (the last being an explicit `ade chat ask` hand-raise) rather than `canonicalStatusBucket`, whose awaiting-input bucket folds in `idle` and `ready` and would light the dot whenever the CTO is merely sitting there. A probe failure logs and returns idle.
+- `useCtoAttention` (mounted once in `AppShell`) keeps `appStore.ctoAttention` fresh from chat events, focus, and a 15 s visible-tab interval; `TabNav` renders the dot on `/cto`. It filters chat events through `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity scan per delta, debounces to 1.5 s (0 on focus), and clears to idle on project switch so the previous project's state cannot linger.
+- `useAppWideSessionAttention` adds the CTO to the dock badge count so a question reaches a minimized window. It stays the single writer of `setDockBadgeCount`.
+
+### The opening turn
+
+A brand-new CTO thread used to open on a blank screen. `ensureIdentitySession` now seeds one real, **visible** first user turn when it *creates* the session (`seedCtoIntroTurn`), asking the CTO to introduce itself and give a read on the project. Because `ensureSession` is gated behind onboarding in `CtoPage`, session creation is exactly the blank-thread moment, and seeding there covers desktop, iOS, and the CLI in one place.
+
+It is deliberately not a hidden or canned message: ADE has no hidden-turn mechanism, and a fabricated assistant message would feed back into the model's context on every later turn. The `intro` marker lives in `onboardingState.completedSteps` — not a user-facing setup step, but kept in that list so it is persisted and so `ctoResetOnboarding` clears it with the rest — so it survives restarts and fires once; it is written only *after* the send succeeds, so an unauthenticated first run retries instead of burning the one shot. The send is fire-and-forget with `awaitDispatch` so a dispatch failure is logged rather than escaping as an unhandled rejection.
+
+### Where CTO-launched work runs
+
+The CTO must not launch implementation work on its own lane — that lane is the primary lane, so agents would write straight to the primary worktree. Two things enforce this:
+
+- **The prompt.** `buildCtoCapabilityManifest`'s operating rules tell the CTO to leave `laneId` off for new work and reserve its own lane for read-only inspection. This is the live lever — the operator tool bodies are not registered on a running session, so the prompt is what actually steers where work lands — and `ctoState.test.ts` pins it.
+- **The code.** `resolveCtoExecutionLane` creates a dedicated lane when no `laneId` is requested, honoring the `freshLaneName` / `freshLaneDescription` contract that `CtoOperatorToolDeps` always declared. It never falls back to the CTO's lane; if lane creation fails the error surfaces (`spawnChat` reports it) rather than quietly re-targeting primary.
+
 ### Session lifecycle tools
 
 Session lifecycle is not desktop-only and settle is not the only quiet tier. A
@@ -145,7 +177,7 @@ The CTO tab is a single persistent thread plus a settings sheet — there is no 
 
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached from the renderer via `window.ade.cto.*`:
 
-- Thread + identity: `ctoEnsureSession`, `ctoGetState`, `ctoUpdateIdentity`, `ctoListSessionLogs`, `ctoPreviewSystemPrompt`, `ctoRunProjectScan`.
+- Thread + identity: `ctoEnsureSession`, `ctoGetState`, `ctoGetAttention`, `ctoUpdateIdentity`, `ctoListSessionLogs`, `ctoPreviewSystemPrompt`, `ctoRunProjectScan`.
 - Onboarding: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`, `ctoDismissOnboarding`, `ctoResetOnboarding`.
 - Memory: `ctoGetMemory`, `ctoUpdateMemory`, `ctoSearchMemory`.
 - Linear read + credentials/OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
