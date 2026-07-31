@@ -1337,6 +1337,58 @@ describe("ptyService", () => {
       ]));
     });
 
+    it("injects the bundled Claude plugin into env-prefixed shell fallback commands", async () => {
+      const pluginRoot = "/Applications/ADE Preview.app/Contents/Resources/agent-skills";
+      const { service, mockPty, loadPty } = createHarness({
+        getAdeCliAgentEnv: (env) => ({
+          ...env,
+          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+        }),
+      });
+      const spawn = vi.fn((command: string) => {
+        if (command === "claude") throw new Error("ENOENT");
+        return mockPty;
+      });
+      loadPty.mockImplementationOnce(() => ({ spawn: spawn as any }));
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        args: ["--plugin-dir=/tmp/custom-plugin", "--permission-mode", "default"],
+        startupCommand: "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir=/tmp/custom-plugin --permission-mode default",
+      });
+
+      expect(mockPty.write).toHaveBeenCalledWith(
+        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
+      );
+    });
+
+    it("does not duplicate the bundled Claude plugin in env-prefixed startup commands", async () => {
+      const pluginRoot = "/Applications/ADE Preview.app/Contents/Resources/agent-skills";
+      const startupCommand = `ADE_RUN_ID=run-1 claude --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin`;
+      const { service, mockPty } = createHarness({
+        getAdeCliAgentEnv: (env) => ({
+          ...env,
+          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+        }),
+      });
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand,
+      });
+
+      expect(mockPty.write).toHaveBeenCalledWith(`${startupCommand}\r`);
+    });
+
     it("waits for agent CLI readiness before sending initialInput", async () => {
       vi.useFakeTimers();
       try {

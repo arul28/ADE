@@ -1073,6 +1073,39 @@ function hasClaudePluginRoot(args: string[], pluginRoot: string): boolean {
   );
 }
 
+function shellWordSpans(command: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  let index = 0;
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index]!)) index += 1;
+    if (index >= command.length) break;
+
+    const start = index;
+    let quote: "'" | "\"" | null = null;
+    let escaped = false;
+    while (index < command.length) {
+      const char = command[index]!;
+      if (escaped) {
+        escaped = false;
+      } else if (quote === "'") {
+        if (char === "'") quote = null;
+      } else if (quote === "\"") {
+        if (char === "\"") quote = null;
+        else if (char === "\\") escaped = true;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "'" || char === "\"") {
+        quote = char;
+      } else if (/\s/.test(char)) {
+        break;
+      }
+      index += 1;
+    }
+    spans.push({ start, end: index });
+  }
+  return spans;
+}
+
 function withBundledClaudePlugin(
   args: string[],
   startupCommand: string,
@@ -1089,16 +1122,23 @@ function withBundledClaudePlugin(
     ? args
     : ["--plugin-dir", pluginRoot, ...args];
   let normalizedStartupCommand = startupCommand;
-  if (startupCommand?.trimStart().startsWith("claude")) {
+  if (startupCommand?.trim()) {
     let commandArgs: string[] = [];
     try {
       commandArgs = parseCommandLine(startupCommand);
     } catch {
-      // Keep the original shell command intact and inject at its known provider prefix.
+      // Keep malformed or unsupported shell input intact.
     }
-    if (!hasClaudePluginRoot(commandArgs.slice(1), pluginRoot)) {
-      const startupPrefix = commandArrayToLine(["claude", "--plugin-dir", pluginRoot]);
-      normalizedStartupCommand = startupCommand.replace(/^(\s*)claude\b/, `$1${startupPrefix}`);
+    const claudeIndex = commandArgs.findIndex((arg, index) =>
+      arg === "claude"
+      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
+    );
+    if (claudeIndex >= 0 && !hasClaudePluginRoot(commandArgs.slice(claudeIndex + 1), pluginRoot)) {
+      const claudeSpan = shellWordSpans(startupCommand)[claudeIndex];
+      if (claudeSpan) {
+        const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
+        normalizedStartupCommand = `${startupCommand.slice(0, claudeSpan.end)} ${pluginArgs}${startupCommand.slice(claudeSpan.end)}`;
+      }
     }
   }
   return {
