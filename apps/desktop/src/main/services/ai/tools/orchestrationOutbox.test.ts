@@ -35,6 +35,31 @@ function makeStub(runId: string) {
   return { svc, listDueOutbox, ctx: { runId, bundlePath: "/tmp/bundle" } };
 }
 
+function makeOverdueStub(runId: string) {
+  const nowMs = 1_000_000;
+  const manifest = {
+    runId,
+    outbox: [
+      {
+        id: "O-overdue",
+        status: "pending",
+        // A busy drain can finish after its scheduled backoff has elapsed.
+        nextAttemptAt: new Date(nowMs - 1).toISOString(),
+      },
+    ],
+  };
+  const listDueOutbox = vi
+    .fn()
+    .mockReturnValueOnce([] as unknown[])
+    .mockReturnValue([] as unknown[]);
+  const svc = {
+    getManifestForRun: () => manifest,
+    nowMs: () => nowMs,
+    listDueOutbox,
+  } as never;
+  return { svc, listDueOutbox, ctx: { runId, bundlePath: "/tmp/bundle" } };
+}
+
 describe("orchestrationOutbox deferred-retry timer teardown", () => {
   afterEach(() => {
     disposeAllOutbox();
@@ -64,6 +89,18 @@ describe("orchestrationOutbox deferred-retry timer teardown", () => {
 
     await vi.advanceTimersByTimeAsync(6_000);
     // The armed timer fired one more drain pass.
+    expect(listDueOutbox).toHaveBeenCalledTimes(2);
+    disposeRunOutbox(ctx.runId);
+  });
+
+  it("immediately retries a pending entry whose backoff elapsed during the drain", async () => {
+    vi.useFakeTimers();
+    const { svc, listDueOutbox, ctx } = makeOverdueStub("R-overdue");
+
+    await drainOutbox(svc, {} as never, ctx);
+    expect(listDueOutbox).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(0);
     expect(listDueOutbox).toHaveBeenCalledTimes(2);
     disposeRunOutbox(ctx.runId);
   });

@@ -67,7 +67,7 @@ function scheduleDeferredRetry(
   for (const entry of manifest.outbox ?? []) {
     if (entry.status !== "pending" || !entry.nextAttemptAt) continue;
     const at = Date.parse(entry.nextAttemptAt);
-    if (Number.isFinite(at) && at > nowMs && at < soonest) soonest = at;
+    if (Number.isFinite(at) && at < soonest) soonest = at;
   }
   if (!Number.isFinite(soonest)) return;
   const delay = Math.max(0, soonest - nowMs);

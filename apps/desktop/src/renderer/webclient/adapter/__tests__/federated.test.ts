@@ -21,9 +21,14 @@ vi.mock("../index", () => ({
 function fakeAdapter(label: string) {
   const createPromptStash = vi.fn(async () => ({ id: label }));
   const onAgentChatEvent = vi.fn(() => () => {});
+  const navigationListeners = new Set<(request: unknown) => void>();
+  const onNavigate = vi.fn((listener: (request: unknown) => void) => {
+    navigationListeners.add(listener);
+    return () => navigationListeners.delete(listener);
+  });
   const adapter = {
     ade: {
-      app: {},
+      app: { onNavigate },
       project: {},
       remoteRuntime: {},
       agentChat: {
@@ -39,7 +44,15 @@ function fakeAdapter(label: string) {
     replaceProject: vi.fn(),
     dispose: vi.fn(),
   };
-  return { adapter, createPromptStash, onAgentChatEvent };
+  return {
+    adapter,
+    createPromptStash,
+    onAgentChatEvent,
+    onNavigate,
+    emitNavigate(request: unknown) {
+      for (const listener of navigationListeners) listener(request);
+    },
+  };
 }
 
 function binding(targetId: string): Extract<OpenProjectBinding, { kind: "remote" }> {
@@ -135,6 +148,7 @@ function managerFixture() {
   return {
     manager,
     fallbackClient,
+    fallback,
     clientA,
     targetA,
     targetB,
@@ -257,6 +271,57 @@ describe("createFederatedWebAdapter", () => {
       expect(result).toBe(unsubscribe);
       expect(onUpdate).toHaveBeenCalledOnce();
     });
+  });
+
+  it("forwards navigation only from the displayed adapter across surface switches", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "active-navigation",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const listener = vi.fn();
+    const dispose = federated.ade.app.onNavigate!(listener);
+
+    await federated.openProject("machine-a", "project-machine-a");
+    fixture.targetA.emitNavigate({ path: "/lanes" });
+    federated.activateHub();
+    fixture.targetA.emitNavigate({ path: "/files" });
+    fixture.fallback.emitNavigate({ path: "/hub" });
+    await federated.openProject("machine-b", "project-machine-b");
+    fixture.fallback.emitNavigate({ path: "/settings" });
+    fixture.targetB.emitNavigate({ path: "/work" });
+
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(listener).toHaveBeenNthCalledWith(1, { path: "/lanes" });
+    expect(listener).toHaveBeenNthCalledWith(2, { path: "/hub" });
+    expect(listener).toHaveBeenNthCalledWith(3, { path: "/work" });
+    expect(fixture.fallback.onNavigate).toHaveBeenCalledTimes(2);
+    expect(fixture.targetA.onNavigate).toHaveBeenCalledOnce();
+    expect(fixture.targetB.onNavigate).toHaveBeenCalledOnce();
+
+    dispose();
+    fixture.targetB.emitNavigate({ path: "/history" });
+    expect(listener).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports lifecycle ownership from the displayed project or Chats adapter", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "displayed-target",
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    expect(federated.getDisplayedTargetId()).toBeNull();
+    await federated.openProject("machine-a", "project-machine-a");
+    expect(federated.getDisplayedTargetId()).toBe("machine-a");
+    federated.activateHub();
+    expect(federated.getDisplayedTargetId()).toBeNull();
+    await federated.activateChats("machine-b");
+    expect(federated.getDisplayedTargetId()).toBe("machine-b");
   });
 
   it("restores machine-scoped Chats without reopening the previous project", async () => {

@@ -1631,7 +1631,7 @@ export function TopBar({
     (binding: RemoteProjectTab) => {
       if (isProjectBusy) return;
       leaveMachineRoute();
-      if (remoteBinding?.key === binding.key) {
+      if (remoteBinding?.key === binding.key && !hubRouteActive) {
         cancelNewTab();
         return;
       }
@@ -1639,6 +1639,7 @@ export function TopBar({
     },
     [
       cancelNewTab,
+      hubRouteActive,
       isProjectBusy,
       leaveMachineRoute,
       remoteBinding?.key,

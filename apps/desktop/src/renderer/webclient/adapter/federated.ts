@@ -102,6 +102,7 @@ export type FederatedWebAdapter = {
   ade: Window["ade"];
   getOpenBindings(): RemoteBinding[];
   getActiveBinding(): RemoteBinding | null;
+  getDisplayedTargetId(): string | null;
   getSelectedHubTargetId(): string | null;
   setSelectedHubTargetId(targetId: string | null): void;
   activateHub(): void;
@@ -141,6 +142,10 @@ export function createFederatedWebAdapter({
   const bindingListeners = new Set<(binding: OpenProjectBinding | null) => void>();
   const connectionListeners = new Set<(snapshot: RemoteRuntimeConnectionSnapshot) => void>();
   const activeAdapterListeners = new Set<() => void>();
+  const navigationListeners = new Set<{
+    listener: (request: unknown) => void;
+    dispose: () => void;
+  }>();
 
   const persist = () => {
     try {
@@ -177,9 +182,18 @@ export function createFederatedWebAdapter({
 
   let managerDispose = () => {};
 
+  const subscribeToAdapterNavigation = (
+    adapter: AdeWebAdapter,
+    listener: (request: unknown) => void,
+  ): (() => void) => adapter.ade.app.onNavigate?.(listener) ?? (() => {});
+
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
     if (currentAdapter === adapter) return;
     currentAdapter = adapter;
+    for (const subscription of navigationListeners) {
+      subscription.dispose();
+      subscription.dispose = subscribeToAdapterNavigation(adapter, subscription.listener);
+    }
     for (const listener of activeAdapterListeners) listener();
   };
 
@@ -370,6 +384,17 @@ export function createFederatedWebAdapter({
     onProjectBindingChanged(listener: (binding: OpenProjectBinding | null) => void) {
       bindingListeners.add(listener);
       return () => bindingListeners.delete(listener);
+    },
+    onNavigate(listener: (request: unknown) => void) {
+      const subscription = {
+        listener,
+        dispose: subscribeToAdapterNavigation(currentAdapter, listener),
+      };
+      navigationListeners.add(subscription);
+      return () => {
+        if (!navigationListeners.delete(subscription)) return;
+        subscription.dispose();
+      };
     },
   };
 
@@ -596,12 +621,20 @@ export function createFederatedWebAdapter({
     ade: surface,
     getOpenBindings: () => workspace.openBindings.slice(),
     getActiveBinding: () => activeBinding,
+    getDisplayedTargetId: () => {
+      if (workspace.activeSurface === "hub") return null;
+      for (const entry of adaptersByBinding.values()) {
+        if (entry.adapter === currentAdapter) return entry.targetId;
+      }
+      return null;
+    },
     getSelectedHubTargetId: () => workspace.selectedHubTargetId,
     setSelectedHubTargetId(targetId) {
       workspace = { ...workspace, selectedHubTargetId: targetId };
       persist();
     },
     activateHub() {
+      setCurrentAdapter(fallbackAdapter);
       workspace = { ...workspace, activeSurface: "hub" };
       persist();
     },
@@ -661,6 +694,8 @@ export function createFederatedWebAdapter({
       invalidationDispose();
       managerDispose();
       manager.setProtectedTargetId(null);
+      for (const subscription of navigationListeners) subscription.dispose();
+      navigationListeners.clear();
       for (const adapter of adapters) adapter.dispose();
       projectListeners.clear();
       bindingListeners.clear();

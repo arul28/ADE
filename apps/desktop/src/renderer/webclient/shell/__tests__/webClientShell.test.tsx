@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
     dispose: vi.fn(),
     getOpenBindings: vi.fn(() => []),
     getActiveBinding: vi.fn(() => null),
+    getDisplayedTargetId: vi.fn(() => null),
     getSelectedHubTargetId: vi.fn(() => null),
     setSelectedHubTargetId: vi.fn(),
     getSelectedChatsTargetId: vi.fn(() => null),

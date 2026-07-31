@@ -305,14 +305,14 @@ export function WebClientRoot({
     sessionManager,
   ]);
 
-  const activeTargetId = workspaceSnapshot.activeTargetId;
-  const activeLifecycleClient = activeTargetId
-    ? sessionManager.getClient(activeTargetId)
+  const displayedTargetId = federatedAdapter?.getDisplayedTargetId() ?? null;
+  const activeLifecycleClient = displayedTargetId
+    ? sessionManager.getClient(displayedTargetId)
     : null;
   useEffect(() => {
     if (!activeLifecycleClient) return;
     return installSessionLifecycleChrome(activeLifecycleClient);
-  }, [activeLifecycleClient, activeTargetId]);
+  }, [activeLifecycleClient, displayedTargetId]);
 
   useEffect(() => {
     let disposed = false;

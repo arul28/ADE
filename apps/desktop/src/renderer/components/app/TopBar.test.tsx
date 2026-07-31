@@ -507,6 +507,40 @@ describe("TopBar", () => {
     expect(screen.queryByTitle("Close hub")).toBeNull();
   });
 
+  it("reselects the current remote adapter when leaving the Hub", async () => {
+    globalThis.window.__adeWebClient = true;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: binding,
+      openRemoteProjectTabs: [binding],
+    } as any);
+
+    render(<TopBar hubRouteActive={true} />);
+    fireEvent.click(
+      await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)"),
+    );
+
+    expect(useAppStore.getState().switchRemoteProject).toHaveBeenCalledWith(
+      "target-1",
+      "project-a",
+    );
+  });
+
   it("restores hosted project bindings before persisting the tab list", async () => {
     globalThis.window.__adeWebClient = true;
     const binding = {
