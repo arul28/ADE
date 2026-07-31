@@ -5,66 +5,79 @@ func settingsVersionLabel(marketingVersion: String, build: String) -> String {
 }
 
 struct SettingsDiagnosticsSection: View {
+  enum Content: Equatable {
+    case all
+    case connection
+    case about
+  }
+
   let snapshot: SettingsDiagnosticsSnapshot
+  var content: Content = .all
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
-      if snapshot.connectionRoute != nil || snapshot.connectionPerformance != nil {
+      if content != .about {
         VStack(alignment: .leading, spacing: 10) {
           SettingsSectionHeader(label: "CONNECTION DETAILS")
 
-          VStack(spacing: 10) {
-            if let route = snapshot.connectionRoute {
-              SettingsDetailRow(
-                symbol: "point.3.connected.trianglepath.dotted",
-                label: "Route",
-                value: route
-              )
-            }
+          if snapshot.connectionRoute == nil, snapshot.connectionPerformance == nil {
+            SettingsConnectionDetailsEmptyState()
+          } else {
+            VStack(spacing: 10) {
+              if let route = snapshot.connectionRoute {
+                SettingsDetailRow(
+                  symbol: "point.3.connected.trianglepath.dotted",
+                  label: "Route",
+                  value: route
+                )
+              }
 
-            if let performance = snapshot.connectionPerformance {
-              SettingsDetailRow(
-                symbol: "timer",
-                label: "Last connection",
-                value: performance
-              )
+              if let performance = snapshot.connectionPerformance {
+                SettingsDetailRow(
+                  symbol: "timer",
+                  label: "Last connection",
+                  value: performance
+                )
+              }
             }
           }
         }
       }
 
-      VStack(alignment: .leading, spacing: 10) {
-        SettingsSectionHeader(label: "ABOUT")
+      if content != .connection {
+        VStack(alignment: .leading, spacing: 10) {
+          SettingsSectionHeader(label: "ABOUT")
 
-        VStack(spacing: 10) {
-          SettingsDetailRow(
-            symbol: "app.badge",
-            label: "ADE",
-            value: Self.appVersionString
-          )
-
-          if let identity = snapshot.pairedMachineIdentity {
+          VStack(spacing: 10) {
             SettingsDetailRow(
-              symbol: "desktopcomputer.and.arrow.down",
-              label: "Paired machine",
-              value: identity
+              symbol: "app.badge",
+              label: "ADE",
+              value: Self.appVersionString
             )
-          }
 
-          if let lastSync = snapshot.lastSyncDescription {
-            SettingsDetailRow(
-              symbol: "clock.arrow.circlepath",
-              label: "Last sync",
-              value: lastSync
-            )
-          }
+            if let identity = snapshot.pairedMachineIdentity {
+              SettingsDetailRow(
+                symbol: "desktopcomputer.and.arrow.down",
+                label: "Paired machine",
+                value: identity
+              )
+            }
 
-          if let deviceId = snapshot.deviceIdentity {
-            SettingsDetailRow(
-              symbol: "iphone",
-              label: "This device",
-              value: deviceId
-            )
+            if let lastSync = snapshot.lastSyncDescription {
+              SettingsDetailRow(
+                symbol: "clock.arrow.circlepath",
+                label: "Last sync",
+                value: lastSync
+              )
+            }
+
+            if let deviceId = snapshot.deviceIdentity {
+              SettingsDetailRow(
+                symbol: "iphone",
+                label: "This device",
+                value: deviceId
+              )
+            }
           }
         }
       }
@@ -76,6 +89,32 @@ struct SettingsDiagnosticsSection: View {
     let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "–"
     let build = info?["CFBundleVersion"] as? String ?? "–"
     return settingsVersionLabel(marketingVersion: shortVersion, build: build)
+  }
+}
+
+private struct SettingsConnectionDetailsEmptyState: View {
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "desktopcomputer.trianglebadge.exclamationmark")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+
+      Text("Connect to a machine to see route and performance details.")
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 16)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 12)
+        .fill(ADEColor.surfaceBackground.opacity(0.55))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12)
+        .stroke(ADEColor.border.opacity(0.45), lineWidth: 0.75)
+    )
   }
 }
 

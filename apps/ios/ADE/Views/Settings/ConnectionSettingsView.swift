@@ -48,7 +48,8 @@ struct ConnectionSettingsView: View {
 
               SettingsPairingSection(
                 snapshot: presentationModel.pairingSnapshot,
-                presentedSheet: $presentedSheet
+                presentedSheet: $presentedSheet,
+                initiallyExpanded: true
               )
             }
             .padding(.horizontal, 16)
@@ -64,7 +65,7 @@ struct ConnectionSettingsView: View {
 
             // 2. Connection status.
             VStack(alignment: .leading, spacing: 12) {
-              SettingsSectionHeader(label: "CONNECTION", hint: "Your current Mac connection")
+              SettingsSectionHeader(label: "CONNECTION")
 
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
@@ -103,13 +104,60 @@ struct ConnectionSettingsView: View {
             SettingsUsageQuotaSection(syncService: syncService)
               .padding(.horizontal, 16)
 
-            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
-              .padding(.horizontal, 16)
+            VStack(spacing: 8) {
+              SettingsNavigationRow(
+                title: "Connection details",
+                subtitle: "Route and connection performance",
+                systemImage: "point.3.connected.trianglepath.dotted"
+              ) {
+                SettingsDestinationPage(title: "Connection details") {
+                  SettingsDiagnosticsSection(
+                    snapshot: presentationModel.diagnosticsSnapshot,
+                    content: .connection
+                  )
+                }
+              }
 
-            SettingsPushDeliverySection(
-              snapshot: presentationModel.pushDeliverySnapshot,
-              pushService: PushNotificationService.shared
-            )
+              SettingsNavigationRow(
+                title: "About",
+                subtitle: "App, machine, and device information",
+                systemImage: "info.circle"
+              ) {
+                SettingsDestinationPage(title: "About") {
+                  SettingsDiagnosticsSection(
+                    snapshot: presentationModel.diagnosticsSnapshot,
+                    content: .about
+                  )
+                }
+              }
+
+              SettingsNavigationRow(
+                title: "Push delivery",
+                subtitle: "Notifications and Live Activities",
+                systemImage: "bell.badge"
+              ) {
+                SettingsDestinationPage(title: "Push delivery") {
+                  SettingsPushDeliverySection(
+                    snapshot: presentationModel.pushDeliverySnapshot,
+                    pushService: PushNotificationService.shared
+                  )
+                }
+              }
+
+              SettingsNavigationRow(
+                title: "Delivery diagnostics",
+                subtitle: "Push registration and relay status",
+                systemImage: "stethoscope"
+              ) {
+                SettingsDestinationPage(title: "Delivery diagnostics") {
+                  SettingsPushDeliverySection(
+                    snapshot: presentationModel.pushDeliverySnapshot,
+                    pushService: PushNotificationService.shared,
+                    content: .diagnostics
+                  )
+                }
+              }
+            }
               .padding(.horizontal, 16)
           }
 
@@ -245,6 +293,73 @@ struct ConnectionSettingsView: View {
         pinPreset = .qr(payload)
       }
     }
+  }
+}
+
+private struct SettingsNavigationRow<Destination: View>: View {
+  let title: String
+  let subtitle: String
+  let systemImage: String
+  @ViewBuilder let destination: () -> Destination
+
+  var body: some View {
+    NavigationLink(destination: destination) {
+      HStack(spacing: 14) {
+        Image(systemName: systemImage)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+          .frame(width: 34, height: 34)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(ADEColor.purpleAccent.opacity(0.14))
+          )
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.body.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+
+        Spacer(minLength: 8)
+
+        Image(systemName: "chevron.right")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent.opacity(0.65))
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(ADEColor.surfaceBackground.opacity(0.5))
+      )
+      .glassEffect(in: .rect(cornerRadius: 14))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+      )
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+  }
+}
+
+private struct SettingsDestinationPage<Content: View>: View {
+  let title: String
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    ScrollView {
+      content()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+    .background(SettingsAuroraBackground().ignoresSafeArea())
+    .adeNavigationGlass()
+    .navigationTitle(title)
+    .navigationBarTitleDisplayMode(.inline)
   }
 }
 
@@ -804,7 +919,7 @@ struct SettingsMachinesSection: View {
   var body: some View {
     let all = entries
     VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "MACHINES", hint: "Macs you can connect to")
+      SettingsSectionHeader(label: "MACHINES")
 
       if all.isEmpty {
         Text("No machines yet. Add one below.")
@@ -882,39 +997,27 @@ struct SettingsMachinesSection: View {
     let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
-      ZStack(alignment: .trailing) {
-        Button {
-          connect(entry)
-        } label: {
-          MachineRowView(
-            deviceSymbol: deviceSymbol(entry),
-            title: entry.name,
-            routeHint: entry.routeHint,
-            online: entry.online,
-            isAuthenticatedCurrent: entry.isCurrent,
-            statusPill: entry.isCurrent ? .connected : nil,
-            affordance: rowAffordance(entry, isConnecting: isConnecting),
-            surface: .row
-          )
+      Group {
+        if tappable {
+          Button {
+            connect(entry)
+          } label: {
+            machineRowLabel(entry, isConnecting: isConnecting)
+          }
+          .buttonStyle(ADEScaleButtonStyle())
+        } else {
+          machineRowLabel(entry, isConnecting: isConnecting)
         }
-        .buttonStyle(ADEScaleButtonStyle())
-        .disabled(!tappable)
-        .accessibilityLabel("\(entry.name), \(entry.routeHint)")
-        .accessibilityHint(tappable ? "Connect." : "")
-
+      }
+      .accessibilityLabel("\(entry.name), \(entry.routeHint)")
+      .accessibilityHint(tappable ? "Connect." : "")
+      .contextMenu {
         if let machine = accountMachine(from: entry) {
           Button {
             renamingMachine = machine
           } label: {
-            Image(systemName: "pencil")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(width: 44, height: 44)
-              .contentShape(Rectangle())
+            Label("Rename", systemImage: "pencil")
           }
-          .buttonStyle(.plain)
-          .padding(.trailing, 58)
-          .accessibilityLabel("Rename \(entry.name)")
         }
       }
       .opacity(tappable || entry.isCurrent ? 1 : 0.72)
@@ -948,6 +1051,19 @@ struct SettingsMachinesSection: View {
     }
   }
 
+  private func machineRowLabel(_ entry: Entry, isConnecting: Bool) -> some View {
+    MachineRowView(
+      deviceSymbol: deviceSymbol(entry),
+      title: entry.name,
+      routeHint: entry.routeHint,
+      online: entry.online,
+      isAuthenticatedCurrent: entry.isCurrent,
+      statusPill: entry.isCurrent ? .connected : nil,
+      affordance: rowAffordance(entry, isConnecting: isConnecting),
+      surface: .row
+    )
+  }
+
   private func accountMachine(from entry: Entry) -> AccountMachine? {
     guard case .account(let machine) = entry.kind else { return nil }
     return machine
@@ -978,7 +1094,7 @@ struct SettingsMachinesSection: View {
   }
 
   private func connect(_ entry: Entry) {
-    guard connectingId == nil else { return }
+    guard !entry.isCurrent, connectingId == nil else { return }
     connectingId = entry.id
     rowErrors[entry.id] = nil
     Task { @MainActor in

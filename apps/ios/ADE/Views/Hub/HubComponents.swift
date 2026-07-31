@@ -117,11 +117,6 @@ struct HubConnectionPill: View {
     }
   }
 
-  private var transportLabel: String? {
-    guard syncService.connectionHealth.transport.isConnected else { return nil }
-    return syncTransportBadgeText(routeKind: syncService.lastConnectedRouteKind)
-  }
-
   private var connectionAccessibilityLabel: String {
     let state = switch syncService.connectionHealth.transport {
     case .connected: "connected"
@@ -129,8 +124,7 @@ struct HubConnectionPill: View {
     case .unreachable: "unreachable"
     case .disconnected: "offline"
     }
-    let route = transportLabel.map { ", \($0)" } ?? ""
-    return "Machine connection: \(label), \(state)\(route)"
+    return "Machine connection: \(label), \(state)"
   }
 
   /// Name of the project currently switching in, if any — drives the progress
@@ -160,25 +154,17 @@ struct HubConnectionPill: View {
         } else {
           HStack(spacing: 6) {
             Circle().fill(tint).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 0) {
-              Text(label)
-                .font(.system(.caption, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              if let transportLabel {
-                Text(transportLabel)
-                  .font(.caption2.weight(.medium))
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .lineLimit(1)
-              }
-            }
+            Text(label)
+              .font(.system(.caption, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
           }
           .id("machine")
           .transition(.opacity)
         }
       }
       .padding(.horizontal, 11)
-      .padding(.vertical, transportLabel == nil ? 8 : 5)
+      .padding(.vertical, 8)
       .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
       .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
     }
