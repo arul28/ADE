@@ -292,6 +292,36 @@ describe("ChatPrPane", () => {
     expect(window.ade.prs.getStatus).not.toHaveBeenCalled();
   });
 
+  it("explains GitHub stack position instead of showing ADE merge readiness", async () => {
+    const stackedPr = makePr({
+      stack: {
+        id: "stack-18",
+        number: 18,
+        size: 3,
+        position: 2,
+        baseBranch: "main",
+      },
+    });
+    installAde({
+      getForLane: vi.fn().mockResolvedValue(stackedPr),
+      refresh: vi.fn().mockResolvedValue([stackedPr]),
+      getStatus: {
+        prId: stackedPr.id,
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeStateStatus: "clean",
+      } as PrStatus,
+    });
+
+    renderPane();
+
+    expect(await screen.findByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
+    expect(screen.getByText(/Review rebases and merge the stack on GitHub/)).toBeTruthy();
+    expect(screen.queryByText("Ready to merge")).toBeNull();
+  });
+
   it("ignores stale live refresh results after switching lanes", async () => {
     const laneOnePr = makePr({
       id: "pr-lane-1",

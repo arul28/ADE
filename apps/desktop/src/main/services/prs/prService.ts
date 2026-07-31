@@ -8731,6 +8731,18 @@ export function createPrService({
     onSnapshotChanged: invalidateGithubSnapshotCache,
     onReconciled: () => emitPrsUpdated(),
   });
+  const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
+    if (summaries.length === 0) return summaries;
+    const memberships = githubStackStore.membershipsByPr();
+    return summaries.map((summary) => ({
+      ...summary,
+      stack: memberships.get(
+        repoPrKey(summary.repoOwner, summary.repoName, summary.githubPrNumber),
+      ) ?? null,
+    }));
+  };
+  const withGithubStackMembership = (summary: PrSummary | null): PrSummary | null =>
+    summary ? withGithubStackMemberships([summary])[0] ?? summary : null;
   const resolveGithubStackRepo = async (
     requestedRepo?: GitHubRepoRef | null,
   ): Promise<GitHubRepoRef> => {
@@ -9152,7 +9164,7 @@ export function createPrService({
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
-      prs: listRows().map(rowToSummary),
+      prs: withGithubStackMemberships(listRows().map(rowToSummary)),
     });
   };
 
@@ -10442,12 +10454,14 @@ export function createPrService({
     const normalizedLaneId = String(laneId ?? "").trim();
     if (!normalizedLaneId) return null;
     try {
-      const existing = getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      const existing = withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
+      );
       if (existing && !existing.unmapped) {
         // Mapped row: refresh by id (heals merged/closed via fetchPr), then
         // return the fresh row summary so the caller sees the new state.
         const refreshed = await refreshPrIds([existing.id]);
-        return (
+        return withGithubStackMembership(
           refreshed.find((pr) => pr.id === existing.id)
           ?? getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary
           ?? null
@@ -10458,7 +10472,9 @@ export function createPrService({
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
       // instead of returning possibly-stale local projections.
       await getGithubSnapshot({ force: true, includeExternalClosed: true });
-      return getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      return withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
+      );
     } catch (error) {
       logger.warn("prs.sync_lane_pr_failed", {
         laneId: normalizedLaneId,
@@ -10490,12 +10506,14 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      return getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
+      return withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null,
+      );
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {
       const laneId = String(args.laneId ?? "").trim();
-      const summaries = listRows().map(rowToSummary);
+      const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
     },
 
@@ -10563,7 +10581,7 @@ export function createPrService({
         ...((args.prIds ?? []).map((prId) => String(prId ?? "").trim()).filter(Boolean)),
       ];
       if (requestedPrIds.length > 0) {
-        return await refreshPrIds(requestedPrIds);
+        return withGithubStackMemberships(await refreshPrIds(requestedPrIds));
       }
 
       const rows = listRows();
@@ -10579,7 +10597,7 @@ export function createPrService({
       const candidates = [...hotCandidates, ...staleCandidates];
       await refreshRowsBestEffort(candidates);
 
-      return listRows().map(rowToSummary);
+      return withGithubStackMemberships(listRows().map(rowToSummary));
     },
 
     markHotRefresh(prIds: string[]): void {

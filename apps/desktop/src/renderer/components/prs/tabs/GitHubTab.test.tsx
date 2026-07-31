@@ -298,6 +298,8 @@ describe("GitHubTab", () => {
             lane: { id: "lane-created", name: "Unlinked PR" },
             pr: { id: "pr-created", laneId: "lane-created" },
           }),
+          addGitHubStackPullRequests: vi.fn().mockResolvedValue(null),
+          unstackGitHubStack: vi.fn().mockResolvedValue(null),
           delete: vi.fn().mockResolvedValue(undefined),
         },
         github: {
@@ -359,6 +361,86 @@ describe("GitHubTab", () => {
     );
     return { onSelectPr, onOpenQueueView, onRefreshAll };
   }
+
+  it("shows and manages the selected GitHub stack from the cached snapshot", async () => {
+    const user = userEvent.setup();
+    const stack = {
+      id: "stack-18",
+      number: 18,
+      nodeId: "STACK_18",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      baseBranch: "main",
+      open: true,
+      createdAt: "2026-07-30T12:00:00.000Z",
+      syncedAt: "2026-07-30T12:10:00.000Z",
+      lastError: null,
+      entries: [
+        {
+          githubPrNumber: 101,
+          position: 1,
+          state: "open" as const,
+          isDraft: false,
+          mergedAt: null,
+          headBranch: "feature/open",
+          headSha: "sha-101",
+        },
+        {
+          githubPrNumber: 104,
+          position: 2,
+          state: "open" as const,
+          isDraft: false,
+          mergedAt: null,
+          headBranch: "feature/top",
+          headSha: "sha-104",
+        },
+      ],
+    };
+    const stackedSnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      stacks: [stack],
+      repoPullRequests: [
+        makeGitHubPr({
+          stack: { id: "stack-18", number: 18, size: 2, position: 1, baseBranch: "main" },
+        }),
+        makeGitHubPr({
+          id: "repo-top",
+          githubPrNumber: 104,
+          githubUrl: "https://github.com/ade-dev/ade/pull/104",
+          title: "Top stack layer",
+          headBranch: "feature/top",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          stack: { id: "stack-18", number: 18, size: 2, position: 2, baseBranch: "main" },
+        }),
+      ],
+      externalPullRequests: [],
+    };
+    vi.mocked(window.ade.prs.getGitHubSnapshot).mockResolvedValue(stackedSnapshot);
+    renderTab({ selectedPrId: "pr-open" });
+
+    expect(await screen.findByText("GitHub Stack #18")).toBeTruthy();
+    expect(screen.getByLabelText("GitHub Stack 1 of 2")).toBeTruthy();
+    expect(screen.getAllByText("Top stack layer")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Review on GitHub" }));
+    expect(window.ade.app.openExternal).toHaveBeenCalledWith(
+      "https://github.com/ade-dev/ade/pull/101",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Manage stack/i }));
+    await user.type(screen.getByLabelText("Pull request numbers to add"), "105, 106");
+    await user.click(screen.getByRole("button", { name: "Add PRs" }));
+    await waitFor(() => {
+      expect(window.ade.prs.addGitHubStackPullRequests).toHaveBeenCalledWith({
+        repo: { owner: "ade-dev", name: "ade" },
+        stackNumber: 18,
+        pullRequests: [105, 106],
+      });
+    });
+  });
 
   it("does not auto-jump to a different PR when switching filters", async () => {
     const user = userEvent.setup();

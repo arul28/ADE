@@ -792,7 +792,6 @@ function StickyGroupHeader({
  * (`useLanePrsByLaneId` moved to ./useLanePrs so the Work session hook can
  * answer the "Has PR" chip filter from the same PR data that badge renders.)
  */
-
 export const SessionListPane = React.memo(function SessionListPane({
   lanes: lanesProp,
   runningFiltered,

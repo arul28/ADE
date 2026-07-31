@@ -82,6 +82,8 @@ export type PrSummary = {
   mergedAt?: string | null;
   /** "pr_target" (default): PR tracks upstream base; "lane_base": PR carries immutable lane base. */
   creationStrategy?: PrCreationStrategy | null;
+  /** Native GitHub stack membership, when this PR currently belongs to a stack. */
+  stack?: GitHubPrStackMembership | null;
 };
 
 export type PrLaneSummary = {

@@ -256,6 +256,8 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
+  CreateGitHubPrStackArgs,
+  AddGitHubPrStackPullRequestsArgs,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateQueuePrsArgs,
@@ -270,9 +272,11 @@ import type {
   DeletePrResult,
   DismissIntegrationCleanupArgs,
   GitHubPrSnapshot,
+  GitHubPrStack,
   IntegrationProposal,
   IntegrationResolutionState,
   ListIntegrationWorkflowsArgs,
+  ListGitHubPrStacksArgs,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
   StartIntegrationResolutionArgs,
@@ -319,6 +323,7 @@ import type {
   LandPrArgs,
   UpdateBranchArgs,
   UpdateBranchResult,
+  UnstackGitHubPrStackArgs,
   LandStackArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
@@ -9580,6 +9585,43 @@ export function registerIpc({
       historyPageLimit: typeof arg?.historyPageLimit === "number" ? arg.historyPageLimit : undefined,
     });
   });
+
+  ipcMain.handle(IPC.prsListGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> =>
+    await ensurePrReadContext().prService.listGithubStacks(arg));
+
+  ipcMain.handle(IPC.prsSyncGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> => {
+    const ctx = ensurePrMutationContext();
+    const result = await ctx.prService.syncGithubStacks(arg);
+    ctx.prPollingService.poke();
+    return result;
+  });
+
+  ipcMain.handle(IPC.prsCreateGitHubStack, async (_event, arg: CreateGitHubPrStackArgs): Promise<GitHubPrStack> => {
+    const ctx = ensurePrMutationContext();
+    const result = await ctx.prService.createGithubStack(arg);
+    ctx.prPollingService.poke();
+    return result;
+  });
+
+  ipcMain.handle(
+    IPC.prsAddGitHubStackPullRequests,
+    async (_event, arg: AddGitHubPrStackPullRequestsArgs): Promise<GitHubPrStack> => {
+      const ctx = ensurePrMutationContext();
+      const result = await ctx.prService.addGithubStackPullRequests(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsUnstackGitHubStack,
+    async (_event, arg: UnstackGitHubPrStackArgs): Promise<GitHubPrStack | null> => {
+      const ctx = ensurePrMutationContext();
+      const result = await ctx.prService.unstackGithubStack(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = ensurePrMutationContext();

@@ -29,6 +29,8 @@ import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
+import { GitHubStackBadge } from "../shared/GitHubStackBadge";
+import { GitHubStackInspector } from "../shared/GitHubStackInspector";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
 import { isTerminalPrState } from "../../../lib/prState";
 
@@ -568,6 +570,7 @@ function buildSyntheticUnmappedPr(item: GitHubPrListItem, projectId: string): Pr
     lastSyncedAt: null,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
+    stack: item.stack ?? null,
     conflictAnalysis: null,
   };
 }
@@ -1219,7 +1222,12 @@ export function GitHubTab({
     (): PrWithConflicts | null => {
       if (!selectedItem?.linkedPrId) return null;
       const linked = prs.find((pr) => pr.id === selectedItem.linkedPrId);
-      if (linked) return linked;
+      if (linked) {
+        return {
+          ...linked,
+          stack: selectedItem.stack ?? linked.stack ?? null,
+        };
+      }
       const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
       return {
         id: selectedItem.linkedPrId,
@@ -1241,6 +1249,7 @@ export function GitHubTab({
         lastSyncedAt: null,
         createdAt: selectedItem.createdAt,
         updatedAt: selectedItem.updatedAt,
+        stack: selectedItem.stack ?? null,
         conflictAnalysis: null,
       };
     },
@@ -1305,6 +1314,14 @@ export function GitHubTab({
     };
   }, [mergeContextByPrId, selectedLinkedPr]);
 
+  const selectedStack = React.useMemo(() => {
+    const membership = selectedItem?.stack;
+    if (!membership) return null;
+    return snapshot?.stacks?.find(
+      (stack) => stack.id === membership.id || stack.number === membership.number,
+    ) ?? null;
+  }, [selectedItem?.stack, snapshot?.stacks]);
+
   const handleSync = React.useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
     setSyncing(true);
     startHotRefreshWindow();
@@ -1327,6 +1344,25 @@ export function GitHubTab({
       setSyncing(false);
     }
   }, [currentHistoryPageLimit, loadSnapshot, onRefreshAll, startHotRefreshWindow]);
+
+  const handleAddStackPullRequests = React.useCallback(async (pullRequests: number[]) => {
+    if (!selectedStack || !snapshot?.repo) return;
+    await window.ade.prs.addGitHubStackPullRequests({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+      pullRequests,
+    });
+    await loadSnapshot({ silent: true });
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
+
+  const handleUnstack = React.useCallback(async () => {
+    if (!selectedStack || !snapshot?.repo) return;
+    await window.ade.prs.unstackGitHubStack({
+      repo: snapshot.repo,
+      stackNumber: selectedStack.number,
+    });
+    await loadSnapshot({ silent: true });
+  }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
   const handleLoadOlderHistory = React.useCallback(async () => {
     if (loadingOlderHistory) return;
@@ -1798,6 +1834,26 @@ export function GitHubTab({
                     />
                   </div>
                 ) : null}
+                {selectedStack ? (
+                  <GitHubStackInspector
+                    stack={selectedStack}
+                    items={displayedItems.filter(
+                      (item) => item.repoOwner === selectedStack.repoOwner
+                        && item.repoName === selectedStack.repoName,
+                    )}
+                    selectedPrNumber={selectedItem.githubPrNumber}
+                    syncing={syncing}
+                    onSelectPr={handleSelectItem}
+                    onOpenGitHub={() => {
+                      void window.ade.app.openExternal(selectedItem.githubUrl);
+                    }}
+                    onSync={() => {
+                      void handleSync();
+                    }}
+                    onAddPullRequests={handleAddStackPullRequests}
+                    onUnstack={handleUnstack}
+                  />
+                ) : null}
                 <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
               <PrDetailPane
                 key={selectedDisplayPr.id}
@@ -2000,6 +2056,7 @@ function GitHubTabPrRow({
         <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text, flexShrink: 0 }}>
           #{item.githubPrNumber}
         </span>
+        <GitHubStackBadge stack={item.stack} compact />
         <span style={{
           fontSize: 12,
           fontWeight: 600,

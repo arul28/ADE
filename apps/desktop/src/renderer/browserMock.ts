@@ -2453,6 +2453,7 @@ function normalizeGitHubSnapshot(snapshot: any): any {
   if (!snapshot || typeof snapshot !== "object") return snapshot;
   return {
     ...snapshot,
+    stacks: Array.isArray(snapshot.stacks) ? snapshot.stacks : [],
     repoPullRequests: Array.isArray(snapshot.repoPullRequests)
       ? snapshot.repoPullRequests.map(normalizeGitHubPrListItem)
       : [],
@@ -2588,6 +2589,19 @@ const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
     ? ADE_DB_SNAPSHOT.githubSnapshot
     : BUILTIN_MOCK_GITHUB_SNAPSHOT,
 );
+
+function browserMockPrSummaryWithStack(pr: any): any {
+  const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+    (item: any) =>
+      item.repoOwner === pr.repoOwner
+      && item.repoName === pr.repoName
+      && item.githubPrNumber === pr.githubPrNumber,
+  );
+  return {
+    ...pr,
+    stack: pull?.stack ?? null,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Wire it up
@@ -6023,9 +6037,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           } as any);
         return { preflight, lane, pr };
       },
-      getForLane: async (laneId: string) =>
-        ALL_PRS.find((pr: any) => pr.laneId === laneId) ?? null,
-      listAll: resolved(ALL_PRS),
+      getForLane: async (laneId: string) => {
+        const pr = ALL_PRS.find((candidate: any) => candidate.laneId === laneId);
+        return pr ? browserMockPrSummaryWithStack(pr) : null;
+      },
+      listAll: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       listOpenForRepo: async () =>
         MOCK_GITHUB_SNAPSHOT.repoPullRequests
           .filter((item: any) => item.linkedPrId == null)
@@ -6035,7 +6051,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             title: item.title,
             url: item.githubUrl,
           })),
-      refresh: resolved(ALL_PRS),
+      refresh: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       getStatus: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ??
         MOCK_STATUS_BY_PR[prId] ?? {
@@ -6172,6 +6188,88 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return snapshots;
       },
       getGitHubSnapshot: resolvedArg(MOCK_GITHUB_SNAPSHOT),
+      listGitHubStacks: async () => MOCK_GITHUB_SNAPSHOT.stacks,
+      syncGitHubStacks: async () => MOCK_GITHUB_SNAPSHOT.stacks,
+      createGitHubStack: async (args: {
+        pullRequests: number[];
+      }) => {
+        const pullRequests = Array.from(new Set(
+          (args?.pullRequests ?? []).map(Number).filter((value) => value > 0),
+        ));
+        const nextNumber = Math.max(
+          0,
+          ...MOCK_GITHUB_SNAPSHOT.stacks.map((stack: any) => Number(stack.number) || 0),
+        ) + 1;
+        const stack = {
+          id: `mock-stack-${nextNumber}`,
+          number: nextNumber,
+          nodeId: `MOCK_STACK_${nextNumber}`,
+          repoOwner: MOCK_GITHUB_SNAPSHOT.repo?.owner ?? "acme",
+          repoName: MOCK_GITHUB_SNAPSHOT.repo?.name ?? "ade",
+          baseBranch: "main",
+          open: true,
+          createdAt: now,
+          syncedAt: now,
+          lastError: null,
+          entries: pullRequests.map((githubPrNumber, index) => {
+            const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+              (item: any) => item.githubPrNumber === githubPrNumber,
+            );
+            return {
+              githubPrNumber,
+              position: index + 1,
+              state: pull?.state === "closed" ? "closed" : "open",
+              isDraft: Boolean(pull?.isDraft),
+              mergedAt: null,
+              headBranch: pull?.headBranch ?? `mock/pr-${githubPrNumber}`,
+              headSha: `mock-sha-${githubPrNumber}`,
+            };
+          }),
+        };
+        MOCK_GITHUB_SNAPSHOT.stacks = [...MOCK_GITHUB_SNAPSHOT.stacks, stack];
+        return stack;
+      },
+      addGitHubStackPullRequests: async (args: {
+        stackNumber: number;
+        pullRequests: number[];
+      }) => {
+        const stack = MOCK_GITHUB_SNAPSHOT.stacks.find(
+          (candidate: any) => candidate.number === Number(args?.stackNumber),
+        );
+        if (!stack) throw new Error(`Unknown GitHub stack: ${args?.stackNumber}`);
+        const known = new Set(
+          stack.entries.map((entry: any) => Number(entry.githubPrNumber)),
+        );
+        for (const githubPrNumber of args?.pullRequests ?? []) {
+          const normalizedNumber = Number(githubPrNumber);
+          if (!Number.isInteger(normalizedNumber) || normalizedNumber <= 0 || known.has(normalizedNumber)) {
+            continue;
+          }
+          known.add(normalizedNumber);
+          const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+            (item: any) => item.githubPrNumber === normalizedNumber,
+          );
+          stack.entries.push({
+            githubPrNumber: normalizedNumber,
+            position: stack.entries.length + 1,
+            state: pull?.state === "closed" ? "closed" : "open",
+            isDraft: Boolean(pull?.isDraft),
+            mergedAt: null,
+            headBranch: pull?.headBranch ?? `mock/pr-${normalizedNumber}`,
+            headSha: `mock-sha-${normalizedNumber}`,
+          });
+        }
+        stack.syncedAt = now;
+        return stack;
+      },
+      unstackGitHubStack: async (args: { stackNumber: number }) => {
+        const index = MOCK_GITHUB_SNAPSHOT.stacks.findIndex(
+          (candidate: any) => candidate.number === Number(args?.stackNumber),
+        );
+        if (index < 0) return null;
+        const [stack] = MOCK_GITHUB_SNAPSHOT.stacks.splice(index, 1);
+        return stack ?? null;
+      },
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
         sessionId: "mock-pr-ai-session",
