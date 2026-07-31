@@ -1433,7 +1433,6 @@ struct PRsTabView: View {
   }
 
   @MainActor
-  @MainActor
   private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) async -> Bool {
     await performPrRootAction(
       "Creating integration PR",
