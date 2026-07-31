@@ -189,11 +189,10 @@ Browser `window.ade` adapter:
   and `filesInvalidated` events clear the read cache and fan a change event out
   to every workspace id seen for the project rather than a single `"*"` marker.
 - `apps/desktop/src/renderer/webclient/adapter/remoteRuntime.ts` - a
-  `window.ade.remoteRuntime` stub for the hosted client, which is already
-  attached to one paired machine and has no desktop-local target registry, SSH
-  discovery, or pairing host. Reads return empty collection-shaped results so
-  shared shell components still mount; machine-management mutations throw
-  "Desktop machine management is unavailable in ADE Web."
+  single-machine adapter fallback for native-only remote-runtime operations.
+  The federated adapter overrides its target, connection, project, connect,
+  park, and forget methods with browser-session-manager state. SSH discovery,
+  desktop-local pairing hosts, and native target editing remain unavailable.
 - `apps/desktop/src/renderer/webclient/adapter/prs.ts` - PR namespace over
   remote commands. List/detail reads go through the 3 s read cache, and a
   `prsInvalidated` event no longer emits an empty PR list marker: it invalidates
@@ -274,7 +273,13 @@ Browser `window.ade` adapter:
   transcript's Retry path does not become a no-op during a rolling upgrade. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
-  does not advertise the action. It also routes
+  does not advertise the action. The adapter also implements the shared
+  `agentChat.promptStashes` object through
+  `chat.listPromptStashes` / `chat.createPromptStash` /
+  `chat.deletePromptStash`. List responses are normalized to an array and
+  mutations fail honestly when the host lacks the required descriptor; the
+  shared composer can therefore index its stash list without receiving the
+  `null` value that previously crashed the hosted page. It also routes
   durable scheduled-work create/list/cancel/pause through the host command
   descriptors, so the reused Work and Settings surfaces do not depend on
   Electron-only preload methods. `misc.ts` routes
@@ -287,6 +292,16 @@ Browser `window.ade` adapter:
   events, and provides the cursor stream consumed by the shared Chats page.
   `lanes.ts` carries `getBranchDrift` / `resolveBranchDrift` passthroughs onto
   the matching `lanes.*` remote commands.
+- `apps/desktop/src/renderer/webclient/adapter/federated.ts` - the hosted
+  workspace router for `window.ade`. It persists the Hub/Chats/project surface,
+  open remote project bindings, and the selected machine per account; restores
+  those bindings at boot; and dispatches project-scoped calls to an adapter
+  keyed by the exact machine + project binding. Remote bindings passed as
+  control arguments pin delayed callbacks and subscriptions to their
+  originating project even after the visible tab changes. Switching the active
+  adapter notifies `WebClientRoot`, which remounts the shared renderer so
+  unpinned long-lived subscriptions cannot remain attached to the prior
+  machine.
 
 Browser shell and routes:
 
@@ -295,36 +310,37 @@ Browser shell and routes:
   `WebClientRoot`.
 - `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
   sequence, retired-`/pair` scrubbing, account privacy pruning, account-first
-  machine picker,
-  30-second active-account lease monitor, project picker, adapter load, pending
-  `/open` target stash, project binding, and projectless `/chats` routing before
-  a project is selected. Ordinary visits paint the machine picker immediately;
-  account bootstrap/directory work and IndexedDB loading proceed independently
-  instead of blocking first paint. Saved environments stay hidden until the
-  current account owner's atomic privacy prune completes, and stale async loads
-  cannot publish another account's records. Storage failure leaves account
-  sign-in and the directory usable with a separate saved-browser Retry path.
-  Project binding passes the selected `project.id`
-  (from the switch result when available) into `bindProject` so the adapter's
-  `getProjectId()` cannot fall back to a stale `activeProjectId` mid-reconnect,
-  and a failed `switchProject` surfaces its message instead of being swallowed.
-  Saved machines are shown first instead of reconnecting automatically on page
-  load.
-- `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
-  switcher, project switcher, forget machine, reconnect hint, and "Open in
-  desktop" button.
-- `apps/desktop/src/renderer/webclient/shell/MachinePicker.tsx`,
-  `ProjectPicker.tsx`, and `ScreenShell.tsx` - the account/switch UI pieces the
-  boot sequence composes (account machines, compatible saved-machine list,
-  independent directory/storage loading and retry states, project list, and the
-  shared screen frame); `shellTokens.ts` holds the standalone-shell design
-  tokens.
-- `apps/desktop/src/renderer/webclient/shell/AccountIdentity.tsx` - shared
-  signed-in identity label and trusted profile-image/initials fallback for the
-  machine picker and connected shell; opaque account IDs are not shown.
+  30-second active-account lease monitor, IndexedDB environment restoration,
+  federated-adapter installation, pending `/open` target stash, and initial
+  Hub/project/Chats restoration. Ordinary visits land on `/hub`; account
+  bootstrap and privacy pruning finish before saved environments are published,
+  so stale async loads cannot expose another account's records. Storage failure
+  leaves account sign-in and the account directory usable and is surfaced as a
+  non-fatal Hub notice. Session-lifecycle chrome follows the client currently
+  assigned to the active machine rather than the bootstrap client.
+- `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts` -
+  browser machine-session owner. It merges saved environments with live
+  clients, serializes admission, deduplicates same-target connects, retains
+  project catalogs for parked machines, and exposes Live, Reconnecting, Parked,
+  and Offline states. The pool owns at most four `AdeSyncClient` instances. A
+  fifth connection parks the least-recently-used non-active session, disconnects
+  it, and returns that client object to the pool; selecting the parked machine
+  reconnects it on demand and parks the next eligible LRU session.
+- `apps/desktop/src/renderer/webclient/workspace/WebWorkspaceContext.tsx` -
+  shared account, directory, session-pool, federated-adapter, notice, machine
+  management, and deferred-deeplink actions used by the hosted workspace.
+- `apps/desktop/src/renderer/webclient/workspace/WebWorkspaceHub.tsx` - the
+  permanent Hub route. It deduplicates account-directory rows and browser-saved
+  environments into one machine list, shows connection state, exposes each
+  machine's project catalog and machine-scoped Chats, and separates account
+  rename/removal from **Forget on this browser**.
+- `apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx` and
+  `shellTokens.ts` - the minimal startup/error frame and standalone shell design
+  tokens. Machine and project selection live inside the reused app shell's Hub
+  and tab strip rather than a separate pre-app picker.
 - `apps/desktop/src/renderer/webclient/shell/sessionLifecycleChrome.ts` -
   web-only presentation for the session-lifecycle controls, installed from
-  `WebClientRoot` through `installSessionLifecycleChrome(client)`. The Work list
+  `WebClientRoot` for the active machine client. The Work list
   is the desktop component mounted verbatim, and it reveals a row's snooze
   control on pointer hover; a phone or tablet never produces hover, so on the
   web that control would be unreachable. Both that and the unsupported-host case
@@ -343,7 +359,8 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/lib/webClientMode.ts` - `isWebClientMode()` reads
   the `window.__adeWebClient` flag the bootstrap stamps before the App module
   loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
-  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). Desktop-only chrome
+  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). The hosted-only `/hub`
+  route is mounted separately as the permanent workspace entry. Desktop-only chrome
   (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
@@ -357,7 +374,12 @@ Reused desktop renderer (web-mode adaptation):
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
   and directs signed-out users to account sign-in; the entire native control is
-  omitted from the hosted web-client shell.
+  omitted from the hosted web-client shell. In hosted mode, `TopBar` instead
+  renders a permanent non-closable Hub tab plus logical repository tabs.
+  Checkouts with the same repository origin collapse into one tab; when that
+  repository exists on multiple machines, the machine becomes a compact
+  selector inside the tab. Parked and offline bindings remain visible and
+  reconnect when chosen.
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web consent banner.
   It sends only normalized inputs through `window.ade.analytics`; the browser
@@ -453,12 +475,17 @@ Tests:
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
 - `apps/desktop/src/renderer/webclient/sync/envStore.test.ts`.
-- `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
-- `apps/desktop/src/renderer/webclient/shell/__tests__/MachinePicker.test.tsx` -
-  signed-in identity, account-machine availability, and reauthentication UI.
-- `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
-- `apps/desktop/src/renderer/webclient/shell/__tests__/WebClientRoot.test.tsx` -
-  verifies that legacy `/pair#...` entry is scrubbed and lands on account sign-in.
+- `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts` -
+  sync-backed namespaces, including the non-null prompt-stash contract.
+- `apps/desktop/src/renderer/webclient/adapter/__tests__/federated.test.ts` -
+  persisted Hub/Chats/project restoration, cross-machine and same-machine
+  binding pinning, active-adapter transitions, and host-driven project changes.
+- `apps/desktop/src/renderer/webclient/workspace/__tests__/WebMachineSessionManager.test.ts` -
+  four-client admission, concurrent-connect bounds, LRU parking, parked resume,
+  auth-failure cleanup, and project switching.
+- `apps/desktop/src/renderer/webclient/shell/__tests__/webClientShell.test.tsx` -
+  startup shell, retired pairing route, account privacy, Hub boot, and
+  StrictMode lifecycle coverage.
 - `apps/desktop/src/shared/webClientUrl.test.ts`.
 - `apps/ade-cli/src/commands/deeplinks.test.ts`.
 - `apps/ade-cli/src/tuiClient/__tests__/deeplinkKeybind.test.ts`.
@@ -550,15 +577,27 @@ https://app.ade-app.dev
   |
   v
 Browser shell
-apps/desktop/src/renderer/webclient/shell/
-  - account sign-in + machine directory
-  - saved-environment compatibility switcher
-  - project picker
+apps/desktop/src/renderer/webclient/{shell,workspace}/
+  - account sign-in + permanent workspace Hub
+  - unified account/saved machine roster
+  - per-machine project catalogs + Chats entry
+  - account management / browser trust management
   - /open resolver
-  - open-in-desktop
   |
   v
-AdeSyncClient
+WebMachineSessionManager
+  - four-client hard cap
+  - serialized admission + same-target dedupe
+  - LRU park/resume with catalog retention
+  |
+  v
+Federated window.ade adapter
+  - one adapter per machine + project binding
+  - persisted Hub/project/Chats surface
+  - repo tabs with machine selection inside the tab
+  |
+  v
+AdeSyncClient pool
 apps/desktop/src/renderer/webclient/sync/
   - IndexedDB environment store
   - WebCrypto DPoP key
@@ -645,20 +684,26 @@ does not downgrade after `accepted`.
 
 The web client never talks to an ADE application server for project data. A
 Cloudflare Pages request serves static assets; after that all application state
-flows through the selected sync WebSocket transport to the machine runtime.
+flows through one of the bounded live sync transports to an ADE machine
+runtime. Only the active project surface mounts in hosted mode, so background
+subscriptions from an inactive project cannot dispatch through another
+machine's adapter.
 
 ## Account machine directory
 
 ADE account sign-in is the only way to create a new hosted-web connection. The
-machine picker loads the user's machines from the Clerk-verified
-account-directory Worker. The directory's `online` value is a 90-second
+Hub loads the user's machines from the Clerk-verified account-directory Worker
+and merges them with compatible browser-saved environments. The directory's
+`online` value is a 90-second
 publisher-presence lease, not proof that a validated route disappeared. A row
 with an allowlisted, directory-verified secure Relay endpoint remains
 selectable after the presence lease expires; the ready-v2 bridge and
 authenticated hello decide current reachability. A row with no dialable secure
 endpoint remains listed with its last-seen state but cannot be selected. Saved
-pre-release direct environments are shown separately as a local compatibility
-path; they are not a pairing fallback.
+pre-release direct environments remain a local compatibility path; they are not
+a pairing fallback. The merged row reports Live, Reconnecting, Parked, or
+Offline, and selecting a saved row reconnects it without forcing the user
+through machine selection again for every project.
 The Worker reads at most the owner's 500 most recently seen rows from D1 before
 computing online-first display order. Machine-list responses expose
 `Server-Timing` entries for Clerk authentication and the D1 query; CORS exposes
@@ -712,6 +757,13 @@ direct routes. If an already direct-paired machine also appears in the account
 directory, selecting it keeps the existing direct provenance instead of making
 it disappear on sign-out.
 
+Machine management has two explicit scopes. **Remove from account** deletes the
+owner-scoped directory registration, so the machine disappears for that ADE
+account across clients. **Forget on this browser** deletes only the local
+IndexedDB environment and its paired secret/key material; it does not remove
+the account machine. Renaming is account-scoped and updates the directory's
+custom display name.
+
 Account pairing captures the exact browser session generation before network
 work and checks it again before persistence, so a late response after sign-out
 or account switch cannot recreate trust. While an account-owned environment or
@@ -733,10 +785,10 @@ a full-domain refresh, and subsequent compact invalidation batches remain live
 refresh hints rather than replicated state.
 
 Because there is no local replica, project/runtime reads are live transport
-round-trips to the selected machine — where the desktop renderer would hit its
+round-trips to the active project binding's machine — where the desktop renderer would hit its
 in-process cr-sqlite. Account Attention is the deliberate exception: a
 signed-in browser reads the consolidated push-relay stream directly, so changing
-the selected machine/project cannot narrow or block the account inbox. Two
+the active machine/project cannot narrow or block the account inbox. Two
 adapter-side measures keep ordinary machine reads from turning routine UI into
 a burst of redundant relay traffic. First, read commands and file-list requests
 pass through a short (3 s) **coalescing read cache**: concurrent identical reads
@@ -748,6 +800,14 @@ coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
 `prsInvalidated` event triggers exactly one aggregate refresh rather than an
 empty-list marker. These caches are freshness hints over the authoritative
 relay reads, not a persisted store.
+
+The browser may retain several machine catalogs and open project bindings, but
+it owns at most four live sync clients. Parked sessions retain only bounded
+workspace metadata and release their transport/client slot. Reopening a parked
+project reconnects its machine and restores the exact project-scoped adapter.
+Open tabs are persisted per account as remote bindings; project calls carrying
+one of those bindings stay pinned to that machine/project even if another tab
+became active before the call executes.
 
 The Attention adapter maintains a separate incremental account cursor and
 validates every item, destination, action, machine, project, tombstone, and
@@ -876,9 +936,9 @@ URL contract.
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
 - If a user opens `/open` before a machine is connected, `WebClientRoot.tsx`
-  stores the target in session storage and applies it after sign-in/connect.
-- "Open in desktop" in `WebShell.tsx` maps the current web route back through
-  `parseWebPath` and emits the `ade://` form.
+  stores the target in session storage and applies it after the user opens a
+  project from the Hub. Merely selecting or reconnecting a machine does not
+  consume the target.
 
 Entry points:
 

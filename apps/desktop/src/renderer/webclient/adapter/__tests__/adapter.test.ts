@@ -1266,6 +1266,65 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes prompt stashes through the web chat adapter", async () => {
+    fake.descriptors = descriptors([
+      "chat.listPromptStashes",
+      "chat.createPromptStash",
+      "chat.deletePromptStash",
+    ]);
+    const stashedPrompt = {
+      id: "stash-1",
+      text: "Keep this draft",
+      provider: "codex",
+      modelId: "openai/gpt-5.4",
+      createdAt: "2026-07-31T12:00:00.000Z",
+    };
+    fake.commandResults.set("chat.listPromptStashes", [stashedPrompt]);
+    fake.commandResults.set("chat.createPromptStash", stashedPrompt);
+    fake.commandResults.set("chat.deletePromptStash", true);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.promptStashes.list()).resolves.toEqual([stashedPrompt]);
+    await expect(adapter.ade.agentChat.promptStashes.create({
+      text: stashedPrompt.text,
+      provider: stashedPrompt.provider,
+      modelId: stashedPrompt.modelId,
+    })).resolves.toEqual(stashedPrompt);
+    await expect(adapter.ade.agentChat.promptStashes.delete({
+      id: stashedPrompt.id,
+    })).resolves.toBe(true);
+
+    expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
+      { action: "chat.listPromptStashes", args: {} },
+      {
+        action: "chat.createPromptStash",
+        args: {
+          text: stashedPrompt.text,
+          provider: stashedPrompt.provider,
+          modelId: stashedPrompt.modelId,
+        },
+      },
+      { action: "chat.deletePromptStash", args: { id: stashedPrompt.id } },
+    ]);
+    adapter.dispose();
+  });
+
+  it("treats an unavailable or malformed prompt-stash list as empty", async () => {
+    const adapterWithoutAction = createAdeWebAdapter(fake.asClient());
+    adapterWithoutAction.bindProject(project, "project-1");
+    await expect(adapterWithoutAction.ade.agentChat.promptStashes.list()).resolves.toEqual([]);
+    adapterWithoutAction.dispose();
+
+    fake.descriptors = descriptors(["chat.listPromptStashes"]);
+    fake.commandResults.set("chat.listPromptStashes", null);
+    const adapterWithMalformedResult = createAdeWebAdapter(fake.asClient());
+    adapterWithMalformedResult.bindProject(project, "project-1");
+    await expect(adapterWithMalformedResult.ade.agentChat.promptStashes.list()).resolves.toEqual([]);
+    adapterWithMalformedResult.dispose();
+  });
+
   it("runs personal chats at machine scope and streams their subscribed events", async () => {
     fake.descriptors = [{
       action: "personalChats.list",

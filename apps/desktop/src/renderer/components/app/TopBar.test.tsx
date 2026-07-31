@@ -492,6 +492,64 @@ describe("TopBar", () => {
     expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
   });
 
+  it("keeps a permanent Hub tab and routes new-project actions there in hosted web mode", () => {
+    globalThis.window.__adeWebClient = true;
+    const onNavigate = vi.fn();
+
+    const { rerender } = render(<TopBar hubRouteActive={true} onNavigate={onNavigate} />);
+
+    fireEvent.click(screen.getByTitle("Open a project from the Hub"));
+    rerender(<TopBar hubRouteActive={false} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Hub" }));
+
+    expect(onNavigate).toHaveBeenNthCalledWith(1, "/hub");
+    expect(onNavigate).toHaveBeenNthCalledWith(2, "/hub");
+    expect(screen.queryByTitle("Close hub")).toBeNull();
+  });
+
+  it("restores hosted project bindings before persisting the tab list", async () => {
+    globalThis.window.__adeWebClient = true;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade",
+      displayName: "ADE",
+    };
+    let resolveSession!: (session: {
+      windowId: number | null;
+      project: null;
+      binding: null;
+      openProjectTabs: [];
+      openProjectBindings: [typeof binding];
+    }) => void;
+    globalThis.window.ade.app.getWindowSession = vi.fn(() => new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    const persistBindings = vi.fn(async () => ({ openProjectBindings: [binding] }));
+    globalThis.window.ade.app.setWindowProjectBindings = persistBindings;
+
+    render(<TopBar hubRouteActive={true} />);
+
+    expect(persistBindings).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveSession({
+        windowId: null,
+        project: null,
+        binding: null,
+        openProjectTabs: [],
+        openProjectBindings: [binding],
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().openRemoteProjectTabs).toEqual([binding]);
+      expect(persistBindings).toHaveBeenCalledWith([binding]);
+    });
+  });
+
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
     const { onNavigate } = renderChatsTopBar({
       personalChatsRouteActive: true,

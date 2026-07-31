@@ -162,6 +162,7 @@ function RecentProjectRow({
   const isRemote = rp.kind === "remote" && Boolean(rp.remote);
   const connected = connectionState === "connected";
   const connecting = connectionState === "connecting";
+  const parked = connectionState === "parked";
   // Remote rows are "offline" until their target reports a live connection.
   const offline = isRemote && !connected;
   const remoteIconDataUrl = isRemote ? rp.remote?.iconDataUrl : null;
@@ -382,7 +383,7 @@ function RecentProjectRow({
                     : undefined
                 }
               />
-              {connecting ? "Reconnecting" : "Reconnect"}
+              {connecting ? "Reconnecting" : parked ? "Resume" : "Reconnect"}
             </span>
           ) : rp.laneCount !== undefined ? (
             <span

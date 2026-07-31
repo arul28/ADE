@@ -7,6 +7,9 @@ import type {
   AgentChatScheduledWorkItem,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
+  PromptStashCreateArgs,
+  PromptStashDeleteArgs,
+  PromptStashEntry,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
@@ -121,22 +124,26 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
   }
 
-  function callRequired<T>(action: string, args: unknown): Promise<T> {
+  function callRequired<T>(
+    action: string,
+    args: unknown,
+    capability: "Scheduled work" | "Chat history" | "Chat",
+    idempotent: boolean,
+  ): Promise<T> {
     return commands.call<T>(action, asRecord(args), {
       fallback: () => {
-        throw new Error(`Scheduled work action '${action}' is unavailable on the connected ADE host.`);
+        throw new Error(`${capability} action '${action}' is unavailable on the connected ADE host.`);
       },
-      idempotent: false,
+      idempotent,
     });
   }
 
   function callRequiredRead<T>(action: string, args: unknown): Promise<T> {
-    return commands.call<T>(action, asRecord(args), {
-      fallback: () => {
-        throw new Error(`Chat history action '${action}' is unavailable on the connected ADE host.`);
-      },
-      idempotent: true,
-    });
+    return callRequired<T>(action, args, "Chat history", true);
+  }
+
+  function callRequiredMutation<T>(action: string, args: unknown): Promise<T> {
+    return callRequired<T>(action, args, "Chat", false);
   }
 
   const agentChat: Record<string, unknown> = {
@@ -174,6 +181,16 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       set: async (args: unknown) => {
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
+    },
+    promptStashes: {
+      list: async () => {
+        const result = await call<unknown>("chat.listPromptStashes", {}, []);
+        return Array.isArray(result) ? result as PromptStashEntry[] : [];
+      },
+      create: (args: PromptStashCreateArgs) =>
+        callRequiredMutation<PromptStashEntry>("chat.createPromptStash", args),
+      delete: (args: PromptStashDeleteArgs) =>
+        callRequiredMutation<boolean>("chat.deletePromptStash", args),
     },
     handoff: (args: unknown) => call("chat.handoff", args, null, false),
     send: async (args: unknown) => {
@@ -236,13 +253,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     updateSession: (args: unknown) => call("chat.updateSession", args, null, false),
     createScheduledWork: (args: unknown) =>
-      callRequired<AgentChatCreateScheduledWorkResult>("chat.createScheduledWork", args),
+      callRequired<AgentChatCreateScheduledWorkResult>("chat.createScheduledWork", args, "Scheduled work", false),
     listScheduledWork: (args?: unknown) =>
       call<AgentChatScheduledWorkItem[]>("chat.listScheduledWork", args, []),
     cancelScheduledWork: (args: unknown) =>
-      callRequired<AgentChatCancelScheduledWorkResult>("chat.cancelScheduledWork", args),
+      callRequired<AgentChatCancelScheduledWorkResult>("chat.cancelScheduledWork", args, "Scheduled work", false),
     setScheduledWorkPaused: (args: unknown) =>
-      callRequired<AgentChatSetScheduledWorkPausedResult>("chat.setScheduledWorkPaused", args),
+      callRequired<AgentChatSetScheduledWorkPausedResult>("chat.setScheduledWorkPaused", args, "Scheduled work", false),
     warmupModel: async (args: unknown) => {
       await call("chat.warmupModel", args, undefined, false);
     },

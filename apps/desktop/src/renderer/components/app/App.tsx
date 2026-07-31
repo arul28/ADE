@@ -27,6 +27,7 @@ import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -79,6 +80,11 @@ const HistoryPage = React.lazy(() =>
 );
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
+);
+const WebWorkspaceHub = React.lazy(() =>
+  import("../../webclient/workspace/WebWorkspaceHub").then((module) => ({
+    default: module.WebWorkspaceHub,
+  }))
 );
 const AutomationsTemplatesPage = React.lazy(() =>
   import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
@@ -684,6 +690,7 @@ function ProjectSurface({
 function ProjectTabHost() {
   const location = useLocation();
   const navigate = useNavigate();
+  const webMode = isWebClientMode();
   const activeProject = useAppStore((s) => s.project);
   const activeProjectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -722,6 +729,7 @@ function ProjectTabHost() {
   const isAttentionRoute =
     location.pathname === "/attention" || location.pathname.startsWith("/attention/");
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
+  const isWebHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   const activeBinding = !showWelcome && activeProject?.rootPath
     ? bindingForProject(activeProject, activeProjectBinding)
@@ -768,7 +776,7 @@ function ProjectTabHost() {
     // Machine-level routes (personal chats, account) are not project surfaces;
     // the route-restore below would otherwise clobber them with the active
     // project's stored route on load.
-    if (isPersonalChatsRoute || isAttentionRoute || isAccountRoute) return;
+    if (isPersonalChatsRoute || isAttentionRoute || isAccountRoute || isWebHubRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -791,7 +799,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isAccountRoute, isAttentionRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isAccountRoute, isAttentionRoute, isPersonalChatsRoute, isWebHubRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -941,11 +949,11 @@ function ProjectTabHost() {
     );
   }
 
-  if (!isAttentionRoute && !projectHydrated && !activeProject) {
+  if (!isWebHubRoute && !isAttentionRoute && !projectHydrated && !activeProject) {
     return GuardLoadingFallback;
   }
 
-  if (!isPersonalChatsRoute && !isAttentionRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isWebHubRoute && !isPersonalChatsRoute && !isAttentionRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
         <ProjectWelcomePage />
@@ -974,6 +982,9 @@ function ProjectTabHost() {
     <div className="relative h-full min-h-0 w-full">
       {mountedProjects.map((entry) => {
         const { binding: projectBinding, project, surfaceKey } = entry;
+        if (webMode && (isWebHubRoute || surfaceKey !== activeSurfaceKey)) {
+          return null;
+        }
         const store = storesRef.current.get(surfaceKey);
         if (!store) return null;
         const liveRoute = surfaceKey === activeSurfaceKey ? serializeProjectRoute(location) : null;
@@ -981,7 +992,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isPersonalChatsRoute && !isAttentionRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!isWebHubRoute && !isPersonalChatsRoute && !isAttentionRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -989,6 +1000,13 @@ function ProjectTabHost() {
           />
         );
       })}
+      {isWebHubRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <WebWorkspaceHub />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {isPersonalChatsRoute ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>

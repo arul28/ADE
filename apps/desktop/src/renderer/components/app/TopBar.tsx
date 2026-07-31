@@ -14,6 +14,7 @@ import {
   DesktopTower,
   Folder,
   FolderOpen,
+  House,
   Plus,
   Minus,
   Plugs,
@@ -949,10 +950,12 @@ function ProjectTabIcon({
 export function TopBar({
   personalChatsRouteActive = false,
   accountRouteActive = false,
+  hubRouteActive = false,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
   accountRouteActive?: boolean;
+  hubRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
@@ -1027,6 +1030,7 @@ export function TopBar({
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
+  const [windowSessionRestored, setWindowSessionRestored] = useState(false);
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
   const openConnections = useCallback((tab: ConnectionsPanelTab = "machines") => {
@@ -1091,6 +1095,13 @@ export function TopBar({
   useEffect(() => {
     window.ade.app.setWindowProjectTabs(openProjectTabRoots).catch(() => {});
   }, [openProjectTabRoots]);
+
+  useEffect(() => {
+    if (!windowSessionRestored) return;
+    const persistBindings = window.ade.app.setWindowProjectBindings;
+    if (!persistBindings) return;
+    void persistBindings(openRemoteProjectTabs).catch(() => {});
+  }, [openRemoteProjectTabs, windowSessionRestored]);
 
   useEffect(() => {
     openRemoteProjectTabsRef.current = openRemoteProjectTabs;
@@ -1329,6 +1340,7 @@ export function TopBar({
           : openRemoteProjectTabs.find((entry) => entry.key === machine.bindingKey);
         const state = binding ? remoteConnectionState(binding.targetId) : "idle";
         if (state === "connecting") return "Reconnecting";
+        if (state === "parked") return "Parked";
         if (state !== "connected") return "Offline";
       }
       const laneCount = machine.laneCount;
@@ -1347,6 +1359,18 @@ export function TopBar({
       .then((session) => {
         if (cancelled) return;
         setWindowId(session.windowId);
+        if (session.openProjectBindings?.length) {
+          const restoredRemoteBindings = session.openProjectBindings.filter(
+            (entry): entry is RemoteProjectTab => entry.kind === "remote",
+          );
+          if (restoredRemoteBindings.length > 0) {
+            setOpenRemoteProjectTabs((current) => {
+              const byKey = new Map(current.map((entry) => [entry.key, entry]));
+              for (const entry of restoredRemoteBindings) byKey.set(entry.key, entry);
+              return [...byKey.values()];
+            });
+          }
+        }
         if (session.openProjectTabs.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
@@ -1370,9 +1394,13 @@ export function TopBar({
           // variant of the disappearing-tab bug.
           setOpenProjectTabRoots([]);
         }
+        setWindowSessionRestored(true);
       })
       .catch(() => {
-        if (!cancelled) setWindowId(null);
+        if (!cancelled) {
+          setWindowId(null);
+          setWindowSessionRestored(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -1545,9 +1573,13 @@ export function TopBar({
 
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
+    if (webMode) {
+      onNavigate?.("/hub");
+      return;
+    }
     openNewTab();
-    if (personalChatsRouteActive || accountRouteActive) onNavigate?.("/work");
-  }, [accountRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
+    if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
+  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive, webMode]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
@@ -1565,7 +1597,7 @@ export function TopBar({
   // route-cache effect writes that same value back instead of stamping /work
   // over the project's remembered position.
   const leaveMachineRoute = useCallback(() => {
-    if (!personalChatsRouteActive && !accountRouteActive) return;
+    if (!personalChatsRouteActive && !accountRouteActive && !hubRouteActive) return;
     const currentBindingKey = remoteBinding
       ? remoteBinding.key
       : project?.rootPath
@@ -1573,7 +1605,7 @@ export function TopBar({
         : null;
     const route = (currentBindingKey ? readStoredProjectRoute(currentBindingKey) : null) ?? "/work";
     onNavigate?.(route, { replace: true });
-  }, [accountRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
+  }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
 
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
@@ -2182,6 +2214,18 @@ export function TopBar({
         onDragOver={handleProjectTabDragOver}
         onDrop={handleProjectTabDrop}
       >
+        {webMode ? (
+          <ShellNavTab
+            active={hubRouteActive}
+            label="Hub"
+            onActivate={() => {
+              if (!hubRouteActive) onNavigate?.("/hub");
+            }}
+          >
+            <House size={14} weight={hubRouteActive ? "fill" : "duotone"} className="shrink-0 text-accent" />
+            <span className="min-w-0 flex-1 truncate text-center text-[12px]">Hub</span>
+          </ShellNavTab>
+        ) : null}
         {tabGroups.length > 0 ||
         isNewTabOpen ||
         personalChatsTabOpen ? (
@@ -2243,19 +2287,22 @@ export function TopBar({
                 const remoteTabState = remoteConnectionState(remoteTab.targetId);
                 const remoteTabConnected = remoteTabState === "connected";
                 const remoteTabConnecting = remoteTabState === "connecting";
+                const remoteTabParked = remoteTabState === "parked";
                 const remoteTabDisconnected =
                   remoteTabState === "error" || remoteTabState === "idle";
                 const remoteTabStatusLabel = remoteTabConnected
                   ? "Connected"
                   : remoteTabConnecting
                     ? "Reconnecting"
-                    : "Disconnected";
+                    : remoteTabParked
+                      ? "Parked"
+                      : "Disconnected";
                 return (
                   <div
                     key={group.id}
                     role="button"
                     tabIndex={0}
-                    data-state={isCurrentRemote && !personalChatsRouteActive ? "active" : undefined}
+                    data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
                     className={cn(
@@ -2266,6 +2313,8 @@ export function TopBar({
                         ? "border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]"
                         : remoteTabConnecting
                           ? "border-amber-400/60"
+                          : remoteTabParked
+                            ? "border-sky-400/50"
                           : "border-red-400/60",
                     )}
                     style={
@@ -2298,6 +2347,13 @@ export function TopBar({
                         weight="bold"
                         className="shrink-0 animate-spin text-amber-300"
                         aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                      />
+                    ) : remoteTabParked ? (
+                      <DesktopTower
+                        size={11}
+                        weight="duotone"
+                        className="shrink-0 text-sky-300"
+                        aria-label={`Parked: ${remoteTab.runtimeName}`}
                       />
                     ) : remoteTabDisconnected ? (
                       <WarningCircle
@@ -2364,7 +2420,7 @@ export function TopBar({
               else if (isMissing) projectTabState = "missing";
               // While the Chats machine tab is the foreground surface, the
               // bound project tab stays rendered but must not also read active.
-              else if (isCurrent && !personalChatsRouteActive) projectTabState = "active";
+              else if (isCurrent && !personalChatsRouteActive && !hubRouteActive) projectTabState = "active";
               const indicator = terminalAttention?.indicator;
               return (
                 <div
@@ -2579,7 +2635,6 @@ export function TopBar({
         ) : null}
 
         {/* Add project button */}
-        {!webMode ? (
         <button
           type="button"
           data-tour="project.addProject"
@@ -2591,7 +2646,9 @@ export function TopBar({
           onClick={handleOpenNew}
           disabled={isProjectBusy}
           title={
-            remoteStatusCount > 0
+            webMode
+              ? "Open a project from the Hub"
+              : remoteStatusCount > 0
               ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
               : "Open another project"
           }
@@ -2611,7 +2668,6 @@ export function TopBar({
         >
           <Plus size={12} weight="regular" />
         </button>
-        ) : null}
         {!webMode ? (
         <button
           type="button"

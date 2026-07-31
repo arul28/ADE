@@ -292,6 +292,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
+    delete window.__adeWebClient;
     (window as Window & { __adeBrowserMock?: boolean }).__adeBrowserMock = true;
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -309,6 +310,7 @@ describe("App Work route keep-alive", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
   });
 
   it("keeps the Work page mounted while other ADE tabs are active", async () => {
@@ -758,6 +760,45 @@ describe("App Work route keep-alive", () => {
     expect(
       createMock.mock.results[inactiveStoreIndex]?.value.getState().refreshLanes,
     ).not.toHaveBeenCalled();
+  });
+
+  it("mounts only the active project surface in hosted web mode", async () => {
+    window.__adeWebClient = true;
+    const remoteA = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      targetId: "studio-a",
+      runtimeName: "Studio A",
+      projectId: "project-1",
+      rootPath: "/srv/shared",
+      displayName: "Shared A",
+    };
+    const remoteB = {
+      ...remoteA,
+      key: "remote:studio-b:project-1",
+      targetId: "studio-b",
+      runtimeName: "Studio B",
+      displayName: "Shared B",
+    };
+    appStoreState.project = {
+      rootPath: remoteB.rootPath,
+      displayName: remoteB.displayName,
+    } as any;
+    appStoreState.projectBinding = remoteB;
+    appStoreState.openRemoteProjectTabs = [remoteA, remoteB];
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("work-page")).toHaveLength(1);
+    });
+    expect(document.querySelector(
+      `[data-project-binding-key="${remoteA.key}"]`,
+    )).toBeNull();
+    expect(document.querySelector(
+      `[data-project-binding-key="${remoteB.key}"]`,
+    )?.getAttribute("aria-hidden")).toBe("false");
   });
 
   it("does not retain an explicitly closed remote surface", async () => {
