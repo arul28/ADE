@@ -48,8 +48,11 @@ export function codexSkillsForCwd(
   if (!Array.isArray(response.data)) {
     return Array.isArray(response.skills) ? response.skills : [];
   }
-  const skills = response.data.find((entry) => entry.cwd === cwd)?.skills
-    ?? response.data[0]?.skills;
+  const matchingEntry = response.data.find((entry) => entry.cwd === cwd);
+  const legacySingleEntry = response.data.length === 1 && response.data[0]?.cwd == null
+    ? response.data[0]
+    : undefined;
+  const skills = matchingEntry?.skills ?? legacySingleEntry?.skills;
   return Array.isArray(skills) ? skills : [];
 }
 

@@ -37,6 +37,7 @@ type DevCliEntry = {
 
 const PATH_DELIMITER = path.delimiter;
 const VALID_COMMAND_NAME = /^ade(?:-[a-z0-9][a-z0-9-]*)?$/;
+let legacySkillCleanupScheduled = false;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -547,19 +548,24 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     bundledAgentSkillsRoot
     && process.env.ADE_DISABLE_SKILL_CLEANUP !== "1"
     && !process.env.VITEST
+    && !legacySkillCleanupScheduled
   ) {
-    try {
-      cleanupLegacyAdeSkills({
-        bundledRoot: bundledAgentSkillsRoot,
-      });
-    } catch (error) {
-      // best-effort: legacy cleanup must never block desktop startup, but
-      // surface the failure so it can be debugged.
-      args.logger.warn("ade_cli.legacy_skill_cleanup_failed", {
-        bundledRoot: bundledAgentSkillsRoot,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    legacySkillCleanupScheduled = true;
+    const cleanupTask = setImmediate(() => {
+      try {
+        cleanupLegacyAdeSkills({
+          bundledRoot: bundledAgentSkillsRoot,
+        });
+      } catch (error) {
+        // Best-effort migration: cleanup runs outside the startup critical path
+        // and must never prevent ADE from launching.
+        args.logger.warn("ade_cli.legacy_skill_cleanup_failed", {
+          bundledRoot: bundledAgentSkillsRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    cleanupTask.unref?.();
   }
   const envSnapshot = args.env ?? process.env;
   const hostPathSnapshot = getPathEnvValue(envSnapshot);

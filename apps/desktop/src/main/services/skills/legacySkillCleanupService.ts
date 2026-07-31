@@ -24,6 +24,10 @@ interface LegacyManifest {
   names: string[];
 }
 
+type SkillTreeEntry =
+  | { kind: "directory"; relative: string }
+  | { kind: "file"; relative: string; contents: Buffer };
+
 export interface LegacySkillCleanupResult {
   targetsCleaned: string[];
   skillsRemoved: string[];
@@ -56,44 +60,87 @@ function listBundledAdeSkills(bundledRoot: string): BundledSkill[] {
     return [];
   }
   return entries
-    .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && entry.name.startsWith("ade-"))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("ade-"))
     .map((entry) => ({ name: entry.name, dir: path.join(bundledRoot, entry.name) }))
-    .filter((entry) => fs.existsSync(path.join(entry.dir, "SKILL.md")))
+    .filter((entry) => {
+      try {
+        return fs.lstatSync(path.join(entry.dir, "SKILL.md")).isFile();
+      } catch {
+        return false;
+      }
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function walkFiles(dir: string): string[] {
-  const out: string[] = [];
-  const stack = [dir];
+function readSkillTree(dir: string): SkillTreeEntry[] | null {
+  try {
+    const rootStat = fs.lstatSync(dir);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
+
+  const tree: SkillTreeEntry[] = [];
+  const stack: Array<{ dir: string; relative: string }> = [{ dir, relative: "" }];
   while (stack.length) {
-    const current = stack.pop() as string;
+    const current = stack.pop() as { dir: string; relative: string };
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = fs.readdirSync(current.dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
     } catch {
-      continue;
+      return null;
     }
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile()) out.push(full);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index] as fs.Dirent;
+      const relative = current.relative
+        ? `${current.relative}/${entry.name}`
+        : entry.name;
+      const full = path.join(current.dir, entry.name);
+      if (entry.isSymbolicLink()) return null;
+      if (entry.isDirectory()) {
+        tree.push({ kind: "directory", relative });
+        stack.push({ dir: full, relative });
+        continue;
+      }
+      if (!entry.isFile()) return null;
+      try {
+        tree.push({ kind: "file", relative, contents: fs.readFileSync(full) });
+      } catch {
+        return null;
+      }
     }
   }
-  return out.sort();
+  return tree.some((entry) => entry.kind === "file") ? tree : null;
 }
 
-function hashSkills(skills: BundledSkill[]): string {
+function hashSkills(skills: BundledSkill[]): string | null {
   const hash = crypto.createHash("sha256");
   for (const skill of skills) {
-    hash.update(`\0skill:${skill.name}\0`);
-    for (const file of walkFiles(skill.dir)) {
-      hash.update(path.relative(skill.dir, file).split(path.sep).join("/"));
+    const tree = readSkillTree(skill.dir);
+    if (!tree) return null;
+    hash.update(`skill\0${skill.name}\0`);
+    for (const entry of tree.sort((a, b) => a.relative.localeCompare(b.relative))) {
+      hash.update(`${entry.kind}\0${entry.relative}\0`);
+      if (entry.kind === "file") hash.update(entry.contents);
       hash.update("\0");
-      try {
-        hash.update(fs.readFileSync(file));
-      } catch {
-        hash.update("\u0001unreadable\u0001");
-      }
+    }
+  }
+  return hash.digest("hex");
+}
+
+function legacyManifestHash(skills: BundledSkill[]): string | null {
+  const hash = crypto.createHash("sha256");
+  for (const skill of skills) {
+    const tree = readSkillTree(skill.dir);
+    if (!tree) return null;
+    hash.update(`\0skill:${skill.name}\0`);
+    for (const entry of tree
+      .filter((item): item is Extract<SkillTreeEntry, { kind: "file" }> => item.kind === "file")
+      .sort((a, b) => a.relative.localeCompare(b.relative))) {
+      hash.update(entry.relative);
+      hash.update("\0");
+      hash.update(entry.contents);
     }
   }
   return hash.digest("hex");
@@ -119,8 +166,9 @@ function readManifest(manifestPath: string): LegacyManifest | null {
 }
 
 function directoryMatches(left: string, right: string): boolean {
-  if (!isDirectory(left) || !isDirectory(right)) return false;
-  return hashSkills([{ name: "skill", dir: left }]) === hashSkills([{ name: "skill", dir: right }]);
+  const leftHash = hashSkills([{ name: "skill", dir: left }]);
+  const rightHash = hashSkills([{ name: "skill", dir: right }]);
+  return leftHash != null && rightHash != null && leftHash === rightHash;
 }
 
 export function cleanupLegacyAdeSkills(opts: {
@@ -141,10 +189,13 @@ export function cleanupLegacyAdeSkills(opts: {
 
     const installed = manifest.names
       .map((name) => ({ name, dir: path.join(target, name) }))
-      .filter((skill) => isDirectory(skill.dir))
+      .filter((skill) => fs.existsSync(skill.dir))
       .sort((a, b) => a.name.localeCompare(b.name));
+    const installedHash = legacyManifestHash(installed);
     const wholeLegacySetUnchanged =
-      installed.length === manifest.names.length && hashSkills(installed) === manifest.hash;
+      installed.length === manifest.names.length
+      && installedHash != null
+      && installedHash === manifest.hash;
 
     for (const installedSkill of installed) {
       const bundled = bundledByName.get(installedSkill.name);

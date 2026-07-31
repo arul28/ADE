@@ -67,4 +67,17 @@ describe("agentSkillRuntimeService", () => {
       { name: "/ade-search", description: "" },
     ]);
   });
+
+  it("does not borrow Codex skills from another lane", () => {
+    expect(codexSkillsForCwd({
+      data: [
+        { cwd: "/lane-a", skills: [{ name: "lane-a-skill" }] },
+        { cwd: "/lane-b", skills: [{ name: "lane-b-skill" }] },
+      ],
+    }, "/lane-c")).toEqual([]);
+
+    expect(codexSkillsForCwd({
+      data: [{ skills: [{ name: "legacy-single-cwd" }] }],
+    }, "/lane-c")).toEqual([{ name: "legacy-single-cwd" }]);
+  });
 });

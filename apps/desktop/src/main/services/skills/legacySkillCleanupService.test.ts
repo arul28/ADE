@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupLegacyAdeSkills } from "./legacySkillCleanupService";
 
@@ -13,6 +15,15 @@ function writeSkill(root: string, name: string, body: string): void {
 function writeLegacyManifest(target: string, names: string[], hash = "legacy-hash"): void {
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(path.join(target, ".ade-skills.json"), JSON.stringify({ version: "1", hash, names }));
+}
+
+function legacyManifestHash(name: string, body: string): string {
+  return crypto.createHash("sha256")
+    .update(`\0skill:${name}\0`)
+    .update("SKILL.md")
+    .update("\0")
+    .update(body)
+    .digest("hex");
 }
 
 describe("cleanupLegacyAdeSkills", () => {
@@ -54,6 +65,23 @@ describe("cleanupLegacyAdeSkills", () => {
     expect(result.skillsRemoved).toEqual([]);
     expect(result.skillsPreserved).toEqual([path.join(target, "ade-browser")]);
     expect(fs.readFileSync(path.join(target, "ade-browser", "SKILL.md"), "utf8")).toBe("# user modified");
+    expect(fs.existsSync(path.join(target, ".ade-skills.json"))).toBe(false);
+  });
+
+  it("removes an unchanged legacy copy after the bundled version has advanced", () => {
+    writeSkill(bundled, "ade-browser", "# current bundle");
+    writeSkill(target, "ade-browser", "# prior bundle");
+    writeLegacyManifest(
+      target,
+      ["ade-browser"],
+      legacyManifestHash("ade-browser", "# prior bundle"),
+    );
+
+    const result = cleanupLegacyAdeSkills({ bundledRoot: bundled, targetDirs: [target] });
+
+    expect(result.skillsRemoved).toEqual([path.join(target, "ade-browser")]);
+    expect(result.skillsPreserved).toEqual([]);
+    expect(fs.existsSync(path.join(target, "ade-browser"))).toBe(false);
     expect(fs.existsSync(path.join(target, ".ade-skills.json"))).toBe(false);
   });
 
@@ -99,5 +127,48 @@ describe("cleanupLegacyAdeSkills", () => {
     expect(result.targetsCleaned).toEqual([target, target2]);
     expect(fs.existsSync(path.join(target, "ade-browser"))).toBe(false);
     expect(fs.existsSync(path.join(target2, "ade-browser"))).toBe(false);
+  });
+
+  it.each([
+    ["empty directory", (skillDir: string) => fs.mkdirSync(skillDir, { recursive: true })],
+    ["symbolic link", (skillDir: string) => {
+      const userOwned = path.join(tmp, "user-owned");
+      fs.mkdirSync(userOwned, { recursive: true });
+      fs.writeFileSync(path.join(userOwned, "SKILL.md"), "# user owned");
+      fs.mkdirSync(path.dirname(skillDir), { recursive: true });
+      fs.symlinkSync(userOwned, skillDir, "dir");
+    }],
+    ["unsupported filesystem entry", (skillDir: string) => {
+      fs.mkdirSync(skillDir, { recursive: true });
+      execFileSync("mkfifo", [path.join(skillDir, "pipe")]);
+    }],
+  ])("preserves a recorded %s and retires only the manifest", (_label, arrange) => {
+    writeSkill(bundled, "ade-browser", "# browser");
+    const installed = path.join(target, "ade-browser");
+    arrange(installed);
+    writeLegacyManifest(target, ["ade-browser"]);
+
+    const result = cleanupLegacyAdeSkills({ bundledRoot: bundled, targetDirs: [target] });
+
+    expect(result.skillsRemoved).toEqual([]);
+    expect(result.skillsPreserved).toEqual([installed]);
+    expect(fs.existsSync(installed)).toBe(true);
+    expect(fs.existsSync(path.join(target, ".ade-skills.json"))).toBe(false);
+  });
+
+  it("preserves an unreadable recorded directory", () => {
+    writeSkill(bundled, "ade-browser", "# browser");
+    writeSkill(target, "ade-browser", "# browser");
+    const installed = path.join(target, "ade-browser");
+    writeLegacyManifest(target, ["ade-browser"]);
+    fs.chmodSync(installed, 0o000);
+
+    const result = cleanupLegacyAdeSkills({ bundledRoot: bundled, targetDirs: [target] });
+
+    fs.chmodSync(installed, 0o700);
+    expect(result.skillsRemoved).toEqual([]);
+    expect(result.skillsPreserved).toEqual([installed]);
+    expect(fs.existsSync(installed)).toBe(true);
+    expect(fs.existsSync(path.join(target, ".ade-skills.json"))).toBe(false);
   });
 });

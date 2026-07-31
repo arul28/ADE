@@ -1184,6 +1184,7 @@ type PendingClaudeApproval = {
 
 type CodexRuntime = {
   kind: "codex";
+  agentSkillRoots: string[];
   serverVersion: CodexServerVersion | null;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
@@ -26148,6 +26149,7 @@ export function createAgentChatService(args: {
 
     const runtime: CodexRuntime = {
       kind: "codex",
+      agentSkillRoots: existingAgentSkillRoots(spawnEnv),
       serverVersion: null,
       process: proc,
       reader,
@@ -26423,7 +26425,7 @@ export function createAgentChatService(args: {
     ]).then(() => undefined);
 
     runtime.notify("initialized");
-    const bundledSkillRoots = existingAgentSkillRoots(spawnEnv);
+    const bundledSkillRoots = runtime.agentSkillRoots;
     if (bundledSkillRoots.length) {
       await runtime.request("skills/extraRoots/set", { extraRoots: bundledSkillRoots })
         .catch(() => { /* older app-server versions use the prompt/CLI fallback */ });
@@ -26468,7 +26470,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): Promise<void> => {
-    const extraUserRoots = existingAgentSkillRoots(buildAgentRuntimeEnv(managed));
+    const extraUserRoots = runtime.agentSkillRoots;
     return runtime.request<CodexSkillsListResponse>(
       "skills/list",
       codexSkillsListParams(managed.laneWorktreePath, extraUserRoots),
