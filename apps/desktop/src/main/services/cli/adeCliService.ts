@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/adeCli";
 import { ADE_AGENT_SKILLS_DIRS_ENV, joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../../shared/agentSkillRoots";
-import { reseedAdeSkills } from "../skills/skillReseedService";
+import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import {
@@ -541,22 +541,21 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const commandName = resolveCommandName(args);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
-  // Seed ADE's bundled skills into the home-level dirs every runtime discovers, so
-  // desktop-launched agents pick them up via the runtime's own progressive disclosure.
+  // Migrate away from the old user-global copies. New sessions receive the
+  // bundled root directly; unrelated harnesses should not see ADE capabilities.
   if (
     bundledAgentSkillsRoot
-    && process.env.ADE_DISABLE_SKILL_RESEED !== "1"
+    && process.env.ADE_DISABLE_SKILL_CLEANUP !== "1"
     && !process.env.VITEST
   ) {
     try {
-      reseedAdeSkills({
+      cleanupLegacyAdeSkills({
         bundledRoot: bundledAgentSkillsRoot,
-        version: process.env.npm_package_version,
       });
     } catch (error) {
-      // best-effort: skill re-seeding must never block desktop startup, but
+      // best-effort: legacy cleanup must never block desktop startup, but
       // surface the failure so it can be debugged.
-      args.logger.warn("ade_cli.skill_reseed_failed", {
+      args.logger.warn("ade_cli.legacy_skill_cleanup_failed", {
         bundledRoot: bundledAgentSkillsRoot,
         error: error instanceof Error ? error.message : String(error),
       });

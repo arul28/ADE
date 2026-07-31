@@ -122,7 +122,7 @@ import {
 } from "./sessionSnoozeDuration";
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
-import { reseedBundledAdeSkillsForCli } from "./bootstrap";
+import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
@@ -20251,7 +20251,7 @@ async function runCli(
     (plan.kind === "execute" &&
       /^(agent spawn|chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
-    reseedBundledAdeSkillsForCli();
+    cleanupLegacyBundledAdeSkillsForCli();
   }
   const originalConsole = {
     log: console.log,

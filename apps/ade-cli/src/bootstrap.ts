@@ -14,7 +14,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
-import { reseedAdeSkills } from "../../desktop/src/main/services/skills/skillReseedService";
+import { cleanupLegacyAdeSkills } from "../../desktop/src/main/services/skills/legacySkillCleanupService";
 import {
   createAdeProjectService,
   initializeOrRepairAdeProject,
@@ -450,28 +450,26 @@ function inferAgentSkillsRootForCliEntry(cliEntry: string | null): string | null
   return null;
 }
 
-let adeSkillsReseededForCli = false;
+let legacyAdeSkillsCleanedForCli = false;
 
 /**
- * Materialize ADE's bundled `ade-*` skills into the home-level skill dirs every
- * runtime natively discovers, so agents ADE spawns pick them up via the runtime's
- * own progressive disclosure. Cheap no-op once on-disk copies are current;
- * best-effort so an unwritable home dir never blocks the CLI.
+ * Remove legacy ADE-managed user-global copies when they are provably unchanged.
+ * Session-scoped discovery now uses ADE_AGENT_SKILLS_DIRS instead.
  */
-export function reseedBundledAdeSkillsForCli(): void {
-  if (adeSkillsReseededForCli) return;
-  if (process.env.ADE_DISABLE_SKILL_RESEED === "1" || process.env.VITEST) return;
-  adeSkillsReseededForCli = true;
+export function cleanupLegacyBundledAdeSkillsForCli(): void {
+  if (legacyAdeSkillsCleanedForCli) return;
+  if (process.env.ADE_DISABLE_SKILL_CLEANUP === "1" || process.env.VITEST) return;
+  legacyAdeSkillsCleanedForCli = true;
   try {
     const bundledRoot = inferAgentSkillsRootForCliEntry(resolveCurrentAdeCliEntry());
-    if (bundledRoot) reseedAdeSkills({ bundledRoot });
+    if (bundledRoot) cleanupLegacyAdeSkills({ bundledRoot });
   } catch {
-    /* best-effort: skill re-seeding must never break agent launch */
+    /* best-effort: legacy cleanup must never break agent launch */
   }
 }
 
 function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  reseedBundledAdeSkillsForCli();
+  cleanupLegacyBundledAdeSkillsForCli();
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,

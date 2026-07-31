@@ -279,7 +279,8 @@
         "from": "resources/agent-skills",
         "to": "agent-skills",
         "filter": [
-          "**/*"
+          "**/*",
+          ".claude-plugin/**/*"
         ]
       },
       {

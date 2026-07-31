@@ -3302,6 +3302,12 @@ describe("createAgentChatService", () => {
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
+      const bundledSkillRoot = path.join(tmpRoot, "bundled-agent-skills");
+      fs.mkdirSync(path.join(bundledSkillRoot, ".claude-plugin"), { recursive: true });
+      fs.writeFileSync(
+        path.join(bundledSkillRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "ade", skills: "." }),
+      );
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -3311,7 +3317,12 @@ describe("createAgentChatService", () => {
         sessionId: "sdk-session-skills",
       } as any);
 
-      const { service } = createService();
+      const { service } = createService({
+        getAdeCliAgentEnv: () => ({
+          ...process.env,
+          ADE_AGENT_SKILLS_DIRS: bundledSkillRoot,
+        }),
+      });
       await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -3332,9 +3343,13 @@ describe("createAgentChatService", () => {
           fastMode?: boolean;
         };
         skills?: string;
+        plugins?: Array<{ type?: string; path?: string }>;
       } | undefined;
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
       expect(opts?.skills).toBe("all");
+      expect(opts?.plugins).toEqual(expect.arrayContaining([
+        { type: "local", path: bundledSkillRoot },
+      ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
       expect(opts?.settings).toEqual(expect.objectContaining({
@@ -6873,8 +6888,15 @@ describe("createAgentChatService", () => {
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
+      const bundledSkillRoot = path.join(tmpRoot, "codex-agent-skills");
+      fs.mkdirSync(bundledSkillRoot, { recursive: true });
 
-      const { service } = createService();
+      const { service } = createService({
+        getAdeCliAgentEnv: () => ({
+          ...process.env,
+          ADE_AGENT_SKILLS_DIRS: bundledSkillRoot,
+        }),
+      });
       const session = await service.createSession({
         laneId: "lane-2",
         provider: "codex",
@@ -6890,6 +6912,22 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
       });
 
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "skills/extraRoots/set",
+          params: { extraRoots: [bundledSkillRoot] },
+        }),
+        expect.objectContaining({
+          method: "skills/list",
+          params: expect.objectContaining({
+            cwds: [expect.stringContaining("lane-2")],
+            perCwdExtraUserRoots: [{
+              cwd: expect.stringContaining("lane-2"),
+              extraUserRoots: [bundledSkillRoot],
+            }],
+          }),
+        }),
+      ]));
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       expect(startPayload?.params).toMatchObject({
         cwd: expect.stringContaining("lane-2"),

@@ -358,6 +358,7 @@ function createHarness(overrides: {
   diskPressureMonitor?: {
     canPerform: ReturnType<typeof vi.fn>;
   } | null;
+  getAdeCliAgentEnv?: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -493,6 +494,7 @@ function createHarness(overrides: {
     ...(overrides.processRegistry !== undefined ? { processRegistry: overrides.processRegistry as any } : {}),
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
+    ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -1302,6 +1304,37 @@ describe("ptyService", () => {
 
       expect(mockPty.write).toHaveBeenCalledTimes(1);
       expect(mockPty.write).toHaveBeenCalledWith("\x1b[200~ADE session guidance\nUser prompt:\nhello\x1b[201~\r");
+    });
+
+    it("injects the validated bundled plugin into tracked Claude CLI launches", async () => {
+      const pluginRoot = "/Applications/ADE.app/Contents/Resources/agent-skills";
+      const { service, loadPty } = createHarness({
+        getAdeCliAgentEnv: (env) => ({
+          ...env,
+          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+        }),
+      });
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        args: ["--plugin-dir=/tmp/custom-plugin", "--permission-mode", "default"],
+        startupCommand: "claude --plugin-dir=/tmp/custom-plugin --permission-mode default",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--plugin-dir", pluginRoot]),
+        expect.any(Object),
+      );
+      expect(ptyLib.spawn.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
+        "--plugin-dir=/tmp/custom-plugin",
+      ]));
     });
 
     it("waits for agent CLI readiness before sending initialInput", async () => {
@@ -2461,8 +2494,14 @@ describe("ptyService", () => {
     });
 
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
+      const pluginRoot = "/Applications/ADE.app/Contents/Resources/agent-skills";
       (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
-      const { service, sessionService, mockPty } = createHarness();
+      const { service, sessionService, mockPty } = createHarness({
+        getAdeCliAgentEnv: (env) => ({
+          ...env,
+          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+        }),
+      });
       sessionService.create({
         sessionId: "session-claude-picker",
         laneId: "lane-1",
@@ -2501,7 +2540,9 @@ describe("ptyService", () => {
         "session-claude-picker",
         "claude --resume claude-session-123",
       );
-      expect(mockPty.write).toHaveBeenCalledWith("claude --resume claude-session-123\r");
+      expect(mockPty.write).toHaveBeenCalledWith(
+        `claude --plugin-dir "${pluginRoot}" --resume claude-session-123\r`,
+      );
     });
 
     it("backfills a missing Codex storage target before launching the resumed PTY", async () => {

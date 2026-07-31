@@ -29,6 +29,8 @@ describe("ADE bootstrap guidance", () => {
     // The fallback: CLI help is ground truth (agents are not trained on `ade`).
     expect(bootstrap).toContain("ade help <command>");
     expect(bootstrap).toContain("ade actions list --text");
+    expect(bootstrap).toContain("ade skill list --text");
+    expect(bootstrap).toContain("ade skill show <name> --text");
     expect(bootstrap).toContain("ade chat scheduled-work create");
     expect(bootstrap).toContain("tracked provider CLIs");
     expect(bootstrap).toContain('ade chat note "running e2e shard 2/4"');

@@ -19,7 +19,7 @@ The former worker/hiring agents were removed. There is one persistent identity â
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, and OpenCode. |
-| `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Discovered on demand rather than named in the `adeBundledAgentSkills` bootstrap list; parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
+| `apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md` | Agent-facing schema for Mosaic v1 interactive cards: an agent emits a fenced ` ```mosaic ` JSON block to ask the user for structured input (select / multiselect / number / input / approval / table) and the submitted answers return as the next user message. Parsing/rendering live in `apps/desktop/src/shared/chatMosaic.ts` (see [chat composer-and-ui.md](../chat/composer-and-ui.md)). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, the CTO, and mobile-started runtime work. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
@@ -87,6 +87,37 @@ active/ended, never settled.
 `buildAdeBootstrapGuidance` exposes the surviving commands in the injected
 agent prompt (`ADE_SESSION_STATUS_PROTOCOL_GUIDANCE`), including the explicit
 "you cannot settle or unsettle a session" line.
+
+### Bundled skill distribution
+
+ADE keeps one canonical bundled skill tree at
+`apps/desktop/resources/agent-skills` (packaged as
+`Resources/agent-skills`). It does not install those skills into
+`~/.claude/skills`, `~/.agents/skills`, `~/.cursor/skills`,
+`~/.factory/skills`, or `~/.config/opencode/skills`; doing so leaks
+ADE-specific capabilities into unrelated harness sessions.
+
+Each ADE-launched session receives the canonical root through
+`ADE_AGENT_SKILLS_DIRS` and the compact skill catalog in
+`buildAdeBootstrapGuidance`. Provider-native integrations are session-scoped:
+
+- Codex app-server receives `skills/extraRoots/set` and uses
+  `perCwdExtraUserRoots` when listing skills.
+- Claude Agent SDK loads the bundled root as a local plugin through its
+  `.claude-plugin/plugin.json`; tracked Claude CLI launches receive the same
+  validated root through `--plugin-dir`.
+- OpenCode's currently shipped config schema, Cursor, and Droid do not expose
+  an arbitrary standalone skill-root option ADE can safely set, so they use
+  the catalog plus the provider-independent
+  `ade skill list --text` / `ade skill show <name> --text` activation path.
+
+The same CLI activation path is available to every provider and remains the
+compatibility fallback for older runtime versions. On startup, ADE performs a
+one-time conservative migration of the former global installation: it reads
+the ADE-owned `.ade-skills.json` manifest, removes only copies whose contents
+still match ADE's bundle, preserves modified or unverifiable copies, and then
+retires the manifest.
+
 SDK-backed Claude, Codex, Cursor, Droid, and OpenCode chats receive
 `ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for an
 orchestration lead), and their persistent guidance names the concrete

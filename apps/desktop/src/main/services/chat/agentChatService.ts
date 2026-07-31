@@ -435,6 +435,14 @@ import {
 } from "../../../shared/adeCard";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
+import {
+  agentSkillSlashCommands,
+  claudeAgentSkillPluginRoots,
+  codexSkillsForCwd,
+  codexSkillsListParams,
+  existingAgentSkillRoots,
+  type CodexSkillsListResponse,
+} from "../skills/agentSkillRuntimeService";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   isBackgroundShellCommand,
@@ -26415,6 +26423,11 @@ export function createAgentChatService(args: {
     ]).then(() => undefined);
 
     runtime.notify("initialized");
+    const bundledSkillRoots = existingAgentSkillRoots(spawnEnv);
+    if (bundledSkillRoots.length) {
+      await runtime.request("skills/extraRoots/set", { extraRoots: bundledSkillRoots })
+        .catch(() => { /* older app-server versions use the prompt/CLI fallback */ });
+    }
     runtime.acceptedSteersHydrationReady = hydrateAcceptedCodexSteers(
       managed,
       runtime,
@@ -26449,6 +26462,21 @@ export function createAgentChatService(args: {
   type CodexPointerReplacementToken = {
     originalThreadId: string | null;
     mode: "recover_from_history" | "explicit_reset";
+  };
+
+  const refreshCodexSkills = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    const extraUserRoots = existingAgentSkillRoots(buildAgentRuntimeEnv(managed));
+    return runtime.request<CodexSkillsListResponse>(
+      "skills/list",
+      codexSkillsListParams(managed.laneWorktreePath, extraUserRoots),
+    ).then((response) => {
+      runtime.slashCommands = agentSkillSlashCommands(
+        codexSkillsForCwd(response, managed.laneWorktreePath),
+      );
+    }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
   };
 
   const resolveCodexThreadParams = (managed: ManagedChatSession): {
@@ -26561,15 +26589,7 @@ export function createAgentChatService(args: {
     await seedCodexThreadGoalFromSessionGoal(managed, runtime);
 
     // Fetch available skills and populate slash commands.
-    runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
-      .then((res) => {
-        if (Array.isArray(res?.skills)) {
-          runtime.slashCommands = res.skills
-            .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
-            .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
-        }
-      })
-      .catch(() => { /* skills/list not supported — ignore */ });
+    void refreshCodexSkills(managed, runtime);
 
     // Fetch initial rate limits.
     runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
@@ -26813,7 +26833,10 @@ export function createAgentChatService(args: {
     };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
-    const pluginPaths = personalSession ? [] : discoverClaudePluginPaths(managed.laneWorktreePath);
+    const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
+    const pluginPaths = personalSession
+      ? []
+      : [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(managed.laneWorktreePath)])];
     const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
@@ -34637,15 +34660,7 @@ export function createAgentChatService(args: {
             persistChatState(managed);
             // Fetch skills after resume if not already fetched
             if (runtime.slashCommands.length === 0) {
-              runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
-                .then((res) => {
-                  if (Array.isArray(res?.skills)) {
-                    runtime.slashCommands = res.skills
-                      .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
-                      .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
-                  }
-                })
-                .catch(() => { /* skills/list not supported — ignore */ });
+              void refreshCodexSkills(managed, runtime);
               runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
                 .then((res) => {
                   const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
@@ -36308,15 +36323,7 @@ export function createAgentChatService(args: {
           persistChatState(managed);
           // Fetch skills after resume if not already fetched
           if (runtime.slashCommands.length === 0) {
-            runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
-              .then((res) => {
-                if (Array.isArray(res?.skills)) {
-                  runtime.slashCommands = res.skills
-                    .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
-                    .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
-                }
-              })
-              .catch(() => { /* skills/list not supported — ignore */ });
+            void refreshCodexSkills(managed, runtime);
             runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
               .then((res) => {
                 const rateLimits = normalizeCodexRateLimits(res?.rateLimits);

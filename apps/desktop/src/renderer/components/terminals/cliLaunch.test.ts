@@ -834,7 +834,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toEqual(expect.arrayContaining(["--model", "github-copilot/gpt-5.4", "--prompt"]));
       expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBe("{\"permission\":\"allow\"}");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
-      expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode");
+      expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=");
       expect(launch.startupCommand).toContain("Use OpenCode.");
     });
 

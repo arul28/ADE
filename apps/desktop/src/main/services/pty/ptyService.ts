@@ -72,6 +72,8 @@ import {
   trackedCliTitleFromPromptSeed,
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
+import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
+import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
@@ -1062,6 +1064,47 @@ function isCodexTrackedCliToolType(toolType: TerminalToolType | null | undefined
 
 function isClaudeTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "claude" | "claude-orchestrated" {
   return toolType === "claude" || toolType === "claude-orchestrated";
+}
+
+function hasClaudePluginRoot(args: string[], pluginRoot: string): boolean {
+  return args.some((arg, index) =>
+    (arg === "--plugin-dir" && args[index + 1] === pluginRoot)
+    || arg === `--plugin-dir=${pluginRoot}`,
+  );
+}
+
+function withBundledClaudePlugin(
+  args: string[],
+  startupCommand: string,
+  toolType: TerminalToolType | null,
+  env: NodeJS.ProcessEnv,
+): { args: string[]; startupCommand: string } {
+  if (!isClaudeTrackedCliToolType(toolType)) {
+    return { args, startupCommand };
+  }
+  const pluginRoot = claudeAgentSkillPluginRoots(env)[0];
+  if (!pluginRoot) return { args, startupCommand };
+
+  const normalizedArgs = hasClaudePluginRoot(args, pluginRoot)
+    ? args
+    : ["--plugin-dir", pluginRoot, ...args];
+  let normalizedStartupCommand = startupCommand;
+  if (startupCommand?.trimStart().startsWith("claude")) {
+    let commandArgs: string[] = [];
+    try {
+      commandArgs = parseCommandLine(startupCommand);
+    } catch {
+      // Keep the original shell command intact and inject at its known provider prefix.
+    }
+    if (!hasClaudePluginRoot(commandArgs.slice(1), pluginRoot)) {
+      const startupPrefix = commandArrayToLine(["claude", "--plugin-dir", pluginRoot]);
+      normalizedStartupCommand = startupCommand.replace(/^(\s*)claude\b/, `$1${startupPrefix}`);
+    }
+  }
+  return {
+    args: normalizedArgs,
+    startupCommand: normalizedStartupCommand,
+  };
 }
 
 function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
@@ -4386,7 +4429,7 @@ export function createPtyService({
 
       const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
       const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
-      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+      let directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
@@ -4449,6 +4492,14 @@ export function createPtyService({
           startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
+      const claudePluginLaunch = withBundledClaudePlugin(
+        directArgs,
+        startupCommand,
+        toolTypeHint,
+        launchEnv,
+      );
+      directArgs = claudePluginLaunch.args;
+      startupCommand = claudePluginLaunch.startupCommand;
       launchEnv = withUserCodexCliPathPriority(launchEnv, {
         toolType: toolTypeHint,
         directCommand,
