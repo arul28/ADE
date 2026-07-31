@@ -17,12 +17,7 @@ struct AccountConnectionsSection: View {
     Group {
       if account.isConfigured {
         VStack(alignment: .leading, spacing: 12) {
-          SettingsSectionHeader(
-            label: "ACCOUNT",
-            hint: account.isSignedIn
-              ? "Your Macs on other networks"
-              : "Sign in or create an account for internet connections"
-          )
+          SettingsSectionHeader(label: "ACCOUNT")
 
           switch account.phase {
           case .signedIn:

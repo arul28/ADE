@@ -64,7 +64,7 @@ struct ConnectionSettingsView: View {
 
             // 2. Connection status.
             VStack(alignment: .leading, spacing: 12) {
-              SettingsSectionHeader(label: "CONNECTION", hint: "Your current Mac connection")
+              SettingsSectionHeader(label: "CONNECTION")
 
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
@@ -804,7 +804,7 @@ struct SettingsMachinesSection: View {
   var body: some View {
     let all = entries
     VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "MACHINES", hint: "Macs you can connect to")
+      SettingsSectionHeader(label: "MACHINES")
 
       if all.isEmpty {
         Text("No machines yet. Add one below.")
@@ -882,39 +882,30 @@ struct SettingsMachinesSection: View {
     let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
-      ZStack(alignment: .trailing) {
-        Button {
-          connect(entry)
-        } label: {
-          MachineRowView(
-            deviceSymbol: deviceSymbol(entry),
-            title: entry.name,
-            routeHint: entry.routeHint,
-            online: entry.online,
-            isAuthenticatedCurrent: entry.isCurrent,
-            statusPill: entry.isCurrent ? .connected : nil,
-            affordance: rowAffordance(entry, isConnecting: isConnecting),
-            surface: .row
-          )
-        }
-        .buttonStyle(ADEScaleButtonStyle())
-        .disabled(!tappable)
-        .accessibilityLabel("\(entry.name), \(entry.routeHint)")
-        .accessibilityHint(tappable ? "Connect." : "")
-
+      Button {
+        connect(entry)
+      } label: {
+        MachineRowView(
+          deviceSymbol: deviceSymbol(entry),
+          title: entry.name,
+          routeHint: entry.routeHint,
+          online: entry.online,
+          isAuthenticatedCurrent: entry.isCurrent,
+          statusPill: entry.isCurrent ? .connected : nil,
+          affordance: rowAffordance(entry, isConnecting: isConnecting),
+          surface: .row
+        )
+      }
+      .buttonStyle(ADEScaleButtonStyle())
+      .accessibilityLabel("\(entry.name), \(entry.routeHint)")
+      .accessibilityHint(tappable ? "Connect." : "")
+      .contextMenu {
         if let machine = accountMachine(from: entry) {
           Button {
             renamingMachine = machine
           } label: {
-            Image(systemName: "pencil")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-              .frame(width: 44, height: 44)
-              .contentShape(Rectangle())
+            Label("Rename", systemImage: "pencil")
           }
-          .buttonStyle(.plain)
-          .padding(.trailing, 58)
-          .accessibilityLabel("Rename \(entry.name)")
         }
       }
       .opacity(tappable || entry.isCurrent ? 1 : 0.72)
@@ -978,7 +969,7 @@ struct SettingsMachinesSection: View {
   }
 
   private func connect(_ entry: Entry) {
-    guard connectingId == nil else { return }
+    guard !entry.isCurrent, connectingId == nil else { return }
     connectingId = entry.id
     rowErrors[entry.id] = nil
     Task { @MainActor in

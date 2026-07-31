@@ -53,31 +53,29 @@ struct SettingsConnectionHeader: View {
           pulsing: pulsing,
           reduceMotion: reduceMotion
         )
-        VStack(alignment: .leading, spacing: 1) {
-          HStack(spacing: 7) {
-            Text(SettingsConnectionPresentation.statusLabel(
-              for: health,
-              canReconnectToSavedHost: snapshot.canReconnectToSavedHost
-            ))
-              .font(.system(.body, design: .rounded).weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            if health.transport.isConnected,
-               let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
-              Text(routeLabel)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(ADEColor.textSecondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(ADEColor.recessedBackground, in: Capsule())
-                .overlay(Capsule().stroke(ADEColor.border.opacity(0.7), lineWidth: 0.7))
-            }
-          }
+        VStack(alignment: .leading, spacing: 4) {
+          Text(SettingsConnectionPresentation.statusLabel(
+            for: health,
+            canReconnectToSavedHost: snapshot.canReconnectToSavedHost
+          ))
+            .font(.system(.body, design: .rounded).weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
           if let detail = stateDetailLine {
             Text(detail)
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
               .lineLimit(2)
               .fixedSize(horizontal: false, vertical: true)
+          }
+          if health.transport.isConnected,
+             let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
+            Text(routeLabel)
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 3)
+              .background(ADEColor.recessedBackground, in: Capsule())
+              .overlay(Capsule().stroke(ADEColor.border.opacity(0.7), lineWidth: 0.7))
           }
         }
         Spacer(minLength: 0)
