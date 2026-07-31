@@ -248,14 +248,16 @@ The full card is one full-bleed row with three lines:
 1. **Where + status** — an adaptive identity slot on the left and
    `SessionStatusSlot` on the right. The identity slot can carry the owning
    machine, a pin, the lane identity for a singleton lane, spawned-chat
-   lineage, a branch only when it differs from the lane's declared branch, and
-   the lane PR for a singleton. When none of those apply, session delta or
-   last-activity time is the floor, so the line never renders empty. A grouped
-   lane owns machine identity and PR state in its header; child rows do not
-   repeat them. Lane identity always uses the lane accent and `LaneIcon`;
-   branch identity is always muted and uses `BranchIcon`.
-2. **Title** — `primarySessionLabel()` is the prominent element. When the
-   card's lane is mid
+   lineage, and a branch only when it differs from the lane's declared branch.
+   When none of those apply, session delta or last-activity time is the floor,
+   so the line never renders empty. A grouped lane owns machine identity and PR
+   state in its header; child rows do not repeat them. Lane identity always
+   uses the lane accent and `LaneIcon`; branch identity is always muted and
+   uses `BranchIcon`.
+2. **Title + singleton PR** — `primarySessionLabel()` is the prominent,
+   elastic element. When the card stands in for a one-session lane, the shared
+   `LanePrBadge` sits at the right edge directly beneath the lifecycle status,
+   stays untruncated, and deep-links to the PR in ADE. When the card's lane is mid
    background AI auto-naming (`useLaneNaming(lane.id)` from
    `renderer/state/laneNamingStore.ts` is true), a title change gets a short
    lane-accent highlight.

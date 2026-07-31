@@ -425,9 +425,12 @@ export const SessionCard = React.memo(function SessionCard({
        3. lane identity (singleton rows only, `showLaneIdentity`)
        4. lineage — a Subagent/Peer badge, for sessions with a parent
        5. branch — ONLY when it differs from the lane's own branch
-       6. the lane's PR badge (singleton rows only)
-       7. the diff chips, else the last-activity time — the FLOOR. Every rule
+       6. the diff chips, else the last-activity time — the FLOOR. Every rule
           above can miss, and an empty slot reads as broken rather than minimal.
+
+     A singleton lane's PR sits at the right edge of line 2, directly beneath
+     the lifecycle status. Keeping navigation separate from the identity line
+     gives both the human lane name and the PR number enough room to scan.
 
      The floor is signal, not filler. `+42 −8` is how much this chat has
      actually changed, which is exactly what separates several sessions sitting
@@ -437,7 +440,8 @@ export const SessionCard = React.memo(function SessionCard({
      the status slot's elapsed counter only runs while a turn is WORKING, so a
      Done / Stale / Stopped row otherwise says nowhere when it last moved.
 
-     Because of (7) the slot is never empty, so line 1 needs no spacer.
+     Because the floor is mandatory, the slot is never empty, so line 1 needs
+     no spacer.
 
      The HARD rule: lane is ALWAYS the lane accent with `LaneIcon`, branch is
      ALWAYS muted with `BranchIcon`. Colour is the only thing that tells the two
@@ -588,24 +592,6 @@ export const SessionCard = React.memo(function SessionCard({
         <BranchIcon size={11} />
         <span className="truncate">{branchDisplayLabel(branchName)}</span>
       </span>,
-    );
-  }
-  if (showLaneIdentity && lanePr) {
-    /* PR state has to survive everywhere a lane header is minimized or absent —
-       it already does on quiet and collapsed dividers, and the singleton form
-       has no divider at all. Same component as the divider's badge, so the two
-       can never drift apart.
-
-       It goes LAST and `shrink-0` on purpose: the lane name is the only elastic
-       part of this slot, and a truncated "#95…" is unreadable while a truncated
-       lane name is still recognisable. So the squeeze lands on the name and the
-       PR chip keeps its full width. */
-    whereParts.push(
-      <LanePrBadge
-        key="lane-pr"
-        pr={lanePr}
-        onOpen={() => navigate(lanePrDeepLinkPath(lanePr))}
-      />,
     );
   }
   if (whereParts.length === 0) {
@@ -821,6 +807,12 @@ export const SessionCard = React.memo(function SessionCard({
       <GridFour size={11} weight={gridBadge === "active" ? "fill" : "bold"} />
     </span>
   ) : null;
+  const singletonPrBadge = showLaneIdentity && lanePr ? (
+    <LanePrBadge
+      pr={lanePr}
+      onOpen={() => navigate(lanePrDeepLinkPath(lanePr))}
+    />
+  ) : null;
 
   /* COMPACT ROWS ONLY. The full row carries lineage on line 1 now, and two
      lineage indicators on one row is exactly the duplication this pass removes.
@@ -945,8 +937,12 @@ export const SessionCard = React.memo(function SessionCard({
             {statusSlot}
           </div>
 
-          {/* Line 2 — the title. The one prominent element in the row. */}
-          <div className="mt-1 flex min-w-0">{titleNode}</div>
+          {/* Line 2 — the title, plus the singleton lane's PR directly beneath
+              the status. The title is elastic; the navigable PR number is not. */}
+          <div className="mt-1 flex min-w-0 items-center gap-2">
+            {titleNode}
+            {singletonPrBadge}
+          </div>
 
           {/* Line 3 — what it is doing, then the quiet meta. */}
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
